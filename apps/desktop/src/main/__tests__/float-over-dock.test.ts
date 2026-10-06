@@ -145,6 +145,7 @@ import {
   floatOverDockBounds,
   getFloatOverState,
   releaseFloatOverDock,
+  setFloatOverRecentSidebarVisible,
   setFloatOverState,
   tuckFloatOver
 } from "../float-over";
@@ -222,6 +223,7 @@ describe("float-over dock", () => {
     vi.useFakeTimers();
     disposeFloatOver();
     setRecordingState({ phase: "idle" });
+    setFloatOverRecentSidebarVisible(true);
     mocks.windows.length = 0;
     mocks.menuTemplates.length = 0;
     mocks.placementIsOurs.value = true;
@@ -232,6 +234,7 @@ describe("float-over dock", () => {
   afterEach(() => {
     disposeFloatOver();
     setRecordingState({ phase: "idle" });
+    setFloatOverRecentSidebarVisible(true);
     vi.useRealTimers();
   });
 
@@ -454,6 +457,105 @@ describe("float-over dock", () => {
     });
     expect(getFloatOverState()).toEqual({ kind: "hidden" });
     expect(onScreen(window)).toBe(false);
+  });
+
+  describe("the recent-capture sidebar setting", () => {
+    // `recording.showRecentCaptureSidebar` decides whether the dock is SEEN,
+    // never what is on it. The renderer owns the list (and its AI status
+    // glyphs), so hiding parks the window the way a recording does and
+    // never sends the `dismiss` that makes the renderer forget the list.
+    const sentKinds = (window: MockWindow): string[] =>
+      stateSends(window).map((event) => (event as { kind: string }).kind);
+
+    it("parks the dock a tuck asks for while the sidebar is hidden", () => {
+      const window = showToast();
+      setFloatOverRecentSidebarVisible(false);
+
+      expect(tuckFloatOver()).toEqual({ docked: true });
+      postLayout({ width: 18, height: 174, mode: "dock" });
+
+      expect(getFloatOverState()).toEqual({ kind: "hidden" });
+      expect(onScreen(window)).toBe(false);
+      // The renderer still holds the list: told it tucked, never dismissed.
+      expect(sentKinds(window).at(-1)).toBe("tucked");
+      expect(sentKinds(window)).not.toContain("dismiss");
+    });
+
+    it("hides a dock that is showing, and brings the same dock back", () => {
+      const window = showDock();
+      expect(onScreen(window)).toBe(true);
+
+      setFloatOverRecentSidebarVisible(false);
+      expect(getFloatOverState()).toEqual({ kind: "hidden" });
+      expect(onScreen(window)).toBe(false);
+      expect(sentKinds(window)).not.toContain("dismiss");
+
+      setFloatOverRecentSidebarVisible(true);
+      expect(getFloatOverState()).toEqual({ kind: "tucked" });
+      // Parked until the renderer redraws the tabs, then shown.
+      expect(onScreen(window)).toBe(false);
+      postLayout({ width: 18, height: 174, mode: "dock" });
+      expect(onScreen(window)).toBe(true);
+    });
+
+    it("never touches a toast that is on screen", () => {
+      const window = showToast();
+      setFloatOverRecentSidebarVisible(false);
+      expect(getFloatOverState()).toEqual({ kind: "loaded", captureId: "cap_1" });
+      expect(onScreen(window)).toBe(true);
+      setFloatOverRecentSidebarVisible(true);
+      expect(getFloatOverState()).toEqual({ kind: "loaded", captureId: "cap_1" });
+      expect(onScreen(window)).toBe(true);
+    });
+
+    it("keeps a hidden dock hidden through a capture session and a recording", () => {
+      const window = showDock();
+      setFloatOverRecentSidebarVisible(false);
+
+      setFloatOverState({ kind: "show-idle" });
+      setFloatOverState({ kind: "cancel" });
+      expect(getFloatOverState()).toEqual({ kind: "hidden" });
+
+      setRecordingState({
+        phase: "preflight",
+        sessionId: "rec_3",
+        rect: { x: 0, y: 0, w: 800, h: 600 },
+        displayId: 1
+      });
+      setRecordingState({ phase: "idle" });
+      releaseFloatOverDock();
+      postLayout({ width: 18, height: 174, mode: "dock" });
+      expect(onScreen(window)).toBe(false);
+
+      // Turning it back on after all that still finds the dock.
+      setFloatOverRecentSidebarVisible(true);
+      expect(getFloatOverState()).toEqual({ kind: "tucked" });
+    });
+
+    it("does not bring the dock back over a recording", () => {
+      const window = showDock();
+      setFloatOverRecentSidebarVisible(false);
+      setRecordingState({
+        phase: "preflight",
+        sessionId: "rec_4",
+        rect: { x: 0, y: 0, w: 800, h: 600 },
+        displayId: 1
+      });
+      setFloatOverRecentSidebarVisible(true);
+      expect(getFloatOverState()).toEqual({ kind: "hidden" });
+      expect(onScreen(window)).toBe(false);
+
+      setRecordingState({ phase: "idle" });
+      expect(getFloatOverState()).toEqual({ kind: "tucked" });
+    });
+
+    it("has nothing to bring back once the dock was dismissed", () => {
+      showDock();
+      setFloatOverRecentSidebarVisible(false);
+      setFloatOverState({ kind: "dismiss" });
+      setFloatOverRecentSidebarVisible(true);
+      expect(getFloatOverState()).toEqual({ kind: "hidden" });
+    });
   });
 
   it("a mark-only tuck never collapses the toast that is showing", () => {

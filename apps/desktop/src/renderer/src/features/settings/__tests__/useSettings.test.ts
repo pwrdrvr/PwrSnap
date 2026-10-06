@@ -74,6 +74,7 @@ const baseSettings: Settings = {
     mp4IncludeSystemAudio: true,
     videoCaptureCursor: true,
     showRegionFrame: true,
+    showRecentCaptureSidebar: true,
     imageCaptureCursor: true,
     lastRoutedPermissionFingerprint: "",
     screenCapturePrompted: false

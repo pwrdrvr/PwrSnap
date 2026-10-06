@@ -56,3 +56,25 @@ describe("validateSettingsWrite — recording.mp4Include*", () => {
     }
   });
 });
+
+describe("validateSettingsWrite — recording.showRecentCaptureSidebar", () => {
+  test("accepts booleans", () => {
+    for (const value of [true, false]) {
+      expect(validateSettingsWrite({ recording: { showRecentCaptureSidebar: value } }).ok).toBe(
+        true
+      );
+    }
+  });
+
+  // Main reads this to decide whether the dock window shows; a string
+  // "false" is truthy and must never be persisted.
+  test("rejects non-booleans", () => {
+    for (const value of ["false", 0, null, {}]) {
+      const result = validateSettingsWrite({ recording: { showRecentCaptureSidebar: value } });
+      expect(result.ok, JSON.stringify(value)).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("invalid_recording_showRecentCaptureSidebar");
+      }
+    }
+  });
+});

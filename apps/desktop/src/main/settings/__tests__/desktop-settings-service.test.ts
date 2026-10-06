@@ -920,6 +920,38 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(restarted.recording.includeMicrophone).toBe(false);
   });
 
+  test("the recent-capture sidebar defaults ON, including for files that predate it", async () => {
+    expect(defaultSettings().recording.showRecentCaptureSidebar).toBe(true);
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({ schemaVersion: 1, recording: { showRegionFrame: false } }),
+      "utf8"
+    );
+    const settings = await new DesktopSettingsService({ filePath }).read();
+    expect(settings.recording.showRecentCaptureSidebar).toBe(true);
+    expect(settings.recording.showRegionFrame).toBe(false);
+  });
+
+  test("a hidden recent-capture sidebar stays hidden across a restart", async () => {
+    const filePath = join(workDir, "settings.json");
+    await new DesktopSettingsService({ filePath }).write({
+      recording: { showRecentCaptureSidebar: false }
+    });
+
+    const restarted = await new DesktopSettingsService({ filePath }).read();
+    expect(restarted.recording.showRecentCaptureSidebar).toBe(false);
+    // Hiding the sidebar is not an AI choice.
+    expect(restarted.ai).toEqual(defaultSettings().ai);
+
+    await new DesktopSettingsService({ filePath }).write({
+      recording: { showRecentCaptureSidebar: true }
+    });
+    expect(
+      (await new DesktopSettingsService({ filePath }).read()).recording.showRecentCaptureSidebar
+    ).toBe(true);
+  });
+
   test("v1 recording block preserves an explicit cursor:false choice", async () => {
     const filePath = join(workDir, "settings.json");
     writeFileSync(

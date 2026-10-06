@@ -463,6 +463,23 @@ describe("FloatOver tuck countdown", () => {
     expect(onTimeout).toHaveBeenCalledTimes(1);
   });
 
+  test("with the sidebar hidden the countdown is unchanged, but nothing offers a tuck", async () => {
+    const onTimeout = vi.fn();
+    const el = await render({
+      ...baseProps,
+      enrichment: running,
+      dockable: true,
+      sidebarVisible: false,
+      onTimeout
+    });
+
+    expect(el.querySelector('[aria-label="Tuck to the screen edge"]')).toBeNull();
+    await advance(DOCK_TUCK_COUNTDOWN_MS - 200);
+    expect(onTimeout).not.toHaveBeenCalled();
+    await advance(600);
+    expect(onTimeout).toHaveBeenCalledWith({ inFlight: true });
+  });
+
   test("hovering the rail beside the toast pauses it like hovering the toast", async () => {
     const onTimeout = vi.fn();
     await render({ ...baseProps, enrichment: running, dockable: true, onTimeout, externalHover: true });
@@ -516,6 +533,62 @@ describe("FloatOverHost dock", () => {
     await advance(DOCK_TUCK_COUNTDOWN_MS + 500);
     expect(api.calls("float-over:dismiss")).toEqual([]);
     expect(api.calls("float-over:tuck")).toEqual([{}, {}]);
+  });
+
+  describe("recent-capture sidebar setting", () => {
+    const withSidebar = (show: boolean): Settings =>
+      ({
+        ...offlineSettings,
+        recording: { showRecentCaptureSidebar: show }
+      }) as unknown as Settings;
+    // Everything that would mean the setting reached past visibility:
+    // captures, AI runs, or the list main keeps the dock for.
+    const SIDE_EFFECT_VERBS = [
+      "codex:enrich",
+      "codex:cancel",
+      "capture:delete",
+      "library:trash",
+      "float-over:dismiss",
+      "float-over:tuck"
+    ];
+    const sideEffects = (api: HostApi): unknown[] =>
+      SIDE_EFFECT_VERBS.flatMap((verb) => api.calls(verb).map((req) => [verb, req]));
+
+    test("hidden: a timed-out snap is still kept, with its status, for when it is shown", async () => {
+      const api = installHostApi({ settings: withSidebar(false) });
+      const el = await mountHost();
+      await showSnap(api, "cap_1", "running");
+      // While the model reads, a tuck would send the snap nowhere visible.
+      expect(el.querySelector('[aria-label="Tuck to the screen edge"]')).toBeNull();
+      await push(api, EVENT_CHANNELS.aiRunUpdated, { enrichment: endpointFailure("cap_1") });
+
+      await advance(DOCK_TUCK_COUNTDOWN_MS + 500);
+      // The same close as with the sidebar on: main parks the dock.
+      expect(api.calls("float-over:tuck")).toEqual([{}]);
+      expect(api.calls("float-over:dismiss")).toEqual([]);
+      expect(api.calls("codex:enrich")).toEqual([]);
+      await push(api, EVENT_CHANNELS.floatOverState, { kind: "tucked", side: "right" });
+      expect(el.querySelector(".fod-tab")?.getAttribute("data-status")).toBe("failed");
+    });
+
+    test("toggling the setting dispatches nothing and keeps the tabs", async () => {
+      const api = installHostApi({ settings: withSidebar(true) });
+      const el = await mountHost();
+      await showSnap(api, "cap_1", "failed");
+      await showSnap(api, "cap_2", "running");
+      await advance(DOCK_TUCK_COUNTDOWN_MS + 500);
+      await push(api, EVENT_CHANNELS.floatOverState, { kind: "tucked", side: "right" });
+      const statuses = (): Array<string | null> =>
+        Array.from(el.querySelectorAll(".fod-tab"), (tab) => tab.getAttribute("data-status"));
+      expect(statuses()).toEqual(["reading", "failed"]);
+      const before = sideEffects(api);
+
+      for (const show of [false, true]) {
+        await push(api, EVENT_CHANNELS.settingsChanged, { settings: withSidebar(show), secrets: {} });
+      }
+      expect(sideEffects(api)).toEqual(before);
+      expect(statuses()).toEqual(["reading", "failed"]);
+    });
   });
 
   test("a new capture preserves an unopened model failure on the dock", async () => {

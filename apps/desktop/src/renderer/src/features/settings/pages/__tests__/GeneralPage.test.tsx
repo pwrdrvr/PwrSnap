@@ -166,6 +166,35 @@ describe("GeneralPage — cursor capture", () => {
   });
 });
 
+describe("GeneralPage — recent captures", () => {
+  const label = "Keep recent captures on the screen edge";
+
+  test("defaults on and patches only recording.showRecentCaptureSidebar", async () => {
+    await renderGeneral(baseSettings, healthyStatus);
+    const toggle = findSwitchIn(label);
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    expect(toggle.getAttribute("aria-label")).toBe(label);
+    await act(async () => {
+      toggle.click();
+    });
+    expect(patchMock).toHaveBeenCalledTimes(1);
+    expect(patchMock).toHaveBeenCalledWith({ recording: { showRecentCaptureSidebar: false } });
+  });
+
+  test("reflects a saved off and turns it back on", async () => {
+    await renderGeneral(
+      { ...baseSettings, recording: { ...baseSettings.recording, showRecentCaptureSidebar: false } },
+      healthyStatus
+    );
+    const toggle = findSwitchIn(label);
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    await act(async () => {
+      toggle.click();
+    });
+    expect(patchMock).toHaveBeenCalledWith({ recording: { showRecentCaptureSidebar: true } });
+  });
+});
+
 describe("GeneralPage — recording audio", () => {
   // The two `recording.include*Audio` fields have existed in the schema
   // (and been honored by the macOS recorder) since Phase 1, but no

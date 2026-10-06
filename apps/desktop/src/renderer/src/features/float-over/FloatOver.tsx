@@ -398,6 +398,7 @@ export function FloatOver({
   onDismiss,
   onTimeout,
   dockable = false,
+  sidebarVisible = true,
   externalHover = false,
   onEdit,
   onReveal,
@@ -477,6 +478,12 @@ export function FloatOver({
    * the toast then holds the corner until the model answers.
    */
   dockable?: boolean;
+  /**
+   * Settings → Recent captures. Off hides the Tuck button, which would
+   * send the snap to a dock nobody can see. Nothing else here follows it:
+   * the countdown and its timeout are the same either way.
+   */
+  sidebarVisible?: boolean;
   /** The pointer is over part of the float-over window that is not this
    *  toast (the rail beside it), or its menu is open. Pauses the
    *  countdown exactly as hovering the toast does. */
@@ -1026,7 +1033,7 @@ export function FloatOver({
               separate Pin affordance. The footer Edit button is the
               primary editor entry; an extra pencil here would be
               redundant. */}
-          {tuckMode && inFlight && onTimeout !== undefined ? (
+          {tuckMode && sidebarVisible && inFlight && onTimeout !== undefined ? (
             <button
               className="fo__icon-btn"
               type="button"

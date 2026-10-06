@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.1.16 - 2026-10-06
+
+This patch makes the Library detail rail and prerelease update checks more predictable.
+
+- Library Detail Rail - Fixed the rail switching to Cart when a saved cart
+  loads or when adding an item in Grid, keeping the editor's Info tab and copy
+  buttons where you left them.
+- Update Channels - Fixed Beta / Prerelease checks to offer newer stable
+  candidates, including stable builds awaiting promotion, while still preferring
+  a newer alpha or beta when one is available.
+
 ## v1.1.15 - 2026-10-05
 
 This patch improves recording previews and background capture enrichment.

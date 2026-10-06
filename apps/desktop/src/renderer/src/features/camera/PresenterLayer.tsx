@@ -439,7 +439,7 @@ export function PresenterLayer({
               </span>
             ) : null}
             {selected ? (
-              <div className="pres-sel" aria-hidden="true">
+              <div className="pres-sel" aria-hidden="true" style={selectionInsets(box, frameSize)}>
                 <span className="pres-sel__tag">Presenter</span>
                 {(["nw", "ne", "sw", "se"] as const).map((corner) => (
                   <i key={corner} className={`pres-sel__h is-${corner}`} onPointerDown={onHandlePointerDown(corner)} />
@@ -487,6 +487,36 @@ export function PresenterLayer({
       ) : null}
     </div>
   );
+}
+
+/**
+ * The selection outline sits 4px outside the picture and the handles 5px
+ * outside the outline — unless that would leave the stage frame, which
+ * clips. A cut-out flush on the bottom edge is the common case: its outline
+ * and handles move inside instead of being cut off.
+ */
+function selectionInsets(
+  box: { left: number; top: number; width: number; height: number },
+  frame: { width: number; height: number }
+): CSSProperties {
+  const room = {
+    l: Math.max(0, box.left),
+    t: Math.max(0, box.top),
+    r: Math.max(0, frame.width - box.left - box.width),
+    b: Math.max(0, frame.height - box.top - box.height)
+  };
+  const out = (side: number): number => Math.min(4, side);
+  const handle = (side: number): number => Math.min(5, Math.max(0, side - out(side)));
+  return {
+    left: -out(room.l),
+    top: -out(room.t),
+    right: -out(room.r),
+    bottom: -out(room.b),
+    "--pres-h-l": `${-handle(room.l)}px`,
+    "--pres-h-t": `${-handle(room.t)}px`,
+    "--pres-h-r": `${-handle(room.r)}px`,
+    "--pres-h-b": `${-handle(room.b)}px`
+  } as CSSProperties;
 }
 
 function PresenterToastIcon(): ReactElement {

@@ -235,7 +235,7 @@ import {
   listCaptures,
   listExpiredTrash
 } from "./persistence/captures-repo";
-import { insertVideoMetadata } from "./persistence/video-repo";
+import { insertVideoMetadata, setVideoCamera } from "./persistence/video-repo";
 import {
   seedCapturesForE2E,
   type E2ESeedCaptureInput
@@ -2423,6 +2423,11 @@ export function bootstrapApp(): void {
         // recording (which would need TCC permission + a Mac).
         seedVideoMetadata: (input: Parameters<typeof insertVideoMetadata>[0]) =>
           insertVideoMetadata(input),
+        // Index a camera track for a seeded video. The caller writes the
+        // `<id>.camera/` directory (track.json + source) beside the
+        // screen file first, exactly where a recording would leave it.
+        seedVideoCamera: (captureId: string, camera: Parameters<typeof setVideoCamera>[1]) =>
+          setVideoCamera(captureId, camera),
         // Seed a real bundle-backed capture by running the production
         // persistCaptureFromTempV2 pipeline — packs `.pwrsnap`, writes
         // the per-capture source.png cache under <userData>/render-cache/<id>/.

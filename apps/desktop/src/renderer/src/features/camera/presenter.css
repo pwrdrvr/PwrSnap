@@ -92,7 +92,6 @@
 }
 .pres-sel {
   position: absolute;
-  inset: -4px;
   border: 1.5px solid var(--accent);
   border-radius: 4px;
   pointer-events: none;
@@ -126,23 +125,23 @@
   inset: -6px;
 }
 .pres-sel__h.is-nw {
-  left: -5px;
-  top: -5px;
+  left: var(--pres-h-l, -5px);
+  top: var(--pres-h-t, -5px);
   cursor: nwse-resize;
 }
 .pres-sel__h.is-ne {
-  right: -5px;
-  top: -5px;
+  right: var(--pres-h-r, -5px);
+  top: var(--pres-h-t, -5px);
   cursor: nesw-resize;
 }
 .pres-sel__h.is-sw {
-  left: -5px;
-  bottom: -5px;
+  left: var(--pres-h-l, -5px);
+  bottom: var(--pres-h-b, -5px);
   cursor: nesw-resize;
 }
 .pres-sel__h.is-se {
-  right: -5px;
-  bottom: -5px;
+  right: var(--pres-h-r, -5px);
+  bottom: var(--pres-h-b, -5px);
   cursor: nwse-resize;
 }
 

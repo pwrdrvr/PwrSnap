@@ -298,12 +298,11 @@ describe("Window menu", () => {
       const menu = submenuOf(platform, "Window", opts);
       expect(flatten(menu)).toEqual([
         "role:minimize",
-        "role:close",
         "---",
         "Library",
         "Settings"
       ]);
-      expect(menu.slice(3).map((item) => [item.type, item.checked])).toEqual([
+      expect(menu.slice(2).map((item) => [item.type, item.checked])).toEqual([
         ["checkbox", false],
         ["checkbox", true]
       ]);
@@ -314,8 +313,17 @@ describe("Window menu", () => {
 
   test("says so when no window is open", () => {
     const menu = submenuOf("win32", "Window");
-    expect(flatten(menu)).toEqual(["role:minimize", "role:close", "---", "No Open Windows"]);
+    expect(flatten(menu)).toEqual(["role:minimize", "---", "No Open Windows"]);
     expect(find(menu, "No Open Windows")?.enabled).toBe(false);
+  });
+
+  test("binds Ctrl+W once — to File → Close Window, not again in Window", () => {
+    for (const platform of OTHER_PLATFORMS) {
+      const closeItems = everyItem(buildApplicationMenuTemplate(options(), platform)).filter(
+        (item) => item.role === "close"
+      );
+      expect(closeItems.map((item) => item.label)).toEqual(["Close Window"]);
+    }
   });
 });
 

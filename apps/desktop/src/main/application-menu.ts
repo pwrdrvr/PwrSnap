@@ -243,13 +243,14 @@ export function buildApplicationMenuTemplate(
     checked: entry.focused,
     click: () => actions.onFocusWindow(entry.id)
   }));
+  // No Close off macOS: File → Close Window already owns Ctrl+W, and a second
+  // row with the same action and key is noise (the macOS Window menu has none).
   const windowMenu: Item = isMac
     ? { role: "windowMenu" }
     : {
         label: "Window",
         submenu: [
           { role: "minimize" },
-          { role: "close" },
           separator,
           ...(openWindowItems.length > 0
             ? openWindowItems

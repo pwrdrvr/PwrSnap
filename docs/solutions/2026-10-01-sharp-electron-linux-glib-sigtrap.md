@@ -165,3 +165,30 @@ either way.
 - A teardown that reports `close=timeout, exited=false` after an
   operation that "returned ok" is not proof of a hang. Record the child's
   exit signal before reasoning about renderer state.
+
+## Addendum (2026-10-06): the package on a Mac is a stale tree, not a gate failure
+
+`pnpmfile.test.mjs` › "the installed sharp exposes its wasm binding only on
+Linux" failed on macOS checkouts at an unmodified `main` (593be5b4). Every one
+of them had `@img+sharp-wasm32@0.35.4` in `node_modules/.pnpm`, and all of
+their `node_modules` were last installed with pnpm 10.33.0, before the gate
+settled. The gate itself holds:
+
+- A clean `pnpm install --frozen-lockfile` with pnpm 12.9.1 on macOS skips the
+  package. `.modules.yaml` lists it under `skipped`, and the test passes.
+- **pnpm does not remove an installed package that the lockfile now skips for
+  this platform.** Measured on 12.9.1: install with `os: [linux]` deleted from
+  the lockfile entry, restore the line, then run `pnpm install
+  --frozen-lockfile` and plain `pnpm install`. Neither removes it, and the
+  second reports "Already up to date". **`pnpm prune` does remove it.** It
+  leaves a dangling `@img/sharp-wasm32` symlink beside sharp, which resolves
+  as `Cannot find module`.
+- Release staging does not ship it, even from such a stale tree. `pnpm
+  deploy --prod --legacy` installs from the lockfile and skips it.
+  `injectDarwinPlatformPackages` copies only the four named darwin slices. On
+  Windows and darwin-arm64, `pruneSharpNativePackages` removes it anyway,
+  because `sharp-wasm32` matches `^sharp-`, and `verify-asar-contents` fails if
+  it survives. The universal mac build has neither check. Today that build is
+  protected only by deploy honoring the lockfile.
+
+The test now says this in its failure message, and it names `pnpm prune`.

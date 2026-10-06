@@ -159,7 +159,18 @@ describe("readPackage / sharp wasm wiring", () => {
     if (process.platform === "linux") {
       expect(resolveBinding()).toContain("sharp-wasm32");
     } else {
-      expect(resolveBinding).toThrow(/Cannot find module/);
+      // The lockfile test below pins the gate itself. A failure HERE, with
+      // that one green, is a node_modules installed before the gate existed:
+      // pnpm 12 never removes an already-installed package the lockfile now
+      // skips for this platform, and `pnpm install` (frozen or not) reports
+      // "Already up to date". `pnpm prune` is what removes it — measured.
+      expect(
+        resolveBinding,
+        "@img/sharp-wasm32 is installed on a non-Linux host. If the lockfile " +
+          "test below passes, this node_modules predates the os: [linux] gate " +
+          "and `pnpm install` will not remove it: run `pnpm prune` from the " +
+          "repo root."
+      ).toThrow(/Cannot find module/);
     }
   });
 

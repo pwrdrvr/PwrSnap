@@ -52,7 +52,13 @@ describe("electron-log under vitest", () => {
     const marker = `electron-log-isolation ${process.pid} ${Date.now()}`;
     getMainLogger("pwrsnap:settings-service").warn(marker);
 
-    expect(existsSync(path)).toBe(true);
-    expect(readFileSync(path, "utf8")).toContain(marker);
+    // Every worker appends to this one file, and electron-log rotates it to
+    // `<name>.old.log` at maxSize, so a sibling's write can move the marker.
+    const rotated = path.replace(/\.log$/, ".old.log");
+    const written = [path, rotated]
+      .filter((file) => existsSync(file))
+      .map((file) => readFileSync(file, "utf8"))
+      .join("\n");
+    expect(written).toContain(marker);
   });
 });

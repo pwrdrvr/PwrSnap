@@ -525,7 +525,7 @@ if (!signStageOnly) {
     }
     writeFileSync(configPath, config.replaceAll("arch: [universal]", "arch: [arm64]"));
   }
-  for (const file of ["THIRD_PARTY_LICENSES", "CHANGELOG.md", ".pnpmfile-global.cjs"]) {
+  for (const file of ["THIRD_PARTY_LICENSES", "CHANGELOG.md", "LICENSE", ".pnpmfile-global.cjs"]) {
     run(`cp ${join(repoRoot, file)} ${join(stageDir, file)}`);
   }
 

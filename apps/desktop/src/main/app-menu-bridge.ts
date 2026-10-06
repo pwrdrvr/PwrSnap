@@ -3,14 +3,16 @@
 // On Windows we hide the native title bar (titleBarStyle: "hidden") to draw our
 // own chrome, which ALSO removes the native menu bar (the menu lives in the
 // title bar Windows just hid). So the renderer paints its own always-visible
-// top-level menu buttons (File / Edit / View / Window / Library / Help) and,
+// top-level menu buttons (File / Edit / View / Library / Window / Help) and,
 // on click / Alt-mnemonic, asks main to pop the REAL native submenu at that
 // spot via `Menu.popup()`. The submenus — roles (Undo/Copy/Paste), accelerators,
 // dynamic enable/disable, click handlers — are exactly the ones
-// `installApplicationMenu` already builds, so there is a single source of truth
-// for menu behavior; the renderer only owns the top-level bar's looks.
+// `buildApplicationMenuTemplate` (application-menu.ts) lays out, so there is a
+// single source of truth for menu behavior; the renderer only owns the
+// top-level bar's looks.
 //
-// macOS/Linux never call this — they keep the native menu bar.
+// Linux uses the same bridge: its frameless windows never build a native menu
+// bar. macOS never calls it — it keeps the system menu bar.
 
 import { BrowserWindow, ipcMain, Menu } from "electron";
 

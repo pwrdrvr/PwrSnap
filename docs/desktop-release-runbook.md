@@ -407,12 +407,14 @@ npx --yes @electron/fuses read --app "$APP"
 # User-viewable release documents must ship outside app.asar
 test -f "$APP/Contents/Resources/THIRD_PARTY_LICENSES"
 test -f "$APP/Contents/Resources/CHANGELOG.md"
+test -f "$APP/Contents/Resources/LICENSE"
 ```
 
 After launch, spot-check the document surfaces:
 
 - Help → Changelog opens the bundled changelog.
-- Help → Third-party Licenses opens the bundled notices.
+- Help → View License opens the bundled LICENSE.
+- Help → Third-Party Notices opens the bundled notices.
 - Settings → About can open both release notes and third-party notices.
 
 After a local publish, make the GitHub Release body match the changelog entry

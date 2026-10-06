@@ -18,7 +18,7 @@ describe("commandOwner", () => {
     // The Cancel button lives in the Library window; the download it stops
     // lives in the agent, which is where `activeDownload` is held.
     expect(commandOwner("app:update:cancel")).toBe("agent");
-    // Help → Check for Updates is clicked in whichever process installed the
+    // Check for Updates… is clicked in whichever process installed the
     // menu — the LIBRARY under the split — and must still run in the agent,
     // beside the updater and the `userCheckRunning` flag the snapshot reads.
     expect(commandOwner("app:update:menuCheck")).toBe("agent");

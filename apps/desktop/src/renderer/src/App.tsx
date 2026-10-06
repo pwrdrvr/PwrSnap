@@ -1,6 +1,7 @@
 import { AppDocumentWindow } from "./features/documents/AppDocumentWindow";
 import { Library } from "./features/library/Library";
 import { LocalAgentConsent } from "./features/local-agents/LocalAgentConsent";
+import { AppNoticeToast } from "./features/shared/AppNoticeToast";
 import { WindowControls } from "./features/shared/WindowControls";
 import { paintsOwnCaptionButtons, rendererPlatform } from "./lib/window-chrome";
 import { LogsWindow } from "./features/logs/LogsWindow";
@@ -21,7 +22,12 @@ import { useAppearanceSync } from "./lib/useAppearance";
 import { useEditMenuBridge } from "./lib/editMenuBridge";
 import { usePreventBrowserZoom } from "./lib/usePreventBrowserZoom";
 import { FastTooltipHost } from "./lib/useFastTooltip";
-import { isWindowChromeStage } from "@pwrsnap/shared";
+import {
+  APP_DOCUMENT_TITLES,
+  isAppDocumentKind,
+  isWindowChromeStage,
+  type AppDocumentKind
+} from "@pwrsnap/shared";
 
 type Stage =
   | "library"
@@ -35,7 +41,6 @@ type Stage =
   | "local-agent-consent"
   | "recording-controller"
   | "recording-frame";
-type AppDocumentKind = "changelog" | "third-party-licenses";
 
 function readStage(): Stage {
   const hash = window.location.hash.replace(/^#/, "");
@@ -62,10 +67,7 @@ function readDocumentKind(): AppDocumentKind | null {
   const hash = window.location.hash.replace(/^#/, "");
   const params = new URLSearchParams(hash);
   const kind = params.get("kind");
-  if (kind === "changelog" || kind === "third-party-licenses") {
-    return kind;
-  }
-  return null;
+  return isAppDocumentKind(kind) ? kind : null;
 }
 
 const STAGE = readStage();
@@ -102,10 +104,7 @@ const TITLE_BY_STAGE: Record<Stage, string> = {
   "local-agent-consent": "Authorize Local Agent - PwrSnap",
   "recording-controller": "PwrSnap Recording",
   "recording-frame": "PwrSnap Recording Frame",
-  document:
-    DOCUMENT_KIND === "third-party-licenses"
-      ? "PwrSnap Third-party Licenses"
-      : "PwrSnap Changelog"
+  document: `PwrSnap ${APP_DOCUMENT_TITLES[DOCUMENT_KIND ?? "changelog"]}`
 };
 document.title = TITLE_BY_STAGE[STAGE] ?? "PwrSnap";
 
@@ -201,6 +200,7 @@ export function App() {
           <CodexCompatibilityBanner />
           <HotCpuProfileBanner />
           <AppUpdateBanner />
+          <AppNoticeToast />
         </div>
       </div>
     );

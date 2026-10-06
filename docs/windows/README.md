@@ -75,7 +75,7 @@ automatically.
 Release builds check the selected GitHub release channel at startup and
 periodically while PwrSnap is running. Under **Settings → General → Updates**,
 choose a release train (Stable or Beta) and an update track (Latest or
-Prerelease). **Help → Check for Updates** starts the same check on demand, and
+Prerelease). **Help → Check for Updates…** starts the same check on demand, and
 **Restart to Update** installs a completed download.
 
 The Windows updater requires `latest.yml`, the versioned installer, and its
@@ -164,7 +164,7 @@ design; the Library window does not open automatically.
 ### Updates do not appear
 
 Confirm the desired Stable/Beta and Latest/Prerelease choices under
-**Settings → General → Updates**, then use **Help → Check for Updates**. The
+**Settings → General → Updates**, then use **Help → Check for Updates…**. The
 `pnpm dev` process simulates manual update UI but does not use the production
 feed; use a published release to test real updates.
 

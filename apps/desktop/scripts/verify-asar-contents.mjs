@@ -46,10 +46,16 @@ const forbidden = [
 
 const allowedForbiddenEntries = [/^\/out\/main\/prompts\/[^/]+\.md$/];
 
-const macRequiredResources = ["THIRD_PARTY_LICENSES", "CHANGELOG.md", "PwrSnapFFmpeg"];
+const macRequiredResources = [
+  "THIRD_PARTY_LICENSES",
+  "CHANGELOG.md",
+  "LICENSE",
+  "PwrSnapFFmpeg"
+];
 const windowsRequiredResources = [
   "THIRD_PARTY_LICENSES",
   "CHANGELOG.md",
+  "LICENSE",
   "PwrSnapWindowList.exe",
   "PwrSnapScreenSnapshot.exe"
 ];

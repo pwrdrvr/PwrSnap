@@ -3,12 +3,12 @@
 // Exposes:
 //   - app:version             — build/runtime metadata for Settings → About
 //   - app:readDocument        — read a bundled app document (changelog,
-//                               third-party licenses) for in-app viewing
+//                               license, third-party notices) for in-app viewing
 //   - app:openDocumentWindow  — open the document-viewer BrowserWindow
 //   - app:openExternal        — open an allowlisted https URL in the
 //                               default browser (About page links)
 //   - app:update:check        — force a fresh electron-updater check
-//   - app:update:menuCheck    — Help → Check for Updates, announced on the
+//   - app:update:menuCheck    — the Check for Updates… menu item, announced on the
 //                               user-initiated result channel
 //   - app:update:cancel       — stop the download the update card reports
 //   - app:update:userCheckRunning — mount-time snapshot of "the user asked"
@@ -18,9 +18,9 @@
 //                               updater channel; used by the Updates page)
 
 import { app, screen, shell } from "electron";
-import { err, ok } from "@pwrsnap/shared";
+import { err, isAppDocumentKind, ok } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
-import { isAppDocumentKind, readAppDocument } from "../app-documents";
+import { readAppDocument } from "../app-documents";
 import { isAllowedExternalUrl } from "../external-url-allowlist";
 import { readLaunchAtLoginStatus } from "../launch-at-login";
 import { resolveDevelopmentRuntimeIdentity } from "../runtime-identity";
@@ -42,7 +42,7 @@ import {
  * independent of both Electron upgrades and PwrSnap releases. Keep the seam
  * E2E-only so production always reports the packaged application version.
  */
-function resolveAppVersion(): string {
+export function resolveAppVersion(): string {
   const e2eVersion = process.env["PWRSNAP_E2E_APP_VERSION"];
   if (
     process.env["PWRSNAP_E2E"] === "1" &&

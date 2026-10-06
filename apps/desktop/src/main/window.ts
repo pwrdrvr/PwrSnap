@@ -7,6 +7,8 @@ import {
 } from "electron";
 import { join } from "node:path";
 import {
+  APP_DOCUMENT_KINDS,
+  APP_DOCUMENT_TITLES,
   EVENT_CHANNELS,
   FLOAT_OVER_WIDTH_REGULAR_DIP,
   TRAY_WIDTH_REGULAR_DIP,
@@ -1327,7 +1329,38 @@ export function createSizzleWindow(
 }
 
 function appDocumentTitle(kind: AppDocumentKind): string {
-  return kind === "changelog" ? "PwrSnap Changelog" : "PwrSnap Third-party Licenses";
+  return `PwrSnap ${APP_DOCUMENT_TITLES[kind]}`;
+}
+
+/** One of PwrSnap's own windows, named the way the Window menu lists it. */
+export type OpenAppWindow = { window: BrowserWindow; label: string };
+
+/**
+ * The windows a person opened and can switch between — Library, Settings,
+ * Sizzle Reels, Logs and the document windows — for the Window menu on
+ * Linux and Windows (macOS draws its own list). Chrome that is not a
+ * destination (tray popover, float-over, region selector, recording HUD and
+ * frame, the focus sink) is left out by construction: only the singletons
+ * this module tracks are read. Hidden windows are skipped.
+ */
+export function listOpenAppWindows(): OpenAppWindow[] {
+  const candidates: Array<[BrowserWindow | null | undefined, string]> = [
+    [libraryWindow, "Library"],
+    [settingsWindow, "Settings"],
+    [sizzleWindow, "Sizzle Reels"],
+    [logsWindow, "Logs"],
+    ...APP_DOCUMENT_KINDS.map(
+      (kind): [BrowserWindow | undefined, string] => [
+        appDocumentWindows.get(kind),
+        APP_DOCUMENT_TITLES[kind]
+      ]
+    )
+  ];
+  return candidates.flatMap(([window, label]) =>
+    window !== null && window !== undefined && !window.isDestroyed() && window.isVisible()
+      ? [{ window, label }]
+      : []
+  );
 }
 
 export function showAppDocumentWindow(

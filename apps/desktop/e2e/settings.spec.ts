@@ -14,7 +14,7 @@
 // the `smoke.spec.ts` shape; the more-elaborate seeding patterns
 // from `library-source-filter.spec.ts` are intentionally avoided.
 
-import { readFile, stat } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { LocalAgentClientGrant } from "@pwrsnap/shared";
 import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
@@ -320,6 +320,44 @@ test("settings:write persists to pwrsnap-settings.json under userData", async ()
     const raw = await readFile(settingsPath, "utf8");
     const parsed = JSON.parse(raw) as { general?: { developerMode?: boolean } };
     expect(parsed.general?.developerMode).toBe(true);
+  } finally {
+    await app.close();
+  }
+});
+
+test("a hidden recent-capture sidebar is still hidden after a restart", async () => {
+  // A real second boot, not only the file: main reads the setting at
+  // startup to decide whether the float-over dock may show, and the
+  // Settings switch must come back the way the user left it.
+  let saved = "";
+  const first = await launchPwrSnap();
+  try {
+    const written = await first.dispatch("settings:write", {
+      recording: { showRecentCaptureSidebar: false }
+    });
+    expect(written.ok).toBe(true);
+    saved = await readFile(path.join(first.homeRoot, "pwrsnap-settings.json"), "utf8");
+  } finally {
+    await first.close();
+  }
+
+  const app = await launchPwrSnap({
+    seedUserData: (home) => writeFile(path.join(home, "pwrsnap-settings.json"), saved)
+  });
+  try {
+    const read = await app.dispatch("settings:read", {});
+    expect(read.ok).toBe(true);
+    if (!read.ok) throw new Error("unreachable");
+    expect(read.value.recording.showRecentCaptureSidebar).toBe(false);
+    // Visibility only: nothing about AI rode along.
+    expect(read.value.ai.enabled).toBe(false);
+
+    await app.dispatch("settings:open", { page: "general" });
+    const settingsPage = await waitForSettingsWindow(app);
+    const toggle = settingsPage.getByRole("switch", {
+      name: "Keep recent captures on the screen edge"
+    });
+    await expect(toggle).toHaveAttribute("aria-checked", "false");
   } finally {
     await app.close();
   }

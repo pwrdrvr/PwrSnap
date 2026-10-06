@@ -1262,6 +1262,26 @@ function isBetaTrainRelease(
   });
 }
 
+// A Stable candidate — a `-prerelease.N` / `-rc.N` maintenance candidate, or
+// a suffix-free final still staged as a GitHub prerelease — that outranks
+// Stable Latest. Stable · Prerelease already offers it, so Beta · Prerelease,
+// the most adventurous slot, must too or it trails the conservative one.
+// Precedence still decides, so a newer alpha or beta wins over it.
+function isStableCandidateAheadOfLatest(
+  release: GitHubRelease,
+  stableLatest: GitHubRelease | undefined
+): boolean {
+  if (release.prerelease !== true) return false;
+  const parsed = parseSemver(release.tag_name);
+  if (!parsed) return false;
+  const id = firstPrereleaseId(release.tag_name);
+  const isCandidate = parsed.pre.length === 0 || id === "prerelease" || id === "rc";
+  return (
+    isCandidate &&
+    (stableLatest === undefined || compareSemver(release.tag_name, stableLatest.tag_name) > 0)
+  );
+}
+
 function isBetaLatestRelease(
   release: GitHubRelease,
   stableLatest: GitHubRelease | undefined,
@@ -1286,7 +1306,9 @@ export type SelectedUpdateReleases = {
 //   - stable latest      → highest GitHub non-prerelease (the 1.0 / normie feed)
 //   - stable prerelease  → max(stable latest, 1.0 `-prerelease` / legacy `-beta`)
 //   - beta latest        → highest newer-core `-beta`, falling back to stable final
-//   - beta prerelease    → highest newer-core alpha/beta, falling back to stable final
+//   - beta prerelease    → highest newer-core alpha/beta, or Stable candidate
+//                          (`-prerelease` / `-rc` / staged final) above stable
+//                          latest, falling back to stable final
 // Stable promotion must keep Beta followers on an upgrade path without changing
 // their saved selection; the next main-train release takes precedence again.
 export function selectChannelReleases(releases: GitHubRelease[]): SelectedUpdateReleases {
@@ -1310,7 +1332,8 @@ export function selectChannelReleases(releases: GitHubRelease[]): SelectedUpdate
     return !isBetaLatestRelease(release, stableLatest, publicReleases);
   });
   const betaPrerelease = byPrecedenceDesc.find((release) =>
-    isBetaTrainRelease(release, stableLatest, publicReleases)
+    isBetaTrainRelease(release, stableLatest, publicReleases) ||
+    isStableCandidateAheadOfLatest(release, stableLatest)
   ) ?? stableFinal;
   return {
     latest: stableLatest,

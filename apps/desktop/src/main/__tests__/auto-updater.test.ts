@@ -242,6 +242,53 @@ describe("selectChannelReleases", () => {
     expect(selected.betaLatest?.tag_name).toBe(selected.stableLatest?.tag_name);
     expect(selected.betaPrerelease?.tag_name).toBe("v1.1.0-alpha.7");
   });
+
+  // Beta · Prerelease is the most adventurous slot. It must never sit behind
+  // Stable · Prerelease, which used to happen whenever the newest build was a
+  // Stable candidate rather than an alpha or beta.
+  test.each([
+    ["maintenance candidate", "v1.1.16-prerelease.1"],
+    ["later maintenance release candidate", "v1.1.16-rc.1"],
+    ["staged final", "v1.1.16"]
+  ])("offers a newer %s on Beta · Prerelease", async (_label, candidate) => {
+    const { selectChannelReleases } = await importAutoUpdater();
+    const selected = selectChannelReleases([
+      { tag_name: candidate, prerelease: true, draft: false },
+      { tag_name: "v1.1.15", prerelease: false, draft: false },
+      { tag_name: "v1.1.13", prerelease: true, draft: false },
+      { tag_name: "v1.1.0-beta.5", prerelease: true, draft: false },
+      { tag_name: "v1.1.0-alpha.11", prerelease: true, draft: false }
+    ]);
+    expect(selected.stableLatest?.tag_name).toBe("v1.1.15");
+    expect(selected.stablePrerelease?.tag_name).toBe(candidate);
+    expect(selected.betaLatest?.tag_name).toBe("v1.1.15");
+    expect(selected.betaPrerelease?.tag_name).toBe(candidate);
+  });
+
+  test("prefers a newer main-train alpha over a maintenance candidate", async () => {
+    const { selectChannelReleases } = await importAutoUpdater();
+    const selected = selectChannelReleases([
+      { tag_name: "v1.2.0-alpha.1", prerelease: true, draft: false },
+      { tag_name: "v1.1.16-prerelease.1", prerelease: true, draft: false },
+      { tag_name: "v1.1.15", prerelease: false, draft: false }
+    ]);
+    expect(selected.stablePrerelease?.tag_name).toBe("v1.1.16-prerelease.1");
+    expect(selected.betaLatest?.tag_name).toBe("v1.1.15");
+    expect(selected.betaPrerelease?.tag_name).toBe("v1.2.0-alpha.1");
+  });
+
+  test("keeps Stable candidates at or below Stable Latest off Beta · Prerelease", async () => {
+    const { selectChannelReleases } = await importAutoUpdater();
+    const selected = selectChannelReleases([
+      { tag_name: "v1.1.15", prerelease: false, draft: false },
+      { tag_name: "v1.1.15-rc.1", prerelease: true, draft: false },
+      { tag_name: "v1.1.15-prerelease.2", prerelease: true, draft: false },
+      { tag_name: "v1.1.13", prerelease: true, draft: false }
+    ]);
+    expect(selected.stableLatest?.tag_name).toBe("v1.1.15");
+    expect(selected.stablePrerelease?.tag_name).toBe("v1.1.15");
+    expect(selected.betaPrerelease?.tag_name).toBe("v1.1.15");
+  });
 });
 
 describe("auto updater selection", () => {

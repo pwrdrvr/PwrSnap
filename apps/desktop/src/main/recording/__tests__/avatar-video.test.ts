@@ -107,3 +107,52 @@ describe("presenter composition", () => {
     },
   );
 });
+
+describe("presenter shapes", () => {
+  test.skipIf(!available)("a circle masks its corners and keeps its centre", () => {
+    const filter = avatarCompositionFilter({
+      camera,
+      style: {
+        ...DEFAULT_AVATAR_STYLE,
+        background: "original",
+        shape: "circle",
+        crop: { x: 0, y: 0, width: 1, height: 1 },
+        x: 0.25,
+        y: 0.25,
+        width: 0.5,
+      },
+      width: 64,
+      height: 64,
+    });
+    const result = spawnSync(
+      binary,
+      [
+        "-v", "error",
+        "-f", "lavfi", "-i", "color=blue:s=64x64:d=1:r=1",
+        "-f", "lavfi", "-i", "color=red:s=16x16:d=1:r=1",
+        "-filter_complex", filter,
+        "-map", "[out]", "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1",
+      ],
+      { maxBuffer: 1024 * 1024 },
+    );
+    expect(result.status, result.stderr?.toString()).toBe(0);
+    const pixel = (x: number, y: number) => [
+      ...result.stdout.subarray((y * 64 + x) * 3, (y * 64 + x) * 3 + 3),
+    ];
+    expect(pixel(32, 32)[0]).toBeGreaterThan(220);
+    // The presenter's own top-left corner sits outside the circle.
+    expect(pixel(17, 17)[2]).toBeGreaterThan(200);
+  });
+
+  test("a rect, and any cut-out, adds no mask", () => {
+    for (const style of [
+      { ...DEFAULT_AVATAR_STYLE },
+      { ...DEFAULT_AVATAR_STYLE, background: "original" as const, shape: "rect" as const },
+      { ...DEFAULT_AVATAR_STYLE, shape: "circle" as const },
+    ]) {
+      expect(
+        avatarCompositionFilter({ camera, style, width: 64, height: 64 }),
+      ).not.toContain("geq");
+    }
+  });
+});

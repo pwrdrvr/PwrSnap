@@ -5,6 +5,9 @@ import { join } from "node:path";
 import {
   AvatarStyleSchema,
   DEFAULT_AVATAR_STYLE,
+  geometryFor,
+  presenterCornerRadius,
+  resolvePresenterStyle,
   type AvatarStyle,
   type CaptureRecord,
   type CameraTrackMetadata,
@@ -19,9 +22,26 @@ import { getRuntimeProcessRole } from "../process-role";
 const MODEL_REVISION = "mediapipe-landscape-490e9ea7-v1";
 const FPS = 15;
 export type AvatarCanvas = { width: number; height: number };
+
+/** The presenter a recording renders with on `canvas` (the recording's own
+ *  frame when omitted): the stored style, or the default for this camera. */
+export function resolveRecordPresenter(
+  record: CaptureRecord,
+  override?: AvatarStyle | null,
+  canvas?: AvatarCanvas,
+): AvatarStyle {
+  const camera = record.video?.camera;
+  const stored = override ?? record.video?.avatar;
+  if (!camera) return stored ?? DEFAULT_AVATAR_STYLE;
+  return resolvePresenterStyle(
+    stored,
+    geometryFor(camera, canvas ?? { width: record.width_px, height: record.height_px }),
+  );
+}
+
 export function avatarCacheKey(
   record: CaptureRecord,
-  style: AvatarStyle = record.video?.avatar ?? DEFAULT_AVATAR_STYLE,
+  style: AvatarStyle = resolveRecordPresenter(record),
   canvas?: AvatarCanvas,
 ): string {
   return createHash("sha256")
@@ -194,6 +214,8 @@ export function avatarCompositionFilter(input: {
   const targetWidth = Math.max(2, Math.round((width * style.width) / 2) * 2);
   const offsetSec = camera.offsetSec + (style.syncOffsetSec ?? 0);
   const timing = `trim=start=${Math.max(0, -offsetSec).toFixed(6)},setpts=PTS-STARTPTS+${Math.max(0, offsetSec).toFixed(6)}/TB`;
+  const shape =
+    style.background === "remove" ? "" : presenterShapeFilter(style);
   const layers =
     style.background === "remove"
       ? `[1:v]split=2[color][mask];[color]crop=iw/2:ih:0:0[rgb];[mask]crop=iw/2:ih:iw/2:0,format=gray[alpha];[rgb][alpha]alphamerge[person];`
@@ -205,9 +227,25 @@ export function avatarCompositionFilter(input: {
     screen +
     layers +
     `[person]${timing},crop=iw*${crop.width}:ih*${crop.height}:iw*${crop.x}:ih*${crop.y},` +
-    `${style.mirror ? "hflip," : ""}scale=${targetWidth}:-2[avatar];` +
+    `${style.mirror ? "hflip," : ""}scale=${targetWidth}:-2${shape}[avatar];` +
     `${input.normalizeScreen ? "[screen]" : "[0:v]"}[avatar]overlay=x=${Math.round(width * style.x)}:y=${Math.round(height * style.y)}:eof_action=pass:repeatlast=0:shortest=0,format=yuv420p[out]`
   );
+}
+
+/**
+ * The outline of a presenter that keeps its background, as an alpha
+ * mask over the scaled frame. Anti-aliased over one pixel so the export's
+ * edge matches the stage's CSS `border-radius`. The radius comes from
+ * `presenterCornerRadius`, the same number the stage uses.
+ */
+export function presenterShapeFilter(style: AvatarStyle): string {
+  if (style.shape !== "circle" && style.shape !== "rounded") return "";
+  const ratio = style.shape === "circle" ? 0.5 : presenterCornerRadius("rounded");
+  const r = `(${ratio}*min(W,H))`;
+  const dx = `max(abs(X+0.5-W/2)-(W/2-${r}),0)`;
+  const dy = `max(abs(Y+0.5-H/2)-(H/2-${r}),0)`;
+  const alpha = `255*clip(${r}-hypot(${dx},${dy})+0.5,0,1)`;
+  return `,format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='${alpha}'`;
 }
 
 /** Compose in source time, before the existing trim/cut/speed machinery. */
@@ -225,7 +263,7 @@ export async function prepareAvatarVideo(
   if (!source) throw new Error("Recording source missing");
   const camera = record.video?.camera;
   const style = AvatarStyleSchema.parse(
-    override ?? record.video?.avatar ?? DEFAULT_AVATAR_STYLE,
+    resolveRecordPresenter(record, override, canvas),
   );
   if (!camera || !style.visible) return source;
   const offset = camera.offsetSec + (style.syncOffsetSec ?? 0);

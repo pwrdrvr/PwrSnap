@@ -9,6 +9,9 @@ export const AvatarStyleSchema = z
     y: z.number().finite().min(0).max(1),
     width: z.number().finite().min(0.05).max(1),
     mirror: z.boolean(),
+    /** Outline of a presenter that keeps its background. Ignored by a
+     *  cut-out. Absent reads as `rect`. */
+    shape: z.enum(["rect", "rounded", "circle"]).optional(),
     /** Additional camera delay; positive values show earlier camera frames. */
     syncOffsetSec: z.number().finite().min(-10).max(10).optional(),
     crop: z
@@ -24,14 +27,16 @@ export const AvatarStyleSchema = z
   .strict();
 
 export type AvatarStyle = z.infer<typeof AvatarStyleSchema>;
+/** `defaultPresenterStyle` for a 16:9 camera on a 16:9 canvas. Renderers
+ *  that know the real geometry call `resolvePresenterStyle` instead. */
 export const DEFAULT_AVATAR_STYLE: AvatarStyle = {
   visible: true,
   background: "remove",
-  x: 0.72,
-  y: 0.72,
-  width: 0.26,
-  mirror: true,
-  crop: { x: 0, y: 0, width: 1, height: 1 },
+  x: 0.735,
+  y: 0.68,
+  width: 0.24,
+  mirror: false,
+  crop: { x: 0.2, y: 0, width: 0.6, height: 0.8 },
 };
 
 export const RecordingCameraSchema = z

@@ -593,6 +593,7 @@ export function validateSettingsWrite(
       "videoCaptureCursor",
       "imageCaptureCursor",
       "showRegionFrame",
+      "showRecentCaptureSidebar",
       "screenCapturePrompted"
     ] as const) {
       const v = recording[key];

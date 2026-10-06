@@ -276,6 +276,7 @@ export function defaultSettings(
       // was the reported gap, and the overlay never reaches the file on
       // any platform. Off is a taste preference, not a safety valve.
       showRegionFrame: true,
+      showRecentCaptureSidebar: true,
       lastRoutedPermissionFingerprint: "",
       // Fresh install has never triggered the macOS Screen Recording
       // prompt, so the System Permissions page + the capture gate show
@@ -1066,6 +1067,12 @@ function parseV1(
       // existing install gains the frame on first launch after the
       // update rather than having to find the switch.
       showRegionFrame: pickBoolean(recording.showRegionFrame, defaults.recording.showRegionFrame),
+      // `showRecentCaptureSidebar` landed after the dock; older files get
+      // the ON default, which is what they already had.
+      showRecentCaptureSidebar: pickBoolean(
+        recording.showRecentCaptureSidebar,
+        defaults.recording.showRecentCaptureSidebar
+      ),
       lastRoutedPermissionFingerprint: pickString(
         recording.lastRoutedPermissionFingerprint,
         defaults.recording.lastRoutedPermissionFingerprint

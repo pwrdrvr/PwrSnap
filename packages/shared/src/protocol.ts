@@ -3016,6 +3016,13 @@ export type Settings = {
      *  distracting), not a workaround: the frame never reaches the
      *  recorded file on any platform. */
     showRegionFrame: boolean;
+    /** Whether the recent-capture sidebar (the float-over's screen-edge
+     *  dock) is SHOWN. Defaults ON. It governs visibility only: which
+     *  captures are on the dock, their AI status glyphs, and every AI
+     *  run are the same either way. Off parks the dock window the way a
+     *  recording does, so turning it back on shows the same tabs. Main
+     *  reads it live (`setFloatOverRecentSidebarVisible`). */
+    showRecentCaptureSidebar: boolean;
     /** Whether IMAGE captures include the mouse cursor. Defaults ON.
      *  Reserved for the Phase 3 image-cursor work — the field is
      *  persisted now so adding it later needs no schema change, but

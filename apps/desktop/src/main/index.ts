@@ -53,6 +53,7 @@ import { getAppIconPath } from "./app-icons/app-icon-cache";
 import {
   disposeFloatOver,
   getFloatOverWindowIdForE2E,
+  setFloatOverRecentSidebarVisible,
   setFloatOverState
 } from "./float-over";
 import { bus } from "./command-bus";
@@ -1930,6 +1931,7 @@ export function bootstrapApp(): void {
     try {
       const storageSettings = await storageSettingsService.read();
       setCapturesLocation(storageSettings.storage.capturesLocation);
+      setFloatOverRecentSidebarVisible(storageSettings.recording.showRecentCaptureSidebar);
     } catch (cause) {
       log.warn("captures location: initial settings read failed; using Documents", {
         message: cause instanceof Error ? cause.message : String(cause)
@@ -1941,6 +1943,9 @@ export function bootstrapApp(): void {
     // event below.
     onSettingsChanged((settings) => {
       setCapturesLocation(settings.storage.capturesLocation);
+      // The float-over (and its dock) lives in this process in both roles
+      // that receive these broadcasts.
+      setFloatOverRecentSidebarVisible(settings.recording.showRecentCaptureSidebar);
     });
     // Open the DB before anything else — cold first-INSERT cost
     // (~40ms) lands here instead of inside ⌘⇧P's <120ms budget.

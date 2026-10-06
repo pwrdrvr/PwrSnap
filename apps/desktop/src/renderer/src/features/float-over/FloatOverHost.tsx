@@ -1259,6 +1259,7 @@ export function FloatOverHost({
           closeToast(true);
         }}
         dockable={dockSupported}
+        sidebarVisible={settings?.recording?.showRecentCaptureSidebar !== false}
         externalHover={(showRail && railHover) || menuOpen}
         onEdit={openInLibraryAndDismiss}
         onReveal={openInLibraryAndDismiss}

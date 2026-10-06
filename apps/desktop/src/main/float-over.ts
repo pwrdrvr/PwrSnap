@@ -108,6 +108,16 @@ let dockDrag: { grabOffsetY: number } | null = null;
  *  records every window; see AGENTS.md §"Mid-take UI"). */
 let recordingOwnsScreen = false;
 let unsubscribeRecordingState: (() => void) | null = null;
+/** `recording.showRecentCaptureSidebar`. Off parks the dock exactly as a
+ *  recording does: the renderer keeps its list and every status glyph, and
+ *  nothing here is forgotten, so turning it back on shows the same tabs.
+ *  A settings mirror, not window state, so disposal leaves it alone. */
+let recentSidebarVisible = true;
+
+/** The dock exists (`docked`) but may not be on screen right now. */
+function dockParked(): boolean {
+  return recordingOwnsScreen || !recentSidebarVisible;
+}
 /** Whether the window is currently excluded from screen capture. A new
  *  window starts capturable. */
 let dockContentProtected = false;
@@ -621,7 +631,7 @@ function applyDockLayout(window: BrowserWindow, widthDip: number, heightDip: num
   const bounds = floatOverDockBounds(dockDisplay().workArea, dock, widthDip, Math.max(1, heightDip));
   window.setBounds(bounds, false);
   setWindowShape(window, "dock");
-  if (layoutPending === "dock" && !recordingOwnsScreen) {
+  if (layoutPending === "dock" && !dockParked()) {
     layoutPending = null;
     restoreOnScreen(window);
   }
@@ -731,7 +741,7 @@ function onRecordingStateChanged(): void {
     }
     return;
   }
-  if (docked && state.kind === "hidden") enterTucked(singleton);
+  if (docked && state.kind === "hidden" && !dockParked()) enterTucked(singleton);
 }
 
 /**
@@ -1020,15 +1030,16 @@ function setDockContentProtection(window: BrowserWindow, on: boolean): void {
 /**
  * Show the dock. The window changes shape, so it is parked until the
  * renderer has drawn the tabs and posted their size (`applyDockLayout`
- * places and shows it). While a recording owns the screen the dock stays
- * parked; the end of the recording calls this again.
+ * places and shows it). While a recording owns the screen, or the user has
+ * hidden the recent-capture sidebar, the dock stays parked; the end of the
+ * recording, or the setting turning back on, calls this again.
  */
 function enterTucked(window: BrowserWindow): void {
   const wasTucked = state.kind === "tucked";
   docked = true;
   disarmCopyShortcuts();
   setDockContentProtection(window, true);
-  if (recordingOwnsScreen) {
+  if (dockParked()) {
     state = { kind: "hidden" };
     layoutPending = null;
     parkOffScreen(window);
@@ -1071,10 +1082,33 @@ export function tuckFloatOver(options: { markOnly?: boolean } = {}): { docked: b
  * says so here.
  */
 export function releaseFloatOverDock(): void {
-  if (!docked || state.kind !== "hidden" || recordingOwnsScreen) return;
+  if (!docked || state.kind !== "hidden" || dockParked()) return;
   if (singleton === null || singleton.isDestroyed()) return;
   enterTucked(singleton);
   log.info("float-over state", { kind: "release", logicalState: state.kind });
+}
+
+/**
+ * Settings → General → Recent captures. Visibility only: hiding parks a
+ * dock that is showing (never a toast) and keeps `docked`, and it sends
+ * the renderer nothing, so its list, the status glyphs and every AI run
+ * are untouched. Showing brings that same dock back unless a recording
+ * still owns the screen, in which case the take's end does it.
+ */
+export function setFloatOverRecentSidebarVisible(visible: boolean): void {
+  if (visible === recentSidebarVisible) return;
+  recentSidebarVisible = visible;
+  log.info("float-over recent-capture sidebar", { visible, logicalState: state.kind, docked });
+  if (singleton === null || singleton.isDestroyed()) return;
+  if (!visible) {
+    if (state.kind === "tucked") {
+      state = { kind: "hidden" };
+      layoutPending = null;
+      parkOffScreen(singleton);
+    }
+    return;
+  }
+  if (docked && state.kind === "hidden" && !dockParked()) enterTucked(singleton);
 }
 
 /** `float-over:open` — open the toast on a snap picked from the dock. */

@@ -2505,6 +2505,16 @@ and
   shows `✓`. A snap with no expected AI run has no AI glyph.
   Re-read an active image on capture-change broadcasts too: deletion
   closes its toast before it can be retained on the dock.
+- **`recording.showRecentCaptureSidebar` decides whether the dock is SEEN,
+  never what is on it.** Off parks the window through the same
+  `dockParked()` gate a recording uses (`setFloatOverRecentSidebarVisible`
+  in float-over.ts, fed from `onSettingsChanged` in index.ts). The
+  renderer still retains, tucks and shows status glyphs exactly as with it
+  on, and main never sends `dismiss` for it, so turning it back on shows
+  the same tabs. Do not implement "off" as a dismiss or as a renderer-side
+  skip of `retainSnap`: either one makes the switch delete dock state. The
+  only renderer change is that the toast drops its Tuck button, which
+  would send the snap somewhere invisible. The countdown is unchanged.
 - **"No run yet" means "not yet" only for a snap just taken**
   (`mayAwaitFirstRun`) with AI enabled and available. `awaitingFirstRun`
   keeps an older snap or one with AI off from showing a waiting glyph

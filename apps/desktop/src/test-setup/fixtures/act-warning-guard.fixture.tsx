@@ -92,6 +92,15 @@ describe("suite teardown", () => {
   it("has a clean body", () => {});
 });
 
+for (const [name, warning] of [
+  ["fails an unawaited async act warning", "You called act(async () => ...) without await."],
+  ["fails an overlapping act warning", "You seem to have overlapping act() calls, this is not supported."],
+  ["fails an unawaited suspended act warning", "A component suspended inside an `act` scope, but the `act` call was not awaited."],
+  ["fails a disabled act environment warning", "The current testing environment is not configured to support act(...)"],
+] as const) {
+  it(name, () => console.error(warning));
+}
+
 it("passes clean act-wrapped synchronous and asynchronous updates", async () => {
   renderCounter();
   act(update);

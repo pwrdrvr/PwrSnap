@@ -19,8 +19,8 @@ export default class ActWarningRunner extends TestRunner {
     if (updates.length > 0) await this.onTaskUpdate(updates, []);
   }
 
-  override async onAfterRunFiles(files: RunnerTestFile[]): Promise<void> {
-    super.onAfterRunFiles(files);
+  override async onAfterRunFiles(files: RunnerTestFile[] = []): Promise<void> {
+    super.onAfterRunFiles();
     const lastFile = files.at(-1);
     if (!lastFile) return;
     const updates = getActWarningGuard().report(lastFile);

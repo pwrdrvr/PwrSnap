@@ -1622,6 +1622,25 @@ Rules the surface keeps, and where each one lives:
   production sources so `createGrant` has no caller and `issueOAuthGrant`
   is reached only from the authorization-code exchange.
 
+## React act warnings fail renderer tests
+
+The renderer Vitest project uses `act-warning-runner.ts` and
+`react-act-environment.ts` under `apps/desktop/src/test-setup/` to fail React
+act warnings, including unwrapped updates, unawaited/overlapping scopes,
+suspended work and a disabled act environment. The guard observes both
+`console.error` and `console.warn`, survives silenced spies and mock restoration,
+and attributes late asynchronous work to the test that created it. It checks
+again after test and suite teardown.
+
+Await the React work inside `await act(async () => { ... })`: mount effects,
+IPC replies, timers, event callbacks and teardown are all part of the test.
+Keep assertions after the relevant work settles. Do not silence the warning,
+disable `IS_REACT_ACT_ENVIRONMENT`, or wrap the whole test in act to bypass
+individual interaction boundaries. Mocks must preserve the real transport's
+ordering and results; waiting can expose assertions against transient state.
+The nested fixtures in `scripts/renderer-act-warning-guard.test.mjs` prove that
+warnings fail the process and clean runs pass.
+
 ## Repository conventions
 
 - **pnpm workspaces.** Apps in `apps/*`, packages in `packages/*`. Always run

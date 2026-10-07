@@ -4,6 +4,10 @@ import type { RunnerTask, RunnerTaskResultPack } from "vitest";
 
 const KEY = Symbol.for("pwrsnap.rendererActWarningGuard");
 
+// React's act diagnostics: missing scopes, unawaited/overlapping scopes,
+// suspended work, and a disabled act environment. Ordinary errors stay visible.
+const ACT_WARNING = /\bnot wrapped in act\(\.\.\.\)|\bYou called act\(.*without await|\boverlapping act\(\) calls|the `act` call was not awaited|\bnot configured to support act\(\.\.\.\)/;
+
 /** Test-only: keep the async creator, even when its callback runs in a later test. */
 class ActWarningGuard {
   readonly owners = new AsyncLocalStorage<RunnerTask>();
@@ -44,7 +48,7 @@ class ActWarningGuard {
   }
 
   private observe(args: unknown[]): void {
-    if (!args.some((arg) => typeof arg === "string" && /\bnot wrapped in act\(\.\.\.\)/.test(arg))) return;
+    if (!args.some((arg) => typeof arg === "string" && ACT_WARNING.test(arg))) return;
     const message = format(...args);
     const owner = this.owners.getStore();
     const error = new Error([
@@ -77,7 +81,7 @@ class ActWarningGuard {
       task.result.errors.push(...errors.map((error) => ({
         name: error.name,
         message: error.message,
-        stack: error.stack,
+        ...(error.stack === undefined ? {} : { stack: error.stack }),
       })));
       updates.push([task.id, task.result, task.meta]);
       // A late failure must also change already completed ancestor suites.

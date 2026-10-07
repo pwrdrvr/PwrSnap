@@ -41,6 +41,10 @@ it("the renderer runner fails act warnings and keeps their async owner", async (
       "fails a warning from afterEach",
       "attributes a late callback to its originating test",
       "fails the originating final test when its callback settles in afterAll",
+      "fails an unawaited async act warning",
+      "fails an overlapping act warning",
+      "fails an unawaited suspended act warning",
+      "fails a disabled act environment warning",
     ]);
     for (const test of failed) {
       expect(test.failureMessages.join("\n")).toContain("React act warning");

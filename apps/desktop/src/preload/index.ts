@@ -75,7 +75,7 @@ import type {
 import type { PerfMarkPayload } from "@pwrsnap/shared/ipc";
 import { parseAppearanceArg } from "@pwrsnap/shared/appearance-arg";
 import { resolveDroppedFilePath } from "./dropped-file-path";
-import { createEventSubscriber } from "./latched-events";
+import { createEventSubscriber, LATCHED_EVENT_CHANNELS } from "./latched-events";
 
 // Internal (non-command-bus) channel for the region selector to commit
 // its result back to main. Kept narrow: the preload exposes one
@@ -118,9 +118,7 @@ const rendererDocumentId = crypto.randomUUID().replaceAll("-", "");
 // Installed now, at preload evaluation, so a latched channel is listened
 // to before the page's own scripts run. See latched-events.ts for why a
 // one-shot intent cannot wait for the renderer's React subscriber.
-const subscribeToEvent = createEventSubscriber(ipcRenderer, [
-  EVENT_CHANNELS.libraryOpenCapture
-]);
+const subscribeToEvent = createEventSubscriber(ipcRenderer, LATCHED_EVENT_CHANNELS);
 
 // Tray content auto-sizes to fit. The renderer measures itself with a
 // ResizeObserver and asks main to setContentSize so the popover never

@@ -32,6 +32,9 @@ export default defineConfig({
           name: "desktop-main",
           globals: true,
           environment: "node",
+          // Transform the real discovery engine so its Node imports use the
+          // filesystem/process fixtures in codex-discovery-real.test.ts.
+          server: { deps: { inline: ["@pwrdrvr/codex-discovery"] } },
           include: [
             "scripts/**/*.test.mjs",
             "apps/desktop/scripts/**/*.test.mjs",

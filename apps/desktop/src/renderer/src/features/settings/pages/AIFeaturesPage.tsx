@@ -947,6 +947,7 @@ function usageActivitySub(item: AiUsageRunsPage["items"][number]): string {
 function usageTaskLabel(task: string, triggerSource: string): string {
   if (triggerSource === "auto-enrichment") return "Auto enrichment";
   if (triggerSource === "library-regenerate") return "Library regenerate";
+  if (triggerSource === "library-repair") return "Library re-run";
   if (triggerSource === "popover-regenerate") return "Float-over regenerate";
   if (triggerSource === "library-chat") return "Library chat";
   if (triggerSource === "sizzle-chat") return "Sizzle chat";

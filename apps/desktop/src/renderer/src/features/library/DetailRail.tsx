@@ -68,6 +68,7 @@ import { recordedAudioTracks, useMp4ExportAudio } from "../shared/useMp4ExportAu
 import { VideoExportPresetGrid } from "../shared/VideoExportPresetGrid";
 import { exportRangeLabel, exportSegmentsOf } from "../shared/video-range";
 import { AppTag } from "../shared/AppIcons";
+import { enrichmentRunClock } from "../shared/EnrichmentRunClock";
 import { DeleteConfirm } from "../shared/DeleteConfirm";
 import { PsIcon } from "../shared/PsIcon";
 import {
@@ -179,6 +180,8 @@ export type DetailRailProps = {
   readonly onDuplicate?: (record: CaptureRecord, request: DuplicateRequest) => void;
   /** The remembered With Edits / Base Only choice, per kind. */
   readonly duplicatePrefs?: LibraryDuplicateWithEditsSettings;
+  /** Opens the dialog that re-runs AI over every snap it failed on. */
+  readonly onOpenEnrichmentRepair?: () => void;
 };
 
 export function DetailRail({
@@ -207,7 +210,8 @@ export function DetailRail({
   onSelectFamilyMember,
   onFilterFamily,
   onDuplicate,
-  duplicatePrefs = DEFAULT_DUPLICATE_PREFS
+  duplicatePrefs = DEFAULT_DUPLICATE_PREFS,
+  onOpenEnrichmentRepair
 }: DetailRailProps): ReactElement | null {
   // Skip the image render-metrics IPC for video captures — the
   // sharp-based preset pipeline is image-only and the video branch
@@ -898,6 +902,7 @@ export function DetailRail({
               });
             }}
             onEnrichmentUpdate={setEnrichment}
+            onOpenEnrichmentRepair={onOpenEnrichmentRepair}
           />
         </div>
       );
@@ -1396,6 +1401,7 @@ type DetailTabProps = {
   readonly autoApply: boolean | null;
   readonly onSetAutoApply: (next: boolean) => void;
   readonly onEnrichmentUpdate: (next: CaptureEnrichment) => void;
+  readonly onOpenEnrichmentRepair?: (() => void) | undefined;
 };
 
 function DetailTab({
@@ -1411,7 +1417,8 @@ function DetailTab({
   regenerateLabel,
   autoApply,
   onSetAutoApply,
-  onEnrichmentUpdate
+  onEnrichmentUpdate,
+  onOpenEnrichmentRepair
 }: DetailTabProps): ReactElement {
   const acceptedTitle = enrichment?.acceptedTitle ?? "";
   const suggestedTitle = enrichment?.suggestedTitle ?? "";
@@ -1684,6 +1691,7 @@ function DetailTab({
         safetyDisabled={aiSafetyDisabled}
         providerLabel={null}
         error={enrichment?.error}
+        clock={enrichmentRunClock(enrichment)}
         // Only recorded run metadata supplies attribution, once. Defaults
         // belong to the Regenerate tooltip, even while this detail is loading.
         {...(usageDetail !== null && usageDetail.run.id === enrichment?.latestRunId ? { meta: <AiRunUsageStrip detail={usageDetail} /> } : {})}
@@ -1720,6 +1728,18 @@ function DetailTab({
                     title={`Regenerate with ${regenerateLabel}`}
                   >
                     Regenerate
+                  </button>
+                ) : null}
+                {/* One failure is rarely alone (a model that was down, an
+                    endpoint that moved): offer the batch repair from here. */}
+                {codexStatus === "failed" && !aiSafetyDisabled && onOpenEnrichmentRepair !== undefined ? (
+                  <button
+                    type="button"
+                    className="psl__chip-link"
+                    onClick={onOpenEnrichmentRepair}
+                    title="Re-run AI on every snap it failed on"
+                  >
+                    Re-run all failed…
                   </button>
                 ) : null}
               </span>

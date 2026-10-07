@@ -23,6 +23,7 @@ import {
   type CopyPreset
 } from "../shared/CopyButton";
 import { CodexStatusPill } from "../shared/CodexStatusPill";
+import { enrichmentRunClock } from "../shared/EnrichmentRunClock";
 import { AiConsentDialog } from "../shared/AiConsentDialog";
 import { useFieldEditor } from "../shared/useFieldEditor";
 import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
@@ -1392,6 +1393,7 @@ export function FloatOver({
               needsConsent={aiNeedsConsent}
               safetyDisabled={aiSafetyDisabled}
               error={enrichment?.error}
+              clock={enrichmentRunClock(enrichment)}
               {...(enrichmentProviderLabel !== undefined
                 ? { providerLabel: enrichmentProviderLabel }
                 : {})}

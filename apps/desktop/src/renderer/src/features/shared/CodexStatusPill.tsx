@@ -92,6 +92,9 @@ export type CodexStatusPillProps = {
    *  one row instead of stacking two bordered strips above the first
    *  field. Omitted → the row is exactly what it was before. */
   readonly meta?: ReactNode;
+  /** Run duration (`EnrichmentRunClock`), right after the status text. It
+   *  renders nothing until there is a duration worth showing. */
+  readonly clock?: ReactNode;
   readonly action?: ReactNode;
   /** A full-width row under the status text, inside the pill. Use it when a
    *  surface has more than one control to offer: side-by-side buttons next to
@@ -224,6 +227,7 @@ export function CodexStatusPill({
   modelLabel,
   error,
   meta,
+  clock,
   action,
   footer,
   style,
@@ -264,8 +268,13 @@ export function CodexStatusPill({
         </svg>
       </span>
       <span className="ps-codex-pill__text">
-        <span className="ps-codex-pill__summary" title={summaryTitle}>
-          {labelFor(kind, summaryText)}
+        {/* The clock rides the status line, so the run's model and cost
+            (`meta`) keep the line below it to themselves. */}
+        <span className="ps-codex-pill__headline">
+          <span className="ps-codex-pill__summary" title={summaryTitle}>
+            {labelFor(kind, summaryText)}
+          </span>
+          {clock}
         </span>
         {hasMeta ? (
           <span className="ps-codex-pill__meta">{meta}</span>

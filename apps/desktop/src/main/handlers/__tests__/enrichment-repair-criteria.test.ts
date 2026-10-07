@@ -1,0 +1,36 @@
+// `codex:repair:*` takes its criteria from a renderer, so they are rebuilt
+// from checked parts rather than passed through.
+
+import { describe, expect, test } from "vitest";
+
+import { parseRepairCriteria } from "../enrichment-repair-handlers";
+
+const valid = {
+  statuses: ["failed", "never", "failed"],
+  since: "2026-10-01T00:00:00.000Z",
+  until: null,
+  apps: { mode: "exclude", appIds: ["com.apple.safari", "", "com.apple.safari"] }
+};
+
+describe("parseRepairCriteria", () => {
+  test("keeps a valid request, de-duplicated", () => {
+    expect(parseRepairCriteria(valid)).toEqual({
+      statuses: ["failed", "never"],
+      since: "2026-10-01T00:00:00.000Z",
+      until: null,
+      apps: { mode: "exclude", appIds: ["com.apple.safari", ""] }
+    });
+  });
+
+  test.each([
+    ["no statuses", { ...valid, statuses: [] }],
+    ["an unknown status", { ...valid, statuses: ["completed"] }],
+    ["a bad date", { ...valid, since: "yesterday" }],
+    ["an unknown app mode", { ...valid, apps: { mode: "only", appIds: [] } }],
+    ["a non-string app id", { ...valid, apps: { mode: "include", appIds: [7] } }],
+    ["too many apps", { ...valid, apps: { mode: "include", appIds: Array.from({ length: 501 }, (_, i) => `a${i}`) } }],
+    ["no object", null]
+  ])("refuses %s", (_label, raw) => {
+    expect(parseRepairCriteria(raw)).toBeNull();
+  });
+});

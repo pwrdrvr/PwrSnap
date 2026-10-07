@@ -159,7 +159,15 @@ describe("readPackage / sharp wasm wiring", () => {
     if (process.platform === "linux") {
       expect(resolveBinding()).toContain("sharp-wasm32");
     } else {
-      expect(resolveBinding).toThrow(/Cannot find module/);
+      // Measured on pnpm 12.9.1: see the 2026-10-06 addendum in
+      // docs/solutions/2026-10-01-sharp-electron-linux-glib-sigtrap.md.
+      expect(
+        resolveBinding,
+        "@img/sharp-wasm32 is installed on a non-Linux host. If the lockfile " +
+          "test below passes, this node_modules is stale: an install the " +
+          "os: [linux] gate did not apply to left it behind, and pnpm install " +
+          "never removes it. Run `pnpm prune` from the repo root."
+      ).toThrow(/Cannot find module/);
     }
   });
 

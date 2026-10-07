@@ -2480,6 +2480,16 @@ and
   while the window is on screen, and every show and park resets it to
   taking clicks, so a report can never un-park a window. Linux has no
   move forwarding, so the strip keeps taking clicks there.
+- **On Windows the dock's window is 32px wide, and its edge is placed, not
+  its request.** Under Electron 44, Windows will not make any window
+  narrower than 32 DIP. Measured on the GitHub Windows runner at 100%: transparent or opaque,
+  resizable or not, through `setBounds` or `setContentSize`, every request
+  below 32 came back as 32. Electron 41 gave 18. The renderer pins the tab
+  to the window's edge, so `applyDockLayout` reads the width back and puts
+  THAT flush with the work area. Placed by the requested 18, the window ran
+  14px past the right edge and 4px of tab showed. The spare strip is
+  see-through, so it passes clicks like the rail's. The E2E specs
+  assert where the tab lands (`dockGeometry`), not the window's width.
 - **No native shadow on the dock.** macOS draws the shadow, with a light
   rim, around the window's whole shape, which outlined the gap between
   the tabs. `setWindowShape` turns it off for the dock and back on for

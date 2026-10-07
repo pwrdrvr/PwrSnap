@@ -630,8 +630,18 @@ export function floatOverDockBounds(
  */
 function applyDockLayout(window: BrowserWindow, widthDip: number, heightDip: number): void {
   if (!windowPlacementIsOurs()) return;
-  const bounds = floatOverDockBounds(dockDisplay().workArea, dock, widthDip, Math.max(1, heightDip));
+  const workArea = dockDisplay().workArea;
+  const bounds = floatOverDockBounds(workArea, dock, widthDip, Math.max(1, heightDip));
   window.setBounds(bounds, false);
+  // Under Electron 44, Windows will not make a window narrower than 32 DIP,
+  // so the 18px sliver comes back wider than asked. The renderer pins the
+  // tab to the window's edge, so it is the window's real width that has to
+  // sit flush with the screen's edge; placed by the requested width, the
+  // window hung 14px off the right of the work area with 4px of tab showing.
+  const placed = window.getBounds();
+  if (placed.width !== bounds.width || placed.height !== bounds.height) {
+    window.setBounds(floatOverDockBounds(workArea, dock, placed.width, placed.height), false);
+  }
   setWindowShape(window, "dock");
   if (layoutPending === "dock" && !dockParked()) {
     layoutPending = null;

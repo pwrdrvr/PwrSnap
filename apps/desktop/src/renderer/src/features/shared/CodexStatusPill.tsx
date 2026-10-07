@@ -93,6 +93,9 @@ export type CodexStatusPillProps = {
    *  one row instead of stacking two bordered strips above the first
    *  field. Omitted → the row is exactly what it was before. */
   readonly meta?: ReactNode;
+  /** Run duration (`EnrichmentRunClock`), right after the status text. It
+   *  renders nothing until there is a duration worth showing. */
+  readonly clock?: ReactNode;
   readonly action?: ReactNode;
   /** A full-width row under the status text, inside the pill. Use it when a
    *  surface has more than one control to offer: side-by-side buttons next to
@@ -137,15 +140,18 @@ function failedLabelFor(provider: string, error: string | null | undefined): str
   if (message === undefined || message.length === 0) {
     return `${provider} could not read this snap.`;
   }
+  if (/^failed to (?:load|reload) workspace requirements$/i.test(message)) {
+    return "Codex could not load its configuration, so AI did not run. Update PwrSnap or check Settings → AI Providers → Codex.";
+  }
   if (/(auth|login|logged|credential|ineligibletier|unsupported_client|unsupported client|not supported|no longer supported)/i.test(message)) {
     return `${provider} is not available: ${message}`;
   }
   return `${provider} could not read this snap: ${message}`;
 }
 
-/** The status sentence as plain text. It is both what the pill prints and
- *  the summary's `title`, so a surface that clamps the pill to one line
- *  (the float-over) still offers the whole of it. */
+/** The status sentence as plain text. The summary's `title` includes this
+ *  sentence and any raw failure detail replaced by friendlier copy, so a
+ *  surface that clamps the pill still offers the whole diagnostic. */
 function labelTextFor(
   kind: StatusKind,
   provider: string | null,
@@ -222,6 +228,7 @@ export function CodexStatusPill({
   modelLabel,
   error,
   meta,
+  clock,
   action,
   footer,
   style,
@@ -230,6 +237,10 @@ export function CodexStatusPill({
   const kind = resolveKind(status, draftAvailable, accepted, needsConsent, safetyDisabled);
   const hasMeta = meta !== undefined && meta !== null;
   const summaryText = labelTextFor(kind, providerLabel, modelLabel, error, hasMeta);
+  const summaryTitle = kind === "failed" && error?.trim()
+    && !summaryText.includes(error.trim())
+    ? `${summaryText} Technical detail: ${error.trim()}`
+    : summaryText;
   const classes = [
     "ps-codex-pill",
     `ps-codex-pill--${variant}`,
@@ -258,8 +269,13 @@ export function CodexStatusPill({
         </svg>
       </span>
       <span className="ps-codex-pill__text">
-        <span className="ps-codex-pill__summary" title={summaryText}>
-          {labelFor(kind, summaryText)}
+        {/* The clock rides the status line, so the run's model and cost
+            (`meta`) keep the line below it to themselves. */}
+        <span className="ps-codex-pill__headline">
+          <span className="ps-codex-pill__summary" title={summaryTitle}>
+            {labelFor(kind, summaryText)}
+          </span>
+          {clock}
         </span>
         {hasMeta ? (
           <span className="ps-codex-pill__meta">{meta}</span>

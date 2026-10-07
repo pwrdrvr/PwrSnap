@@ -12,8 +12,9 @@ feature:
   background ones.
 - **`events:app-update:check-result`** is emitted from exactly one place —
   `runMenuUpdateCheck` in [auto-updater.ts](../../../../main/auto-updater.ts),
-  i.e. Help → Check for Updates. It is the only thing that distinguishes "the
-  user is waiting for this answer" from "the hour hand looked again".
+  i.e. the Check for Updates… menu item (app menu on macOS, Help
+  elsewhere). It is the only thing that distinguishes "the user is waiting
+  for this answer" from "the hour hand looked again".
   Settings → Updates' own **Check for Updates** button deliberately does not
   emit it: that surface reports its result inline, and a card in the Library
   repeating the answer would be saying the same thing twice.
@@ -52,7 +53,7 @@ states only**, and that is deliberate — see the header of
 to their content, so a row that appears and vanishes mid-check resizes the
 window under the user's cursor; the float-over arrives unbidden after every
 capture and has no business reporting work the user started somewhere else.
-The Library window is where Help → Check for Updates is answered.
+The Library window is where the Check for Updates… menu item is answered.
 
 If a future change does want progress in the tray, gate it on the same result
 channel — never on the status channel alone, or an hourly background download

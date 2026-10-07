@@ -10,6 +10,7 @@ import {
   clampRectToViewport,
   DRAG_ENGAGE_PX,
   exceedsDragThreshold,
+  intersectRectWithViewport,
   isPointInsideRect,
   occludedFrame,
   rectFromTwoPoints,
@@ -173,6 +174,36 @@ describe("applyResize — every handle is exercised", () => {
     const result = applyResize(start, handle as HandleId, 5, 5);
     expect(result.w).toBeGreaterThanOrEqual(0);
     expect(result.h).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe("intersectRectWithViewport", () => {
+  test("a rect fully on screen is returned unchanged", () => {
+    expect(intersectRectWithViewport({ x: 100, y: 100, w: 200, h: 200 }, VIEWPORT)).toEqual({
+      x: 100,
+      y: 100,
+      w: 200,
+      h: 200
+    });
+  });
+
+  test("cuts the overhang instead of sliding the rect back on screen", () => {
+    // clampRectToViewport would answer { x: 0, y: 0, w: 300, h: 300 },
+    // moving the on-screen right and bottom edges 50px and 100px.
+    expect(intersectRectWithViewport({ x: -50, y: -100, w: 300, h: 300 }, VIEWPORT)).toEqual({
+      x: 0,
+      y: 0,
+      w: 250,
+      h: 200
+    });
+    expect(
+      intersectRectWithViewport({ x: 1800, y: 1000, w: 500, h: 500 }, VIEWPORT)
+    ).toEqual({ x: 1800, y: 1000, w: 120, h: 80 });
+  });
+
+  test("returns null when nothing is on screen", () => {
+    expect(intersectRectWithViewport({ x: 1920, y: 10, w: 50, h: 50 }, VIEWPORT)).toBeNull();
+    expect(intersectRectWithViewport({ x: 10, y: -60, w: 50, h: 50 }, VIEWPORT)).toBeNull();
   });
 });
 

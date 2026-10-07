@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
+  isShippedSharpNativePackage,
   partitionSharpNativePackages,
   pruneSharpNativePackages,
   sharpNativePackagesForTarget
@@ -86,6 +87,72 @@ describe("Sharp platform package pruning", () => {
       required: ["sharp-win32-arm64"],
       missing: []
     });
+  });
+
+  test("keeps both Darwin slices for the universal app and treats sharp-wasm32 as foreign", () => {
+    expect(sharpNativePackagesForTarget({ platform: "darwin", arch: "universal" })).toEqual([
+      "sharp-darwin-arm64",
+      "sharp-libvips-darwin-arm64",
+      "sharp-darwin-x64",
+      "sharp-libvips-darwin-x64"
+    ]);
+    expect(
+      partitionSharpNativePackages([...allPlatformPackages, "sharp-wasm32"], {
+        platform: "darwin",
+        arch: "universal"
+      })
+    ).toEqual({
+      kept: [
+        "colour",
+        "sharp-darwin-arm64",
+        "sharp-darwin-x64",
+        "sharp-libvips-darwin-arm64",
+        "sharp-libvips-darwin-x64"
+      ],
+      removed: ["sharp-wasm32", "sharp-win32-arm64", "sharp-win32-x64"],
+      required: [
+        "sharp-darwin-arm64",
+        "sharp-libvips-darwin-arm64",
+        "sharp-darwin-x64",
+        "sharp-libvips-darwin-x64"
+      ],
+      missing: []
+    });
+  });
+
+  test("treats sharp-wasm32 as foreign on every shipped target", () => {
+    for (const target of [
+      { platform: "darwin", arch: "universal" },
+      { platform: "darwin", arch: "arm64" },
+      { platform: "win32", arch: "x64" },
+      { platform: "win32", arch: "arm64" }
+    ]) {
+      expect(partitionSharpNativePackages(["sharp-wasm32"], target).removed).toEqual([
+        "sharp-wasm32"
+      ]);
+    }
+  });
+
+  test("knows which native packages some shipped target uses", () => {
+    for (const name of allPlatformPackages.filter((name) => name !== "colour")) {
+      expect(isShippedSharpNativePackage(name)).toBe(true);
+    }
+    for (const name of ["sharp-wasm32", "sharp-linux-x64", "sharp-libvips-linux-x64", "sharp-win32-ia32", "colour"]) {
+      expect(isShippedSharpNativePackage(name)).toBe(false);
+    }
+  });
+
+  test("fails closed for targets nobody mapped", () => {
+    for (const target of [
+      { platform: "linux", arch: "x64" },
+      { platform: "darwin", arch: "ia32" },
+      { platform: "win32", arch: "universal" },
+      { platform: "darwin", arch: "wasm32" }
+    ]) {
+      expect(() => sharpNativePackagesForTarget(target)).toThrow(
+        /unsupported Sharp package target/
+      );
+    }
   });
 
   test("removes foreign native slices without touching Sharp glue, licenses, or notices", () => {

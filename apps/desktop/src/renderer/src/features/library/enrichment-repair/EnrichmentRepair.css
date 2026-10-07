@@ -1,0 +1,473 @@
+/* Enrichment repair: the dialog (EnrichmentRepairDialog.tsx) and its
+   collapsed progress toast (EnrichmentRepairProgress.tsx). The dialog
+   shares the AI consent dialog's card; the toast shares the duplicate
+   progress toast's card, in the same lower-left stack. App rows mirror the
+   Library sidebar's Source App rows: accent fill when picked, a struck
+   label when excluded. */
+
+.ps-repair__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: var(--bg-overlay);
+}
+
+.ps-repair {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(560px, 100%);
+  max-height: calc(100vh - 36px);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-lg);
+  padding: 18px;
+  color: var(--text-primary);
+}
+
+.ps-repair__hdr {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex: none;
+}
+
+.ps-repair__eyebrow {
+  color: var(--accent-bright);
+  font: 700 10px/1 var(--font-mono);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.ps-repair__title {
+  margin: 0;
+  color: var(--text-primary);
+  font: 750 18px/1.15 var(--font-display);
+}
+
+/* The form scrolls as one; the app list inside it has its own cap so a
+   long list does not push the footer away. `min-height: 0` lets this flex
+   child shrink below its content so the scroll engages. */
+.ps-repair__form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow-y: auto;
+}
+
+.ps-repair__form:disabled {
+  opacity: 0.55;
+}
+
+.ps-repair__section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ps-repair__label {
+  color: var(--text-secondary);
+  font: 700 10px/1 var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ps-repair__label-note {
+  color: var(--text-muted);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.ps-repair__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ps-repair__check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--bg-panel-elevated);
+  font: 600 12px/1 var(--font-sans);
+  cursor: pointer;
+}
+
+.ps-repair__check:has(input:checked) {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+}
+
+.ps-repair__check input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.ps-repair__count {
+  color: var(--text-muted);
+  font: 500 10px/1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
+.ps-repair__segmented {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.ps-repair__seg {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 600 11px/1 var(--font-sans);
+  cursor: pointer;
+}
+
+.ps-repair__seg:hover {
+  background: var(--bg-panel-hover);
+}
+
+.ps-repair__seg.is-active {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+}
+
+.ps-repair__dates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.ps-repair__dates label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font: 500 11px/1 var(--font-sans);
+}
+
+.ps-repair__dates input,
+.ps-repair__search {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font: 500 12px/1 var(--font-sans);
+  color-scheme: inherit;
+}
+
+.ps-repair__apps-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ps-repair__link {
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--accent-bright);
+  font: 600 11px/1.2 var(--font-sans);
+  cursor: pointer;
+}
+
+.ps-repair__link:focus-visible {
+  outline-offset: 2px;
+}
+
+.ps-repair__apps {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 2px;
+  scroll-padding: 4px;
+}
+
+.ps-repair__app {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-shrink: 0;
+  height: 30px;
+  width: 100%;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-primary);
+  font: 500 12px/1.4 var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+
+/* Edge to edge inside a scroller: inset the ring so the scroller does not
+   clip it. */
+.ps-repair__app:focus-visible {
+  outline-offset: -2px;
+}
+
+.ps-repair__app:hover {
+  background: var(--bg-panel-hover);
+}
+
+.ps-repair__app.is-active {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+}
+
+.ps-repair__app.is-excluded {
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+  color: var(--text-muted);
+}
+
+.ps-repair__app.is-excluded .ps-repair__app-name {
+  text-decoration: line-through;
+  text-decoration-color: var(--danger-text);
+  text-decoration-thickness: 1px;
+}
+
+/* Something is picked and this app is not in it: it will not run. */
+.ps-repair__app.is-dimmed {
+  color: var(--text-muted);
+}
+
+.ps-repair__app-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+}
+
+.ps-repair__app-icon > .ps-app-icon-img {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
+
+.ps-repair__app.is-excluded .ps-repair__app-icon,
+.ps-repair__app.is-dimmed .ps-repair__app-icon {
+  opacity: 0.6;
+}
+
+.ps-repair__app-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ps-repair__empty {
+  padding: 10px;
+  color: var(--text-muted);
+  font: 500 12px/1.3 var(--font-sans);
+}
+
+.ps-repair__job {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: none;
+  padding: 10px 12px;
+  border: 1px solid var(--accent-border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
+.ps-repair__error {
+  flex: none;
+  color: var(--danger-text);
+  font: 500 12px/1.4 var(--font-sans);
+}
+
+.ps-repair__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: none;
+}
+
+.ps-repair__plan {
+  color: var(--text-secondary);
+  font: 500 11px/1.4 var(--font-sans);
+}
+
+.ps-repair__actions {
+  display: inline-flex;
+  flex: none;
+  gap: 8px;
+}
+
+.ps-repair__btn {
+  flex: none;
+  height: 30px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--bg-panel-elevated);
+  color: var(--text-primary);
+  padding: 0 12px;
+  font: 650 11px/1 var(--font-sans);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ps-repair__btn:hover:not(:disabled) {
+  border-color: var(--accent-border);
+}
+
+.ps-repair__btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.ps-repair__btn.is-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--button-text-on-accent);
+}
+
+.ps-repair__btn.is-primary:hover:not(:disabled) {
+  background: var(--accent-strong);
+}
+
+/* ----- progress (dialog block + toast) ----- */
+
+.ps-repair-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 300px;
+  padding: 10px 8px 10px 13px;
+  background: color-mix(in srgb, var(--bg-panel-elevated) 96%, transparent);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  backdrop-filter: blur(18px) saturate(1.2);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  box-shadow: 0 14px 36px color-mix(in srgb, var(--shadow-base) 50%, transparent);
+  animation: ps-repair-toast-in 140ms ease-out;
+}
+
+@keyframes ps-repair-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ps-repair-progress {
+    animation: none;
+  }
+}
+
+.ps-repair-progress__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ps-repair-progress__text {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.ps-repair-progress__msg {
+  color: var(--text-primary);
+  font: 600 12px/1.2 var(--font-sans);
+}
+
+.ps-repair-progress__detail {
+  color: var(--text-muted);
+  font: 500 11px/1.3 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.ps-repair-progress__track {
+  height: 3px;
+  margin-right: 5px;
+  border-radius: var(--radius-pill);
+  background: var(--border-subtle);
+  overflow: hidden;
+}
+
+.ps-repair-progress__fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-strong) 100%);
+  transform-origin: left center;
+  transition: transform 120ms linear;
+}
+
+.ps-repair-toast__open {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 2px 4px 2px 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ps-repair-toast__open:hover .ps-repair-progress__msg {
+  color: var(--accent-bright);
+}
+
+.ps-repair-toast__action {
+  flex: none;
+  height: 26px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-primary);
+  font: 700 11px/1 var(--font-sans);
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+
+.ps-repair-toast__action:hover {
+  background: var(--bg-panel-hover);
+}
+
+/* The dialog's progress block is the same content without the card. */
+.ps-repair__job .ps-repair-progress__track {
+  margin-right: 0;
+}

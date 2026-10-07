@@ -165,3 +165,76 @@ either way.
 - A teardown that reports `close=timeout, exited=false` after an
   operation that "returned ok" is not proof of a hang. Record the child's
   exit signal before reasoning about renderer state.
+
+## Addendum (2026-10-06): the package on a Mac is a stale tree, not a gate failure
+
+`pnpmfile.test.mjs` › "the installed sharp exposes its wasm binding only on
+Linux" was reported failing on macOS at an unmodified `main` (593be5b4). Three
+local worktrees showed the same failure, at 758084d5, b0551993 and c8599507.
+Each had `@img+sharp-wasm32@0.35.4` in `node_modules/.pnpm`, and each
+`node_modules` was last written by pnpm 10.33.0. Two of them already carried
+`os: [linux]` in their lockfile, so "installed before the gate" is not the
+whole story: what they share is an install the gate did not apply to. The gate
+itself holds:
+
+- A clean `pnpm install --frozen-lockfile` with pnpm 12.9.1 on macOS skips the
+  package. `.modules.yaml` lists it under `skipped`, and the test passes.
+- **pnpm does not remove an installed package that the lockfile now skips for
+  this platform.** Measured on 12.9.1: install with `os: [linux]` deleted from
+  the lockfile entry, restore the line, then run `pnpm install
+  --frozen-lockfile` and plain `pnpm install`. Neither removes it. The frozen
+  install re-runs postinstall and prints "Done"; the plain one prints "Already
+  up to date". **`pnpm prune` does remove it**, on 12.9.1 and on 10.33.0. It
+  leaves a dangling `@img/sharp-wasm32` symlink beside sharp, which resolves
+  as `Cannot find module`.
+- Release staging does not ship it, even from such a stale tree. `pnpm
+  deploy --prod --legacy` installs from the lockfile and skips it.
+  `injectDarwinPlatformPackages` copies only the four named darwin slices.
+  Every shipped target now also refuses it, the universal mac build included:
+  - **Stage, macOS (both arches).** `pruneStagedSharp` in
+    `macos-release-artifacts.mjs` runs on the universal and the arm64 stage
+    alike. A Sharp native package that no shipped target uses (sharp-wasm32,
+    any linux slice) fails the release before anything is deleted. Another
+    shipped target's slice is pruned, and sharp's staged manifest is narrowed
+    to the target's slices. `assertStagedSharpTarget` then checks the result,
+    and checks it again in the `--sign-stage-only` job.
+  - **Stage, Windows.** `pruneSharpNativePackages` removes it, because
+    `sharp-wasm32` matches `^sharp-`.
+  - **Built app, every target.** `verify-asar-contents` fails on any Sharp
+    native package the target does not use. That covers the asar listing and
+    `app.asar.unpacked`, at any depth. For universal, the target is both
+    Darwin slices. `sharpNativePackagesForTarget` maps universal, and it still
+    throws for any target nobody mapped.
+
+The test now says this in its failure message, and it names `pnpm prune`.
+
+### The universal build was shipping both Windows slices
+
+Writing the universal rule turned up a second leak. The shipped v1.1.15
+universal zip was read through HTTP range requests (its central directory and
+the asar header, a few MB). Both its `app.asar` and its `app.asar.unpacked`
+carry `@img/sharp-win32-x64` and
+`@img/sharp-win32-arm64` beside the four Darwin slices. The arm64 build of the
+same release does not. Nothing in macOS loads them. `sharp-win32-arm64` bundles
+LGPL libvips DLLs, and THIRD_PARTY_LICENSES does not list it for any artifact.
+That is the same notice gap this addendum set out to close for sharp-wasm32.
+
+The mechanism, measured against a scratch `pnpm deploy --prod --legacy` stage
+and electron-builder 26.17's own pnpm collector:
+
+- `supportedArchitectures` (darwin + win32, x64 + arm64) makes deploy link all
+  six slices beside sharp in the stage's virtual store.
+- The collector follows only the dependencies a package's **on-disk manifest**
+  declares (`if (!all[packageName]) return undefined` in
+  `pnpmNodeModulesCollector.js`). sharp's published manifest declares every
+  platform, so the collector picked up `colour`, the four Darwin slices, and
+  both win32 slices. That is exactly the v1.1.15 universal contents.
+- The arm64 stage was clean only because `pruneStagedArm64Sharp` already
+  narrowed that manifest. Running the same step on the universal stage
+  (`pruneStagedSharp(stage, "universal")`) left the collector with `colour`
+  and the four Darwin slices.
+
+The same rule says how sharp-wasm32 could still reach a mac app. sharp does
+not declare it, so the collector cannot reach it through sharp. A copy in the
+stage's top-level `@img` is the remaining path, and `pruneStagedSharp`
+refuses that copy.

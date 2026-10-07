@@ -402,6 +402,14 @@ and [acp-approval-policy.test.ts](apps/desktop/src/main/ai/__tests__/acp-approva
   (`disableConfiguredMcpServers`), so the user's own Codex MCP setup never
   attaches to an enrichment thread. `web_search: "disabled"` and
   `project_doc_max_bytes: 0` come from the thread-config overlay.
+- **Codex enrichment disables lifecycle hooks and legacy notification
+  commands in its thread config** (`features.hooks: false`, `notify: []`).
+  Trusted hooks execute outside the agent sandbox and can inject context;
+  `notify` executes separately from the hooks feature and receives the last
+  assistant message. Pin both on every enrichment start, including the
+  legacy sandbox fallback. Keep these overrides per-thread: enrichment and
+  chat share an App Server process, and chat retains the user's choices.
+  See [docs/solutions/2026-10-02-codex-enrichment-config-overlays.md](docs/solutions/2026-10-02-codex-enrichment-config-overlays.md).
 - **Every one-shot thread carries explicit deny handlers.** An approval
   request or tool call from an enrichment turn is denied and logged at
   **error** with `{ runId, captureId }` through
@@ -455,14 +463,23 @@ the other, mutually exclusive path:
 
 ```jsonc
 "permissions": "pwrsnap_enrichment",     // NOT "sandbox" — cannot combine
-"config": { "permissions": { "pwrsnap_enrichment": {
+"config": { "default_permissions": "pwrsnap_enrichment",
+  "permissions": { "pwrsnap_enrichment": {
   "filesystem": { ":root": "deny", ":minimal": "read", "<jail>": "read" } } } }
 ```
 
 Measured result: `~/Documents`, `~/.ssh`, `~/.aws`, and any path outside
 the jail are DENIED; the jail stays readable and network stays denied.
 
-Two things that bite if you touch this:
+Three things that bite if you touch this:
+
+- **Keep the selection in `config.default_permissions` too.** Codex 0.160
+  reloads the retained session config before inference without the explicit
+  `thread/start.permissions` override. A profile table without a selected
+  default then fails validation, surfaced only as "failed to load workspace
+  requirements". The legacy `sandbox` fallback leaves this named profile
+  unselected. See
+  [docs/solutions/2026-10-02-codex-workspace-requirements-enrichment.md](docs/solutions/2026-10-02-codex-workspace-requirements-enrichment.md).
 
 - **`":minimal" = "read"` is load-bearing.** Denying `:root` also denies
   reading `/bin/cat`, so without `:minimal` no command can exec at all
@@ -1605,6 +1622,25 @@ Rules the surface keeps, and where each one lives:
   production sources so `createGrant` has no caller and `issueOAuthGrant`
   is reached only from the authorization-code exchange.
 
+## React act warnings fail renderer tests
+
+The renderer Vitest project uses `act-warning-runner.ts` and
+`react-act-environment.ts` under `apps/desktop/src/test-setup/` to fail React
+act warnings, including unwrapped updates, unawaited/overlapping scopes,
+suspended work and a disabled act environment. The guard observes both
+`console.error` and `console.warn`, survives silenced spies and mock restoration,
+and attributes late asynchronous work to the test that created it. It checks
+again after test and suite teardown.
+
+Await the React work inside `await act(async () => { ... })`: mount effects,
+IPC replies, timers, event callbacks and teardown are all part of the test.
+Keep assertions after the relevant work settles. Do not silence the warning,
+disable `IS_REACT_ACT_ENVIRONMENT`, or wrap the whole test in act to bypass
+individual interaction boundaries. Mocks must preserve the real transport's
+ordering and results; waiting can expose assertions against transient state.
+The nested fixtures in `scripts/renderer-act-warning-guard.test.mjs` prove that
+warnings fail the process and clean runs pass.
+
 ## Repository conventions
 
 - **pnpm workspaces.** Apps in `apps/*`, packages in `packages/*`. Always run
@@ -2403,8 +2439,8 @@ Measurements, the two failure timelines, and the probe:
 
 ## The float-over dock is the toast's own window, and it never lands in a capture
 
-**When a snap's enrichment is still running as its toast's countdown ends,
-the toast tucks to tabs on the screen edge. The dock is the SAME
+**When a toast's countdown ends, the snap stays in tabs on the screen edge,
+regardless of whether AI is off, running, completed, or failed. The dock is the SAME
 BrowserWindow as the toast, reshaped. It is placed inside the work area,
 excluded from screen capture, and hidden for every snapshot and every
 recording.** Owners: `enterTucked` / `applyDockLayout` /
@@ -2481,15 +2517,33 @@ and
   time. The dock's glyphs sit on the snaps that are waiting; everything
   else is a plain thumbnail with its age. Ages count from `captured_at`,
   never from when a snap joined the dock.
+- **Dock membership does not depend on enrichment status.** Timeout or
+  replacement by another capture keeps the snap; opening it does not
+  remove it. Explicit dismissal, discard, Library handoff, deletion, or
+  "Clear finished" removes it. A failed run shows `!`; a completed run
+  shows `✓`. A snap with no expected AI run has no AI glyph.
+  Re-read an active image on capture-change broadcasts too: deletion
+  closes its toast before it can be retained on the dock.
+- **`recording.showRecentCaptureSidebar` decides whether the dock is SEEN,
+  never what is on it.** Off parks the window through the same
+  `dockParked()` gate a recording uses (`setFloatOverRecentSidebarVisible`
+  in float-over.ts, fed from `onSettingsChanged` in index.ts). The
+  renderer still retains, tucks and shows status glyphs exactly as with it
+  on, and main never sends `dismiss` for it, so turning it back on shows
+  the same tabs. Do not implement "off" as a dismiss or as a renderer-side
+  skip of `retainSnap`: either one makes the switch delete dock state. The
+  only renderer change is that the toast drops its Tuck button, which
+  would send the snap somewhere invisible. The countdown is unchanged.
 - **"No run yet" means "not yet" only for a snap just taken**
-  (`mayAwaitFirstRun`). An older snap opened from the rail with no
-  enrichment row would otherwise join the dock as "waiting" when left,
-  for a run that never comes.
+  (`mayAwaitFirstRun`) with AI enabled and available. `awaitingFirstRun`
+  keeps an older snap or one with AI off from showing a waiting glyph
+  or being counted as in-flight. A real queued/running run still wins.
+  Expire that expectation after `FIRST_RUN_GRACE_MS` when no run arrives,
+  so a skipped enrichment becomes a plain tab eligible for "Clear finished".
 - **A snap's fate is decided once, at the close the host caused.**
   `settledRef` stops main's echo of that close from deciding again. By
-  then the model may have answered, and a snap tucked unread would be
-  dropped as "finished". A snap that has been on the dock stays, ✓ and
-  all, until it is opened or cleared.
+  then the model may have answered. A snap that has been on the dock
+  stays, ✓ and all, until explicitly dismissed or cleared.
 - **No dock where placement is not ours** (`windowPlacementIsOurs()`,
   native Wayland). `float-over:capabilities` says so. The toast then holds
   the corner while the model reads, as it did before the dock existed.
@@ -3110,7 +3164,7 @@ caught this at tag time, which is the worst moment to find it.
 ## Dependencies and tooling
 
 - Node version pinned in `.nvmrc` (currently `v24.14.1`).
-- Package manager: `pnpm@10.33.0` (set in root `package.json`'s
+- Package manager: `pnpm@12.9.1` (set in root `package.json`'s
   `packageManager` field).
 - Electron + electron-vite versions pinned in `apps/desktop/package.json`,
   matching PwrAgnt for tool consistency.
@@ -3254,12 +3308,23 @@ Four things that bite:
 - **The install needs the `.pnpmfile.cjs` hook.** sharp does not depend on
   `@img/sharp-wasm32` (its docs say to install it alongside), and pnpm's
   isolated layout hides a sibling from sharp's loader. The hook adds it to
-  sharp's optional dependencies at sharp's own version. It gates the package
-  to `os: linux` so macOS and Windows release staging never ship it (the
-  license notice does not disclose it). It also drops the edge from sharp's
+  sharp's optional dependencies at sharp's own version. It declares `cpu: any`
+  explicitly: pnpm 12 otherwise infers `wasm32` from the name and skips it on
+  native Linux CPUs. It gates the package to `os: linux` so macOS and Windows
+  release staging never ship it (the license notice does not disclose it).
+  It also drops the edge from sharp's
   FreeBSD and WebContainers wrappers: pnpm 10.33 otherwise reaches the
   package through them first, skips it along with them, and never
   reconsiders.
+- **Every shipped target refuses it at release time, too.** pnpm never
+  removes an installed package that the lockfile now skips, so a stale tree
+  can still hold it. `verify-asar-contents` fails any Sharp native package the
+  target does not use, in the asar and in `app.asar.unpacked`, on universal
+  mac as well. Before packaging, `pruneStagedSharp` narrows each mac stage's
+  sharp manifest to the target's slices, because electron-builder follows
+  that manifest. Without it, the universal app shipped both win32 slices
+  through v1.1.15. A slice that no shipped target uses fails the release
+  instead of being pruned.
 - **What does not work.** `RTLD_DEEPBIND` on the addon fixes the glib
   binding but rebinds `free` / `operator new` / `operator delete` away from
   Chromium's allocator shim, and crashes with SIGSEGV. A `utilityProcess`

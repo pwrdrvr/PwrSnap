@@ -9,7 +9,7 @@ type TopLevel = { index: number; label: string };
  *
  * Under `titleBarStyle: "hidden"` (our custom title bar) the native Windows
  * menu bar is gone — the menu lives in the title bar we hid. So we paint the
- * top-level entries (File / Edit / View / Window / Library / Help) as buttons in
+ * top-level entries (File / Edit / View / Library / Window / Help) as buttons in
  * the title bar and, on click or Alt-mnemonic, ask main to pop the REAL native
  * submenu at the button (`window.pwrsnapApi.popupAppMenu`). Roles, accelerators,
  * dynamic enable/disable, and click handlers all live in the menu main already

@@ -8,13 +8,13 @@
 //   • The row's trash button deletes the layer (layers:list drops to 0).
 //   • The row's eye button toggles the layer's `visible` flag.
 //
+// A seeded capture carries the production root group + Source raster,
+// so the panel always shows the pinned Source row (data-base="true")
+// below the annotations. Row assertions here count annotation rows.
+//
 // NOTE: the crop → uncrop path is covered at the unit level
 // (inverseCropRect round-trip in useCaptureModel.test.ts + the
-// crop-routes-to-uncrop assertion in LayersPanel.test.tsx). A full
-// E2E uncrop needs a seeded root-group + raster tree (a freshly seeded
-// v2 capture has neither, so no crop layer is created and uncrop's
-// grow-back hits the natural-dims ceiling) — deferred as a fixture
-// follow-up.
+// crop-routes-to-uncrop assertion in LayersPanel.test.tsx), not here.
 //
 // Spec-specific helpers (openLayersTab, layerRowIds, firstLayerVisible) live
 // at the bottom; the shared seed/open/draw machinery comes from
@@ -25,8 +25,9 @@ import { expect, type LaunchedApp, launchPwrSnap, test } from "./fixtures/electr
 import {
   drawAnnotation,
   drawOnCanvas,
-  expectLayerCount,
+  expectPlacedLayerCount,
   openEditorFocus,
+  placedLayers,
   seedImageCapture,
   selectTool
 } from "./fixtures/editor-helpers";
@@ -46,23 +47,23 @@ test("library-layers-panel: Layers tab appears for a v2 image and a drawn annota
       .waitFor({ state: "visible", timeout: 15_000 });
 
     // Fresh capture: nothing placed yet.
-    await expectLayerCount(app, captureId, 0);
+    await expectPlacedLayerCount(app, captureId, 0);
 
     // Draw an arrow → one vector layer.
     await selectTool(win, "arrow");
     await drawOnCanvas(win);
-    await expectLayerCount(app, captureId, 1);
+    await expectPlacedLayerCount(app, captureId, 1);
 
     // Open the Layers tab; the arrow shows up as a row.
     await win.locator('[data-testid="psl-right-tab-layers"]').click();
     await win
       .locator('[data-testid="psl-layers"]')
       .waitFor({ state: "visible", timeout: 5_000 });
-    await expect(win.locator('[data-testid^="layer-row-"]')).toHaveCount(1);
+    await expect(win.locator('[data-testid^="layer-row-"][data-annotation="true"]')).toHaveCount(1);
 
     // Trash the row → the layer is removed via layers:delete.
     await win.locator('[data-testid^="layer-delete-"]').first().click();
-    await expectLayerCount(app, captureId, 0);
+    await expectPlacedLayerCount(app, captureId, 0);
   } finally {
     await app.close();
   }
@@ -80,7 +81,7 @@ test("library-layers-panel: the eye toggle flips a layer's visible flag", async 
 
     await selectTool(win, "arrow");
     await drawOnCanvas(win);
-    await expectLayerCount(app, captureId, 1);
+    await expectPlacedLayerCount(app, captureId, 1);
 
     await win.locator('[data-testid="psl-right-tab-layers"]').click();
     await win
@@ -157,7 +158,7 @@ test("library-layers-panel: a resting committed annotation clips to the canvas (
 
     await selectTool(win, "arrow");
     await drawOnCanvas(win);
-    await expectLayerCount(app, captureId, 1);
+    await expectPlacedLayerCount(app, captureId, 1);
 
     const glyph = win.locator('[data-testid="persisted-glyph-svg"]').first();
     await glyph.waitFor({ state: "attached", timeout: 5_000 });
@@ -237,7 +238,7 @@ async function openLayersTab(
     // eslint-disable-next-line no-await-in-loop
     await drawAnnotation(win, a, a, a + 0.08, a + 0.08);
   }
-  await expectLayerCount(app, captureId, count);
+  await expectPlacedLayerCount(app, captureId, count);
   await win.locator('[data-testid="psl-right-tab-layers"]').click();
   await win
     .locator('[data-testid="psl-layers"]')
@@ -245,9 +246,10 @@ async function openLayersTab(
   return win;
 }
 
-/** The layer ids in the panel's current top-to-bottom row order. */
+/** The annotation layer ids in the panel's current top-to-bottom row
+ *  order (the pinned Source row is left out). */
 async function layerRowIds(win: Page): Promise<string[]> {
-  return win.locator('[data-testid^="layer-row-"]').evaluateAll((nodes) =>
+  return win.locator('[data-testid^="layer-row-"][data-annotation="true"]').evaluateAll((nodes) =>
     nodes.map((n) =>
       (n.getAttribute("data-testid") ?? "").replace("layer-row-", "")
     )
@@ -259,8 +261,9 @@ async function firstLayerVisible(
   captureId: string
 ): Promise<boolean | null> {
   const result = await app.dispatch("layers:list", { captureId });
-  if (!result.ok || result.value.length === 0) return null;
-  return result.value[0]!.visible !== false;
+  if (!result.ok) return null;
+  const first = placedLayers(result.value)[0];
+  return first === undefined ? null : first.visible !== false;
 }
 
 /** Seed a v2 image tagged for the Layers-panel specs. */

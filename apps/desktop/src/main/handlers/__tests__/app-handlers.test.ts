@@ -113,7 +113,7 @@ describe("app:* handlers", () => {
     expect(result.value.content).toContain("# Changelog");
   });
 
-  test("app:readDocument reads third-party licenses", async () => {
+  test("app:readDocument reads the third-party notices", async () => {
     const result = await bus.dispatch(
       "app:readDocument",
       { kind: "third-party-licenses" },
@@ -122,8 +122,21 @@ describe("app:* handlers", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected ok");
-    expect(result.value.title).toBe("Third-Party Licenses");
+    expect(result.value.title).toBe("Third-Party Notices");
     expect(result.value.content).toContain("PwrSnap Third-Party Licenses");
+  });
+
+  test("app:readDocument reads the license (Help → View License)", async () => {
+    const result = await bus.dispatch(
+      "app:readDocument",
+      { kind: "license" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.value.title).toBe("License");
+    expect(result.value.content).toContain("MIT License");
   });
 
   test("app:readDocument rejects an unknown kind", async () => {

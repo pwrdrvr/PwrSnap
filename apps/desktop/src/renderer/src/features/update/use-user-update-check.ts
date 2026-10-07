@@ -4,7 +4,7 @@
 //   - `events:app-update:status`  — what the updater is DOING. Every check
 //     moves it, including the hourly background ones.
 //   - `events:app-update:check-result` — emitted from exactly one place,
-//     `runMenuUpdateCheck` in main, i.e. Help -> Check for Updates.
+//     `runMenuUpdateCheck` in main, i.e. the Check for Updates… menu item.
 //
 // So the live card is gated on having seen a `checking` tick on the RESULT
 // channel and is then driven by the STATUS channel. A background download

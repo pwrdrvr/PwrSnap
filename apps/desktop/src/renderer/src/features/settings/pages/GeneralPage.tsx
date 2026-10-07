@@ -73,6 +73,7 @@ export function GeneralPage(): ReactElement {
   const videoCaptureCursor = settings?.recording.videoCaptureCursor ?? true;
   const imageCaptureCursor = settings?.recording.imageCaptureCursor ?? true;
   const showRegionFrame = settings?.recording.showRegionFrame ?? true;
+  const showRecentCaptureSidebar = settings?.recording.showRecentCaptureSidebar ?? true;
   const quickCaptureAction: QuickCaptureAction =
     settings?.recording.quickCaptureAction ?? "ask";
   // Audio defaults for new recordings. Both ship OFF — recording either
@@ -247,6 +248,23 @@ export function GeneralPage(): ReactElement {
             onChange={(next) => {
               if (!ready) return;
               void patch({ recording: { quickCaptureAction: next } });
+            }}
+          />
+        </Row>
+      </Card>
+
+      <Card eyebrow="CAPTURE" title="Recent captures">
+        <Row
+          label="Keep recent captures on the screen edge"
+          sub="When a capture's popup closes, the capture stays as a tab on the edge of the screen until you dismiss it. A tab shows what the AI did: ✓ done, ! failed. Turning this off hides the tabs. Your captures and AI are not affected."
+          tag="popup"
+        >
+          <Switch
+            on={showRecentCaptureSidebar}
+            label="Keep recent captures on the screen edge"
+            onChange={(next) => {
+              if (!ready) return;
+              void patch({ recording: { showRecentCaptureSidebar: next } });
             }}
           />
         </Row>

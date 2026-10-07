@@ -64,6 +64,7 @@ import {
 } from "../ai/enrichment-schema";
 import { bus, type CommandContext } from "../command-bus";
 import { getMainLogger } from "../log";
+import { notifyAiRunObservers } from "../ai/ai-run-observers";
 import {
   cancelAiRun,
   completeAiRun,
@@ -191,6 +192,7 @@ function broadcastAiRunUpdated(payload: {
   // the library didn't start must still land in its focused view.
   broadcastRendererEventToLocalWindows(EVENT_CHANNELS.aiRunUpdated, payload);
   relayRendererEventToPeer(EVENT_CHANNELS.aiRunUpdated, payload);
+  notifyAiRunObservers(payload.run);
 }
 
 function preparedMediaShape(

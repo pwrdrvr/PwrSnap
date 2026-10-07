@@ -306,7 +306,8 @@ additional network destinations: only main's fixed inference request is made.
 **Capture enrichment is a jailed, unattended path.** A screenshot is
 untrusted input that can carry text engineered to steer a model. Enrichment
 runs with no tools, no model-initiated network, no filesystem beyond the
-agent scratch jail (or bounded image bytes for direct APIs), and no UI to
+agent scratch jail (or bounded image bytes for direct APIs), no inherited
+Codex lifecycle hooks or notification commands, and no UI to
 approve anything — enforced in the transport, not the prompt. This is
 the most security-sensitive surface in the app; AGENTS.md §"Capture
 enrichment runs in a sandbox jail" is the authority, including the measured

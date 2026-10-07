@@ -68,6 +68,7 @@ function makeSettings(overrides?: {
       enabled: false,
       consentAcceptedAt: null,
       budgetSafetyDisabledAt: null,
+      enrichmentRateLimit: null,
       autoAcceptSuggestions: false,
       chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false },
       defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} },
@@ -106,6 +107,7 @@ function makeSettings(overrides?: {
       mp4IncludeSystemAudio: true,
       videoCaptureCursor: true,
       showRegionFrame: true,
+      showRecentCaptureSidebar: true,
       imageCaptureCursor: true,
       lastRoutedPermissionFingerprint: "",
       screenCapturePrompted: false
@@ -193,7 +195,18 @@ function rerender(node: React.ReactElement): void {
 
 beforeEach(() => {
   dispatchMock.mockReset();
-  dispatchMock.mockResolvedValue({ ok: true, value: undefined });
+  dispatchMock.mockImplementation(async (channel, patch) => {
+    // Main broadcasts the saved settings before settings:write resolves.
+    // Preserve that contract when the optimistic tool-bag state settles.
+    if (channel === "settings:write" && patch.editor?.toolBag) {
+      const settings = useSettingsMock().settings as Settings;
+      installSettingsMock({
+        ...settings,
+        editor: { ...settings.editor, toolBag: patch.editor.toolBag }
+      });
+    }
+    return { ok: true, value: undefined };
+  });
   useSettingsMock.mockReset();
   installSettingsMock(makeSettings());
 });
@@ -363,7 +376,7 @@ describe("useEditorToolState", () => {
     expect(api!.armedSlot).toBe(4);
   });
 
-  test("6b. a Draw slot saves and arms like any other: the Draw tool with its mode, color and weight", () => {
+  test("6b. a Draw slot saves and arms like any other: the Draw tool with its mode, color and weight", async () => {
     let api: UseEditorToolStateReturn | null = null;
     render(
       createElement(Probe, {
@@ -373,7 +386,7 @@ describe("useEditorToolState", () => {
         }
       })
     );
-    act(() => {
+    await act(async () => {
       api!.setBagSlot(8, {
         tool: "draw",
         style: { mode: "marker", color: "yellow", thickness: "large" }
@@ -498,13 +511,17 @@ describe("useEditorToolState", () => {
     expect(slots[8]).toEqual(saved);
     expect(slots[0]).toMatchObject({ tool: "arrow", style: { color: "red" } });
 
-    // Once the write resolves the bag reads from settings again (which
-    // the real substrate has broadcast by then).
+    // Broadcast the persisted bag before resolving the write, as main does.
     await act(async () => {
+      const settings = makeSettings();
+      installSettingsMock({
+        ...settings,
+        editor: { ...settings.editor, toolBag: { slots: slots as Settings["editor"]["toolBag"]["slots"] } }
+      });
       finishWrite();
       await Promise.resolve();
     });
-    expect(api!.bag.slots[8]).toBeNull();
+    expect(api!.bag.slots[8]).toEqual(saved);
   });
 
   test("10b. a save before settings land is dropped, so the factory bag never overwrites the saved one", () => {
@@ -525,7 +542,7 @@ describe("useEditorToolState", () => {
     expect(api!.bag.slots[8]).toBeNull();
   });
 
-  test("11. clearing the armed slot disarms it", () => {
+  test("11. clearing the armed slot disarms it", async () => {
     let api: UseEditorToolStateReturn | null = null;
     render(
       createElement(Probe, {
@@ -538,7 +555,7 @@ describe("useEditorToolState", () => {
     act(() => {
       api!.armSlot(2);
     });
-    act(() => {
+    await act(async () => {
       api!.setBagSlot(2, null);
     });
     expect(api!.armedSlot).toBeNull();

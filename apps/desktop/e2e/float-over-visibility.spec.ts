@@ -29,11 +29,11 @@
 // test (PWRSNAP_E2E_REAL_CAPTURE=1) in region-capture.spec.ts covers
 // the snapshot path.
 
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
-import { popoverWidthDip } from "@pwrsnap/shared";
+import { EVENT_CHANNELS, popoverWidthDip, type CaptureEnrichment } from "@pwrsnap/shared";
 
 const isMac = process.platform === "darwin";
 
@@ -207,15 +207,15 @@ async function seedCapture(
 
   const captureId = `fo-e2e-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   await app.electronApp.evaluate(
-    (_electron, payload: { id: string; pngPath: string }) => {
+    async (_electron, payload: { id: string; pngPath: string }) => {
       const bridge = (
         globalThis as unknown as {
           __PWRSNAP_TEST__: {
-            seedCapture: (input: Record<string, unknown>) => unknown;
+            seedCapture: (input: Record<string, unknown>) => Promise<unknown>;
           };
         }
       ).__PWRSNAP_TEST__;
-      bridge.seedCapture({
+      await bridge.seedCapture({
         id: payload.id,
         kind: "image",
         captured_at: new Date().toISOString(),
@@ -239,6 +239,123 @@ test.describe("float-over visibility", () => {
     !isMac && process.platform !== "win32",
     "float-over visibility runs on macOS + Windows (Linux/xvfb excluded)"
   );
+
+  for (const status of [null, "completed", "failed"] as const) {
+    test(`recent sidebar survives timeout with enrichment ${status ?? "off"}`, async () => {
+      const app = await launchPwrSnap();
+      try {
+        const captureId = await seedCapture(app);
+        await setFloatOverState(app, { kind: "show-loaded", captureId });
+        await expect.poll(() => app.electronApp.windows().some((page) => page.url().includes("stage=float-over"))).toBe(true);
+        const page = app.electronApp.windows().find((candidate) => candidate.url().includes("stage=float-over"))!;
+        await expect(page.locator(".fo")).toBeVisible();
+        if (status !== null) {
+          const enrichment: CaptureEnrichment = {
+            captureId, latestRunId: `run_${captureId}`, status,
+            error: status === "failed" ? "Could not reach the configured endpoint." : null,
+            ocrText: null, suggestedTitle: null, acceptedTitle: null, titleAcceptedAt: null,
+            suggestedFilenameStem: null, acceptedFilenameStem: null, filenameAcceptedAt: null,
+            suggestedDescription: null, acceptedDescription: null, descriptionAcceptedAt: null,
+            suggestedTags: [], acceptedTags: []
+          };
+          await app.electronApp.evaluate(({ BrowserWindow }, payload) => {
+            const bridge = (globalThis as unknown as {
+              __PWRSNAP_TEST__: { getFloatOverWindowId: () => number };
+            }).__PWRSNAP_TEST__;
+            BrowserWindow.fromId(bridge.getFloatOverWindowId())!.webContents.send(payload.channel, {
+              enrichment: payload.enrichment
+            });
+          }, { channel: EVENT_CHANNELS.aiRunUpdated, enrichment });
+        }
+        await expect(page.locator(".fod-tab")).toHaveAttribute("data-status", status === null ? "none" : status === "completed" ? "ready" : "failed", { timeout: 12_000 });
+        // The toast is gone after tucking. Its sizing helper requires
+        // .fo and can never settle for the dock; wait for the native
+        // window to finish reshaping to the single tab instead.
+        await expect.poll(() => inspectFloatOver(app)).toMatchObject({
+          visible: true,
+          opacity: 1,
+          contentSize: { width: 18, height: 54 }
+        });
+        const info = await inspectFloatOver(app);
+        expect(info.visible).toBe(true);
+        expect(info.opacity).toBe(1);
+        expect(info.contentSize?.width).toBe(18);
+        const workArea = await app.electronApp.evaluate(({ screen }) => screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea);
+        expect(info.bounds!.x).toBeGreaterThanOrEqual(workArea.x);
+        expect(info.bounds!.x + info.bounds!.width).toBeLessThanOrEqual(workArea.x + workArea.width);
+        if (status === null) await expect(page.locator(".fod-st")).toHaveCount(0);
+      } finally {
+        await app.close();
+      }
+    });
+  }
+
+  test("a hidden recent sidebar survives a restart and keeps its tab for when it is shown", async () => {
+    // First run: the user turns the sidebar off in Settings.
+    let saved = "";
+    const first = await launchPwrSnap();
+    try {
+      const written = await first.dispatch("settings:write", {
+        recording: { showRecentCaptureSidebar: false }
+      });
+      expect(written.ok).toBe(true);
+      saved = await readFile(path.join(first.homeRoot, "pwrsnap-settings.json"), "utf8");
+    } finally {
+      await first.close();
+    }
+    expect(
+      (JSON.parse(saved) as { recording?: { showRecentCaptureSidebar?: boolean } }).recording
+        ?.showRecentCaptureSidebar
+    ).toBe(false);
+
+    // Restart: a new process boots from the file the first one saved.
+    const app = await launchPwrSnap({
+      seedUserData: (home) => writeFile(path.join(home, "pwrsnap-settings.json"), saved)
+    });
+    try {
+      const read = await app.dispatch("settings:read", {});
+      expect(read.ok && read.value.recording.showRecentCaptureSidebar).toBe(false);
+
+      const captureId = await seedCapture(app);
+      await setFloatOverState(app, { kind: "show-loaded", captureId });
+      await expect
+        .poll(() => app.electronApp.windows().some((page) => page.url().includes("stage=float-over")))
+        .toBe(true);
+      const page = app.electronApp
+        .windows()
+        .find((candidate) => candidate.url().includes("stage=float-over"))!;
+      await expect(page.locator(".fo")).toBeVisible();
+
+      // The countdown ends exactly as with the sidebar on: the renderer
+      // keeps the snap and tucks...
+      await expect(page.locator(".fod-tab")).toHaveCount(1, { timeout: 12_000 });
+      // ...and main keeps the dock off screen. Sample for a while: a dock
+      // that is shown late is as wrong as one shown at once.
+      const onScreen = async (): Promise<boolean> => {
+        const info = await inspectFloatOver(app);
+        return info.visible && info.opacity === 1;
+      };
+      const deadline = Date.now() + 1500;
+      while (Date.now() < deadline) {
+        expect(await onScreen()).toBe(false);
+        await app.window.waitForTimeout(100);
+      }
+
+      // Turning it back on shows that same tab, without a new capture.
+      const shown = await app.dispatch("settings:write", {
+        recording: { showRecentCaptureSidebar: true }
+      });
+      expect(shown.ok).toBe(true);
+      await expect.poll(() => inspectFloatOver(app)).toMatchObject({
+        visible: true,
+        opacity: 1,
+        contentSize: { width: 18, height: 54 }
+      });
+      await expect(page.locator(".fod-tab")).toHaveCount(1);
+    } finally {
+      await app.close();
+    }
+  });
 
   test("show-loaded reaches visible within 200ms and stays past 4s", async () => {
     const app = await launchPwrSnap();

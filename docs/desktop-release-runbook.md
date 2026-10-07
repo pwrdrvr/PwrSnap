@@ -16,6 +16,23 @@ default, even when the version string has no prerelease suffix. Promotion to
 Latest is a separate operator action after the build, assets, updater metadata,
 and smoke checks are validated.
 
+Every release, including prereleases, must run the remote Winget and Homebrew
+baseline in the [package-manager release runbook](package-manager-release-runbook.md)
+before changing metadata and again at handoff. Advance eligible stable updates
+within the authorized scope, and record submission links, accepted source and
+refreshed client versions, delays, blockers and a named follow-up owner. The new
+GitHub Pre-release waits for manual promotion; package channels may still need
+to catch up to an earlier promoted stable release.
+
+Release CI invokes `distribution-audit.yml` before preparation and after
+publication. Only its public Winget/Homebrew/source searches use organization
+secret `DISTRIBUTION_READ_TOKEN` with the workflow-token fallback. Publication
+and signing credentials remain separate. The
+[package-manager runbook](package-manager-release-runbook.md#organization-provided-public-read-credential)
+describes public-read-only scope, bounded rate-limit retries, fork behavior and
+organization-owned expiry/rotation. An incomplete or throttled audit is a
+blocker, not package absence; a post-publication blocker does not undo publication.
+
 ---
 
 ## One-time setup
@@ -165,6 +182,14 @@ it cannot steal `/releases/latest` from the Stable train. Promote a smoked
 alpha by bumping `apps/desktop/package.json` and the CHANGELOG heading to
 the beta version, then tagging that commit. Do not retag the alpha SHA.
 
+Beta · Prerelease is the most adventurous slot, so it also offers any Stable
+candidate that outranks Stable Latest. That covers a `-prerelease.N` or
+`-rc.N` maintenance candidate, and a bare `vX.Y.Z` still staged as a GitHub
+Pre-release. Selection is by semver precedence, so a newer alpha or beta still
+wins. A candidate at or below Stable Latest stays out. Semver sorts `rc` after
+`prerelease`, and both after `alpha` and `beta`. A `v1.2.0-alpha.N` tag
+therefore sorts below an existing `v1.2.0-prerelease.N`.
+
 Moving a slot BACKWARD is supported. If a build ends up ahead of the slot the
 user selected — someone on a 1.1 alpha who picks Stable · Latest, or a tester
 stepping off Beta — the resolved release is older than what they are running,
@@ -213,12 +238,17 @@ bundle with `codesign --verify --deep --strict PwrSnap.app`.
 
 ## Cutting a release (CI path — preferred)
 
-```bash
-# 1. Bump the version. Use semver pre-release tags during alpha/beta:
-pnpm --filter @pwrsnap/desktop version 0.0.1-alpha.1
+First complete the package-channel baseline above, then follow the
+[release skill](../.agents/skills/release/SKILL.md) for branch selection,
+changelog, signed metadata commit and tagging. Do not let a version command
+create a tag before the metadata is reviewed and landed:
 
-# 2. Push the tag (the version command commits and tags automatically).
-git push --follow-tags
+```bash
+pnpm --filter @pwrsnap/desktop version <version> --no-git-tag-version
+# Add matching CHANGELOG.md notes, validate, commit and land on RELEASE_BRANCH.
+RELEASE_TAG=v<version> pnpm release:check
+# Create a signed tag on the intended landed commit as described in the skill.
+git push origin v<version>
 ```
 
 The release workflow separates preparation, signing, and publication:
@@ -299,6 +329,13 @@ No signing job publishes directly. A macOS or Windows signing failure, an
 unapproved environment, or a Linux build failure leaves no partial GitHub
 Release behind.
 
+After GitHub asset/notes verification, perform the package-manager runbook's
+post-publication steps and leave its completion record. `release.yml` does not
+submit Winget or merge Homebrew updates. Homebrew's separate tap workflow opens
+bump PRs; its success is not publication. Repeat channel follow-up after the
+operator manually promotes the release, retaining ownership through submission
+acceptance and refreshed-client verification.
+
 For a non-publishing Windows signing smoke check, apply `ci:windows-signing` to
 a same-repository PR after reviewing its head SHA. Temporarily allow that exact
 PR merge ref (`refs/pull/<number>/merge`) in the `windows-signing` environment,
@@ -370,12 +407,14 @@ npx --yes @electron/fuses read --app "$APP"
 # User-viewable release documents must ship outside app.asar
 test -f "$APP/Contents/Resources/THIRD_PARTY_LICENSES"
 test -f "$APP/Contents/Resources/CHANGELOG.md"
+test -f "$APP/Contents/Resources/LICENSE"
 ```
 
 After launch, spot-check the document surfaces:
 
 - Help → Changelog opens the bundled changelog.
-- Help → Third-party Licenses opens the bundled notices.
+- Help → View License opens the bundled LICENSE.
+- Help → Third-Party Notices opens the bundled notices.
 - Settings → About can open both release notes and third-party notices.
 
 After a local publish, make the GitHub Release body match the changelog entry

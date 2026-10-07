@@ -9,7 +9,6 @@ vi.mock("node:child_process", () => ({
 }));
 
 import {
-  resolveAboutPanelBuildVersion,
   resolveDevelopmentRuntimeIdentity,
   resolveRuntimeIdentity
 } from "../runtime-identity";
@@ -85,18 +84,5 @@ describe("runtime identity", () => {
       cwd: "/repo/PwrSnap"
     })).toBeUndefined();
     expect(execFileSyncMock).not.toHaveBeenCalled();
-  });
-
-  test("uses the development identity as the native About build value", () => {
-    expect(resolveAboutPanelBuildVersion("1.0.0", {
-      branch: "agent/show-dev-branch-in-about",
-      cwd: "/repo/PwrSnap"
-    })).toBe("agent/show-dev-branch-in-about");
-    expect(resolveAboutPanelBuildVersion("1.0.0", {
-      commitSha: "ab12cd3344556677889900aabbccddeeff001122",
-      cwd: "/repo/PwrSnap",
-      detachedHead: true
-    })).toBe("HEAD ab12cd33");
-    expect(resolveAboutPanelBuildVersion("1.0.0", undefined)).toBe("1.0.0");
   });
 });

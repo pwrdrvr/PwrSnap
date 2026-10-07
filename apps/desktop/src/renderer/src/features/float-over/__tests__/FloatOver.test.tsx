@@ -58,7 +58,7 @@ function enrichment(patch: Partial<CaptureEnrichment> = {}): CaptureEnrichment {
 const baseSettings: Settings = {
   schemaVersion: 1,
   codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
-  ai: { enabled: false, consentAcceptedAt: null, budgetSafetyDisabledAt: null, autoAcceptSuggestions: false, chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false }, defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} }, acp: { enabledAgentIds: [] } },
+  ai: { enabled: false, consentAcceptedAt: null, budgetSafetyDisabledAt: null, enrichmentRateLimit: null, autoAcceptSuggestions: false, chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false }, defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} }, acp: { enabledAgentIds: [] } },
   hotkeys: {
     quickCapture: "CommandOrControl+Shift+C",
     region: "",
@@ -92,6 +92,7 @@ const baseSettings: Settings = {
     mp4IncludeSystemAudio: true,
     videoCaptureCursor: true,
     showRegionFrame: true,
+    showRecentCaptureSidebar: true,
     imageCaptureCursor: true,
     lastRoutedPermissionFingerprint: "",
     screenCapturePrompted: false
@@ -327,6 +328,42 @@ describe("FloatOver asset mode", () => {
     } as unknown as NonNullable<Window["pwrsnapApi"]>;
   });
 
+  test("a persisted 1.6 s trim owns the initial preview clock, scrubber and duration badge", async () => {
+    const el = await renderToast({
+      kind: "video", src: "pwrsnap-capture://r/trimmed", captureId: "trimmed",
+      durationSec: 4, widthPx: 1208, heightPx: 608,
+      defaultRange: { start: 1.8, end: 3.4 }
+    });
+    expect(el.querySelector('[data-testid="preview-timecode"]')?.textContent).toBe("0:00.0 / 0:01.6");
+    expect(el.querySelector(".fo__preview-size")?.textContent).toBe("1.6s");
+    expect(el.querySelector('[aria-label="Preview position"]')?.getAttribute("max")).toBe("1.6");
+    expect(el.querySelector('[data-testid="video-timeline-trim-label"]')?.textContent).toBe(
+      "TRIM 0:01.8 – 0:03.4 · 1.6 s"
+    );
+    const media = el.querySelector<HTMLVideoElement>(".fo__preview video")!;
+    await act(async () => media.dispatchEvent(new Event("loadedmetadata")));
+    expect(media.currentTime).toBe(1.8);
+    expect(media.controls).toBe(false);
+  });
+
+  test("an upstream trim replaces a paused preview position and all its duration displays", async () => {
+    const asset = {
+      kind: "video", src: "pwrsnap-capture://r/trimmed", captureId: "trimmed",
+      durationSec: 4, widthPx: 1208, heightPx: 608,
+      defaultRange: { start: 0, end: 4 }
+    } as const;
+    const el = await renderToast(asset);
+    const media = el.querySelector<HTMLVideoElement>(".fo__preview video")!;
+    media.currentTime = 0;
+    await act(async () => root?.render(createElement(FloatOver, {
+      asset: { ...asset, defaultRange: { start: 1.8, end: 3.4 } }, src: asset.src,
+      srcW: 1208, srcH: 608, srcBytes: 1024, startCountdown: false
+    })));
+    expect(media.currentTime).toBe(1.8);
+    expect(el.querySelector('[data-testid="preview-timecode"]')?.textContent).toBe("0:00.0 / 0:01.6");
+    expect(el.querySelector(".fo__preview-size")?.textContent).toBe("1.6s");
+  });
+
   test("video asset renders <video> in fo__preview, the mini-trim strip, and the 6-card export grid", async () => {
     const el = await renderToast({
       kind: "video",
@@ -548,13 +585,18 @@ describe("FloatOver asset mode", () => {
       await act(async () => {
         strip.dispatchEvent(at("pointermove", 400));
       });
-      expect(video.currentTime).toBe(6.25);
+      expect(video.currentTime).toBeGreaterThan(6.2);
+      expect(video.currentTime).toBeLessThan(6.25);
+      expect(el.querySelector('[data-testid="preview-timecode"]')?.textContent).toBe("0:06.2 / 0:06.2");
 
       // Still tracking on release, and the range agrees with the frame.
       await act(async () => {
         strip.dispatchEvent(at("pointerup", 320));
       });
-      expect(video.currentTime).toBe(5);
+      expect(video.currentTime).toBeGreaterThan(4.9);
+      expect(video.currentTime).toBeLessThan(5);
+      expect(el.querySelector('[data-testid="preview-timecode"]')?.textContent).toBe("0:05.0 / 0:05.0");
+      expect(el.querySelector(".fo__preview-size")?.textContent).toBe("5.0s");
       expect(el.querySelector('[data-testid="video-timeline-trim-label"]')?.textContent).toBe(
         "TRIM 0:00.0 – 0:05.0 · 5 s"
       );

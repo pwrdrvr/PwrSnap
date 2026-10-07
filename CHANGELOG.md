@@ -1,5 +1,59 @@
 # Changelog
 
+## v1.1.18 - 2026-10-07
+
+This patch makes diagnostics copying more dependable immediately after startup.
+
+- Diagnostics - Fixed the confirmation for Copy Diagnostics Info disappearing
+  when used before the Library finishes starting, so the copied build details
+  receive the same visible confirmation as later menu actions.
+
+## v1.1.17 - 2026-10-06
+
+This release adds easier window trimming and more control over recent captures,
+and makes everyday menu actions easier to find.
+
+- Window Capture - Added edge and corner resize handles to a selected window,
+  letting you trim its capture from the exact window bounds instead of drawing
+  a new region.
+- Recent Captures - Fixed recent captures disappearing from the screen-edge
+  sidebar when AI enrichment is unavailable or fails, keeping them accessible
+  after the popup closes.
+- Recent Captures - Added a General setting to show or hide the screen-edge
+  sidebar without deleting captures or changing background AI processing.
+- App Menus - Improved menu organization across platforms and added Copy
+  Diagnostics Info for support, View License, and Reload Window outside
+  Developer Mode. Windows also gains Close Window and an open-window list.
+
+## v1.1.16 - 2026-10-06
+
+This patch makes the Library detail rail and prerelease update checks more predictable.
+
+- Library Detail Rail - Fixed the rail switching to Cart when a saved cart
+  loads or when adding an item in Grid, keeping the editor's Info tab and copy
+  buttons where you left them.
+- Update Channels - Fixed Beta / Prerelease checks to offer newer stable
+  candidates, including stable builds awaiting promotion, while still preferring
+  a newer alpha or beta when one is available.
+
+## v1.1.15 - 2026-10-05
+
+This patch improves recording previews and background capture enrichment.
+
+- Recording Preview - Fixed playback to stay within the current trim range,
+  so previews reflect the portion of the recording you intend to keep.
+- Codex Enrichment - Improved isolation of background capture descriptions
+  by disabling user lifecycle hooks and notification commands for enrichment,
+  without changing your chat configuration.
+
+## v1.1.14 - 2026-10-02
+
+This patch restores capture enrichment with newer Codex installations.
+
+- Codex Enrichment - Fixed capture descriptions and other AI metadata from
+  failing on Codex 0.160 with "failed to load workspace requirements," and
+  improved configuration-error guidance when enrichment cannot start.
+
 ## v1.1.13 - 2026-10-02
 
 This release adds freehand drawing and flexible toolbar docking, and improves

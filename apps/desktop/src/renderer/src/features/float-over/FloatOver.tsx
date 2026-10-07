@@ -23,6 +23,7 @@ import {
   type CopyPreset
 } from "../shared/CopyButton";
 import { CodexStatusPill } from "../shared/CodexStatusPill";
+import { enrichmentRunClock } from "../shared/EnrichmentRunClock";
 import { AiConsentDialog } from "../shared/AiConsentDialog";
 import { useFieldEditor } from "../shared/useFieldEditor";
 import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
@@ -35,7 +36,7 @@ import {
 } from "../shared/VideoExportPresetsPanel";
 import { VideoTimeline } from "../shared/VideoTimeline";
 import { useVideoTimelineAssets } from "../shared/useVideoTimelineAssets";
-import { useVideoTrimRange } from "../shared/useVideoTrimRange";
+import { useVideoTrimRange, type UseVideoTrimRange } from "../shared/useVideoTrimRange";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import { FoIcon } from "./FoIcons";
 import { fitTagChips } from "./fitTagRow";
@@ -398,6 +399,7 @@ export function FloatOver({
   onDismiss,
   onTimeout,
   dockable = false,
+  sidebarVisible = true,
   externalHover = false,
   onEdit,
   onReveal,
@@ -477,6 +479,12 @@ export function FloatOver({
    * the toast then holds the corner until the model answers.
    */
   dockable?: boolean;
+  /**
+   * Settings → Recent captures. Off hides the Tuck button, which would
+   * send the snap to a dock nobody can see. Nothing else here follows it:
+   * the countdown and its timeout are the same either way.
+   */
+  sidebarVisible?: boolean;
   /** The pointer is over part of the float-over window that is not this
    *  toast (the rail beside it), or its menu is open. Pauses the
    *  countdown exactly as hovering the toast does. */
@@ -624,6 +632,14 @@ export function FloatOver({
   // The preview `<video>`, handed to the trim strip so dragging an
   // in/out handle parks the preview on that frame.
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
+  // One local selection owns the preview, duration badge, timeline and
+  // exports, including drag frames before the debounced persist lands.
+  const videoTrim = useVideoTrimRange({
+    captureId: asset?.kind === "video" ? asset.captureId : null,
+    durationSec: asset?.kind === "video" ? asset.durationSec : 0,
+    persistedRange: asset?.kind === "video" ? asset.defaultRange : null,
+    persist: "range"
+  });
   // Stable ref to `onDismiss` so the countdown effect can call the
   // latest callback without re-subscribing on every parent re-render.
   // Without this, an enrichment-arrived re-render (which creates a
@@ -762,7 +778,7 @@ export function FloatOver({
     const timer = setTimeout(() => setAwaitingAiTimedOut(true), 3000);
     return () => clearTimeout(timer);
   }, [aiNeedsConsent, aiStatus]);
-  const awaitingAi = !aiNeedsConsent && aiStatus === null && !awaitingAiTimedOut;
+  const awaitingAi = !aiNeedsConsent && providerAvailable && aiStatus === null && !awaitingAiTimedOut;
 
   const hasUserDescription =
     description.trim().length > 0 && descriptionOrigin === "manual";
@@ -1018,7 +1034,7 @@ export function FloatOver({
               separate Pin affordance. The footer Edit button is the
               primary editor entry; an extra pencil here would be
               redundant. */}
-          {tuckMode && inFlight && onTimeout !== undefined ? (
+          {tuckMode && sidebarVisible && inFlight && onTimeout !== undefined ? (
             <button
               className="fo__icon-btn"
               type="button"
@@ -1095,10 +1111,8 @@ export function FloatOver({
           className={asset?.kind === "video" ? "fo__preview fo__preview--video" : "fo__preview"}
         >
           {asset?.kind === "video" ? (
-            // Video preview — hover-autoplay on top of native
-            // controls. Same component the tray uses for its
-            // "last recording" preview, so the surfaces behave
-            // consistently.
+            // The live trim owns both the playback window and the
+            // preview's elapsed clock, before persistence completes.
             <HoverAutoplayVideo
               captureId={asset.captureId}
               // The descriptor's flags are optional on the type; a video
@@ -1112,6 +1126,7 @@ export function FloatOver({
                 requestedMicrophone: asset.requestedMicrophone
               }}
               videoRef={previewVideoRef}
+              range={videoTrim.range}
             />
           ) : (
             <img
@@ -1130,7 +1145,7 @@ export function FloatOver({
           </div>
           <div className="fo__preview-size">
             {asset?.kind === "video"
-              ? fmtDurationLabel(asset.durationSec)
+              ? fmtDurationLabel(videoTrim.range.end - videoTrim.range.start)
               : dprBadgeLabel(srcDpr, window.pwrsnapApi?.platform)}
           </div>
 
@@ -1237,6 +1252,7 @@ export function FloatOver({
           <div className="fo__export-grid">
             <FloatOverVideoExport
               asset={asset}
+              trim={videoTrim}
               copyShortcut={videoCopyShortcut}
               onTrimDraggingChange={setTrimDragging}
               previewVideoRef={previewVideoRef}
@@ -1377,6 +1393,7 @@ export function FloatOver({
               needsConsent={aiNeedsConsent}
               safetyDisabled={aiSafetyDisabled}
               error={enrichment?.error}
+              clock={enrichmentRunClock(enrichment)}
               {...(enrichmentProviderLabel !== undefined
                 ? { providerLabel: enrichmentProviderLabel }
                 : {})}
@@ -1644,12 +1661,14 @@ export function recordingSourcesLabel(
  */
 function FloatOverVideoExport({
   asset,
+  trim,
   copyShortcut,
   onTrimDraggingChange,
   previewVideoRef,
   shortcutPlatform
 }: {
   asset: Extract<FloatOverAsset, { kind: "video" }>;
+  trim: UseVideoTrimRange;
   copyShortcut?: VideoCopyShortcutRequest | null | undefined;
   onTrimDraggingChange: (dragging: boolean) => void;
   previewVideoRef: React.RefObject<HTMLVideoElement | null>;
@@ -1667,14 +1686,6 @@ function FloatOverVideoExport({
     },
     [previewVideoRef]
   );
-  const trim = useVideoTrimRange({
-    captureId: asset.captureId,
-    durationSec: asset.durationSec,
-    persistedRange: asset.defaultRange,
-    // In/out only: the mini-trim shows no cuts, so it clips them in main
-    // rather than writing an edit that would replace them.
-    persist: "range"
-  });
   const assets = useVideoTimelineAssets({
     captureId: asset.captureId,
     stripWidthPx: stripWidth,

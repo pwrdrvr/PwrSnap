@@ -160,7 +160,11 @@ test("click-without-drag on a window picks it + ↵ commits with snappedWindowId
       "snap"
     );
     await expect(selector.locator(".region-pick")).toHaveCount(1);
-    await expect(selector.locator(".region-handle")).toHaveCount(0);
+    // Not adjusting — but a lone pick does carry the trim grippers,
+    // and only those: no adjustable rect with its own handle set.
+    await expect(selector.locator(".region-rect--adjustable")).toHaveCount(0);
+    await expect(selector.locator(".region-pick-grips .region-handle")).toHaveCount(8);
+    await expect(selector.locator(".region-handle")).toHaveCount(8);
 
     // No submitRegion fired yet — the pick set holds the selection for
     // refinement.

@@ -18,8 +18,8 @@
 // to FloatOver in this same phase clears the timer on unmount.
 //
 // The host also owns the screen-edge DOCK (float-over-dock-model.ts):
-// the snaps a slow enrichment model is still reading when their toast's
-// countdown runs out. It is the renderer's list because the renderer is
+// recent snaps retained when their toast's countdown runs out, regardless
+// of model status. It is the renderer's list because the renderer is
 // what knows each snap's enrichment status; main only knows where the
 // dock sits and whether the window is showing the toast or the tabs.
 // The same window draws both — `mode` says which, and every layout post
@@ -53,8 +53,8 @@ import {
   DOCK_VISIBLE_CAP,
   clearFinishedDockItems,
   dockItemLabel,
+  firstRunDeadline,
   hasFinishedDockItems,
-  isLeavingSnapInFlight,
   mayAwaitFirstRun,
   catalogRailItems,
   mergeCatalogRecords,
@@ -309,6 +309,7 @@ export function FloatOverHost({
   const toastItem = currentDockItem(state, shownRef.current?.addedAt ?? 0);
   const currentRef = useRef(toastItem);
   currentRef.current = toastItem;
+  const activeCaptureRefreshSequenceRef = useRef(0);
   if (state.kind === "loaded" && state.settings !== null) lastSettingsRef.current = state.settings;
   const loadedSettings = state.kind === "loaded" ? state.settings : null;
   const enrichmentProviderAvailable = isEnrichmentProviderAvailable({
@@ -324,26 +325,26 @@ export function FloatOverHost({
     loadedSettings.ai.budgetSafetyDisabledAt === null &&
     enrichmentProviderAvailable !== false;
 
+  const retainSnap = (item: DockItem): void => {
+    commitQueue(upsertDockItem(queueRef.current, {
+      ...item,
+      awaitingFirstRun: aiWillRunRef.current && mayAwaitFirstRun(item.record, Date.now())
+    }));
+  };
+
   /**
    * The snap on the toast is leaving it because something else took the
-   * window: a new capture, another snap opened, the tuck. One the model
-   * is still reading waits on the dock; a finished one has been on
-   * screen, so it is done. Main is told that snaps are waiting, without
-   * touching the screen, so the end of the capture session can bring the
+   * window: a new capture, another snap opened, the tuck. Every snap
+   * stays available on the dock, independent of AI status. Main is told
+   * that snaps remain without touching the screen, so the end of the capture session can bring the
    * dock back even though this toast never tucked.
    */
   const leaveCurrent = (): void => {
     const leaving = currentRef.current;
     if (leaving === null || settledRef.current === leaving.captureId) return;
     settledRef.current = leaving.captureId;
-    if (
-      dockSupportedRef.current &&
-      isLeavingSnapInFlight(
-        leaving.enrichment,
-        aiWillRunRef.current && mayAwaitFirstRun(leaving.record, Date.now())
-      )
-    ) {
-      commitQueue(upsertDockItem(queueRef.current, leaving));
+    if (dockSupportedRef.current) {
+      retainSnap(leaving);
       void dispatch("float-over:tuck", { markOnly: true });
       return;
     }
@@ -353,18 +354,15 @@ export function FloatOverHost({
   /**
    * The toast is closing by the host's own hand: the countdown ran out,
    * or the user dismissed it, opened it in the Library, or discarded it.
-   * With snaps still waiting the window becomes the dock; with none it
+   * With recent snaps retained the window becomes the dock; with none it
    * goes away.
    */
-  const closeToast = (keepWaiting: boolean): void => {
+  const closeToast = (keepRecent: boolean): void => {
     const closing = currentRef.current;
     if (closing !== null && settledRef.current !== closing.captureId) {
       settledRef.current = closing.captureId;
-      commitQueue(
-        keepWaiting && dockSupportedRef.current
-          ? upsertDockItem(queueRef.current, closing)
-          : removeDockItem(queueRef.current, closing.captureId)
-      );
+      if (keepRecent && dockSupportedRef.current) retainSnap(closing);
+      else commitQueue(removeDockItem(queueRef.current, closing.captureId));
     }
     if (queueRef.current.length === 0) {
       void dispatch("float-over:dismiss", {});
@@ -608,6 +606,9 @@ export function FloatOverHost({
   useEffect(() => {
     const unsubscribe = window.pwrsnapApi?.on(EVENT_CHANNELS.floatOverState, (payload) => {
       const event = payload as FloatOverEvent;
+      // A record refresh belongs to the toast that requested it, even
+      // if the same capture is opened again before the read resolves.
+      activeCaptureRefreshSequenceRef.current += 1;
       // A shortcut is a one-shot action for the currently mounted toast.
       // Do not replay the last action if the same capture is re-shown later.
       setVideoCopyShortcut(null);
@@ -784,22 +785,59 @@ export function FloatOverHost({
     }
   }, [queue]);
 
-  // A waiting snap was deleted or edited somewhere else. Deleted: off the
-  // dock. Edited: its thumbnail follows the new edits version.
+  // Enrichment can be skipped before a run row is created (for example,
+  // by the budget limit). Retain the snap, but stop claiming it is waiting
+  // once its first-run grace ends. Actual queued/running rows never expire.
   useEffect(() => {
+    const deadlines = queue.map(firstRunDeadline).filter((at): at is number => at !== null);
+    if (deadlines.length === 0) return;
+    const timer = window.setTimeout(() => {
+      const now = Date.now();
+      commitQueue(queueRef.current.map((item) => {
+        const deadline = firstRunDeadline(item);
+        return deadline !== null && deadline <= now ? { ...item, awaitingFirstRun: false } : item;
+      }));
+    }, Math.max(0, Math.min(...deadlines) - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [queue]);
+
+  // A snap was deleted or edited somewhere else. Re-read the active image
+  // as well as queued snaps and videos, so a deleted toast cannot become a
+  // retained tab. The active video's trim also follows the refreshed record.
+  useEffect(() => {
+    let disposed = false;
+    const refreshSequences = new Map<string, number>();
     const unsubscribe = window.pwrsnapApi?.on(EVENT_CHANNELS.capturesChanged, (payload) => {
       const changed = capturesChangedIds(payload);
       if (catalogRef.current.started && changed.length > 0) refreshCatalogRecords(changed);
+      const active = currentRef.current;
+      const activeId = active?.captureId ?? null;
+      const sequence = activeId !== null && changed.includes(activeId)
+        ? ++activeCaptureRefreshSequenceRef.current : null;
       const ids = changed.filter((id) =>
-        queueRef.current.some((item) => item.captureId === id)
+        id === activeId || queueRef.current.some((item) => item.captureId === id)
       );
       for (const captureId of ids) {
+        const refreshSequence = (refreshSequences.get(captureId) ?? 0) + 1;
+        refreshSequences.set(captureId, refreshSequence);
         void dispatch("library:byId", { id: captureId }).then((result) => {
-          if (!result.ok) return;
+          // The newest broadcast wins even if the toast has since tucked.
+          if (disposed || !result.ok || refreshSequences.get(captureId) !== refreshSequence) return;
+          // A newer refresh or re-show of this same toast supersedes the
+          // old read, including an old deletion followed by a restore.
+          if (captureId === activeId && currentRef.current?.captureId === captureId &&
+            sequence !== activeCaptureRefreshSequenceRef.current) return;
           const record = result.value;
           if (record === null || record.deleted_at !== null) {
             commitQueue(removeDockItem(queueRef.current, captureId));
+            if (currentRef.current?.captureId === captureId) dockActionsRef.current.closeToast(false);
             return;
+          }
+          if (captureId === activeId && sequence === activeCaptureRefreshSequenceRef.current) {
+            setState((current) =>
+              current.kind === "loaded" && current.record.id === captureId
+                ? { ...current, record } : current
+            );
           }
           const entry = queueRef.current.find((item) => item.captureId === captureId);
           if (entry === undefined) return;
@@ -808,6 +846,7 @@ export function FloatOverHost({
       }
     });
     return () => {
+      disposed = true;
       unsubscribe?.();
     };
   }, []);
@@ -1214,12 +1253,13 @@ export function FloatOverHost({
           // echo resets us to IDLE.
           closeToast(false);
         }}
-        onTimeout={({ inFlight }) => {
-          // The countdown ran out, or the user pressed Tuck. A snap the
-          // model is still reading goes to the dock.
-          closeToast(inFlight);
+        onTimeout={() => {
+          // Timeout is not an explicit dismissal: keep the snap available
+          // even when AI finished quickly, failed, or is disabled.
+          closeToast(true);
         }}
         dockable={dockSupported}
+        sidebarVisible={settings?.recording?.showRecentCaptureSidebar !== false}
         externalHover={(showRail && railHover) || menuOpen}
         onEdit={openInLibraryAndDismiss}
         onReveal={openInLibraryAndDismiss}

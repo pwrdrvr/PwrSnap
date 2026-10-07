@@ -234,6 +234,26 @@ describe("DesktopSettingsService.write", () => {
     expect(JSON.parse(readFileSync(filePath, "utf8")).ai.customModels).toEqual([]);
   });
 
+  test("the enrichment rate limit round-trips, clears to null, and an unreadable one reads as the default", async () => {
+    const filePath = join(workDir, "settings.json");
+    const svc = new DesktopSettingsService({ filePath });
+    expect((await svc.read()).ai.enrichmentRateLimit).toBeNull();
+    await svc.write({ ai: { enrichmentRateLimit: { burst: 60, perMinute: 120 } } });
+    expect(JSON.parse(readFileSync(filePath, "utf8")).ai.enrichmentRateLimit).toEqual({ burst: 60, perMinute: 120 });
+    await svc.write({ ai: { enabled: true } });
+    expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentRateLimit).toEqual({
+      burst: 60,
+      perMinute: 120
+    });
+    await svc.write({ ai: { enrichmentRateLimit: null } });
+    expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentRateLimit).toBeNull();
+
+    const raw = defaultSettings() as unknown as { ai: Record<string, unknown> };
+    raw.ai.enrichmentRateLimit = { burst: 0, perMinute: 1e9 };
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+    expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentRateLimit).toBeNull();
+  });
+
   test("write + read round-trips", async () => {
     const svc = makeService();
     const merged = await svc.write({
@@ -918,6 +938,38 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(restarted.recording.mp4IncludeSystemAudio).toBe(true);
     // Recording a microphone and exporting one are separate choices.
     expect(restarted.recording.includeMicrophone).toBe(false);
+  });
+
+  test("the recent-capture sidebar defaults ON, including for files that predate it", async () => {
+    expect(defaultSettings().recording.showRecentCaptureSidebar).toBe(true);
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({ schemaVersion: 1, recording: { showRegionFrame: false } }),
+      "utf8"
+    );
+    const settings = await new DesktopSettingsService({ filePath }).read();
+    expect(settings.recording.showRecentCaptureSidebar).toBe(true);
+    expect(settings.recording.showRegionFrame).toBe(false);
+  });
+
+  test("a hidden recent-capture sidebar stays hidden across a restart", async () => {
+    const filePath = join(workDir, "settings.json");
+    await new DesktopSettingsService({ filePath }).write({
+      recording: { showRecentCaptureSidebar: false }
+    });
+
+    const restarted = await new DesktopSettingsService({ filePath }).read();
+    expect(restarted.recording.showRecentCaptureSidebar).toBe(false);
+    // Hiding the sidebar is not an AI choice.
+    expect(restarted.ai).toEqual(defaultSettings().ai);
+
+    await new DesktopSettingsService({ filePath }).write({
+      recording: { showRecentCaptureSidebar: true }
+    });
+    expect(
+      (await new DesktopSettingsService({ filePath }).read()).recording.showRecentCaptureSidebar
+    ).toBe(true);
   });
 
   test("v1 recording block preserves an explicit cursor:false choice", async () => {

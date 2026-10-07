@@ -81,6 +81,9 @@ import {
   DuplicateProgressToasts,
   DuplicateTileProgress
 } from "./DuplicateProgress";
+import { EnrichmentRepairDialog } from "./enrichment-repair/EnrichmentRepairDialog";
+import { EnrichmentRepairToast } from "./enrichment-repair/EnrichmentRepairProgress";
+import { useEnrichmentRepairJob } from "./enrichment-repair/use-enrichment-repair-job";
 import { GridCopyPalette } from "./GridCopyPalette";
 import { closeWhenFocusLeaves } from "../shared/close-when-focus-leaves";
 import { primeEditToolbarDock } from "./useEditToolbarDock";
@@ -1514,6 +1517,11 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
         ? `${formatBytes(storage.summary.sourceCaptures.bytes)} snaps`
         : "calculating storage";
   const [storagePanelOpen, setStoragePanelOpen] = useState(false);
+  // AI repair: the dialog is ours, the job is main's. Closing the dialog
+  // while the job runs leaves its progress toast in the lower-left stack.
+  const [enrichmentRepairOpen, setEnrichmentRepairOpen] = useState(false);
+  const { job: enrichmentRepairJob, setJob: setEnrichmentRepairJob } = useEnrichmentRepairJob();
+  const openEnrichmentRepair = useCallback(() => setEnrichmentRepairOpen(true), []);
   const storagePanelRef = useRef<HTMLDivElement | null>(null);
   const storageTriggerRef = useRef<HTMLButtonElement | null>(null);
   const storagePopoverRef = useRef<HTMLDivElement | null>(null);
@@ -5436,6 +5444,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           onSelectFamilyMember={selectFamilyMember}
           onFilterFamily={filterToFamily}
           duplicatePrefs={duplicatePrefs}
+          onOpenEnrichmentRepair={openEnrichmentRepair}
           onDuplicate={(record, request) => {
             void duplicateRecord(record, request);
           }}
@@ -5466,6 +5475,31 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
       {/* Background video duplicates: one progress row per copy, with
           Cancel, in the same lower-left stack. */}
       <DuplicateProgressToasts onCancel={cancelDuplicateJob} />
+
+      {/* AI re-run of failed / never-run snaps. The toast is the dialog
+          collapsed: clicking it opens the dialog again. */}
+      {enrichmentRepairOpen ? (
+        <EnrichmentRepairDialog
+          job={enrichmentRepairJob}
+          altModifierLabel={altModifierLabel}
+          onJobChange={setEnrichmentRepairJob}
+          onClose={() => setEnrichmentRepairOpen(false)}
+        />
+      ) : enrichmentRepairJob !== null ? (
+        <EnrichmentRepairToast
+          job={enrichmentRepairJob}
+          onOpen={openEnrichmentRepair}
+          onCancel={(jobId) => {
+            void dispatch("codex:repair:cancel", { jobId }).then((result) => {
+              if (result.ok) setEnrichmentRepairJob(result.value);
+            });
+          }}
+          onDismiss={(jobId) => {
+            setEnrichmentRepairJob(null);
+            void dispatch("codex:repair:dismiss", { jobId });
+          }}
+        />
+      ) : null}
 
       {/* Result-aware action failures stay visible over Grid, Focus, and
           Reel. Mutation failures carry a direct retry that targets only the
@@ -5623,6 +5657,17 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               )}
             </span>
           </button>
+          {aiEnabled ? (
+            <button
+              type="button"
+              className="psl__ai-repair"
+              aria-haspopup="dialog"
+              data-tip="Re-run AI on snaps it failed on or never read"
+              onClick={openEnrichmentRepair}
+            >
+              Re-run AI…
+            </button>
+          ) : null}
         </div>
         <div className="psl__status-r">
           {/* Grid zoom stepper — the discoverable, labeled face of pinch-to-

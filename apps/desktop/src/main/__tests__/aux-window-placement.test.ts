@@ -393,7 +393,7 @@ describe("settings window placement", () => {
       width: 920,
       height: 760,
       show: false,
-      title: "PwrSnap Third-party Licenses"
+      title: "PwrSnap Third-Party Notices"
     });
   });
 

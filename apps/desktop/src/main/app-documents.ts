@@ -2,19 +2,20 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { app } from "electron";
-import type { AppDocument, AppDocumentKind } from "@pwrsnap/shared";
+import {
+  APP_DOCUMENT_TITLES,
+  type AppDocument,
+  type AppDocumentKind
+} from "@pwrsnap/shared";
 
-const DOCUMENTS: Record<AppDocumentKind, { fileName: string; title: string }> = {
-  changelog: { fileName: "CHANGELOG.md", title: "Changelog" },
-  "third-party-licenses": {
-    fileName: "THIRD_PARTY_LICENSES",
-    title: "Third-Party Licenses"
-  }
+/** The bundled file behind each document. All three ship as
+ *  `extraResources` (electron-builder.yml) and are required by
+ *  verify-asar-contents.mjs; in a dev checkout they sit at the repo root. */
+const DOCUMENT_FILES: Record<AppDocumentKind, string> = {
+  changelog: "CHANGELOG.md",
+  license: "LICENSE",
+  "third-party-licenses": "THIRD_PARTY_LICENSES"
 };
-
-export function isAppDocumentKind(value: unknown): value is AppDocumentKind {
-  return value === "changelog" || value === "third-party-licenses";
-}
 
 export function resolveAppDocumentPath(
   kind: AppDocumentKind,
@@ -24,7 +25,7 @@ export function resolveAppDocumentPath(
     cwd?: string | undefined;
   } = {}
 ): string {
-  const { fileName } = DOCUMENTS[kind];
+  const fileName = DOCUMENT_FILES[kind];
   const resourcesPath =
     roots.resourcesPath ??
     (typeof process.resourcesPath === "string" ? process.resourcesPath : undefined);
@@ -41,11 +42,10 @@ export function resolveAppDocumentPath(
 }
 
 export async function readAppDocument(kind: AppDocumentKind): Promise<AppDocument> {
-  const definition = DOCUMENTS[kind];
   const content = await readFile(resolveAppDocumentPath(kind), "utf8");
   return {
     kind,
-    title: definition.title,
+    title: APP_DOCUMENT_TITLES[kind],
     content
   };
 }

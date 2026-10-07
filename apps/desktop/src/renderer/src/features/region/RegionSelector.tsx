@@ -61,6 +61,7 @@ import {
   applyResize,
   clampRectToViewport,
   exceedsDragThreshold,
+  intersectRectWithViewport,
   isPointInsideRect,
   occludedFrame,
   rectFromTwoPoints,
@@ -1115,6 +1116,29 @@ export function RegionSelector() {
   }
 
   /**
+   * Turn a LONE pick into an ordinary adjustable rect: drop the pick
+   * and pin the snap target to the window that was picked — NOT to
+   * whatever the cursor has since wandered over, which would tag the
+   * commit with the wrong `snappedWindowId`. The rect is left alone; it
+   * is already the pick's box.
+   *
+   * The two gestures that refine a lone pick both start here: the
+   * first arrow key, and a press on one of its grippers. Returns false
+   * (and does nothing) unless exactly one window is picked — above one
+   * the rect is a derived union, and adjusting it would leave the
+   * extents pinned to windows the box no longer matches.
+   */
+  function promoteLonePick(): boolean {
+    if (picksRef.current.length !== 1) return false;
+    const only = picksRef.current[0]!;
+    clearPickSet();
+    const promoted: SnapTarget = { kind: "window", entry: only };
+    snapTargetRef.current = promoted;
+    setSnapTarget(promoted);
+    return true;
+  }
+
+  /**
    * Return to live snap, re-deriving the frame from whatever is under
    * the cursor.
    *
@@ -1678,19 +1702,11 @@ export function RegionSelector() {
         return;
       }
       // Arrow-key nudge. Normally only while adjusting (no live drag)
-      // — but a LONE pick promotes into adjusting on the first arrow.
-      // Clicking a window used to land in `adjusting` directly, so the
-      // arrows moved it; now a click picks, and without this the keys
-      // would be silently dead on the very selection they used to
-      // nudge. The rect is already the pick's box, so promoting is just
-      // dropping the pick (see clearPickSet) and pinning the snap
-      // target to the window that was picked — NOT to whatever the
-      // cursor has since wandered over, which would tag the commit with
-      // the wrong `snappedWindowId`.
-      //
-      // Not offered above one pick: the rect is a derived union there,
-      // and nudging it would leave the extents pinned to windows the
-      // box no longer matches.
+      // — but a LONE pick promotes into adjusting on the first arrow
+      // (see promoteLonePick). Clicking a window used to land in
+      // `adjusting` directly, so the arrows moved it; now a click
+      // picks, and without this the keys would be silently dead on the
+      // very selection they used to nudge.
       const isArrowKey =
         event.key === "ArrowLeft" ||
         event.key === "ArrowRight" ||
@@ -1699,12 +1715,7 @@ export function RegionSelector() {
       if (interactionRef.current.kind !== "adjusting") {
         if (!isArrowKey) return;
         if (interactionRef.current.kind !== "snap") return;
-        if (picksRef.current.length !== 1) return;
-        const only = picksRef.current[0]!;
-        clearPickSet();
-        const promoted: SnapTarget = { kind: "window", entry: only };
-        snapTargetRef.current = promoted;
-        setSnapTarget(promoted);
+        if (!promoteLonePick()) return;
         setInteraction({ kind: "adjusting" });
       }
       const r = rectRef.current;
@@ -1799,6 +1810,34 @@ export function RegionSelector() {
       event.preventDefault();
       const handle = getHandleFromTarget(event.target);
       const i = interactionRef.current;
+
+      // A lone pick's grippers. Ahead of the multi-select intercept for
+      // the same reason the adjusting handles are: a window almost
+      // always lies under a gripper, so letting the intercept see the
+      // press would toggle a pick instead of starting the trim. The
+      // press promotes the pick exactly as the first arrow key does,
+      // then runs as an ordinary resize — so on release the user is in
+      // `adjusting` with every refinement it offers.
+      //
+      // The resize starts from the pick's ON-SCREEN box, the same box
+      // the grippers are drawn on. A window hanging off the display
+      // keeps its off-screen part in `rawRect`, and measuring the drag
+      // from there would leave the grabbed edge trailing the cursor.
+      if (handle !== null && i.kind === "snap" && picksRef.current.length === 1) {
+        const start = intersectRectWithViewport(rectRef.current, viewport());
+        if (start !== null && promoteLonePick()) {
+          pendingPickRef.current = null;
+          rectRef.current = start;
+          setRect(start);
+          setInteraction({
+            kind: "resizing",
+            handle,
+            startMouse: { x: event.clientX, y: event.clientY },
+            startRect: start
+          });
+          return;
+        }
+      }
 
       // Multi-select intercept. It sits ahead of the SNAP/DRAW branches
       // — a pick is not a discard — but BEHIND the adjusting
@@ -1943,6 +1982,21 @@ export function RegionSelector() {
       const i = interactionRef.current;
       switch (i.kind) {
         case "snap": {
+          // Over a lone pick's gripper a press trims the pick; it does
+          // not add the window behind the edge. Aim at the pick itself,
+          // which suppresses the dashed next-pick preview (`hoverEntry`
+          // skips picked windows) — otherwise arriving at a gripper
+          // from outside would leave a neighbour advertised as "+".
+          if (picksRef.current.length === 1 && getHandleFromTarget(event.target) !== null) {
+            const only = picksRef.current[0]!;
+            const cur = snapTargetRef.current;
+            if (cur.kind !== "window" || cur.entry.windowId !== only.windowId) {
+              const aimed: SnapTarget = { kind: "window", entry: only };
+              snapTargetRef.current = aimed;
+              setSnapTarget(aimed);
+            }
+            return;
+          }
           // Live snap: recompute target from cursor, repaint rect.
           const next = snapAt(event.clientX, event.clientY);
           if (
@@ -2197,6 +2251,21 @@ export function RegionSelector() {
   const isAdjustable = interaction.kind === "adjusting";
   const isSnap = interaction.kind === "snap" || interaction.kind === "pending";
   const hasPicks = picks.length > 0;
+  // Grippers on a LONE pick: its box is a real rect the user can own,
+  // so it gets the adjusting handles before anything is adjusted —
+  // pressing one is how "this window, but only its top-left" is done
+  // without throwing the pick away and free-drawing. Drawn on the
+  // on-screen part of the box (see the matching press in onMouseDown).
+  // Never above one pick, where the box is a derived union.
+  const lonePickGrips =
+    picks.length === 1 && isSnap ? intersectRectWithViewport(rect, viewport()) : null;
+  // While a window-derived rect is being resized, where the whole
+  // window was: it answers "how much of it am I keeping" while the
+  // dim is busy hiding the part being cut away.
+  const trimSource =
+    interaction.kind === "resizing" && snapTarget.kind === "window"
+      ? snapTarget.entry.rawRect
+      : null;
   const dimsChipPosition: { left: number; top: number } | null = {
     left: rect.x,
     top: rect.y > 30 ? rect.y - 30 : rect.y + rect.h + 6
@@ -2287,6 +2356,10 @@ export function RegionSelector() {
           </span>
           {picks.length === 1 && (
             <>
+              <span className="region-hint-sep">·</span>
+              <span>
+                <kbd>handles</kbd>trim
+              </span>
               <span className="region-hint-sep">·</span>
               <span>
                 <kbd>arrows</kbd>nudge
@@ -2611,6 +2684,39 @@ export function RegionSelector() {
         />
       )}
 
+      {trimSource !== null && (
+        <div
+          className="region-trim-ghost"
+          data-testid="region-trim-ghost"
+          style={{
+            left: trimSource.x,
+            top: trimSource.y,
+            width: trimSource.w,
+            height: trimSource.h
+          }}
+        />
+      )}
+
+      {/* A lone pick's grippers. Same handles, same data-handle hook as
+          the adjusting rect below, so a press resolves through the one
+          getHandleFromTarget and the drag is an ordinary resize. */}
+      {lonePickGrips !== null && (
+        <div
+          className="region-pick-grips"
+          data-testid="region-pick-grips"
+          style={{
+            left: lonePickGrips.x,
+            top: lonePickGrips.y,
+            width: lonePickGrips.w,
+            height: lonePickGrips.h
+          }}
+        >
+          {ALL_HANDLES.map((h) => (
+            <span key={h} className={`region-handle ${h}`} data-handle={h} />
+          ))}
+        </div>
+      )}
+
       {/* The selection frame. Skipped at exactly one pick: the union
           box and that pick's box are the same rectangle, and drawing
           both puts a dashed border under a solid one. The pick box wins
@@ -2694,6 +2800,13 @@ export function RegionSelector() {
           ) : isSnap && snapTarget.kind === "display" ? (
             <>
               Display · {Math.round(rect.w)} × {Math.round(rect.h)}
+            </>
+          ) : trimSource !== null ? (
+            <>
+              {Math.round(rect.w)} × {Math.round(rect.h)}
+              <span className="region-dims-chip__of">
+                of {Math.round(trimSource.w)} × {Math.round(trimSource.h)}
+              </span>
             </>
           ) : (
             <>

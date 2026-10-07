@@ -356,6 +356,7 @@ describe("Codex handlers", () => {
             enabled: true,
             consentAcceptedAt: "2026-05-12T12:00:00.000Z",
             budgetSafetyDisabledAt: null,
+            enrichmentRateLimit: null,
             autoAcceptSuggestions: false,
 
             chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false },
@@ -643,6 +644,7 @@ describe("Codex handlers", () => {
             enabled: true,
             consentAcceptedAt: "2026-05-12T12:00:00.000Z",
             budgetSafetyDisabledAt: null,
+            enrichmentRateLimit: null,
             autoAcceptSuggestions: false,
             chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false },
             defaults: {
@@ -1138,6 +1140,7 @@ describe("Codex handlers", () => {
             enabled: true,
             consentAcceptedAt: "2026-05-12T12:00:00.000Z",
             budgetSafetyDisabledAt: null,
+            enrichmentRateLimit: null,
             autoAcceptSuggestions: false,
 
             chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false },
@@ -1186,6 +1189,7 @@ describe("Codex handlers", () => {
             enabled: true,
             consentAcceptedAt: "2026-05-12T12:00:00.000Z",
             budgetSafetyDisabledAt: null,
+            enrichmentRateLimit: null,
             autoAcceptSuggestions: false,
 
             chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false },
@@ -1228,6 +1232,7 @@ describe("Codex handlers", () => {
             enabled: true,
             consentAcceptedAt: "2026-05-12T12:00:00.000Z",
             budgetSafetyDisabledAt: null,
+            enrichmentRateLimit: null,
             autoAcceptSuggestions: false,
 
             chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false },

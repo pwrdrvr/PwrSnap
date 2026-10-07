@@ -60,6 +60,10 @@ export const EVENT_CHANNELS = {
   aiRunUpdated: "events:ai-run:updated",
   aiUsageUpdated: "events:ai-usage:updated",
   aiBudgetUpdated: "events:ai-budget:updated",
+  /** Agent → every BrowserWindow, relayed across the process split: the
+   *  enrichment repair job changed. Payload: `{ job: EnrichmentRepairJob |
+   *  null }` (null once a finished job is dismissed). */
+  enrichmentRepairJob: "events:enrichment-repair:job",
   /** Main → every BrowserWindow: run-scoped GIF/MP4 export progress.
    * Payload type: `VideoExportProgressEvent`. */
   renderProgress: "events:render:progress",
@@ -336,6 +340,14 @@ export const EVENT_CHANNELS = {
    * that raced its own ⇧⌘D keydown, exactly as the edit-menu bridge does.
    */
   libraryDuplicate: "events:library:duplicate",
+  /**
+   * Main → the window a menu command came from: a short confirmation for
+   * an action that has no surface of its own, such as Help ▸ Copy
+   * Diagnostics Info. The Library shows it as a transient toast; a window
+   * that renders no toast stack ignores it, and the action has already
+   * happened either way. Payload: `{ message: string }`.
+   */
+  appNotice: "events:app:notice",
   /**
    * Main → every BrowserWindow: a Library chat thread's metadata
    * changed (created, renamed, archived, anchor moved, status flipped
@@ -626,6 +638,7 @@ export type EventPayloads = {
   [EVENT_CHANNELS.cartChanged]: { cart: DraftCart };
   [EVENT_CHANNELS.cartExportProgress]: CartExportProgressEvent;
   [EVENT_CHANNELS.renderProgress]: VideoExportProgressEvent;
+  [EVENT_CHANNELS.appNotice]: { message: string };
   [EVENT_CHANNELS.libraryChatThreadUpdated]: { thread: LibraryChatThreadView };
   [EVENT_CHANNELS.libraryChatStreamDelta]: LibraryChatStreamDeltaEvent;
   [EVENT_CHANNELS.libraryChatToolCall]: LibraryChatToolCallEvent;

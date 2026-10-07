@@ -5,6 +5,7 @@
 @import "./float-over-dock.css";
 @import "./update-row.css";
 @import "./video-timeline.css";
+@import "./video-preview.css";
 @import "./codex-pill.css";
 @import "./region.css";
 @import "./settings.css";
@@ -379,6 +380,26 @@ body[data-stage="float-over"] .fo {
 
 .app-toast-stack > * {
   pointer-events: auto;
+}
+
+/* One-line confirmation for a menu command with no surface of its own
+ * (features/shared/AppNoticeToast.tsx). Same card as the undo toast,
+ * without its controls. */
+.app-notice {
+  padding: 10px 13px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--bg-panel-elevated) 96%, transparent);
+  box-shadow: 0 14px 36px color-mix(in srgb, var(--shadow-base) 50%, transparent);
+  color: var(--text-primary);
+  font: 600 12px/1.3 var(--font-sans);
+  animation: app-update-banner-enter 140ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-notice {
+    animation: none;
+  }
 }
 
 /* App-update toast (and the captures-access toast, which reuses this

@@ -2444,6 +2444,27 @@ a.pss__top-btn[aria-disabled="true"]:hover {
 .pss__chat-pattern-row .pss__input:first-child { max-width: 160px; }
 .pss__input.is-error { border-color: var(--accent); }
 
+/* AI Features → Rate limit: two short number fields and their buttons. */
+.pss__ratelimit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 10px;
+}
+.pss__ratelimit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 96px;
+  color: var(--text-secondary);
+  font: 600 10px/1 var(--font-sans);
+}
+.pss__ratelimit-error {
+  flex-basis: 100%;
+  color: var(--danger-text);
+  font: 500 11px/1.4 var(--font-sans);
+}
+
 /* ---- Local Agents settings page ---- */
 .pss__main-hdr--agents .pss__main-sub { max-width: 700px; }
 .pss__main-hdr--agents .pss__main-actions {

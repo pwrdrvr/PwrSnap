@@ -24,9 +24,19 @@ permissions:
   id-token: none
 
 jobs:
+  distribution-audit:
+    name: Inspect Winget and Homebrew before release
+    if: ${{ github.event_name != 'pull_request' }}
+    uses: ./.github/workflows/distribution-audit.yml
+    with:
+      stage: before-release
+    secrets:
+      DISTRIBUTION_READ_TOKEN: ${{ secrets.DISTRIBUTION_READ_TOKEN }}
+
   prepare:
     name: Test and prepare signing input
     if: ${{ github.event_name != 'pull_request' }}
+    needs: distribution-audit
     runs-on: macos-26 # Icon Composer's actool requires the matching macOS 26 host.
     timeout-minutes: 75
     permissions:
@@ -42,7 +52,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@e1bd1cc1494a20f0ee91dae622b0d2523b6fb53c # v1.4.0
+        uses: pwrdrvr/configure-nodejs@8876dbf3c524c8a765543dae3ae5b55d7b5ecfb3 # v1.6.0
         with:
           node-version: "24.14.1"
 
@@ -84,7 +94,8 @@ jobs:
             package.json \
             pnpm-lock.yaml \
             pnpm-workspace.yaml \
-            .npmrc \
+            .pnpmfile.cjs \
+            .pnpmfile-global.cjs \
             CHANGELOG.md \
             scripts/check-desktop-release-metadata.mjs \
             scripts/check-app-metadata-policy.mjs \
@@ -97,6 +108,7 @@ jobs:
             apps/desktop/release-stage-arm64 \
             .github/actions/select-xcode-for-actool \
             apps/desktop/scripts/release.mjs \
+            apps/desktop/scripts/staged-pnpm-config.mjs \
             apps/desktop/scripts/macos-release-artifacts.mjs \
             apps/desktop/scripts/rebuild-native-for-electron.mjs \
             apps/desktop/scripts/sharp-platform-packages.mjs \
@@ -344,7 +356,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@e1bd1cc1494a20f0ee91dae622b0d2523b6fb53c # v1.4.0
+        uses: pwrdrvr/configure-nodejs@8876dbf3c524c8a765543dae3ae5b55d7b5ecfb3 # v1.6.0
         with:
           node-version: "24.14.1"
 
@@ -384,7 +396,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@e1bd1cc1494a20f0ee91dae622b0d2523b6fb53c # v1.4.0
+        uses: pwrdrvr/configure-nodejs@8876dbf3c524c8a765543dae3ae5b55d7b5ecfb3 # v1.6.0
         with:
           node-version: "24.14.1"
           cache-electron: "true"
@@ -786,3 +798,12 @@ jobs:
             --json isPrerelease \
             --jq '.isPrerelease')"
           test "$is_prerelease" = "true"
+
+  distribution-audit-after:
+    name: Inspect Winget and Homebrew after publication
+    needs: publish-release-assets
+    uses: ./.github/workflows/distribution-audit.yml
+    with:
+      stage: after-publication
+    secrets:
+      DISTRIBUTION_READ_TOKEN: ${{ secrets.DISTRIBUTION_READ_TOKEN }}

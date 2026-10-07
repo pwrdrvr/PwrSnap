@@ -27,6 +27,7 @@ const { readPackage } = pnpmfile.hooks;
 // Every shape pnpm resolves through the `git` or `gitHostedTarball`
 // fetcher. Widening the allow side must not quietly drop one of these.
 const GIT_SPECS = [
+  "https://bitbucket.org/user/repo/get/v1.0.0.tar.gz",
   "github:user/repo",
   "user/repo",
   "user/repo#v1.0.0",
@@ -127,10 +128,10 @@ describe("readPackage / sharp wasm wiring", () => {
     });
   });
 
-  test("gates @img/sharp-wasm32 to linux", () => {
+  test("gates @img/sharp-wasm32 to linux without pnpm inferring a wasm32 host CPU", () => {
     const pkg = { name: "@img/sharp-wasm32", version: "0.35.4", cpu: ["wasm32"] };
     readPackage(pkg);
-    expect(pkg.cpu).toBeUndefined();
+    expect(pkg.cpu).toEqual(["any"]);
     expect(pkg.os).toEqual(["linux"]);
   });
 
@@ -149,14 +150,35 @@ describe("readPackage / sharp wasm wiring", () => {
     expect(pkg).toEqual({ name: "@img/sharp-linux-x64", os: ["linux"], cpu: ["x64"], libc: ["glibc"] });
   });
 
+  test("the installed sharp exposes its wasm binding only on Linux", () => {
+    const desktopRequire = createRequire(
+      fileURLToPath(new URL("../../apps/desktop/package.json", import.meta.url))
+    );
+    const sharpRequire = createRequire(desktopRequire.resolve("sharp"));
+    const resolveBinding = () => sharpRequire.resolve("@img/sharp-wasm32/sharp.node");
+    if (process.platform === "linux") {
+      expect(resolveBinding()).toContain("sharp-wasm32");
+    } else {
+      // Measured on pnpm 12.9.1: see the 2026-10-06 addendum in
+      // docs/solutions/2026-10-01-sharp-electron-linux-glib-sigtrap.md.
+      expect(
+        resolveBinding,
+        "@img/sharp-wasm32 is installed on a non-Linux host. If the lockfile " +
+          "test below passes, this node_modules is stale: an install the " +
+          "os: [linux] gate did not apply to left it behind, and pnpm install " +
+          "never removes it. Run `pnpm prune` from the repo root."
+      ).toThrow(/Cannot find module/);
+    }
+  });
+
   test("the lockfile carries both edits, so a frozen install on Linux gets the wasm build", () => {
     const lockfile = readFileSync(fileURLToPath(new URL("../../pnpm-lock.yaml", import.meta.url)), "utf8");
     const packageEntry = /\n {2}'@img\/sharp-wasm32@[^']+':\n((?: {4}.*\n)+)/.exec(lockfile);
     expect(packageEntry, "@img/sharp-wasm32 package entry").not.toBeNull();
     expect(packageEntry[1]).toMatch(/^ {4}os: \[linux\]$/m);
-    expect(packageEntry[1]).not.toMatch(/^ {4}cpu:/m);
+    expect(packageEntry[1]).toMatch(/^ {4}cpu: \[any\]$/m);
 
-    const snapshots = lockfile.slice(lockfile.indexOf("\nsnapshots:\n"));
+    const snapshots = lockfile.slice(lockfile.lastIndexOf("\nsnapshots:\n"));
     const sharpSnapshot = /\n {2}sharp@([0-9][^(':]*)[^:]*:\n((?: {4}.*\n)+)/.exec(snapshots);
     expect(sharpSnapshot, "sharp snapshot entry").not.toBeNull();
     expect(sharpSnapshot[2]).toContain(`'@img/sharp-wasm32': ${sharpSnapshot[1]}`);
@@ -227,11 +249,13 @@ describe("readPackage / override fields", () => {
     const root = JSON.parse(
       readFileSync(fileURLToPath(new URL("../../package.json", import.meta.url)), "utf8")
     );
-    const overrides = root.pnpm?.overrides ?? {};
-    expect(Object.keys(overrides).length).toBeGreaterThan(0);
-    expect(() =>
-      readPackage({ name: root.name, pnpm: { overrides: { ...overrides } } })
-    ).not.toThrow();
+    const workspace = readFileSync(
+      fileURLToPath(new URL("../../pnpm-workspace.yaml", import.meta.url)), "utf8"
+    );
+    expect(root.pnpm).toBeUndefined();
+    expect(workspace).toMatch(/^overrides:$/m);
+    expect(gitSpecsInWorkspaceOverrides(workspace)).toEqual([]);
+    expect(() => readPackage(root)).not.toThrow();
   });
 
   test("a missing or empty overrides block is not an error", () => {
@@ -309,5 +333,32 @@ describe("gitSpecsInWorkspaceOverrides", () => {
       "utf8"
     );
     expect(gitSpecsInWorkspaceOverrides(text)).toEqual([]);
+  });
+});
+
+// Frozen installs can fetch locked packages without calling readPackage.
+// pnpm 12 reads this array at the top level, not under hooks.fetchers.
+describe("pnpm 12 git fetch guard", () => {
+  const [fetcher] = pnpmfile.fetchers;
+
+  test.each([
+    { type: "git", repo: "https://example.com/team/pkg.git", commit: "abc" },
+    { tarball: "https://github.com/team/pkg/archive/abc.tar.gz" },
+    { tarball: "https://codeload.github.com/team/pkg/tar.gz/abc" },
+    { tarball: "https://gitlab.com/team/pkg/-/archive/abc/pkg.tar.gz" },
+    { tarball: "https://bitbucket.org/team/pkg/get/abc.tar.gz" }
+  ])("blocks locked git resolution %j", async (resolution) => {
+    expect(fetcher.canFetch("pkg", resolution)).toBe(true);
+    await expect(fetcher.fetch(null, resolution)).rejects.toThrow(
+      "Blocked pnpm git dependency fetch"
+    );
+  });
+
+  test.each([
+    { integrity: "sha512-example" },
+    { tarball: "https://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz" },
+    { type: "directory", directory: "../local" }
+  ])("leaves registry and local resolution %j to pnpm", (resolution) => {
+    expect(fetcher.canFetch("pkg", resolution)).toBe(false);
   });
 });

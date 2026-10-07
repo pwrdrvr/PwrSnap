@@ -61,6 +61,7 @@ import type {
   UpdateTrain
 } from "@pwrsnap/shared";
 import {
+  isAiEnrichmentRateLimit,
   isOverlayOutlineMode,
   isStrokePatternStyle,
   DEFAULT_AI_SURFACE_DEFAULTS,
@@ -178,6 +179,7 @@ export function defaultSettings(
       enabled: false,
       consentAcceptedAt: null,
       budgetSafetyDisabledAt: null,
+      enrichmentRateLimit: null,
       autoAcceptSuggestions: false,
       chat: { ...DEFAULT_CHAT_SETTINGS, sensitiveDataPatterns: [] },
       // Empty surface objects mean "follow the managed default". Runtime and
@@ -278,6 +280,7 @@ export function defaultSettings(
       // was the reported gap, and the overlay never reaches the file on
       // any platform. Off is a taste preference, not a safety valve.
       showRegionFrame: true,
+      showRecentCaptureSidebar: true,
       lastRoutedPermissionFingerprint: "",
       // Fresh install has never triggered the macOS Screen Recording
       // prompt, so the System Permissions page + the capture gate show
@@ -926,6 +929,11 @@ function parseV1(
         ai.budgetSafetyDisabledAt,
         defaults.ai.budgetSafetyDisabledAt
       ),
+      // An unreadable override falls back to the default rather than to
+      // some other limit the user never chose.
+      enrichmentRateLimit: isAiEnrichmentRateLimit(ai.enrichmentRateLimit)
+        ? { burst: ai.enrichmentRateLimit.burst, perMinute: ai.enrichmentRateLimit.perMinute }
+        : defaults.ai.enrichmentRateLimit,
       autoAcceptSuggestions: pickBoolean(
         ai.autoAcceptSuggestions,
         defaults.ai.autoAcceptSuggestions
@@ -1071,6 +1079,12 @@ function parseV1(
       // existing install gains the frame on first launch after the
       // update rather than having to find the switch.
       showRegionFrame: pickBoolean(recording.showRegionFrame, defaults.recording.showRegionFrame),
+      // `showRecentCaptureSidebar` landed after the dock; older files get
+      // the ON default, which is what they already had.
+      showRecentCaptureSidebar: pickBoolean(
+        recording.showRecentCaptureSidebar,
+        defaults.recording.showRecentCaptureSidebar
+      ),
       lastRoutedPermissionFingerprint: pickString(
         recording.lastRoutedPermissionFingerprint,
         defaults.recording.lastRoutedPermissionFingerprint
@@ -2050,6 +2064,8 @@ function mergeAi(current: Settings["ai"], patch: SettingsPatch["ai"]): Settings[
       patch.budgetSafetyDisabledAt !== undefined
         ? patch.budgetSafetyDisabledAt
         : current.budgetSafetyDisabledAt,
+    enrichmentRateLimit:
+      patch.enrichmentRateLimit !== undefined ? patch.enrichmentRateLimit : current.enrichmentRateLimit,
     autoAcceptSuggestions:
       patch.autoAcceptSuggestions !== undefined
         ? patch.autoAcceptSuggestions

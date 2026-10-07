@@ -88,6 +88,9 @@ extraResources:
     to: "THIRD_PARTY_LICENSES"
   - from: "CHANGELOG.md"
     to: "CHANGELOG.md"
+  # Help → View License opens this in an app window (app-documents.ts).
+  - from: "LICENSE"
+    to: "LICENSE"
   # Tray icons. macOS reads the alpha-only *template* PNG (system tints
   # it for dark/light/accent menubars); Windows reads the colored
   # `tray-icon.png`. Electron's nativeImage auto-loads the @Nx siblings

@@ -146,7 +146,7 @@ source-build notes live in [docs/windows/README.md](docs/windows/README.md).
 Signed release builds update through `electron-updater` using the `latest-mac.yml`
 and `latest.yml` metadata published beside their installers. Choose Stable or
 Beta and Latest or Prerelease under **Settings → General → Updates**. The Help
-menu's **Check for Updates** runs the same check on demand; after a download,
+menu's **Check for Updates…** runs the same check on demand; after a download,
 PwrSnap offers **Restart to Update**. When a release contains both macOS
 architectures, Apple Silicon (including Rosetta) receives the ARM64 ZIP and
 Intel receives universal. Existing universal installations follow the same

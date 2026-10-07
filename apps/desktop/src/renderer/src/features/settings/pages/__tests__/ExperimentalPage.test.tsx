@@ -27,6 +27,7 @@ const baseSettings: Settings = {
     enabled: false,
     consentAcceptedAt: null,
     budgetSafetyDisabledAt: null,
+    enrichmentRateLimit: null,
     autoAcceptSuggestions: false,
     chat: {
       userGuidance: "",
@@ -70,6 +71,7 @@ const baseSettings: Settings = {
     mp4IncludeSystemAudio: true,
     videoCaptureCursor: true,
     showRegionFrame: true,
+    showRecentCaptureSidebar: true,
     imageCaptureCursor: true,
     lastRoutedPermissionFingerprint: "",
     screenCapturePrompted: false

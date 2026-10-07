@@ -68,6 +68,7 @@ import { recordedAudioTracks, useMp4ExportAudio } from "../shared/useMp4ExportAu
 import { VideoExportPresetGrid } from "../shared/VideoExportPresetGrid";
 import { exportRangeLabel, exportSegmentsOf } from "../shared/video-range";
 import { AppTag } from "../shared/AppIcons";
+import { enrichmentRunClock } from "../shared/EnrichmentRunClock";
 import { DeleteConfirm } from "../shared/DeleteConfirm";
 import { PsIcon } from "../shared/PsIcon";
 import {
@@ -82,7 +83,7 @@ import type { LayersPanelApi } from "../editor/Editor";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag, subscribe } from "../../lib/pwrsnap";
 import { copyImagePreset, copyImagePresetPath } from "../../lib/clipboard-copy";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
-import { useCart } from "./CartContext";
+import { useCart, useCartLoaded } from "./CartContext";
 import { CartPanel } from "./CartPanel";
 import { DuplicateChooser, type DuplicateRequest } from "./DuplicateChooser";
 import { FamilyTab } from "./FamilyTab";
@@ -179,6 +180,8 @@ export type DetailRailProps = {
   readonly onDuplicate?: (record: CaptureRecord, request: DuplicateRequest) => void;
   /** The remembered With Edits / Base Only choice, per kind. */
   readonly duplicatePrefs?: LibraryDuplicateWithEditsSettings;
+  /** Opens the dialog that re-runs AI over every snap it failed on. */
+  readonly onOpenEnrichmentRepair?: () => void;
 };
 
 export function DetailRail({
@@ -207,7 +210,8 @@ export function DetailRail({
   onSelectFamilyMember,
   onFilterFamily,
   onDuplicate,
-  duplicatePrefs = DEFAULT_DUPLICATE_PREFS
+  duplicatePrefs = DEFAULT_DUPLICATE_PREFS,
+  onOpenEnrichmentRepair
 }: DetailRailProps): ReactElement | null {
   // Skip the image render-metrics IPC for video captures — the
   // sharp-based preset pipeline is image-only and the video branch
@@ -370,6 +374,7 @@ export function DetailRail({
   // the tab badge + the auto-pop effect below.
   const cart = useCart();
   const cartCount = cart.captureIds.length;
+  const cartLoaded = useCartLoaded();
 
   const isPinControlled =
     pinnedProp !== undefined && onPinChange !== undefined;
@@ -509,13 +514,27 @@ export function DetailRail({
   // the user can switch to the Info tab while collecting without the
   // cart yanking focus back on every check. Tracks the previous count
   // in a ref so we only fire on the rising 0→1 edge.
-  const prevCartCountRef = useRef(cartCount);
+  //
+  // Two things this must not do, both of which left the editor opening
+  // on Cart instead of Info:
+  //   • Fire on the saved cart LOADING. The cart persists across
+  //     launches and reads as empty until `cart:get` answers, so every
+  //     launch with a non-empty cart looked like a 0 → N add. The ref
+  //     stays null until the cart has loaded, so the first count it
+  //     sees is the baseline, not an edge.
+  //   • Pop the focus/reel tab from Grid. That tab is the persisted
+  //     `lastSelectedTab`, which Grid does not even show, so the pop was
+  //     invisible until the next capture opened. Grid pops its own tab.
+  const prevCartCountRef = useRef<number | null>(null);
+  const isGridView = view.kind === "grid";
   useEffect(() => {
+    if (!cartLoaded) return;
     if (prevCartCountRef.current === 0 && cartCount > 0) {
-      writeActiveTab("cart");
+      if (isGridView) setGridTab("cart");
+      else writeActiveTab("cart");
     }
     prevCartCountRef.current = cartCount;
-  }, [cartCount, writeActiveTab]);
+  }, [cartLoaded, cartCount, isGridView, setGridTab, writeActiveTab]);
 
   useEffect(() => {
     if (record === null) {
@@ -883,6 +902,7 @@ export function DetailRail({
               });
             }}
             onEnrichmentUpdate={setEnrichment}
+            onOpenEnrichmentRepair={onOpenEnrichmentRepair}
           />
         </div>
       );
@@ -1381,6 +1401,7 @@ type DetailTabProps = {
   readonly autoApply: boolean | null;
   readonly onSetAutoApply: (next: boolean) => void;
   readonly onEnrichmentUpdate: (next: CaptureEnrichment) => void;
+  readonly onOpenEnrichmentRepair?: (() => void) | undefined;
 };
 
 function DetailTab({
@@ -1396,7 +1417,8 @@ function DetailTab({
   regenerateLabel,
   autoApply,
   onSetAutoApply,
-  onEnrichmentUpdate
+  onEnrichmentUpdate,
+  onOpenEnrichmentRepair
 }: DetailTabProps): ReactElement {
   const acceptedTitle = enrichment?.acceptedTitle ?? "";
   const suggestedTitle = enrichment?.suggestedTitle ?? "";
@@ -1669,6 +1691,7 @@ function DetailTab({
         safetyDisabled={aiSafetyDisabled}
         providerLabel={null}
         error={enrichment?.error}
+        clock={enrichmentRunClock(enrichment)}
         // Only recorded run metadata supplies attribution, once. Defaults
         // belong to the Regenerate tooltip, even while this detail is loading.
         {...(usageDetail !== null && usageDetail.run.id === enrichment?.latestRunId ? { meta: <AiRunUsageStrip detail={usageDetail} /> } : {})}
@@ -1705,6 +1728,18 @@ function DetailTab({
                     title={`Regenerate with ${regenerateLabel}`}
                   >
                     Regenerate
+                  </button>
+                ) : null}
+                {/* One failure is rarely alone (a model that was down, an
+                    endpoint that moved): offer the batch repair from here. */}
+                {codexStatus === "failed" && !aiSafetyDisabled && onOpenEnrichmentRepair !== undefined ? (
+                  <button
+                    type="button"
+                    className="psl__chip-link"
+                    onClick={onOpenEnrichmentRepair}
+                    title="Re-run AI on every snap it failed on"
+                  >
+                    Re-run all failed…
                   </button>
                 ) : null}
               </span>

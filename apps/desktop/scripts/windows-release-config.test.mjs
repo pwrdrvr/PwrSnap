@@ -482,7 +482,12 @@ describe("Windows release configuration", () => {
     expect(windowsReadme).toContain("For prerelease testing");
     expect(windowsReadme).toContain("preserves the previous working binding");
     expect(windowsReadme).toContain("Full-window capture on Windows depends on Electron");
-    expect(wingetReadme).toContain("PwrSnap is not published there yet");
+    // Publication is rechecked remotely for each release; the historical
+    // starter must route operators to that procedure instead of pinning prose
+    // about the catalog's state at the time this test was written.
+    expect(wingetReadme).toContain(
+      "[package-manager release runbook](../../package-manager-release-runbook.md)",
+    );
     expect(windowsReadme).toContain("not currently published in the Windows Package Manager");
 
     for (const stale of [

@@ -1,4 +1,4 @@
-// Native <video> with a hover-to-play behaviour layered on top of
+// Without a range: native <video> with hover-to-play layered on top of
 // the browser's standard controls. Mouse-enter calls `.play()`;
 // mouse-leave pauses without rewinding so the next hover resumes
 // from where the user left off. The `muted` attribute is required
@@ -10,6 +10,8 @@
 // Shared between the post-capture float-over toast and the tray
 // popover's "last recording" preview so the two surfaces feel
 // like siblings.
+// The float-over supplies a live range and gets trim-relative controls
+// plus a canvas that paints only verified kept frames.
 //
 // Takes the CAPTURE, not a URL, and resolves what to load itself. Both
 // consumers render native controls over a `muted` element, so both are one
@@ -19,8 +21,9 @@
 // preview component, so the resolution cannot be forgotten at a call site.
 
 import { useCallback, useEffect, useRef, type ReactElement } from "react";
-import type { RecordedAudioTrackFacts } from "@pwrsnap/shared";
+import type { RecordedAudioTrackFacts, VideoRange } from "@pwrsnap/shared";
 import { useVideoPlaybackSrc } from "./useVideoPlaybackSrc";
+import { TrimmedVideoPreview } from "./TrimmedVideoPreview";
 
 export type HoverAutoplayVideoProps = {
   /** The recording to play. */
@@ -39,6 +42,9 @@ export type HoverAutoplayVideoProps = {
    *  `currentTime` — the float-over uses it to park the preview on the
    *  frame under the trim handle being dragged. */
   videoRef?: React.MutableRefObject<HTMLVideoElement | null> | undefined;
+  /** Live source-time selection. Its preview clock starts at zero and
+   *  only frames inside this half-open interval may be displayed. */
+  range?: VideoRange | undefined;
 };
 
 const DEFAULT_STYLE: React.CSSProperties = {
@@ -49,7 +55,15 @@ const DEFAULT_STYLE: React.CSSProperties = {
   background: "#000"
 };
 
-export function HoverAutoplayVideo({
+export function HoverAutoplayVideo(props: HoverAutoplayVideoProps): ReactElement {
+  return props.range === undefined ? (
+    <FullVideoPreview {...props} />
+  ) : (
+    <TrimmedVideoPreview key={props.captureId} {...props} range={props.range} />
+  );
+}
+
+function FullVideoPreview({
   captureId,
   video,
   style,

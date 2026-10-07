@@ -91,6 +91,7 @@ function makeSettings(overrides?: {
       enabled: false,
       consentAcceptedAt: null,
       budgetSafetyDisabledAt: null,
+      enrichmentRateLimit: null,
       autoAcceptSuggestions: false,
       chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false },
       defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} },
@@ -129,6 +130,7 @@ function makeSettings(overrides?: {
       mp4IncludeSystemAudio: true,
       videoCaptureCursor: true,
       showRegionFrame: true,
+      showRecentCaptureSidebar: true,
       imageCaptureCursor: true,
       lastRoutedPermissionFingerprint: "",
       screenCapturePrompted: false

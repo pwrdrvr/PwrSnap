@@ -53,16 +53,23 @@ import { getAppIconPath } from "./app-icons/app-icon-cache";
 import {
   disposeFloatOver,
   getFloatOverWindowIdForE2E,
+  setFloatOverRecentSidebarVisible,
   setFloatOverState
 } from "./float-over";
 import { bus } from "./command-bus";
 import { markStartup, startupProfilingEnabled } from "./startup-profiler";
 import { installDevelopmentDockIcon } from "./development-dock-icon";
 import {
-  resolveAboutPanelBuildVersion,
-  resolveDevelopmentRuntimeIdentity
-} from "./runtime-identity";
+  buildApplicationMenuTemplate,
+  PASTE_FROM_CLIPBOARD_MENU_ID,
+  type ApplicationMenuActions,
+  type MenuSourceWindow,
+  type OpenWindowEntry
+} from "./application-menu";
+import { formatDiagnosticsInfo } from "./diagnostics-info";
+import { isAllowedExternalUrl } from "./external-url-allowlist";
 import { installTerminalSignalShutdown } from "./terminal-signal-shutdown";
+import { installSystemShutdown } from "./system-shutdown";
 import { installTransientWindowTeardown } from "./transient-window-teardown";
 import {
   applyWindowsChromiumStartupFeaturePolicy
@@ -76,7 +83,8 @@ import { disposeFocusSink, installFocusSink } from "./focus-sink";
 import {
   registerAppCommonHandlers,
   registerAppUpdateHandlers,
-  registerAppWindowHandlers
+  registerAppWindowHandlers,
+  resolveAppVersion
 } from "./handlers/app-handlers";
 import {
   clipboardHasPasteableImage,
@@ -92,6 +100,7 @@ import { closeCodexAgentPool } from "./ai/codex-agent-pool";
 import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerChatgptPlanHandlers } from "./handlers/chatgpt-plan-handlers";
 import { registerCodexHandlers } from "./handlers/codex-handlers";
+import { registerEnrichmentRepairHandlers } from "./handlers/enrichment-repair-handlers";
 import { registerDiagnosticsHandlers } from "./handlers/diagnostics-handlers";
 import {
   registerLogsHandlers,
@@ -225,12 +234,14 @@ import {
 } from "./persistence/db";
 import {
   getCaptureById,
-  insertCapture,
-  insertCapturesBatch,
   listCaptures,
   listExpiredTrash
 } from "./persistence/captures-repo";
 import { insertVideoMetadata } from "./persistence/video-repo";
+import {
+  seedCapturesForE2E,
+  type E2ESeedCaptureInput
+} from "./persistence/e2e-capture-seed";
 import { failOrphanedRunsOnBoot } from "./persistence/ai-runs-repo";
 import { migrateLegacyCaptureSources } from "./persistence/capture-source-maintenance";
 import { migrateLegacyRenderCache } from "./persistence/render-cache-maintenance";
@@ -268,6 +279,7 @@ import {
   findMainLibraryWindow,
   findSettingsWindow,
   installMainProcessHotCpuMonitor,
+  listOpenAppWindows,
   reclaimDockIconIfLibraryAlive,
   scheduleDockReclaim,
   refreshWindowsTitleBarOverlay,
@@ -303,13 +315,20 @@ import { recoverInterruptedVideoDuplicates } from "./capture/capture-duplicate";
 import { broadcastCapturesChanged } from "./events";
 
 const APP_NAME = "PwrSnap";
-const APP_COPYRIGHT = "Copyright © 2026 PwrDrvr LLC. All rights reserved.";
-const APP_WEBSITE = "https://pwrsnap.com";
-const APP_DOCS = "https://docs.pwrsnap.com";
-const APP_ISSUE_REPORTER = "https://github.com/pwrdrvr/PwrSnap/issues/new";
-const PASTE_FROM_CLIPBOARD_MENU_ID = "file-new-paste-from-clipboard";
-const EDIT_UNDO_MENU_ID = "edit-undo";
-const EDIT_REDO_MENU_ID = "edit-redo";
+
+/**
+ * The window a menu click acts on. The item's `click` gives us a
+ * `BaseWindow` (no `webContents`), so resolve it to the owning
+ * `BrowserWindow`; fall back to the focused window if needed.
+ */
+function resolveMenuTargetWindow(window: Electron.BaseWindow | undefined): BrowserWindow | null {
+  const candidate =
+    window !== undefined && !window.isDestroyed()
+      ? BrowserWindow.fromId(window.id)
+      : null;
+  const target = candidate ?? BrowserWindow.getFocusedWindow();
+  return target === null || target.isDestroyed() ? null : target;
+}
 
 /**
  * Route a native Edit ▸ Undo / Edit ▸ Redo activation to the focused
@@ -327,12 +346,8 @@ function sendEditCommand(
   channel: (typeof EVENT_CHANNELS)["editUndo" | "editRedo"],
   event?: Electron.KeyboardEvent
 ): void {
-  const candidate =
-    window !== undefined && !window.isDestroyed()
-      ? BrowserWindow.fromId(window.id)
-      : null;
-  const target = candidate ?? BrowserWindow.getFocusedWindow();
-  if (target === null || target.isDestroyed()) return;
+  const target = resolveMenuTargetWindow(window);
+  if (target === null) return;
   target.webContents.send(channel, {
     viaAccelerator: event?.triggeredByAccelerator === true
   });
@@ -348,12 +363,8 @@ function sendLibraryDuplicate(
   mode: "duplicate" | "edit-copy",
   event?: Electron.KeyboardEvent
 ): void {
-  const candidate =
-    window !== undefined && !window.isDestroyed()
-      ? BrowserWindow.fromId(window.id)
-      : null;
-  const target = candidate ?? BrowserWindow.getFocusedWindow();
-  if (target === null || target.isDestroyed()) return;
+  const target = resolveMenuTargetWindow(window);
+  if (target === null) return;
   target.webContents.send(EVENT_CHANNELS.libraryDuplicate, {
     mode,
     viaAccelerator: event?.triggeredByAccelerator === true
@@ -459,276 +470,16 @@ let lastKnownDeveloperMode = false;
 function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode): void {
   // The agent process is menubar-only (Accessory policy — no app menu
   // to show); the menu belongs to the library process. Guarded here so
-  // every re-install site (developer-mode flips, hotkey wiring) inherits
-  // the rule without repeating it.
+  // every re-install site (developer-mode flips, hotkey wiring, the
+  // Window-menu list) inherits the rule without repeating it.
   if (getRuntimeProcessRole() === "agent") return;
   lastKnownDeveloperMode = developerMode;
-  const openSettings = (
-    sourceWindow?: { id: number; isDestroyed: () => boolean } | null
-  ): void => {
-    const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
-    if (sourceWindow !== undefined && sourceWindow !== null && !sourceWindow.isDestroyed()) {
-      options.sourceWindowId = sourceWindow.id;
-    }
-    void bus.dispatch("settings:open", {}, options);
-  };
-  const settingsItem: Electron.MenuItemConstructorOptions = {
-    label: "Settings…",
-    click: (_item, sourceWindow) => openSettings(sourceWindow)
-  };
-  // Stripped-down View menu — Reload / Force Reload / Toggle DevTools
-  // are gated behind `general.developerMode`. Hidden by default so
-  // end-users see the same trim native menu as any signed Mac app;
-  // power users + bug reporters flip Developer Mode on in Settings.
-  const viewSubmenu: Electron.MenuItemConstructorOptions[] = [
-    ...(developerMode
-      ? [
-          { role: "reload" as const },
-          { role: "forceReload" as const },
-          { role: "toggleDevTools" as const },
-          { type: "separator" as const }
-        ]
-      : []),
-    { role: "resetZoom" as const },
-    { role: "zoomIn" as const },
-    { role: "zoomOut" as const },
-    { type: "separator" as const },
-    { role: "togglefullscreen" as const }
-  ];
-  const template: Electron.MenuItemConstructorOptions[] = [
-    ...(isMac
-      ? [
-          {
-            role: "appMenu" as const,
-            submenu: [
-              { role: "about" as const },
-              { type: "separator" as const },
-              settingsItem,
-              { type: "separator" as const },
-              { role: "services" as const },
-              { type: "separator" as const },
-              { role: "hide" as const },
-              { role: "hideOthers" as const },
-              { role: "unhide" as const },
-              { type: "separator" as const },
-              { role: "quit" as const }
-            ]
-          }
-        ]
-      : []),
-    {
-      label: "File",
-      submenu: [
-        {
-          label: "New",
-          submenu: [
-            {
-              id: PASTE_FROM_CLIPBOARD_MENU_ID,
-              label: "Paste from Clipboard",
-              enabled: false,
-              click: () => {
-                void runPasteFromClipboard();
-              }
-            }
-          ]
-        },
-        { type: "separator" },
-        {
-          label: "Duplicate Snap",
-          accelerator: "CmdOrCtrl+Shift+D",
-          click: (_item, window, event) => {
-            sendLibraryDuplicate(window, "duplicate", event);
-          }
-        },
-        {
-          label: "Edit a Copy",
-          click: (_item, window, event) => {
-            sendLibraryDuplicate(window, "edit-copy", event);
-          }
-        },
-        { type: "separator" },
-        isMac ? { role: "close" as const } : { role: "quit" as const }
-      ]
-    },
-    {
-      // Custom Edit menu. We replace Electron's `role: "editMenu"` only
-      // for Undo/Redo: the built-in `role: "undo"` / `role: "redo"`
-      // drive the browser's native edit-undo (`webContents.undo()`),
-      // which can't reach the editor's renderer-side undo stack (crop,
-      // arrow, every canvas annotation). Our custom items send
-      // `editUndo` / `editRedo` to the focused window; the renderer's
-      // edit-menu bridge does native text undo when an editable field is
-      // focused and editor undo otherwise. Everything else mirrors what
-      // `role: "editMenu"` produces per-platform so cut/copy/paste/
-      // select-all (and the macOS Speech submenu) don't regress.
-      //
-      // Accelerators are `CmdOrCtrl+…` so the same template works on
-      // macOS, Windows, and Linux. The Windows/Linux Ctrl+Y redo
-      // convention is handled in the renderer bridge (a single menu item
-      // can register only one accelerator). See
-      // docs/solutions/2026-06-13-edit-menu-undo-redo-bridge.md.
-      label: "Edit",
-      submenu: [
-        {
-          id: EDIT_UNDO_MENU_ID,
-          label: "Undo",
-          accelerator: "CmdOrCtrl+Z",
-          click: (_item, window, event) => {
-            sendEditCommand(window, EVENT_CHANNELS.editUndo, event);
-          }
-        },
-        {
-          id: EDIT_REDO_MENU_ID,
-          label: "Redo",
-          accelerator: "CmdOrCtrl+Shift+Z",
-          click: (_item, window, event) => {
-            sendEditCommand(window, EVENT_CHANNELS.editRedo, event);
-          }
-        },
-        { type: "separator" as const },
-        { role: "cut" as const },
-        { role: "copy" as const },
-        { role: "paste" as const },
-        ...(isMac
-          ? [
-              { role: "pasteAndMatchStyle" as const },
-              { role: "delete" as const },
-              { role: "selectAll" as const },
-              { type: "separator" as const },
-              {
-                label: "Speech",
-                submenu: [
-                  { role: "startSpeaking" as const },
-                  { role: "stopSpeaking" as const }
-                ]
-              }
-            ]
-          : [
-              { role: "delete" as const },
-              { type: "separator" as const },
-              { role: "selectAll" as const }
-            ])
-      ]
-    },
-    { label: "View", submenu: viewSubmenu },
-    { role: "windowMenu" },
-    {
-      label: "Library",
-      submenu: [
-        {
-          label: "Export Library…",
-          click: () => {
-            void runExportLibrary();
-          }
-        },
-        { type: "separator" },
-        {
-          label: "Sizzle Reels…",
-          click: (_item, sourceWindow) => {
-            const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
-            if (sourceWindow !== undefined && sourceWindow !== null && !sourceWindow.isDestroyed()) {
-              options.sourceWindowId = sourceWindow.id;
-            }
-            void bus.dispatch("sizzle:open", {}, options);
-          }
-        }
-      ]
-    },
-    {
-      role: "help",
-      submenu: [
-        // macOS surfaces About + Settings in the app menu, so Help omits
-        // them there. Non-Mac has no app menu — mirror PwrAgent and
-        // surface About + Settings at the top of Help instead.
-        ...(isMac
-          ? []
-          : [
-              {
-                label: `About ${APP_NAME}`,
-                click: () => {
-                  app.showAboutPanel();
-                }
-              },
-              { type: "separator" as const },
-              settingsItem,
-              { type: "separator" as const }
-            ]),
-        {
-          label: "Check for Updates",
-          click: () => {
-            // NOT `app:update:check`: this verb also announces "a user is
-            // waiting for this answer" on EVENT_CHANNELS.appUpdateCheckResult,
-            // which is what raises the live progress card, and it holds its
-            // answer until the download settles. See runMenuUpdateCheck.
-            //
-            // Over the bus rather than a direct call because THIS process may
-            // not be the one that owns the updater: under the process split
-            // the menu is installed by the library while `app:update:*` is
-            // routed to the agent. Calling locally would run a second,
-            // uninitialized updater and set a `userCheckRunning` flag that
-            // `app:update:userCheckRunning` — also agent-routed — never reads.
-            void bus.dispatch("app:update:menuCheck", {}, { principal: "ipc" });
-          }
-        },
-        {
-          label: "Changelog",
-          click: (_item, sourceWindow) => {
-            const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
-            if (sourceWindow !== undefined && sourceWindow !== null && !sourceWindow.isDestroyed()) {
-              options.sourceWindowId = sourceWindow.id;
-            }
-            void bus.dispatch("app:openDocumentWindow", { kind: "changelog" }, options);
-          }
-        },
-        { type: "separator" },
-        {
-          label: "Documentation",
-          click: async () => {
-            await shell.openExternal(APP_DOCS);
-          }
-        },
-        {
-          label: "Report an Issue",
-          click: async () => {
-            await shell.openExternal(APP_ISSUE_REPORTER);
-          }
-        },
-        {
-          label: `${APP_NAME} Website`,
-          click: async () => {
-            await shell.openExternal(APP_WEBSITE);
-          }
-        },
-        { type: "separator" },
-        {
-          label: "Third-party Licenses",
-          click: (_item, sourceWindow) => {
-            const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
-            if (sourceWindow !== undefined && sourceWindow !== null && !sourceWindow.isDestroyed()) {
-              options.sourceWindowId = sourceWindow.id;
-            }
-            void bus.dispatch(
-              "app:openDocumentWindow",
-              { kind: "third-party-licenses" },
-              options
-            );
-          }
-        },
-        { type: "separator" },
-        {
-          label: "Logs",
-          click: (_item, sourceWindow) => {
-            const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
-            if (sourceWindow !== undefined && sourceWindow !== null && !sourceWindow.isDestroyed()) {
-              options.sourceWindowId = sourceWindow.id;
-            }
-            void bus.dispatch("logs:openWindow", {}, options);
-          }
-        }
-      ]
-    }
-  ];
-
+  const openWindows = isMac ? [] : openWindowMenuEntries();
+  installedWindowMenuSignature = JSON.stringify(openWindows);
+  const template = buildApplicationMenuTemplate(
+    { developerMode, openWindows, actions: applicationMenuActions },
+    process.platform
+  );
   const menu = Menu.buildFromTemplate(template);
   pasteFromClipboardMenuItem = menu.getMenuItemById(PASTE_FROM_CLIPBOARD_MENU_ID) ?? null;
   for (const item of menu.items) {
@@ -740,6 +491,171 @@ function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode)
   refreshPasteFromClipboardMenu();
   Menu.setApplicationMenu(menu);
 }
+
+/** Options for a bus command a menu item raises, placed beside the window
+ *  the click came from. */
+function menuDispatchOptions(
+  sourceWindow: MenuSourceWindow
+): Parameters<typeof bus.dispatch>[2] {
+  const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
+  if (sourceWindow !== undefined && !sourceWindow.isDestroyed()) {
+    options.sourceWindowId = sourceWindow.id;
+  }
+  return options;
+}
+
+/** The window list for the Window menu off macOS (macOS draws its own). */
+function openWindowMenuEntries(): OpenWindowEntry[] {
+  const focused = BrowserWindow.getFocusedWindow();
+  return listOpenAppWindows().map(({ window, label }) => ({
+    id: window.id,
+    label,
+    focused: window === focused
+  }));
+}
+
+let windowMenuRefreshQueued = false;
+/** The Window list the installed menu was built with, so a refresh can tell
+ *  whether anything it shows actually changed. */
+let installedWindowMenuSignature = "";
+
+/** Rebuild the menu on the next tick so the Window list tracks windows
+ *  opening, closing and taking focus. Coalesced: one window opening fires
+ *  several of these events at once. Skipped when the list is unchanged —
+ *  most events come from chrome that is never listed (tray popover,
+ *  float-over, selector, recording HUD), and a rebuild re-runs
+ *  `setApplicationMenu`, which re-sets the menu on every window. */
+function queueWindowMenuRefresh(): void {
+  if (windowMenuRefreshQueued) return;
+  windowMenuRefreshQueued = true;
+  setImmediate(() => {
+    windowMenuRefreshQueued = false;
+    if (JSON.stringify(openWindowMenuEntries()) === installedWindowMenuSignature) return;
+    installApplicationMenu();
+  });
+}
+
+/** Keep the Linux/Windows Window menu's list current. macOS lists windows
+ *  itself under `role: "windowMenu"`, so nothing is wired there. */
+function wireWindowMenuRefresh(): void {
+  if (isMac) return;
+  app.on("browser-window-focus", queueWindowMenuRefresh);
+  app.on("browser-window-created", (_event, window) => {
+    window.on("show", queueWindowMenuRefresh);
+    window.on("hide", queueWindowMenuRefresh);
+    window.on("closed", queueWindowMenuRefresh);
+  });
+}
+
+function copyDiagnosticsInfo(): void {
+  clipboard.writeText(
+    formatDiagnosticsInfo({
+      version: resolveAppVersion(),
+      packaged: app.isPackaged,
+      platform: process.platform,
+      platformVersion: process.getSystemVersion(),
+      arch: process.arch,
+      electronVersion: process.versions.electron ?? "",
+      chromeVersion: process.versions.chrome ?? "",
+      nodeVersion: process.versions.node ?? ""
+    })
+  );
+  // The copy has already happened; the toast only confirms it. Only the
+  // Library renders the toast stack, so it goes there whichever window the
+  // click came from.
+  findMainLibraryWindow()?.webContents.send(EVENT_CHANNELS.appNotice, {
+    message: "Diagnostics info copied"
+  });
+}
+
+const applicationMenuActions: ApplicationMenuActions = {
+  onAbout: (window) => {
+    // Decision A of the menu standard: About is Settings → About on every
+    // platform, not the native panel.
+    void bus.dispatch("settings:open", { page: "about" }, menuDispatchOptions(window));
+  },
+  onCheckForUpdates: () => {
+    // NOT `app:update:check`: this verb also announces "a user is waiting
+    // for this answer" on EVENT_CHANNELS.appUpdateCheckResult, which is what
+    // raises the live progress card, and it holds its answer until the
+    // download settles. See runMenuUpdateCheck.
+    //
+    // Over the bus rather than a direct call because THIS process may not be
+    // the one that owns the updater: under the process split the menu is
+    // installed by the library while `app:update:*` is routed to the agent.
+    // Calling locally would run a second, uninitialized updater and set a
+    // `userCheckRunning` flag that `app:update:userCheckRunning` — also
+    // agent-routed — never reads.
+    void bus.dispatch("app:update:menuCheck", {}, { principal: "ipc" });
+  },
+  onOpenSettings: (window) => {
+    void bus.dispatch("settings:open", {}, menuDispatchOptions(window));
+  },
+  onPasteFromClipboard: () => {
+    void runPasteFromClipboard();
+  },
+  onDuplicate: (window, mode, event) => sendLibraryDuplicate(window, mode, event),
+  onUndo: (window, event) => sendEditCommand(window, EVENT_CHANNELS.editUndo, event),
+  onRedo: (window, event) => sendEditCommand(window, EVENT_CHANNELS.editRedo, event),
+  onExportLibrary: () => {
+    void runExportLibrary();
+  },
+  onOpenSizzleReels: (window) => {
+    void bus.dispatch("sizzle:open", {}, menuDispatchOptions(window));
+  },
+  onOpenChangelog: (window) => {
+    void bus.dispatch(
+      "app:openDocumentWindow",
+      { kind: "changelog" },
+      menuDispatchOptions(window)
+    );
+  },
+  onOpenLicense: (window) => {
+    void bus.dispatch("app:openDocumentWindow", { kind: "license" }, menuDispatchOptions(window));
+  },
+  onOpenThirdPartyNotices: (window) => {
+    void bus.dispatch(
+      "app:openDocumentWindow",
+      { kind: "third-party-licenses" },
+      menuDispatchOptions(window)
+    );
+  },
+  onOpenLogs: (window) => {
+    void bus.dispatch("logs:openWindow", {}, menuDispatchOptions(window));
+  },
+  onReloadWindow: (window) => {
+    // Only PwrSnap's own windows. ⌘R / Ctrl+R reaching the region selector,
+    // tray popover, float-over or recording HUD would reload that chrome
+    // mid-use, so the menu never targets them.
+    const target = resolveMenuTargetWindow(window);
+    if (target === null) return;
+    if (!listOpenAppWindows().some((entry) => entry.window === target)) return;
+    target.webContents.reload();
+  },
+  onCopyDiagnostics: copyDiagnosticsInfo,
+  onOpenExternal: (url) => {
+    // The same allowlist every outbound URL clears (navigation-guard.ts).
+    if (!isAllowedExternalUrl(url)) {
+      getMainLogger("pwrsnap:menu").warn("menu link refused by the external URL allowlist", {
+        url
+      });
+      return;
+    }
+    shell.openExternal(url).catch((cause: unknown) => {
+      getMainLogger("pwrsnap:menu").warn("menu link failed to open", {
+        url,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    });
+  },
+  onFocusWindow: (id) => {
+    const window = BrowserWindow.fromId(id);
+    if (window === null || window.isDestroyed()) return;
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
+  }
+};
 
 function refreshPasteFromClipboardMenu(): void {
   if (pasteFromClipboardMenuItem === null) return;
@@ -1849,19 +1765,8 @@ export function bootstrapApp(): void {
     app.setPath("sessionData", join(app.getPath("userData"), "library-session"));
   }
 
-  const appVersion = app.getVersion();
-  const runtimeIdentity = resolveDevelopmentRuntimeIdentity({
-    isPackaged: app.isPackaged,
-    nodeEnv: process.env.NODE_ENV
-  });
-  app.setAboutPanelOptions({
-    applicationName: APP_NAME,
-    applicationVersion: appVersion,
-    version: resolveAboutPanelBuildVersion(appVersion, runtimeIdentity),
-    copyright: APP_COPYRIGHT
-  });
-
   app.whenReady().then(async () => {
+    installSystemShutdown();
     // Before any window loads. Electron's no-handler default GRANTS
     // every permission a renderer asks for; this denies by default and
     // allows only `media` (the selector's level meter + camera preview)
@@ -1929,6 +1834,7 @@ export function bootstrapApp(): void {
     try {
       const storageSettings = await storageSettingsService.read();
       setCapturesLocation(storageSettings.storage.capturesLocation);
+      setFloatOverRecentSidebarVisible(storageSettings.recording.showRecentCaptureSidebar);
     } catch (cause) {
       log.warn("captures location: initial settings read failed; using Documents", {
         message: cause instanceof Error ? cause.message : String(cause)
@@ -1940,6 +1846,9 @@ export function bootstrapApp(): void {
     // event below.
     onSettingsChanged((settings) => {
       setCapturesLocation(settings.storage.capturesLocation);
+      // The float-over (and its dock) lives in this process in both roles
+      // that receive these broadcasts.
+      setFloatOverRecentSidebarVisible(settings.recording.showRecentCaptureSidebar);
     });
     // Open the DB before anything else — cold first-INSERT cost
     // (~40ms) lands here instead of inside ⌘⇧P's <120ms budget.
@@ -2027,6 +1936,7 @@ export function bootstrapApp(): void {
     // the renderer mounts no bar of its own.
     if (role !== "agent") {
       wireAppMenuBridge();
+      wireWindowMenuRefresh();
     }
     // The other half of a renderer-painted Linux strip: minimize / maximize /
     // close, which no OS API provides for a frameless window there.
@@ -2110,6 +2020,7 @@ export function bootstrapApp(): void {
       registerCaptureStorageHandlers();
       registerCodexHandlers();
       registerChatgptPlanHandlers();
+      registerEnrichmentRepairHandlers();
       registerCodexProfileHandlers();
       registerAcpHandlers();
       // `capture:saveAs` is the one capture verb owned by the Library in
@@ -2494,42 +2405,21 @@ export function bootstrapApp(): void {
         // bridge surface so specs don't reach into module internals
         // via dynamic imports — those tend to drift across path /
         // bundler changes.
-        // seedCapture accepts the pre-bundle-storage `src_path` field
-        // name as a back-compat alias. Migration 0005 renamed the
-        // column to `legacy_src_path`, but specs pulled from main still
-        // use the old name. Normalize here so specs work unchanged.
-        seedCapture: (input: Parameters<typeof insertCapture>[0] & { src_path?: string }) => {
-          const { src_path: legacyAlias, ...rest } = input;
-          const normalized =
-            legacyAlias !== undefined && rest.legacy_src_path === undefined
-              ? { ...rest, legacy_src_path: legacyAlias }
-              : rest;
-          // v2 is the only bundle format. Default row-only seeds to v2 so
-          // the editor's useCaptureModel resolves the v2 layer-tree model
-          // — a `bundle_format_version = 1` row now resolves to an error
-          // model (the v1 read path is gone). An explicit version in the
-          // input still wins. (Harmless for `kind: "video"`: nothing reads
-          // the flag for videos — they render via pwrsnap-capture://.)
-          return insertCapture({ bundle_format_version: 2, ...normalized });
+        // Seed capture rows. An image row gets a real v2 `.pwrsnap`
+        // (the coordinator renders nothing else), its layer tree and its
+        // source.png cache before the row lands, so Library thumbnails
+        // load; a video row is inserted as given. Async — specs must
+        // await it before broadcasting captures-changed. `src_path` is
+        // accepted as the pre-0005 name of `legacy_src_path`. See
+        // persistence/e2e-capture-seed.ts.
+        seedCapture: async (input: E2ESeedCaptureInput) => {
+          const [result] = await seedCapturesForE2E([input]);
+          return result;
         },
-        // Batch variant — runs all inserts inside one SQLite
-        // transaction so the chain pays one fsync instead of N.
-        // Lets specs seed 100+ captures inside a single
-        // `electronApp.evaluate` without blowing their time budget
-        // on slow CI disks. Same src_path alias applied to each input.
-        seedCaptures: (inputs: Array<Parameters<typeof insertCapture>[0] & { src_path?: string }>) => {
-          const normalized = inputs.map((input) => {
-            const { src_path: legacyAlias, ...rest } = input;
-            const withAlias =
-              legacyAlias !== undefined && rest.legacy_src_path === undefined
-                ? { ...rest, legacy_src_path: legacyAlias }
-                : rest;
-            // Default to v2 (the only bundle format); explicit wins. See
-            // `seedCapture` above for the rationale.
-            return { bundle_format_version: 2, ...withAlias };
-          });
-          return insertCapturesBatch(normalized);
-        },
+        // Batch variant: one SQLite transaction for every row, and the
+        // per-fixture decode/thumbnail work is shared, so specs can seed
+        // 100+ captures inside a single `electronApp.evaluate`.
+        seedCaptures: (inputs: E2ESeedCaptureInput[]) => seedCapturesForE2E(inputs),
         // Insert the video_captures metadata row for a previously-
         // seeded `kind="video"` capture. Specs use this to drive the
         // float-over's video asset branch without spawning a real

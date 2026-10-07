@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.1.18 - 2026-10-07
+
+This patch makes diagnostics copying more dependable immediately after startup.
+
+- Diagnostics - Fixed the confirmation for Copy Diagnostics Info disappearing
+  when used before the Library finishes starting, so the copied build details
+  receive the same visible confirmation as later menu actions.
+
 ## v1.1.17 - 2026-10-06
 
 This release adds easier window trimming and more control over recent captures,

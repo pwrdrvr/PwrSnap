@@ -9,7 +9,7 @@ import {
   type CameraTrackMetadata,
   type CaptureRecord
 } from "@pwrsnap/shared";
-import { CameraLane, type CameraLaneModel } from "../CameraLane";
+import { CAMERA_LANE_H, CameraLane, cameraStripCells, type CameraLaneModel } from "../CameraLane";
 import { PresenterLayer, type PresenterEditing } from "../PresenterLayer";
 import { applyPresenterAction, presenterKeyAction } from "../usePresenter";
 import { ScenePresenterField } from "../ScenePresenterField";
@@ -217,13 +217,24 @@ describe("presenter actions and keys", () => {
   });
 });
 
+describe("cameraStripCells", () => {
+  test("keeps each thumbnail at the camera's aspect, not stretched to the span", () => {
+    for (const spanWidth of [180, 640, 1300]) {
+      const cells = cameraStripCells(spanWidth, camera);
+      const cellAspect = spanWidth / cells / (CAMERA_LANE_H - 8);
+      expect(cellAspect / (camera.width / camera.height)).toBeGreaterThan(0.8);
+      expect(cellAspect / (camera.width / camera.height)).toBeLessThan(1.25);
+    }
+  });
+});
+
 describe("CameraLane", () => {
   const style = defaultPresenterStyle(geometry);
   const lane = (overrides: Partial<CameraLaneModel> = {}): CameraLaneModel => ({
     track: camera,
     style,
     selected: false,
-    stripUrl: null,
+    captureId: "fixture",
     missing: false,
     onSelect: vi.fn(),
     onSyncChange: vi.fn(),

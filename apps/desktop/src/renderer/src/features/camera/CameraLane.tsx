@@ -16,12 +16,13 @@ import {
 } from "@pwrsnap/shared";
 import { PresenterIcon } from "./PresenterIcons";
 import { syncNudgeKeys } from "./PresenterToolbar";
+import { useCameraStrip } from "./useCameraStrip";
 
 export type CameraLaneModel = {
+  readonly captureId: string;
   readonly track: CameraTrackMetadata;
   readonly style: AvatarStyle;
   readonly selected: boolean;
-  readonly stripUrl: string | null;
   readonly missing: boolean;
   readonly onSelect: () => void;
   /** A finished drag — the new sync offset, in seconds. */
@@ -29,6 +30,16 @@ export type CameraLaneModel = {
 };
 
 export const CAMERA_LANE_H = 30;
+/** The span's inner height: the lane less its 3px insets and 1px border. */
+const SPAN_INNER_H = CAMERA_LANE_H - 8;
+
+/** Thumbnails for a span this wide, so each keeps the camera's aspect.
+ *  Rounded to fours so a window resize rarely rebuilds the strip. */
+export function cameraStripCells(spanWidthPx: number, camera: CameraTrackMetadata): number {
+  const cellW = SPAN_INNER_H * (camera.width / camera.height);
+  const cells = Math.round(spanWidthPx / cellW / 4) * 4;
+  return Math.max(4, Math.min(96, cells));
+}
 
 type Drag = { pointerId: number; startX: number; start: number; moved: boolean };
 
@@ -42,6 +53,11 @@ export function CameraLane({
   readonly width: number;
 }): ReactElement {
   const { track, style } = lane;
+  const strip = useCameraStrip(
+    lane.captureId,
+    track,
+    cameraStripCells((width * track.durationSec) / Math.max(durationSec, 0.001), track)
+  );
   const [draftSync, setDraftSync] = useState<number | null>(null);
   const drag = useRef<Drag | null>(null);
   const sync = draftSync ?? style.syncOffsetSec ?? 0;
@@ -106,11 +122,11 @@ export function CameraLane({
       {ghost !== null ? <div className="vtl__camera-ghost" style={ghost} aria-hidden="true" /> : null}
       {!lane.missing ? (
         <div
-          className={"vtl__camera-span" + (lane.stripUrl === null ? " is-loading" : "")}
+          className={"vtl__camera-span" + (strip.url === null ? " is-loading" : "")}
           style={{
             left,
             right,
-            ...(lane.stripUrl !== null ? { backgroundImage: `url(${lane.stripUrl})` } : {})
+            ...(strip.url !== null ? { backgroundImage: `url(${strip.url})` } : {})
           }}
           role="slider"
           tabIndex={-1}

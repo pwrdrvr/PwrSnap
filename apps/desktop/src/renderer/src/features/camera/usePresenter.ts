@@ -158,7 +158,7 @@ export function usePresenter(record: CaptureRecord): PresenterState | null {
       track: camera,
       style,
       selected,
-      stripUrl: strip.url,
+      captureId: record.id,
       missing: strip.missing,
       onSelect: () => setSelected(true),
       onSyncChange: (syncOffsetSec) => save({ ...style, syncOffsetSec })

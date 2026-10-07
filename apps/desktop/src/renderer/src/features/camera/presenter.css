@@ -638,3 +638,51 @@
 .pres-link:hover {
   text-decoration: underline;
 }
+
+/* ── Edge (cut-out) ─────────────────────────────────────────────── */
+.pres-edge {
+  width: 196px;
+  padding: 6px 8px 4px;
+  display: grid;
+  gap: 6px;
+}
+.pres-edge__hd {
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.pres-edge input[type="range"] {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.pres-edge__ends {
+  display: flex;
+  justify-content: space-between;
+  font: 500 11px/1 var(--font-sans);
+  color: var(--text-muted);
+}
+.pres-edge__note {
+  margin: 2px 0 0;
+  font: 400 11px/1.35 var(--font-sans);
+  color: var(--text-secondary);
+}
+
+/* A piece with its own presenter: a bar along the lane's top edge, over
+   the span (z above it) so it reads against the thumbnails. */
+.vtl__camera-own {
+  position: absolute;
+  top: 0;
+  height: 3px;
+  z-index: 5;
+  border-radius: 0 0 2px 2px;
+  background: var(--accent);
+}
+.vtl__camera-own.is-hidden {
+  background: repeating-linear-gradient(90deg, var(--text-muted) 0 3px, transparent 3px 6px);
+}
+.pres-field .pres-edge {
+  width: auto;
+  padding: 2px 0;
+}

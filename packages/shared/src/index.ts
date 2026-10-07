@@ -47,3 +47,4 @@ export * from "./codex-model-policy";
 
 export * from "./camera";
 export * from "./presenter";
+export * from "./presenter-spans";

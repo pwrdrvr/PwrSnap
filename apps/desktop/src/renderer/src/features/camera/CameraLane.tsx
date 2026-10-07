@@ -12,7 +12,8 @@ import {
   formatSyncOffset,
   PRESENTER_SYNC_LIMIT_SEC,
   type AvatarStyle,
-  type CameraTrackMetadata
+  type CameraTrackMetadata,
+  type PresenterSpan
 } from "@pwrsnap/shared";
 import { PresenterIcon } from "./PresenterIcons";
 import { syncNudgeKeys } from "./PresenterToolbar";
@@ -24,6 +25,8 @@ export type CameraLaneModel = {
   readonly style: AvatarStyle;
   readonly selected: boolean;
   readonly missing: boolean;
+  /** Pieces with their own presenter, marked along the lane's top. */
+  readonly spans?: readonly PresenterSpan[];
   readonly onSelect: () => void;
   /** A finished drag — the new sync offset, in seconds. */
   readonly onSyncChange: (syncOffsetSec: number) => void;
@@ -120,6 +123,15 @@ export function CameraLane({
       data-testid="video-timeline-camera"
     >
       {ghost !== null ? <div className="vtl__camera-ghost" style={ghost} aria-hidden="true" /> : null}
+      {(lane.spans ?? []).map((span) => (
+        <i
+          key={`${span.start}-${span.end}`}
+          className={"vtl__camera-own" + (span.avatar.visible ? "" : " is-hidden")}
+          style={{ left: pct(span.start), right: fromRight(span.end) }}
+          data-tip={span.avatar.visible ? "This piece has its own presenter" : "The presenter is hidden in this piece"}
+          data-testid="video-timeline-camera-own"
+        />
+      ))}
       {!lane.missing ? (
         <div
           className={"vtl__camera-span" + (strip.url === null ? " is-loading" : "")}

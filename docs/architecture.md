@@ -137,7 +137,12 @@ drains these jobs in the owning process before removing their files.
 Crop, placement, size, mirror, background, outline shape, visibility and sync
 adjustment are data: a Library default and optional independent overrides on
 each reel scene. A scene inherits the recording's presenter until it is edited
-in the scene inspector. A recording nobody has edited gets a computed default
+in the scene inspector. Within one recording, a kept piece (between splits)
+can carry its own presenter: these are source-time spans stored apart from
+the cut list, so re-trimming never re-times them, and outside any span the
+recording's presenter shows. Scene overrides replace both. A cut-out's edge
+tightness ramps the soft mask with the same lookup in preview and in FFmpeg.
+A recording nobody has edited gets a computed default
 for its camera and canvas aspect (a head-and-shoulders cut-out flush in the
 bottom-right, unmirrored). Every renderer resolves the style through the same
 shared geometry (`packages/shared/src/presenter.ts`), and circle and rounded
@@ -190,7 +195,9 @@ next preview and render. A clip that needs the removed footage back opts
 out (`useCaptureCuts: false`) without touching the capture. Agents decide
 what to cut without seeing a frame: `video:inspect` returns a
 run-length-encoded on-screen activity track with the still stretches
-already found — one cached ffmpeg pass per capture
+already found. A stretch counts as still only if the picture holds AND the
+recorded audio stays below speech level, because a static screen with someone
+talking over it is content, not idle. One cached ffmpeg pass per capture
 (`recording/video-activity.ts`), a derived-cache lane like the filmstrip
 and waveform.
 

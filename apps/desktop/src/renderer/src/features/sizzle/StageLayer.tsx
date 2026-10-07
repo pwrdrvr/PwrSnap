@@ -1,4 +1,6 @@
+import { useMemo } from "react";
 import { PresenterLayer } from "../camera/PresenterLayer";
+import { useActivePresenterSpan, videoTimeSubscribe } from "../camera/useActivePresenterSpan";
 import { geometryFor, resolvePresenterStyle, type AvatarStyle } from "@pwrsnap/shared";
 // One layer of a preview stage: the picture for a clip, plus the CSS
 // animations that make it move.
@@ -141,14 +143,10 @@ export function StageLayer({
       {capture?.video?.camera && (
         // The reel stage is the 16:9 output canvas, so the presenter is
         // placed against the whole layer, not the letterboxed picture.
-        <PresenterLayer
-          fit="canvas"
+        <ScenePresenter
           capture={capture}
           videoRef={videoRef}
-          style={resolvePresenterStyle(
-            avatar ?? capture.video.avatar,
-            geometryFor(capture.video.camera, { width: 16, height: 9 })
-          )}
+          avatar={avatar}
           time={posterStartSec ?? 0}
         />
       )}
@@ -160,4 +158,37 @@ export function StageLayer({
  *  (the cache serves by id); only a blank id is genuinely missing. */
 function isMissing(captureId: string): boolean {
   return captureId.trim().length === 0;
+}
+
+/** A scene's presenter: its own when it has one; otherwise the
+ *  recording's, piece by piece, following the clip's source time. */
+function ScenePresenter({
+  capture,
+  videoRef,
+  avatar,
+  time
+}: {
+  readonly capture: CaptureRecord;
+  readonly videoRef: RefObject<HTMLVideoElement | null> | undefined;
+  readonly avatar: AvatarStyle | undefined;
+  readonly time: number;
+}): ReactElement | null {
+  const camera = capture.video?.camera;
+  const spans = useMemo(
+    () => (avatar === undefined ? (capture.video?.avatarSpans ?? []) : []),
+    [avatar, capture.video?.avatarSpans]
+  );
+  const subscribe = useMemo(() => (videoRef === undefined ? null : videoTimeSubscribe(videoRef)), [videoRef]);
+  const active = useActivePresenterSpan(spans, subscribe, time);
+  if (!camera) return null;
+  const stored = avatar ?? spans[active]?.avatar ?? capture.video?.avatar;
+  return (
+    <PresenterLayer
+      fit="canvas"
+      capture={capture}
+      {...(videoRef !== undefined ? { videoRef } : {})}
+      style={resolvePresenterStyle(stored, geometryFor(camera, { width: 16, height: 9 }))}
+      time={time}
+    />
+  );
 }

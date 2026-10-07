@@ -4,10 +4,14 @@
 // object itself (drag = position, corner handles = size); there is no
 // settings form.
 //
-//   eye │ Look: Cut out ◯ ▢ ▭ │ Framing ▾  mirror  snap ▾ │ SYNC ‹ +0.13 s › │ ⋯
+//   [This piece | All] │ eye │ Look: Cut out ◯ ▢ ▭  edge ▾ │ Framing ▾  mirror  snap ▾ │ SYNC ‹ +0.13 s › │ ⋯
+//
+// The scope switch shows once the clip has pieces (splits) or a piece has
+// its own presenter; Edge shows for a cut-out only.
 
 import {
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -20,6 +24,7 @@ import {
   formatSyncOffset,
   framingCrop,
   presenterAnchor,
+  presenterEdge,
   presenterFraming,
   presenterLook,
   presenterSize,
@@ -44,8 +49,14 @@ export type PresenterAction =
   | { type: "place"; anchor: PresenterAnchor }
   | { type: "size"; size: PresenterSize }
   | { type: "sync"; frames: number }
+  | { type: "edge"; edge: number }
   | { type: "reset" }
   | { type: "inherit" };
+
+export type PresenterScopeControl = {
+  readonly value: "piece" | "all";
+  readonly onChange: (scope: "piece" | "all") => void;
+};
 
 const LOOKS: ReadonlyArray<{ look: PresenterLook; label: string; icon: "person" | "circle" | "rounded" | "square" }> = [
   { look: "cut", label: "Cut out", icon: "person" },
@@ -88,6 +99,8 @@ export function PresenterToolbar({
   geometry,
   posterUrl,
   inheritable = false,
+  inheritLabel = "Use the recording’s presenter",
+  scope,
   menuSide,
   onAction
 }: {
@@ -97,6 +110,9 @@ export function PresenterToolbar({
   readonly posterUrl?: string | undefined;
   /** A reel scene with its own presenter can go back to the recording's. */
   readonly inheritable?: boolean;
+  readonly inheritLabel?: string;
+  /** Present once the clip has pieces: what the next edit changes. */
+  readonly scope?: PresenterScopeControl | undefined;
   readonly menuSide: "up" | "down";
   readonly onAction: (action: PresenterAction) => void;
 }): ReactElement {
@@ -114,6 +130,37 @@ export function PresenterToolbar({
       data-testid="presenter-toolbar"
       onPointerDown={(e) => e.stopPropagation()}
     >
+      {scope !== undefined ? (
+        <>
+          <span
+            className="pres-seg pres-seg--scope"
+            role="radiogroup"
+            aria-label="Change"
+            data-testid="presenter-scope"
+          >
+            {(
+              [
+                { value: "piece", label: "This piece", tip: "Changes apply to the piece under the playhead" },
+                { value: "all", label: "All", tip: "Changes apply to every piece" }
+              ] as const
+            ).map((entry) => (
+              <button
+                key={entry.value}
+                type="button"
+                role="radio"
+                aria-checked={scope.value === entry.value}
+                className={scope.value === entry.value ? "is-on" : undefined}
+                data-tip={entry.tip}
+                onClick={() => scope.onChange(entry.value)}
+                data-testid={`presenter-scope-${entry.value}`}
+              >
+                {entry.label}
+              </button>
+            ))}
+          </span>
+          <span className="pres-bar__sep" aria-hidden="true" />
+        </>
+      ) : null}
       <button
         type="button"
         className="pres-ib"
@@ -144,6 +191,19 @@ export function PresenterToolbar({
           </button>
         ))}
       </span>
+      {look === "cut" ? (
+        <ToolbarMenu
+          kind="dialog"
+          label="Edge"
+          side={menuSide}
+          trigger={<PresenterIcon name="edge" />}
+          triggerClass="pres-ib"
+          tip="Edge"
+          testId="presenter-edge"
+        >
+          {() => <EdgeControl edge={presenterEdge(style)} onChange={(edge) => onAction({ type: "edge", edge })} />}
+        </ToolbarMenu>
+      ) : null}
       <span className="pres-bar__sep" aria-hidden="true" />
       <ToolbarMenu
         label="Framing"
@@ -330,7 +390,7 @@ export function PresenterToolbar({
                 }}
               >
                 <span className="pres-menu__tick" />
-                Use the recording’s presenter
+                {inheritLabel}
               </button>
             ) : null}
             <button
@@ -353,7 +413,46 @@ export function PresenterToolbar({
   );
 }
 
+/**
+ * How hard the cut-out trims its edge. Soft keeps the model's whole
+ * confidence ramp (hair, but a halo where the light or the angle fools
+ * it); tight cuts close to the person.
+ */
+export function EdgeControl({
+  edge,
+  onChange
+}: {
+  readonly edge: number;
+  readonly onChange: (edge: number) => void;
+}): ReactElement {
+  const id = useId();
+  return (
+    <div className="pres-edge">
+      <label className="pres-edge__hd" htmlFor={id}>
+        Edge
+      </label>
+      <input
+        id={id}
+        type="range"
+        min={0}
+        max={100}
+        step={5}
+        value={Math.round(edge * 100)}
+        aria-valuetext={edge < 0.2 ? "Soft" : edge > 0.8 ? "Tight" : `${Math.round(edge * 100)}%`}
+        onChange={(e) => onChange(Number(e.currentTarget.value) / 100)}
+        data-testid="presenter-edge-range"
+      />
+      <div className="pres-edge__ends" aria-hidden="true">
+        <span>Soft</span>
+        <span>Tight</span>
+      </div>
+      <p className="pres-edge__note">Tighter removes a halo around hair or a hat.</p>
+    </div>
+  );
+}
+
 function ToolbarMenu({
+  kind = "menu",
   label,
   side,
   trigger,
@@ -368,6 +467,8 @@ function ToolbarMenu({
   readonly triggerClass: string;
   readonly tip?: string;
   readonly testId: string;
+  /** A `dialog` holds controls (a slider) that need the arrow keys. */
+  readonly kind?: "menu" | "dialog";
   readonly children: (close: () => void) => ReactNode;
 }): ReactElement {
   const [open, setOpen] = useState(false);
@@ -375,8 +476,11 @@ function ToolbarMenu({
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const close = (): void => setOpen(false);
-  useDismissable({ open, onDismiss: close, surfaceRef: menuRef, triggerRef });
-  useMenuNavigation({ open, menuRef, onClose: close, returnFocusRef: triggerRef });
+  useDismissable({ open, onDismiss: close, surfaceRef: menuRef, triggerRef, dismissOnFocusLeave: kind === "dialog" });
+  useMenuNavigation({ open: open && kind === "menu", menuRef, onClose: close, returnFocusRef: triggerRef });
+  useEffect(() => {
+    if (open && kind === "dialog") menuRef.current?.querySelector<HTMLElement>("input, button")?.focus();
+  }, [open, kind]);
   useOutsidePointer(open, rootRef, close);
   const align = useMenuAlign(open, rootRef, menuRef);
   return (
@@ -386,7 +490,7 @@ function ToolbarMenu({
         type="button"
         className={triggerClass + (open ? " is-open" : "")}
         aria-label={label}
-        aria-haspopup="menu"
+        aria-haspopup={kind}
         aria-expanded={open}
         {...(tip !== undefined ? { "data-tip": tip } : {})}
         onClick={() => setOpen((v) => !v)}
@@ -398,10 +502,10 @@ function ToolbarMenu({
         <div
           ref={menuRef}
           className={`pres-menu is-${side} is-${align}`}
-          role="menu"
+          role={kind}
           aria-label={label}
           tabIndex={-1}
-          onBlur={closeWhenFocusLeaves(close)}
+          {...(kind === "menu" ? { onBlur: closeWhenFocusLeaves(close) } : {})}
           data-testid={`${testId}-menu`}
         >
           {children(close)}

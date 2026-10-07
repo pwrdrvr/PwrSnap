@@ -14,6 +14,7 @@ export type PresenterIconName =
   | "chevronDown"
   | "mirror"
   | "snap"
+  | "edge"
   | "left"
   | "right"
   | "more"
@@ -97,6 +98,16 @@ export function PresenterIcon({
           <path d="M8 1.8v12.4" strokeDasharray="1.6 1.8" />
           <path d="M5.8 4.4L2 11.6h3.8z" />
           <path d="M10.2 4.4l3.8 7.2h-3.8z" />
+        </svg>
+      );
+    case "edge":
+      // A head and shoulders with a dashed outline a step outside it:
+      // the edge the cut-out trims.
+      return (
+        <svg {...common}>
+          <circle cx="8" cy="6" r="2.2" />
+          <path d="M3.8 13.5c.5-2.4 2.2-3.6 4.2-3.6s3.7 1.2 4.2 3.6" />
+          <path d="M8 1.6a4.4 4.4 0 0 1 4.3 5.4M2.6 12.6" strokeDasharray="1.4 1.6" />
         </svg>
       );
     case "snap":

@@ -16,7 +16,11 @@ import {
   withLook,
   withSize,
   withSyncNudge,
-  type PresenterGeometry
+  type PresenterGeometry,
+  presenterEdge,
+  presenterMaskLut,
+  PRESENTER_DEFAULT_EDGE,
+  withEdge
 } from "../presenter";
 
 const wide: PresenterGeometry = { cameraAspect: 16 / 9, canvasAspect: 16 / 9 };
@@ -129,5 +133,24 @@ describe("sync", () => {
     expect(formatSyncOffset(-0.5)).toBe("−0.50 s");
     expect(formatSyncOffset(undefined)).toBe("±0.00 s");
     expect(withSyncNudge({ ...style, syncOffsetSec: 9.99 }, 3).syncOffsetSec).toBe(10);
+  });
+});
+
+describe("cut-out edge", () => {
+  test("edge 0 is the model's mask; the default and a tight edge trim the fringe", () => {
+    const style = { ...DEFAULT_AVATAR_STYLE };
+    const raw = presenterMaskLut({ ...style, edge: 0 });
+    expect(raw[0]).toBe(0);
+    expect(raw[128]).toBe(128);
+    expect(raw[255]).toBe(255);
+    const tight = presenterMaskLut({ ...style, edge: 1 });
+    expect(tight[128]).toBe(0);
+    expect(tight[255]).toBe(255);
+    const normal = presenterMaskLut(style);
+    expect(normal[60]).toBe(0);
+    expect(normal[128]!).toBeLessThan(128);
+    expect(normal[250]).toBe(255);
+    expect(presenterEdge(style)).toBe(PRESENTER_DEFAULT_EDGE);
+    expect(withEdge(style, 1.4).edge).toBe(1);
   });
 });

@@ -32,6 +32,7 @@ import {
   presenterCornerRadius,
   presenterHeight,
   presenterLook,
+  presenterMaskLut,
   snapDrag,
   PRESENTER_MAX_WIDTH,
   PRESENTER_MIN_WIDTH,
@@ -41,7 +42,7 @@ import {
   type PresenterSnapGuides
 } from "@pwrsnap/shared";
 import { PersonSegmenter } from "./segmentation";
-import { PresenterToolbar, type PresenterAction } from "./PresenterToolbar";
+import { PresenterToolbar, type PresenterAction, type PresenterScopeControl } from "./PresenterToolbar";
 import "./presenter.css";
 
 export type PresenterPhase = "loading" | "preparing" | "ready" | "maskFailed" | "missing";
@@ -53,7 +54,14 @@ export type PresenterEditing = {
   readonly onChange: (style: AvatarStyle) => void;
   readonly onAction: (action: PresenterAction) => void;
   readonly posterUrl?: string | undefined;
+  /** The presenter showing has its own copy that can be dropped. */
   readonly inheritable?: boolean;
+  /** The More menu's words for dropping it. */
+  readonly inheritLabel?: string;
+  /** The selection's tag — says what an edit will change. */
+  readonly tag?: string;
+  /** This piece / all pieces, once the clip has pieces. */
+  readonly scope?: PresenterScopeControl;
 };
 
 type Viewport = { x: number; y: number; width: number; height: number };
@@ -198,7 +206,10 @@ export function PresenterLayer({
           }
           if (retired) return;
           if (mask) {
-            for (let i = 0; i < mask.data.length; i += 4) mask.data[i + 3] = mask.data[i]!;
+            // The confidence through the edge ramp — the curve the export's
+            // `lut` applies, so the two trim the same fringe.
+            const ramp = presenterMaskLut(current);
+            for (let i = 0; i < mask.data.length; i += 4) mask.data[i + 3] = ramp[mask.data[i]!]!;
             maskCanvas.width = mask.width;
             maskCanvas.height = mask.height;
             maskCanvas.getContext("2d")!.putImageData(mask, 0, 0);
@@ -440,7 +451,7 @@ export function PresenterLayer({
             ) : null}
             {selected ? (
               <div className="pres-sel" aria-hidden="true" style={selectionInsets(box, frameSize)}>
-                <span className="pres-sel__tag">Presenter</span>
+                <span className="pres-sel__tag">{editing.tag ?? "Presenter"}</span>
                 {(["nw", "ne", "sw", "se"] as const).map((corner) => (
                   <i key={corner} className={`pres-sel__h is-${corner}`} onPointerDown={onHandlePointerDown(corner)} />
                 ))}
@@ -462,6 +473,8 @@ export function PresenterLayer({
                 geometry={geometry}
                 posterUrl={editing.posterUrl}
                 inheritable={editing.inheritable === true}
+                {...(editing.inheritLabel !== undefined ? { inheritLabel: editing.inheritLabel } : {})}
+                {...(editing.scope !== undefined ? { scope: editing.scope } : {})}
                 menuSide={toolbarAbove ? "down" : "up"}
                 onAction={editing.onAction}
               />

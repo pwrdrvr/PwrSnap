@@ -12,6 +12,10 @@ export const AvatarStyleSchema = z
     /** Outline of a presenter that keeps its background. Ignored by a
      *  cut-out. Absent reads as `rect`. */
     shape: z.enum(["rect", "rounded", "circle"]).optional(),
+    /** How hard a cut-out trims its edge: 0 keeps the model's soft
+     *  confidence as-is, 1 cuts close. Absent reads as
+     *  `PRESENTER_DEFAULT_EDGE`. Ignored when the background is kept. */
+    edge: z.number().finite().min(0).max(1).optional(),
     /** Additional camera delay; positive values show earlier camera frames. */
     syncOffsetSec: z.number().finite().min(-10).max(10).optional(),
     crop: z
@@ -27,6 +31,22 @@ export const AvatarStyleSchema = z
   .strict();
 
 export type AvatarStyle = z.infer<typeof AvatarStyleSchema>;
+
+/** A stretch of the recording, in SOURCE seconds, that shows its own
+ *  presenter instead of the recording's. See `presenter-spans.ts`. */
+export const PresenterSpanSchema = z
+  .object({
+    start: z.number().finite().min(0),
+    end: z.number().finite().min(0),
+    avatar: AvatarStyleSchema,
+  })
+  .strict()
+  .refine((span) => span.end > span.start);
+export type PresenterSpan = z.infer<typeof PresenterSpanSchema>;
+
+/** Bounds what one write can make the export's filter graph carry. */
+export const PRESENTER_SPANS_MAX = 50;
+export const PresenterSpansSchema = z.array(PresenterSpanSchema).max(PRESENTER_SPANS_MAX);
 /** `defaultPresenterStyle` for a 16:9 camera on a 16:9 canvas. Renderers
  *  that know the real geometry call `resolvePresenterStyle` instead. */
 export const DEFAULT_AVATAR_STYLE: AvatarStyle = {

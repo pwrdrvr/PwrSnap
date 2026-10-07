@@ -359,6 +359,40 @@ export function resolvePresenterStyle(
   return stored ?? defaultPresenterStyle(geometry);
 }
 
+/** Where an untouched cut-out trims its edge. Tighter than the raw
+ *  model: its low-confidence fringe is the pale halo around hair and
+ *  hats when the person is lit unevenly or turned to the camera. */
+export const PRESENTER_DEFAULT_EDGE = 0.5;
+
+export function presenterEdge(style: AvatarStyle): number {
+  return Math.max(0, Math.min(1, style.edge ?? PRESENTER_DEFAULT_EDGE));
+}
+
+/**
+ * The confidence ramp a cut-out's alpha follows, as fractions 0–1:
+ * below `low` is background, above `high` is person, linear between.
+ * Edge 0 is the model's own soft mask (0 → 1); edge 1 cuts at 0.7 with a
+ * short 0.15 ramp. The stage and the export both read it, so they cut
+ * the same pixels.
+ */
+export function presenterMaskRamp(style: AvatarStyle): { low: number; high: number } {
+  const e = presenterEdge(style);
+  const low = 0.7 * e;
+  return { low, high: Math.min(1, low + 1 - 0.85 * e) };
+}
+
+/** A confidence byte (0–255) → the alpha byte the cut-out paints. */
+export function presenterMaskLut(style: AvatarStyle): Uint8ClampedArray {
+  const { low, high } = presenterMaskRamp(style);
+  const lut = new Uint8ClampedArray(256);
+  for (let c = 0; c < 256; c++) lut[c] = Math.round(Math.max(0, Math.min(1, (c / 255 - low) / (high - low))) * 255);
+  return lut;
+}
+
+export function withEdge(style: AvatarStyle, edge: number): AvatarStyle {
+  return { ...style, edge: Math.round(Math.max(0, Math.min(1, edge)) * 100) / 100 };
+}
+
 /** Corner radius as a fraction of the presenter's SHORTER side. The stage
  *  multiplies it into CSS pixels and the export into an FFmpeg alpha mask,
  *  so the two edges match. */

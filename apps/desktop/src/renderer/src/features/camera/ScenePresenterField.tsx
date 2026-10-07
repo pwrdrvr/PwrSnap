@@ -10,6 +10,7 @@ import {
   formatSyncOffset,
   geometryFor,
   presenterAnchor,
+  presenterEdge,
   presenterFraming,
   presenterLook,
   presenterSize,
@@ -21,7 +22,7 @@ import {
   type PresenterSize
 } from "@pwrsnap/shared";
 import { PresenterIcon } from "./PresenterIcons";
-import type { PresenterAction } from "./PresenterToolbar";
+import { EdgeControl, type PresenterAction } from "./PresenterToolbar";
 import { applyPresenterAction } from "./usePresenter";
 import "./presenter.css";
 
@@ -113,6 +114,9 @@ export function ScenePresenterField({
               </button>
             ))}
           </span>
+          {look === "cut" ? (
+            <EdgeControl edge={presenterEdge(style)} onChange={(edge) => act({ type: "edge", edge })} />
+          ) : null}
           <span className="pres-seg pres-seg--fill" role="radiogroup" aria-label="Framing">
             {FRAMINGS.map((entry) => (
               <button

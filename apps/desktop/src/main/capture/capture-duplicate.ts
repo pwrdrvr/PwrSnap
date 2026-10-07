@@ -693,6 +693,7 @@ function copyVideoMetadata(fromId: string, toId: string, withEdits: boolean): vo
     overrides.default_range_end_sec = "duration_sec";
     overrides.segments_json = "NULL";
     overrides.avatar_json = "NULL";
+    overrides.avatar_spans_json = "NULL";
   }
   const selectList = columns.map((name) => overrides[name] ?? name).join(", ");
   const result = db

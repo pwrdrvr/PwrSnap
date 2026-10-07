@@ -7,6 +7,7 @@ import {
   DEFAULT_AVATAR_STYLE,
   geometryFor,
   presenterCornerRadius,
+  presenterMaskRamp,
   resolvePresenterStyle,
   type AvatarStyle,
   type CaptureRecord,
@@ -39,9 +40,40 @@ export function resolveRecordPresenter(
   );
 }
 
+/** One presenter over a window of SOURCE time; no window = everywhere
+ *  the spans do not cover. */
+export type PresenterLayerSpan = { start: number; end: number; style: AvatarStyle };
+export type PresenterLayers = { base: AvatarStyle; spans: PresenterLayerSpan[] };
+
+/**
+ * Everything a recording's presenter does over the take: the recording's
+ * own presenter and each span's. A reel scene's `override` replaces the
+ * lot — a scene with its own presenter shows it throughout.
+ */
+export function presenterLayersFor(
+  record: CaptureRecord,
+  override?: AvatarStyle | null,
+  canvas?: AvatarCanvas,
+): PresenterLayers {
+  const base = resolveRecordPresenter(record, override, canvas);
+  if (override) return { base, spans: [] };
+  const camera = record.video?.camera;
+  const spans = (record.video?.avatarSpans ?? []).map((span) => ({
+    start: span.start,
+    end: span.end,
+    style: camera
+      ? resolvePresenterStyle(
+          span.avatar,
+          geometryFor(camera, canvas ?? { width: record.width_px, height: record.height_px }),
+        )
+      : span.avatar,
+  }));
+  return { base, spans };
+}
+
 export function avatarCacheKey(
   record: CaptureRecord,
-  style: AvatarStyle = resolveRecordPresenter(record),
+  layers: PresenterLayers = presenterLayersFor(record),
   canvas?: AvatarCanvas,
 ): string {
   return createHash("sha256")
@@ -50,7 +82,9 @@ export function avatarCacheKey(
         MODEL_REVISION,
         record.sha256,
         record.video?.camera,
-        style,
+        // A recording with no spans hashes exactly as before spans existed,
+        // so its cached composition is still found.
+        layers.spans.length === 0 ? layers.base : layers,
         canvas,
       ]),
     )
@@ -208,28 +242,88 @@ export function avatarCompositionFilter(input: {
   width: number;
   height: number;
   normalizeScreen?: boolean;
+  /** Stretches with their own presenter; `style` shows everywhere else. */
+  spans?: readonly PresenterLayerSpan[];
+  /** Input indexes of the cut-out mask video and the original camera.
+   *  Default: input 1 for whichever the presenters need, then input 2. */
+  inputs?: { mask?: number; camera?: number };
 }): string {
-  const { camera, style, width, height } = input;
-  const crop = style.crop;
-  const targetWidth = Math.max(2, Math.round((width * style.width) / 2) * 2);
-  const offsetSec = camera.offsetSec + (style.syncOffsetSec ?? 0);
-  const timing = `trim=start=${Math.max(0, -offsetSec).toFixed(6)},setpts=PTS-STARTPTS+${Math.max(0, offsetSec).toFixed(6)}/TB`;
-  const shape =
-    style.background === "remove" ? "" : presenterShapeFilter(style);
-  const layers =
-    style.background === "remove"
-      ? `[1:v]split=2[color][mask];[color]crop=iw/2:ih:0:0[rgb];[mask]crop=iw/2:ih:iw/2:0,format=gray[alpha];[rgb][alpha]alphamerge[person];`
-      : `[1:v]format=rgba[person];`;
+  const { camera, width, height } = input;
+  const spans = input.spans ?? [];
+  const window = (span: PresenterLayerSpan): string =>
+    `gte(t,${span.start.toFixed(3)})*lt(t,${span.end.toFixed(3)})`;
+  const layers = [
+    {
+      style: input.style,
+      trim: null as PresenterLayerSpan | null,
+      enable: spans.length === 0 ? null : `not(${spans.map(window).join("+")})`,
+    },
+    ...spans.map((span) => ({ style: span.style, trim: span, enable: window(span) })),
+  ].filter((layer) => layer.style.visible);
+  const screenIn = input.normalizeScreen ? "[screen]" : "[0:v]";
   const screen = input.normalizeScreen
     ? `[0:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[screen];`
     : "";
-  return (
-    screen +
-    layers +
-    `[person]${timing},crop=iw*${crop.width}:ih*${crop.height}:iw*${crop.x}:ih*${crop.y},` +
-    `${style.mirror ? "hflip," : ""}scale=${targetWidth}:-2${shape}[avatar];` +
-    `${input.normalizeScreen ? "[screen]" : "[0:v]"}[avatar]overlay=x=${Math.round(width * style.x)}:y=${Math.round(height * style.y)}:eof_action=pass:repeatlast=0:shortest=0,format=yuv420p[out]`
-  );
+  if (layers.length === 0) return `${screen}${screenIn}format=yuv420p[out]`;
+
+  const needsMask = layers.some((layer) => layer.style.background === "remove");
+  const maskIn = input.inputs?.mask ?? 1;
+  const cameraIn = input.inputs?.camera ?? (needsMask ? 2 : 1);
+  const sourceOf = (style: AvatarStyle): number => (style.background === "remove" ? maskIn : cameraIn);
+  const users = new Map<number, number>();
+  for (const layer of layers) users.set(sourceOf(layer.style), (users.get(sourceOf(layer.style)) ?? 0) + 1);
+  const taken = new Map<number, number>();
+  let graph = screen;
+  for (const [index, count] of users) {
+    graph +=
+      count === 1
+        ? `[${index}:v]null[src${index}_0];`
+        : `[${index}:v]split=${count}${Array.from({ length: count }, (_, k) => `[src${index}_${k}]`).join("")};`;
+  }
+
+  let current = screenIn;
+  layers.forEach((layer, k) => {
+    const { style } = layer;
+    const index = sourceOf(style);
+    const n = taken.get(index) ?? 0;
+    taken.set(index, n + 1);
+    const src = `[src${index}_${n}]`;
+    const crop = style.crop;
+    const targetWidth = Math.max(2, Math.round((width * style.width) / 2) * 2);
+    const offsetSec = camera.offsetSec + (style.syncOffsetSec ?? 0);
+    const timing =
+      `trim=start=${Math.max(0, -offsetSec).toFixed(6)},setpts=PTS-STARTPTS+${Math.max(0, offsetSec).toFixed(6)}/TB` +
+      // A span's presenter is only ever shown inside its window, so it
+      // need not be scaled and masked for the rest of the take.
+      (layer.trim === null ? "" : `,trim=start=${layer.trim.start.toFixed(3)}:end=${layer.trim.end.toFixed(3)}`);
+    graph +=
+      style.background === "remove"
+        ? `${src}split=2[color${k}][mask${k}];[color${k}]crop=iw/2:ih:0:0[rgb${k}];[mask${k}]crop=iw/2:ih:iw/2:0,format=gray${presenterEdgeFilter(style)}[alpha${k}];[rgb${k}][alpha${k}]alphamerge[person${k}];`
+        : `${src}format=rgba[person${k}];`;
+    const shape = style.background === "remove" ? "" : presenterShapeFilter(style);
+    graph +=
+      `[person${k}]${timing},crop=iw*${crop.width}:ih*${crop.height}:iw*${crop.x}:ih*${crop.y},` +
+      `${style.mirror ? "hflip," : ""}scale=${targetWidth}:-2${shape}[avatar${k}];`;
+    const next = `[stage${k}]`;
+    graph +=
+      `${current}[avatar${k}]overlay=x=${Math.round(width * style.x)}:y=${Math.round(height * style.y)}:eof_action=pass:repeatlast=0:shortest=0` +
+      `${layer.enable === null ? "" : `:enable='${layer.enable}'`}${next};`;
+    current = next;
+  });
+  return `${graph}${current}format=yuv420p[out]`;
+}
+
+/**
+ * The cut-out's edge ramp (`presenterMaskRamp`) over the confidence mask,
+ * the curve the stage applies per pixel. Empty at edge 0, where the mask
+ * is used as the model wrote it.
+ */
+export function presenterEdgeFilter(style: AvatarStyle): string {
+  const { low, high } = presenterMaskRamp(style);
+  if (low <= 0 && high >= 1) return "";
+  const l = (low * 255).toFixed(2);
+  const span = ((high - low) * 255).toFixed(2);
+  return `,lut=c0='clip((val-${l})*255/${span},0,255)'`;
 }
 
 /**
@@ -262,39 +356,45 @@ export async function prepareAvatarVideo(
   const source = record.legacy_src_path;
   if (!source) throw new Error("Recording source missing");
   const camera = record.video?.camera;
-  const style = AvatarStyleSchema.parse(
-    resolveRecordPresenter(record, override, canvas),
-  );
-  if (!camera || !style.visible) return source;
-  const offset = camera.offsetSec + (style.syncOffsetSec ?? 0);
-  if (offset + camera.durationSec <= 0 || offset >= record.video!.durationSec)
-    return source;
-  const key = avatarCacheKey(record, style, canvas);
+  const layers = presenterLayersFor(record, override, canvas);
+  const base = AvatarStyleSchema.parse(layers.base);
+  const shown = [base, ...layers.spans.map((span) => span.style)].filter((style) => style.visible);
+  if (!camera || shown.length === 0) return source;
+  // Nothing to draw when no visible presenter's camera overlaps the take.
+  const overlaps = shown.some((style) => {
+    const offset = camera.offsetSec + (style.syncOffsetSec ?? 0);
+    return offset + camera.durationSec > 0 && offset < record.video!.durationSec;
+  });
+  if (!overlaps) return source;
+  const key = avatarCacheKey(record, layers, canvas);
   return runGatedCacheWrite(record.id, `avatar-${key}`, async (signal) => {
     const directory = join(getCacheRoot(), "video", record.id);
     const path = join(directory, `avatar-${key}.mp4`);
     if (await exists(path)) return path;
     await mkdir(directory, { recursive: true });
-    const cameraSource =
-      style.background === "remove"
-        ? await prepareMask(record, directory, signal)
-        : await resolveCameraSource(source, record.id);
-    if (!cameraSource) throw new Error("The original camera track is missing.");
+    const needsMask = shown.some((style) => style.background === "remove");
+    const needsCamera = shown.some((style) => style.background !== "remove");
+    const maskSource = needsMask ? await prepareMask(record, directory, signal) : null;
+    const cameraSource = needsCamera ? await resolveCameraSource(source, record.id) : null;
+    if (needsCamera && !cameraSource) throw new Error("The original camera track is missing.");
+    const inputs = [source, ...(maskSource ? [maskSource] : []), ...(cameraSource ? [cameraSource] : [])];
     const staging = `${path}.partial.mp4`;
     try {
       const run = ffmpegRun(
         [
-          "-i",
-          source,
-          "-i",
-          cameraSource,
+          ...inputs.flatMap((file) => ["-i", file]),
           "-filter_complex",
           avatarCompositionFilter({
             camera,
-            style,
+            style: base,
+            spans: layers.spans,
             width: canvas?.width ?? record.width_px,
             height: canvas?.height ?? record.height_px,
             normalizeScreen: canvas !== undefined,
+            inputs: {
+              ...(maskSource ? { mask: 1 } : {}),
+              ...(cameraSource ? { camera: maskSource ? 2 : 1 } : {}),
+            },
           }),
           "-map",
           "[out]",

@@ -1,7 +1,7 @@
-import { AvatarStyleSchema, RecordingCameraSchema } from "@pwrsnap/shared";
+import { AvatarStyleSchema, PresenterSpansSchema, RecordingCameraSchema } from "@pwrsnap/shared";
 import { acceptCameraChunk } from "../recording/camera-recording";
 import { prepareAvatarVideo } from "../recording/avatar-video";
-import { setVideoAvatar } from "../persistence/video-repo";
+import { setVideoAvatar, setVideoAvatarSpans } from "../persistence/video-repo";
 // Command-bus handlers for the `permissions:*`, `recording:*`, and
 // `video:*` namespaces. Splits cleanly off settings-handlers and
 // capture-handlers because:
@@ -612,10 +612,20 @@ export function registerRecordingHandlers(): void {
     return ok(capture && !capture.deleted_at && camera ? { camera, url: `pwrsnap-capture://c/${capture.id}` } : null);
   });
   bus.register("video:setAvatar", async req => {
-    const avatar = AvatarStyleSchema.safeParse(req.avatar);
     const capture = getCaptureById(req.captureId);
-    if (!avatar.success || !capture?.video?.camera || capture.deleted_at) return err(validationError("invalid_avatar", "Choose a recording with a camera and valid avatar settings."));
-    setVideoAvatar(capture.id, avatar.data);
+    const avatar = req.avatar === undefined ? undefined : AvatarStyleSchema.safeParse(req.avatar);
+    const spans = req.spans === undefined ? undefined : PresenterSpansSchema.safeParse(req.spans);
+    if (
+      (avatar === undefined && spans === undefined) ||
+      avatar?.success === false ||
+      spans?.success === false ||
+      !capture?.video?.camera ||
+      capture.deleted_at
+    ) {
+      return err(validationError("invalid_avatar", "Choose a recording with a camera and valid presenter settings."));
+    }
+    if (avatar?.success) setVideoAvatar(capture.id, avatar.data);
+    if (spans?.success) setVideoAvatarSpans(capture.id, spans.data, capture.video.durationSec);
     broadcastCapturesChanged([capture.id]);
     return ok({ saved: true as const });
   });

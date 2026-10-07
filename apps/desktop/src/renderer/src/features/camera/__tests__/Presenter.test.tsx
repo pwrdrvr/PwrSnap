@@ -11,7 +11,15 @@ import {
 } from "@pwrsnap/shared";
 import { CAMERA_LANE_H, CameraLane, cameraStripCells, type CameraLaneModel } from "../CameraLane";
 import { PresenterLayer, type PresenterEditing } from "../PresenterLayer";
-import { applyPresenterAction, presenterKeyAction } from "../usePresenter";
+import { applyPresenterAction, presenterKeyAction, usePresenter, type PresenterState } from "../usePresenter";
+import { createPlayheadSource } from "../../shared/playhead";
+import { PresenterToolbar } from "../PresenterToolbar";
+
+const bridge = vi.hoisted(() => ({ dispatch: vi.fn() }));
+vi.mock("../../../lib/pwrsnap", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../lib/pwrsnap")>()),
+  dispatch: bridge.dispatch
+}));
 import { ScenePresenterField } from "../ScenePresenterField";
 
 beforeAll(() => {
@@ -292,5 +300,131 @@ describe("ScenePresenterField", () => {
     expect(el.querySelector(".pres-badge")?.textContent).toBe("This scene");
     act(() => el.querySelector<HTMLButtonElement>("[data-testid=scene-presenter-inherit]")!.click());
     expect(onChange).toHaveBeenLastCalledWith(null);
+  });
+});
+
+describe("a presenter per piece", () => {
+  // Two kept pieces: 0–4 s and 4–10 s (a split at 4).
+  const segments = [
+    { start: 0, end: 4 },
+    { start: 4, end: 10 }
+  ];
+  const own = { ...defaultPresenterStyle(geometry), x: 0.05 };
+  const withSpans = (spans: unknown[]) =>
+    ({ ...capture, video: { ...capture.video, durationSec: 10, avatarSpans: spans } }) as unknown as CaptureRecord;
+
+  function harness(record: CaptureRecord, at: number) {
+    const playhead = createPlayheadSource(at);
+    const timeline = { segments, durationSec: 10, subscribe: playhead.subscribe, now: playhead.get };
+    const state: { current: PresenterState | null } = { current: null };
+    function Probe({ r }: { r: CaptureRecord }): null {
+      state.current = usePresenter(r, timeline);
+      return null;
+    }
+    mount(createElement(Probe, { r: record }));
+    return { state, playhead };
+  }
+  const sent = () => bridge.dispatch.mock.calls.at(-1)?.[1] as { avatar?: AvatarStyle; spans?: Array<{ start: number; end: number; avatar: AvatarStyle }> };
+
+  beforeEach(() => {
+    bridge.dispatch.mockReset();
+    bridge.dispatch.mockResolvedValue({ ok: true, value: { saved: true } });
+  });
+
+  test("an edit lands on the piece under the playhead, not the recording", () => {
+    const { state } = harness(withSpans([]), 6);
+    expect(state.current!.editing.tag).toBe("Presenter · this piece");
+    act(() => state.current!.act({ type: "place", anchor: { h: "left", v: "top" } }));
+    const req = sent();
+    expect(req.avatar).toBeUndefined();
+    expect(req.spans).toHaveLength(1);
+    expect([req.spans![0]!.start, req.spans![0]!.end]).toEqual([4, 10]);
+    expect(req.spans![0]!.avatar.x).toBeLessThan(0.1);
+  });
+
+  test("the presenter changes as the playhead crosses into a piece with its own", () => {
+    const { state, playhead } = harness(withSpans([{ start: 4, end: 10, avatar: own }]), 1);
+    expect(state.current!.style.x).toBeGreaterThan(0.5);
+    expect(state.current!.editing.inheritable).toBe(false);
+    act(() => playhead.set(5));
+    expect(state.current!.style.x).toBe(0.05);
+    expect(state.current!.editing.inheritable).toBe(true);
+    // "Use the recording's presenter here" gives the piece back.
+    act(() => state.current!.act({ type: "inherit" }));
+    expect(sent().spans).toEqual([]);
+  });
+
+  test("All changes the recording's presenter and every piece's", () => {
+    const { state } = harness(withSpans([{ start: 4, end: 10, avatar: own }]), 1);
+    act(() => state.current!.editing.scope!.onChange("all"));
+    expect(state.current!.editing.tag).toBe("Presenter · all pieces");
+    act(() => state.current!.act({ type: "mirror" }));
+    const req = sent();
+    expect(req.avatar?.mirror).toBe(true);
+    expect(req.spans![0]!.avatar.mirror).toBe(true);
+    // Each keeps its own place.
+    expect(req.spans![0]!.avatar.x).toBe(0.05);
+  });
+
+  test("a drag in All moves only what was dragged", () => {
+    const { state } = harness(withSpans([{ start: 4, end: 10, avatar: own }]), 1);
+    act(() => state.current!.editing.scope!.onChange("all"));
+    const shown = state.current!.style;
+    act(() => state.current!.editing.onChange({ ...shown, width: 0.3 }));
+    const req = sent();
+    expect(req.avatar?.width).toBe(0.3);
+    expect(req.spans![0]!.avatar).toMatchObject({ width: 0.3, x: 0.05 });
+  });
+
+  test("one piece and no spans: no scope, edits change the recording's presenter", () => {
+    const playhead = createPlayheadSource(1);
+    const state: { current: PresenterState | null } = { current: null };
+    function Probe(): null {
+      state.current = usePresenter(withSpans([]), {
+        segments: [{ start: 0, end: 10 }],
+        durationSec: 10,
+        subscribe: playhead.subscribe,
+        now: playhead.get
+      });
+      return null;
+    }
+    mount(createElement(Probe));
+    expect(state.current!.editing.scope).toBeUndefined();
+    act(() => state.current!.act({ type: "mirror" }));
+    expect(sent().avatar?.mirror).toBe(true);
+    expect(sent().spans).toBeUndefined();
+  });
+});
+
+describe("toolbar scope and edge", () => {
+  test("shows This piece / All once there are pieces, and Edge for a cut-out only", () => {
+    const onAction = vi.fn();
+    const onScope = vi.fn();
+    const style = defaultPresenterStyle(geometry);
+    const el = mount(
+      createElement(PresenterToolbar, {
+        style,
+        geometry,
+        menuSide: "down",
+        onAction,
+        scope: { value: "piece", onChange: onScope }
+      })
+    );
+    act(() => el.querySelector<HTMLButtonElement>("[data-testid=presenter-scope-all]")!.click());
+    expect(onScope).toHaveBeenCalledWith("all");
+    act(() => el.querySelector<HTMLButtonElement>("[data-testid=presenter-edge]")!.click());
+    const range = el.querySelector<HTMLInputElement>("[data-testid=presenter-edge-range]")!;
+    expect(document.activeElement).toBe(range);
+    expect(range.value).toBe("50");
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(range, "90");
+      range.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(onAction).toHaveBeenCalledWith({ type: "edge", edge: 0.9 });
+
+    act(() => root!.render(createElement(PresenterToolbar, { style: { ...style, background: "original" }, geometry, menuSide: "down", onAction })));
+    expect(el.querySelector("[data-testid=presenter-edge]")).toBeNull();
+    expect(el.querySelector("[data-testid=presenter-scope]")).toBeNull();
   });
 });

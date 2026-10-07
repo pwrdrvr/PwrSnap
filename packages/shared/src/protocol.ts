@@ -1,4 +1,4 @@
-import type { AvatarStyle, CameraTrackMetadata, RecordingCamera } from "./camera";
+import type { AvatarStyle, CameraTrackMetadata, PresenterSpan, RecordingCamera } from "./camera";
 import type { CustomConnection, CustomConnectionInput, CustomModel, CustomModelDiscovery, CustomModelInput } from "./custom-models";
 // Typed `Commands` registry. Single source of truth across main /
 // preload / renderer / external transports (HTTP RPC in Phase 7, MCP
@@ -176,6 +176,9 @@ export type CaptureFamilySummary = {
 export type VideoCaptureMetadata = {
   camera?: CameraTrackMetadata | null;
   avatar?: AvatarStyle | null;
+  /** Stretches of source time with their own presenter; `avatar` shows
+   *  everywhere else. See `presenter-spans.ts`. */
+  avatarSpans?: PresenterSpan[] | undefined;
   durationSec: number;
   containerFormat: "mp4" | "mov";
   hasSystemAudio: boolean;
@@ -5177,7 +5180,9 @@ export type Commands = {
     res: { url: string; camera: CameraTrackMetadata } | null;
   };
   "video:setAvatar": {
-    req: { captureId: string; avatar: AvatarStyle };
+    /** Either or both: the recording's presenter, and the whole list of
+     *  spans with their own (replaces the stored list). */
+    req: { captureId: string; avatar?: AvatarStyle | undefined; spans?: PresenterSpan[] | undefined };
     res: { saved: true };
   };
   /** Main-process scene preparation. The video/cache owner resolves the

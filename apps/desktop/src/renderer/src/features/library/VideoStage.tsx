@@ -498,7 +498,11 @@ export function VideoStage({
     [currentTime, durationSec, pause, play, playing, seek, setRange, setSegments, shuttle]
   );
 
-  const presenter = usePresenter(record);
+  const presenterTimeline = useMemo(
+    () => ({ segments, durationSec, subscribe: playhead.subscribe, now: playhead.get }),
+    [segments, durationSec, playhead]
+  );
+  const presenter = usePresenter(record, presenterTimeline);
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
     if (isTextEntryTarget(e.target)) return;

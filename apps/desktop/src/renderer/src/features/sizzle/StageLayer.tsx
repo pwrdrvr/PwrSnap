@@ -1,6 +1,7 @@
 import { useMemo } from "react";
-import { PresenterLayer } from "../camera/PresenterLayer";
+import { PresenterLayer, type PresenterEditing } from "../camera/PresenterLayer";
 import { useActivePresenterSpan, videoTimeSubscribe } from "../camera/useActivePresenterSpan";
+import { applyPresenterAction } from "../camera/usePresenter";
 import { geometryFor, resolvePresenterStyle, type AvatarStyle } from "@pwrsnap/shared";
 // One layer of a preview stage: the picture for a clip, plus the CSS
 // animations that make it move.
@@ -63,9 +64,13 @@ export function StageLayer({
   videoRef,
   posterStartSec,
   dataBeat,
-  testId
+  testId,
+  presenterEdit
 }: {
   avatar?: AvatarStyle | undefined;
+  /** Set only while this scene's presenter can be edited on the stage
+   *  (the paused, settled outgoing layer). */
+  presenterEdit?: ScenePresenterEdit | undefined;
   role: "outgoing" | "incoming";
   captureId: string;
   capture: CaptureRecord | null;
@@ -148,6 +153,7 @@ export function StageLayer({
           videoRef={videoRef}
           avatar={avatar}
           time={posterStartSec ?? 0}
+          edit={presenterEdit}
         />
       )}
     </div>
@@ -160,18 +166,29 @@ function isMissing(captureId: string): boolean {
   return captureId.trim().length === 0;
 }
 
+/** Editing a scene's presenter on the reel stage. Every change lands on
+ *  the SCENE's own presenter, never the recording's; `null` gives the
+ *  scene back to the recording. */
+export type ScenePresenterEdit = {
+  readonly selected: boolean;
+  readonly onSelect: (selected: boolean) => void;
+  readonly onChange: (avatar: AvatarStyle | null) => void;
+};
+
 /** A scene's presenter: its own when it has one; otherwise the
  *  recording's, piece by piece, following the clip's source time. */
 function ScenePresenter({
   capture,
   videoRef,
   avatar,
-  time
+  time,
+  edit
 }: {
   readonly capture: CaptureRecord;
   readonly videoRef: RefObject<HTMLVideoElement | null> | undefined;
   readonly avatar: AvatarStyle | undefined;
   readonly time: number;
+  readonly edit: ScenePresenterEdit | undefined;
 }): ReactElement | null {
   const camera = capture.video?.camera;
   const spans = useMemo(
@@ -182,13 +199,34 @@ function ScenePresenter({
   const active = useActivePresenterSpan(spans, subscribe, time);
   if (!camera) return null;
   const stored = avatar ?? spans[active]?.avatar ?? capture.video?.avatar;
+  const geometry = geometryFor(camera, { width: 16, height: 9 });
+  const style = resolvePresenterStyle(stored, geometry);
+  const editing: PresenterEditing | undefined =
+    edit === undefined
+      ? undefined
+      : {
+          selected: edit.selected,
+          onSelect: edit.onSelect,
+          // The first edit copies what shows — the recording's presenter,
+          // or the piece's — into the scene.
+          onChange: (next) => edit.onChange(next),
+          onAction: (action) => {
+            const next = applyPresenterAction(style, action, geometry);
+            if (action.type === "toggleVisible" && next !== null && !next.visible) edit.onSelect(false);
+            edit.onChange(next);
+          },
+          inheritable: avatar !== undefined,
+          inheritLabel: "Use the recording’s presenter in this scene",
+          tag: "Presenter · this scene"
+        };
   return (
     <PresenterLayer
       fit="canvas"
       capture={capture}
       {...(videoRef !== undefined ? { videoRef } : {})}
-      style={resolvePresenterStyle(stored, geometryFor(camera, { width: 16, height: 9 }))}
+      style={style}
       time={time}
+      editing={editing}
     />
   );
 }

@@ -22,6 +22,7 @@ vi.mock("../../../lib/pwrsnap", async (importOriginal) => ({
   dispatch: bridge.dispatch
 }));
 import { ScenePresenterField } from "../ScenePresenterField";
+import { StageLayer } from "../../sizzle/StageLayer";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -453,5 +454,68 @@ describe("toolbar scope and edge", () => {
     act(() => root!.render(createElement(PresenterToolbar, { style: { ...style, background: "original" }, geometry, menuSide: "down", onAction })));
     expect(el.querySelector("[data-testid=presenter-edge]")).toBeNull();
     expect(el.querySelector("[data-testid=presenter-scope]")).toBeNull();
+  });
+});
+
+describe("the presenter on the reel stage", () => {
+  function stage(over: { avatar?: AvatarStyle; selected?: boolean; onChange?: (a: AvatarStyle | null) => void; onSelect?: (s: boolean) => void; editable?: boolean }) {
+    return createElement(StageLayer, {
+      role: "outgoing",
+      captureId: capture.id,
+      capture,
+      avatar: over.avatar,
+      kenBurns: null,
+      kenBurnsDurationSec: 1,
+      kenBurnsElapsedSec: 0,
+      blend: null,
+      playing: false,
+      dataBeat: "b1",
+      testId: "stage",
+      presenterEdit:
+        over.editable === false
+          ? undefined
+          : {
+              selected: over.selected ?? false,
+              onSelect: over.onSelect ?? (() => undefined),
+              onChange: over.onChange ?? (() => undefined)
+            }
+    });
+  }
+
+  test("pressing it selects it; an edit writes the scene's own presenter", () => {
+    const onSelect = vi.fn();
+    const onChange = vi.fn();
+    const el = mount(stage({ onSelect, onChange }));
+    const obj = el.querySelector("[data-testid=presenter-object]")!;
+    pointer(obj, "pointerdown", 700, 450);
+    pointer(obj, "pointerup", 700, 450);
+    expect(onSelect).toHaveBeenCalledWith(true);
+
+    act(() => root!.render(stage({ selected: true, onChange })));
+    expect(el.querySelector(".pres-sel__tag")?.textContent).toBe("Presenter · this scene");
+    act(() => el.querySelector<HTMLButtonElement>("[data-testid=presenter-mirror]")!.click());
+    const written = onChange.mock.calls.at(-1)?.[0] as AvatarStyle;
+    expect(written.mirror).toBe(!defaultPresenterStyle({ cameraAspect: 16 / 9, canvasAspect: 16 / 9 }).mirror);
+  });
+
+  test("a scene with its own presenter can give it back to the recording", () => {
+    const onChange = vi.fn();
+    const own = { ...defaultPresenterStyle({ cameraAspect: 16 / 9, canvasAspect: 16 / 9 }), x: 0.05 };
+    const el = mount(stage({ avatar: own, selected: true, onChange }));
+    const more = el.querySelector<HTMLButtonElement>("[data-testid=presenter-more]")!;
+    act(() => more.click());
+    const back = [...el.querySelectorAll<HTMLElement>("[role=menuitem]")].find((item) =>
+      item.textContent?.includes("Use the recording’s presenter in this scene")
+    );
+    expect(back).toBeDefined();
+    act(() => back!.click());
+    expect(onChange).toHaveBeenLastCalledWith(null);
+  });
+
+  test("while playing (no edit handle) it is only shown", () => {
+    const el = mount(stage({ editable: false }));
+    const obj = el.querySelector("[data-testid=presenter-object]");
+    if (obj !== null) pointer(obj, "pointerdown", 700, 450);
+    expect(el.querySelector("[data-testid=presenter-toolbar]")).toBeNull();
   });
 });

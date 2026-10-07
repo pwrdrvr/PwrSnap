@@ -136,8 +136,9 @@ consumer cancelling while another still needs them. Cache cleanup aborts and
 drains these jobs in the owning process before removing their files.
 Crop, placement, size, mirror, background, outline shape, visibility and sync
 adjustment are data: a Library default and optional independent overrides on
-each reel scene. A scene inherits the recording's presenter until it is edited
-in the scene inspector. Within one recording, a kept piece (between splits)
+each reel scene. A scene inherits the recording's presenter until it is edited,
+in the scene inspector or on the paused reel stage; either writes the scene's
+own copy. Within one recording, a kept piece (between splits)
 can carry its own presenter: these are source-time spans stored apart from
 the cut list, so re-trimming never re-times them, and outside any span the
 recording's presenter shows. Scene overrides replace both. A cut-out's edge

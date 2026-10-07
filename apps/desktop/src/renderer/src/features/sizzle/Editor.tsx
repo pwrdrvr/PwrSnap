@@ -507,6 +507,7 @@ export function Editor(props: EditorProps): ReactElement {
           renderDisabled={rendering || project.scenes.length === 0 || unscriptedSceneNumber !== null}
           renderTitle={renderTitle}
           onRender={onRender}
+          onScenePresenter={(sceneId, avatar) => onScenes(setScenePresenter(project.scenes, sceneId, avatar))}
         />
       ) : null}
 

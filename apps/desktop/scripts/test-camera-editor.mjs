@@ -36,6 +36,7 @@ try {
 import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { VideoStage } from './src/features/library/VideoStage';
+import { EditHistory } from './src/features/shared/edit-history';
 import './src/styles/tokens.css';
 import './src/styles/video-timeline.css';
 const video = { durationSec: 5, containerFormat: 'mp4', hasSystemAudio: false,
@@ -43,6 +44,7 @@ const video = { durationSec: 5, containerFormat: 'mp4', hasSystemAudio: false,
   defaultRange: {start:0,end:5}, segments:[{start:0,end:5}], previewStatus:'ready',previewPath:null,
   camera:{version:1,durationSec:8,width:640,height:360,offsetSec:-3,mimeType:'video/mp4',sha256:'a'.repeat(64)},
   avatar:{visible:true,background:'original',x:0.72,y:0.72,width:0.26,mirror:true,crop:{x:0,y:0,width:1,height:1}} };
+const history = new EditHistory();
 function App() {
   const [record,setRecord]=useState({id:'fixture',kind:'video',width_px:640,height_px:360,video});
   const [segments,setSegments]=useState(video.segments);
@@ -52,7 +54,7 @@ function App() {
   }};
   return <div style={{width:1000,height:740,margin:16,color:'var(--text-primary)'}}>
     <VideoStage record={record} video={record.video} trim={{range:video.defaultRange,segments,
-      setRange:()=>{},setSegments, pending:false,canUndo:false,canRedo:false,undo:()=>{},redo:()=>{}}}/>
+      setRange:()=>{},setSegments, pending:false,canUndo:false,canRedo:false,undo:()=>{},redo:()=>{},history}}/>
   </div>;
 }
 createRoot(document.getElementById('root')).render(<App/>);`;

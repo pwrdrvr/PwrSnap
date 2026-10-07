@@ -404,6 +404,37 @@ describe("a presenter per piece", () => {
     expect(history.canRedo()).toBe(false);
   });
 
+  test("a refused save leaves nothing to undo", async () => {
+    const history = new EditHistory();
+    const { state } = harness(withSpans([]), 6, history);
+    bridge.dispatch.mockResolvedValueOnce({ ok: false, error: { kind: "validation", code: "x", message: "Refused" } });
+    act(() => state.current!.act({ type: "mirror" }));
+    expect(history.canUndo()).toBe(true);
+    await act(async () => {});
+    expect(state.current!.error).toBe("Refused");
+    expect(state.current!.style.mirror).toBe(false);
+    expect(history.canUndo()).toBe(false);
+  });
+
+  test("a refused undo keeps its step, so ⌘Z can try it again", async () => {
+    const history = new EditHistory();
+    const { state } = harness(withSpans([]), 6, history);
+    act(() => state.current!.act({ type: "mirror" }));
+    await act(async () => {});
+    bridge.dispatch.mockRejectedValueOnce(new Error("Gone"));
+    act(() => history.undo());
+    expect(history.canRedo()).toBe(true);
+    await act(async () => {});
+    expect(state.current!.error).toBe("Gone");
+    expect(history.canUndo()).toBe(true);
+    expect(history.canRedo()).toBe(false);
+    act(() => history.undo());
+    await act(async () => {});
+    expect(sent().spans).toEqual([]);
+    expect(history.canUndo()).toBe(false);
+    expect(history.canRedo()).toBe(true);
+  });
+
   test("one piece and no spans: no scope, edits change the recording's presenter", () => {
     const playhead = createPlayheadSource(1);
     const state: { current: PresenterState | null } = { current: null };

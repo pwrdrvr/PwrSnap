@@ -181,24 +181,28 @@ export function usePresenter(
     [active, base, geometry]
   );
 
+  /** Send a change. `onFailed` runs when it was refused or never
+   *  arrived, after the optimistic copy is dropped. */
   const write = useCallback(
-    (next: { avatar?: AvatarStyle; spans?: PresenterSpan[] }): void => {
+    (next: { avatar?: AvatarStyle; spans?: PresenterSpan[] }, onFailed?: () => void): void => {
       if (next.avatar) setPending(next.avatar);
       if (next.spans) setPendingSpans(next.spans);
+      const fail = (message: string): void => {
+        setPending(null);
+        setPendingSpans(null);
+        setError(message);
+        onFailed?.();
+      };
       void dispatch("video:setAvatar", { captureId: record.id, ...next })
         .then((result) => {
           if (result.ok) {
             setError("");
             return;
           }
-          setPending(null);
-          setPendingSpans(null);
-          setError(result.error.message);
+          fail(result.error.message);
         })
         .catch((cause: unknown) => {
-          setPending(null);
-          setPendingSpans(null);
-          setError(cause instanceof Error ? cause.message : "The presenter could not be saved.");
+          fail(cause instanceof Error ? cause.message : "The presenter could not be saved.");
         });
     },
     [record.id]
@@ -215,14 +219,26 @@ export function usePresenter(
   const save = useCallback(
     (next: { avatar?: AvatarStyle; spans?: PresenterSpan[] }): void => {
       const before = snapshotRef.current;
-      if (before !== null) {
-        const source = sourceRef.current;
-        const stamp = history && source ? history.stamp(source) : 0;
-        pastRef.current.push({ stamp, snapshot: before });
-        if (pastRef.current.length > PRESENTER_HISTORY_LIMIT) pastRef.current.shift();
-        futureRef.current = [];
+      if (before === null) {
+        write(next);
+        return;
       }
-      write(next);
+      const source = sourceRef.current;
+      const stamp = history && source ? history.stamp(source) : 0;
+      const entry: PresenterEntry = { stamp, snapshot: before };
+      const future = futureRef.current;
+      pastRef.current.push(entry);
+      if (pastRef.current.length > PRESENTER_HISTORY_LIMIT) pastRef.current.shift();
+      futureRef.current = [];
+      // A refused save changed nothing, so it must not leave a step that
+      // would "undo" to what already shows. Its own redo comes back too;
+      // other stacks' redo, dropped by the stamp, stays dropped.
+      write(next, () => {
+        const at = pastRef.current.indexOf(entry);
+        if (at === -1) return;
+        pastRef.current.splice(at, 1);
+        if (futureRef.current.length === 0) futureRef.current = future;
+      });
     },
     [history, write]
   );
@@ -230,11 +246,20 @@ export function usePresenter(
   useEffect(() => {
     if (!history) return;
     const step = (from: { current: PresenterEntry[] }, to: { current: PresenterEntry[] }): void => {
-      const entry = from.current.pop();
+      const entry = from.current.at(-1);
       const now = snapshotRef.current;
       if (entry === undefined || now === null) return;
-      to.current.push({ stamp: entry.stamp, snapshot: now });
-      write({ avatar: entry.snapshot.avatar, spans: entry.snapshot.spans });
+      from.current.pop();
+      const crossed: PresenterEntry = { stamp: entry.stamp, snapshot: now };
+      to.current.push(crossed);
+      // A refused undo or redo left the presenter where it was: put the
+      // step back where it came from, so the next ⌘Z tries it again.
+      write({ avatar: entry.snapshot.avatar, spans: entry.snapshot.spans }, () => {
+        const at = to.current.indexOf(crossed);
+        if (at === -1) return;
+        to.current.splice(at, 1);
+        from.current.push(entry);
+      });
     };
     const source: EditHistorySource = {
       pastStamp: () => pastRef.current.at(-1)?.stamp,

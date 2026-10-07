@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.1.17 - 2026-10-06
+
+This release adds easier window trimming and more control over recent captures,
+and makes everyday menu actions easier to find.
+
+- Window Capture - Added edge and corner resize handles to a selected window,
+  letting you trim its capture from the exact window bounds instead of drawing
+  a new region.
+- Recent Captures - Fixed recent captures disappearing from the screen-edge
+  sidebar when AI enrichment is unavailable or fails, keeping them accessible
+  after the popup closes.
+- Recent Captures - Added a General setting to show or hide the screen-edge
+  sidebar without deleting captures or changing background AI processing.
+- App Menus - Improved menu organization across platforms and added Copy
+  Diagnostics Info for support, View License, and Reload Window outside
+  Developer Mode. Windows also gains Close Window and an open-window list.
+
 ## v1.1.16 - 2026-10-06
 
 This patch makes the Library detail rail and prerelease update checks more predictable.

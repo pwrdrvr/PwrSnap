@@ -32,3 +32,21 @@
 export function retryQuitAfterDispatch(quit: () => void): void {
   setImmediate(quit);
 }
+
+/** Enter normal cleanup, but bound a quit that a listener can indefinitely defer. */
+export function quitWithExitFailSafe(
+  app: {
+    quit(): void;
+    exit(exitCode?: number): void;
+    on(event: "quit", listener: () => void): unknown;
+  },
+  options: { afterMs: number; warn: (message: string) => void }
+): void {
+  // Arm before asking to quit: even a synchronous successful quit must cancel it.
+  const timer = setTimeout(() => {
+    options.warn(`quit had not completed after ${options.afterMs} ms; exiting`);
+    app.exit(0);
+  }, options.afterMs);
+  app.on("quit", () => clearTimeout(timer));
+  app.quit();
+}

@@ -93,11 +93,11 @@ afterEach(() => {
   }
 });
 
-function mountStage(reel: boolean): HTMLElement {
+async function mountStage(reel: boolean): Promise<HTMLElement> {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
-  act(() => {
+  await act(async () => {
     root!.render(createElement(VideoStage, { record, video, trim, reel }));
   });
   const stage = container.querySelector<HTMLElement>('[data-testid="video-stage"]');
@@ -109,7 +109,7 @@ function mountStage(reel: boolean): HTMLElement {
  *  `setRange` feeds a new range back through props the way the real
  *  Library-level `useVideoTrimRange` does. Needed by anything that
  *  depends on the stage seeing a committed range change. */
-function mountStatefulStage(initialRange = { start: 0, end: 10 }): HTMLElement {
+async function mountStatefulStage(initialRange = { start: 0, end: 10 }): Promise<HTMLElement> {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -128,7 +128,7 @@ function mountStatefulStage(initialRange = { start: 0, end: 10 }): HTMLElement {
     current = next;
     paint();
   }
-  act(() => paint());
+  await act(async () => paint());
   const stage = container.querySelector<HTMLElement>('[data-testid="video-stage"]');
   if (stage === null) throw new Error("video stage did not render");
   return stage;
@@ -157,29 +157,29 @@ function pressArrowRight(): boolean {
 }
 
 describe("VideoStage keyboard ownership", () => {
-  test("Reel mode: does not steal focus on mount", () => {
-    const stage = mountStage(true);
+  test("Reel mode: does not steal focus on mount", async () => {
+    const stage = await mountStage(true);
     expect(document.activeElement).not.toBe(stage);
     expect(stage.contains(document.activeElement)).toBe(false);
   });
 
-  test("Reel mode: ArrowRight is not swallowed — capture navigation still fires", () => {
-    mountStage(true);
+  test("Reel mode: ArrowRight is not swallowed — capture navigation still fires", async () => {
+    await mountStage(true);
     expect(pressArrowRight()).toBe(true);
   });
 
-  test("Focus mode: autofocuses the stage on mount", () => {
-    const stage = mountStage(false);
+  test("Focus mode: autofocuses the stage on mount", async () => {
+    const stage = await mountStage(false);
     expect(document.activeElement).toBe(stage);
   });
 
-  test("Focus mode: ArrowRight is swallowed by the transport (frame step)", () => {
-    mountStage(false);
+  test("Focus mode: ArrowRight is swallowed by the transport (frame step)", async () => {
+    await mountStage(false);
     expect(pressArrowRight()).toBe(false);
   });
 
-  test("Reel mode: clicking into the video arms the transport, and the arrows follow focus", () => {
-    const stage = mountStage(true);
+  test("Reel mode: clicking into the video arms the transport, and the arrows follow focus", async () => {
+    const stage = await mountStage(true);
     act(() => {
       stage.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
     });
@@ -233,10 +233,10 @@ describe("VideoStage timeline drag vs playback", () => {
     };
   }
 
-  test("pauses for the drag and resumes when it was playing", () => {
+  test("pauses for the drag and resumes when it was playing", async () => {
     const media = stubMedia();
     try {
-      const stage = mountStage(false);
+      const stage = await mountStage(false);
       // The stage tracks playback off the element's own events.
       act(() => {
         stage.querySelector("video")!.dispatchEvent(new Event("play"));
@@ -260,7 +260,7 @@ describe("VideoStage timeline drag vs playback", () => {
   // one tick, so resuming inline would test the head against the range
   // the user just abandoned and snap it to that in-point. The resume
   // has to wait for the commit.
-  test("Escape-cancel resumes against the restored range, not the abandoned one", () => {
+  test("Escape-cancel resumes against the restored range, not the abandoned one", async () => {
     const media = stubMedia();
     // jsdom has no layout; 800 px over a 10 s clip → 80 px per second.
     // Both boxes — see `stubRect` below for why.
@@ -279,7 +279,7 @@ describe("VideoStage timeline drag vs playback", () => {
       toJSON: () => ({})
     } as DOMRect);
     try {
-      const stage = mountStatefulStage();
+      const stage = await mountStatefulStage();
       const el = stage.querySelector("video")!;
       act(() => {
         el.dispatchEvent(new Event("play"));
@@ -307,10 +307,10 @@ describe("VideoStage timeline drag vs playback", () => {
     }
   });
 
-  test("a drag started while paused does not start playback on release", () => {
+  test("a drag started while paused does not start playback on release", async () => {
     const media = stubMedia();
     try {
-      const stage = mountStage(false);
+      const stage = await mountStage(false);
       const { inHandle, strip } = handles(stage);
       pointerOn(inHandle, "pointerdown", 10);
       pointerOn(strip, "pointermove", 40);
@@ -448,10 +448,10 @@ describe("VideoStage playhead loop", () => {
     vi.restoreAllMocks();
   });
 
-  test("advances the head and the timecode while playing", () => {
+  test("advances the head and the timecode while playing", async () => {
     stubRect(800);
     const raf = stubRaf();
-    const stage = mountStage(false);
+    const stage = await mountStage(false);
     const video = stage.querySelector("video")!;
     const clock = stubMediaClock(video);
 
@@ -472,10 +472,10 @@ describe("VideoStage playhead loop", () => {
   // compositor frame at every vsync — 120 Hz on a ProMotion display —
   // which measured MORE CPU than decoding and compositing the video.
   // See the rate constants in `VideoStage.tsx`.
-  test("publishes at most ~30 Hz, so vsync does not drive the compositor", () => {
+  test("publishes at most ~30 Hz, so vsync does not drive the compositor", async () => {
     stubRect(800);
     const raf = stubRaf();
-    const stage = mountStage(false);
+    const stage = await mountStage(false);
     const video = stage.querySelector("video")!;
     const clock = stubMediaClock(video);
 
@@ -504,10 +504,10 @@ describe("VideoStage playhead loop", () => {
   // Discrete jumps must never be swallowed by the throttle — the
   // picture snaps back at the out-point, so a head still drawing the
   // far end for a beat reads as a glitch.
-  test("the loop-in-range wrap places the head immediately", () => {
+  test("the loop-in-range wrap places the head immediately", async () => {
     stubRect(800);
     const raf = stubRaf();
-    const stage = mountStatefulStage({ start: 2, end: 6 });
+    const stage = await mountStatefulStage({ start: 2, end: 6 });
     const video = stage.querySelector("video")!;
     const clock = stubMediaClock(video);
 
@@ -526,10 +526,10 @@ describe("VideoStage playhead loop", () => {
   // A seek is user-driven and discrete: it goes through `publishTime`,
   // not the throttled playback path, so it lands on the frame it
   // happens on no matter where the throttle window sits.
-  test("a scrub during playback places the head immediately", () => {
+  test("a scrub during playback places the head immediately", async () => {
     stubRect(800);
     const raf = stubRaf();
-    const stage = mountStage(false);
+    const stage = await mountStage(false);
     const video = stage.querySelector("video")!;
     const clock = stubMediaClock(video);
 
@@ -556,10 +556,10 @@ describe("VideoStage playhead loop", () => {
 
   // rVFC fires once per DECODED frame, so it self-limits to the media
   // rate — there is no reason to move the head faster than the picture.
-  test("requestVideoFrameCallback drives the head when the element has it", () => {
+  test("requestVideoFrameCallback drives the head when the element has it", async () => {
     stubRect(800);
     const raf = stubRaf();
-    const stage = mountStage(false);
+    const stage = await mountStage(false);
     const video = stage.querySelector("video")!;
     const clock = stubMediaClock(video);
     const vfc = stubVideoFrameCallback(video);
@@ -586,10 +586,10 @@ describe("VideoStage playhead loop", () => {
   // head back at the in-point, and drawing its `mediaTime` would flick
   // the head to the far end. No magnitude heuristic survives a range
   // shorter than the threshold, and `MIN_RANGE_SEC` is 0.1 s.
-  test("a video frame published after a wrap draws the wrapped position", () => {
+  test("a video frame published after a wrap draws the wrapped position", async () => {
     stubRect(800);
     const raf = stubRaf();
-    const stage = mountStatefulStage({ start: 2, end: 2.1 });
+    const stage = await mountStatefulStage({ start: 2, end: 2.1 });
     const video = stage.querySelector("video")!;
     const clock = stubMediaClock(video);
     const vfc = stubVideoFrameCallback(video);
@@ -609,10 +609,10 @@ describe("VideoStage playhead loop", () => {
   // VFR screen recordings can go a long time between frames when
   // nothing on screen moved. The clock is still running, so the head
   // must not stall with it.
-  test("rAF covers a long gap between decoded frames", () => {
+  test("rAF covers a long gap between decoded frames", async () => {
     stubRect(800);
     const raf = stubRaf();
-    const stage = mountStage(false);
+    const stage = await mountStage(false);
     const video = stage.querySelector("video")!;
     const clock = stubMediaClock(video);
     const vfc = stubVideoFrameCallback(video);
@@ -627,10 +627,10 @@ describe("VideoStage playhead loop", () => {
     expect(headXOf(stage)).toBeCloseTo(240, 6);
   });
 
-  test("pausing cancels the video-frame callback too", () => {
+  test("pausing cancels the video-frame callback too", async () => {
     stubRect(800);
     stubRaf();
-    const stage = mountStage(false);
+    const stage = await mountStage(false);
     const video = stage.querySelector("video")!;
     stubMediaClock(video);
     const vfc = stubVideoFrameCallback(video);
@@ -643,10 +643,10 @@ describe("VideoStage playhead loop", () => {
     expect(vfc.cancelled()).toBe(true);
   });
 
-  test("loop-in-range still wraps the element back to the in-point", () => {
+  test("loop-in-range still wraps the element back to the in-point", async () => {
     stubRect(800);
     const raf = stubRaf();
-    const stage = mountStatefulStage({ start: 2, end: 6 });
+    const stage = await mountStatefulStage({ start: 2, end: 6 });
     const video = stage.querySelector("video")!;
     const clock = stubMediaClock(video);
 
@@ -664,20 +664,20 @@ describe("VideoStage playhead loop", () => {
   // For a real recording the rAF wrap threshold therefore sits past
   // where the media ends and is never reached — which used to leave
   // loop-in-range parked at the end after a single pass.
-  test("whole-clip loop-in-range loops on the element, not the rAF wrap", () => {
-    const stage = mountStage(false);
+  test("whole-clip loop-in-range loops on the element, not the rAF wrap", async () => {
+    const stage = await mountStage(false);
     // `video` above is the whole clip: durationSec 10, range [0, 10].
     expect(stage.querySelector("video")!.loop).toBe(true);
   });
 
-  test("a trimmed range does not take the element's loop", () => {
-    const stage = mountStatefulStage({ start: 2, end: 6 });
+  test("a trimmed range does not take the element's loop", async () => {
+    const stage = await mountStatefulStage({ start: 2, end: 6 });
     expect(stage.querySelector("video")!.loop).toBe(false);
   });
 
-  test("ended wraps a trimmed range whose out-point the wrap never reached", () => {
+  test("ended wraps a trimmed range whose out-point the wrap never reached", async () => {
     const raf = stubRaf();
-    const stage = mountStatefulStage({ start: 2, end: 10 });
+    const stage = await mountStatefulStage({ start: 2, end: 10 });
     const video = stage.querySelector("video")!;
     const clock = stubMediaClock(video);
     // Row says 10 s; the media really ends at 9.7 s, so `t >= 9.995`
@@ -699,8 +699,8 @@ describe("VideoStage playhead loop", () => {
   // Guard against the inverse: a range start PAST the media end clamps
   // straight back to the end and re-fires `ended`, so replaying there
   // spins (measured 61 ended / 62 play() in 6 s before this guard).
-  test("ended does not replay when the range start is past the media end", () => {
-    const stage = mountStatefulStage({ start: 5, end: 10 });
+  test("ended does not replay when the range start is past the media end", async () => {
+    const stage = await mountStatefulStage({ start: 5, end: 10 });
     const video = stage.querySelector("video")!;
     stubMediaClock(video);
     Object.defineProperty(video, "duration", { value: 2, configurable: true });
@@ -721,7 +721,7 @@ describe("VideoStage playhead loop", () => {
   test("a rejected play() still publishes the in-point snap", async () => {
     stubRect(800);
     stubRaf();
-    const stage = mountStatefulStage({ start: 2, end: 8 });
+    const stage = await mountStatefulStage({ start: 2, end: 8 });
     const video = stage.querySelector("video")!;
     const clock = stubMediaClock(video);
     vi.spyOn(HTMLMediaElement.prototype, "play").mockRejectedValue(new Error("decode failed"));
@@ -739,10 +739,10 @@ describe("VideoStage playhead loop", () => {
     expect(timecodeOf(stage)).toBe("0:02.0");
   });
 
-  test("pausing stops the loop and leaves the head where the element is", () => {
+  test("pausing stops the loop and leaves the head where the element is", async () => {
     stubRect(800);
     const raf = stubRaf();
-    const stage = mountStage(false);
+    const stage = await mountStage(false);
     const video = stage.querySelector("video")!;
     const clock = stubMediaClock(video);
 
@@ -764,11 +764,11 @@ describe("VideoStage cuts", () => {
   /** A stage whose trim holds segments the way the Library-level hook
    *  does, recording every commit and every undo. Mounted beside the
    *  window's edit-menu bridge, as `App` mounts it. */
-  function mountEditStage(initial: Seg[]): {
+  async function mountEditStage(initial: Seg[]): Promise<{
     stage: HTMLElement;
     commits: Seg[][];
     undos: () => number;
-  } {
+  }> {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -801,7 +801,7 @@ describe("VideoStage cuts", () => {
         })
       );
     }
-    act(() => paint());
+    await act(async () => paint());
     const stage = container.querySelector<HTMLElement>('[data-testid="video-stage"]');
     if (stage === null) throw new Error("video stage did not render");
     return { stage, commits, undos: () => undoCount };
@@ -848,8 +848,8 @@ describe("VideoStage cuts", () => {
     __resetEditMenuBridgeForTests();
   });
 
-  test("S splits at the playhead and X cuts the part under it", () => {
-    const { stage, commits } = mountEditStage([{ start: 0, end: 10 }]);
+  test("S splits at the playhead and X cuts the part under it", async () => {
+    const { stage, commits } = await mountEditStage([{ start: 0, end: 10 }]);
     const clock = clockOn(stage.querySelector("video")!);
     clock.t = 4;
     press(stage, "s");
@@ -868,9 +868,9 @@ describe("VideoStage cuts", () => {
     ]);
   });
 
-  test("playback always skips cuts; loop only decides wrap or stop at the out-point", () => {
+  test("playback always skips cuts; loop only decides wrap or stop at the out-point", async () => {
     const step = rafStepper();
-    const { stage } = mountEditStage([
+    const { stage } = await mountEditStage([
       { start: 0, end: 3 },
       { start: 6, end: 10 }
     ]);
@@ -903,8 +903,8 @@ describe("VideoStage cuts", () => {
     expect(pause).toHaveBeenCalled();
   });
 
-  test("play from inside a cut starts at the next kept part", () => {
-    const { stage } = mountEditStage([
+  test("play from inside a cut starts at the next kept part", async () => {
+    const { stage } = await mountEditStage([
       { start: 0, end: 3 },
       { start: 6, end: 10 }
     ]);
@@ -914,8 +914,8 @@ describe("VideoStage cuts", () => {
     expect(clock.t).toBe(6);
   });
 
-  test("⌘Z undoes the edit through the window's edit-menu bridge", () => {
-    const { stage, undos } = mountEditStage([
+  test("⌘Z undoes the edit through the window's edit-menu bridge", async () => {
+    const { stage, undos } = await mountEditStage([
       { start: 0, end: 3 },
       { start: 6, end: 10 }
     ]);
@@ -923,8 +923,8 @@ describe("VideoStage cuts", () => {
     expect(undos()).toBe(1);
   });
 
-  test("the split button splits at the playhead", () => {
-    const { stage, commits } = mountEditStage([{ start: 0, end: 10 }]);
+  test("the split button splits at the playhead", async () => {
+    const { stage, commits } = await mountEditStage([{ start: 0, end: 10 }]);
     const clock = clockOn(stage.querySelector("video")!);
     clock.t = 2.5;
     act(() => (stage.querySelector('[data-testid="video-transport-split"]') as HTMLButtonElement).click());

@@ -70,7 +70,7 @@ later.
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/assets/screenshots/capture-window.webp" width="100%" alt="Quick Capture over a desktop with three overlapping windows. The front window, a task list in a notes app, is outlined in orange with its app name and size; the rest of the screen is dimmed. A hint bar along the bottom lists Enter to snap, R to record, and Escape to cancel."></td>
+    <td width="50%"><img src="docs/assets/screenshots/capture-window.webp" width="100%" alt="Quick Capture over a desktop with three overlapping windows: meeting notes, a terminal with a failed build, and a storefront dashboard in a browser. The pointer is over the dashboard, which is outlined in orange with a label reading Google Chrome · 780 × 368; the windows behind it are dimmed. A hint bar along the bottom reads: click pick Google Chrome · Shift full window · drag region · tab next window · Return capture · R record · C rec cursor: on · esc cancel."></td>
     <td width="50%"><img src="docs/assets/screenshots/editor-draw.webp" width="100%" alt="The editor on a kanban board capture. A hand-drawn orange circle rings one card, a yellow marker stroke covers another, and two green check marks sit in the Done column. The Draw tool's property bar below offers pen, marker, airbrush and eraser, colours and stroke weights."></td>
   </tr>
   <tr>

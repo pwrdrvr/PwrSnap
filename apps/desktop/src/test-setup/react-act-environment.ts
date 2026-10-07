@@ -6,7 +6,6 @@ import { getActWarningGuard } from "./act-warning-guard";
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
   .IS_REACT_ACT_ENVIRONMENT = true;
 
-
 const guard = getActWarningGuard();
 guard.install();
 // Vitest parses hook parameters as fixture names and requires destructuring.

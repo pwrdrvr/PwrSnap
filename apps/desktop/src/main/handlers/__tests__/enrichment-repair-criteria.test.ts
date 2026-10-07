@@ -35,6 +35,15 @@ describe("parseRepairCriteria", () => {
   });
 });
 
+describe("window bounds", () => {
+  test("are rewritten as the UTC ISO form captured_at is stored in, since the repo compares strings", () => {
+    const parsed = parseRepairCriteria({ ...valid, since: "2026-10-01T00:00:00+05:00", until: "2026-10-02" });
+    expect(parsed?.since).toBe("2026-09-30T19:00:00.000Z");
+    expect(parsed?.until).toBe("2026-10-02T00:00:00.000Z");
+    expect(parseRepairCriteria({ ...valid, since: "not a date" })).toBeNull();
+  });
+});
+
 describe("parseRepairConcurrency", () => {
   test("omitted means one; 1–8 whole numbers pass; anything else is refused", () => {
     expect(parseRepairConcurrency(undefined)).toBe(1);

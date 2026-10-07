@@ -846,11 +846,15 @@ function EnrichmentRateLimitControl({
 
   const draft = { burst: Number(burst), perMinute: Number(perMinute) };
   const valid = burst.trim() !== "" && perMinute.trim() !== "" && isAiEnrichmentRateLimit(draft);
+  const { burst: burstBounds, perMinute: rateBounds } = AI_ENRICHMENT_RATE_LIMIT_BOUNDS;
+  const fieldOk = (raw: string, bounds: { min: number; max: number }): boolean => {
+    const n = Number(raw);
+    return raw.trim() !== "" && Number.isInteger(n) && n >= bounds.min && n <= bounds.max;
+  };
   const changed = valid && (draft.burst !== effective.burst || draft.perMinute !== effective.perMinute);
   const isDefault =
     draft.burst === AI_ENRICHMENT_RATE_LIMIT_DEFAULT.burst &&
     draft.perMinute === AI_ENRICHMENT_RATE_LIMIT_DEFAULT.perMinute;
-  const { burst: burstBounds, perMinute: rateBounds } = AI_ENRICHMENT_RATE_LIMIT_BOUNDS;
 
   return (
     <form
@@ -870,7 +874,7 @@ function EnrichmentRateLimitControl({
           step={1}
           value={burst}
           disabled={disabled}
-          aria-invalid={!valid}
+          aria-invalid={!fieldOk(burst, burstBounds)}
           onChange={(event) => setBurst(event.target.value)}
         />
       </label>
@@ -884,7 +888,7 @@ function EnrichmentRateLimitControl({
           step={1}
           value={perMinute}
           disabled={disabled}
-          aria-invalid={!valid}
+          aria-invalid={!fieldOk(perMinute, rateBounds)}
           onChange={(event) => setPerMinute(event.target.value)}
         />
       </label>

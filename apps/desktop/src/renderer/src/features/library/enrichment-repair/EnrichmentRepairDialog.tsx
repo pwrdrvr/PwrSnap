@@ -139,7 +139,10 @@ export function EnrichmentRepairDialog({
     if (!canStart) return;
     setStarting(true);
     setError(null);
-    const result = await dispatch("codex:repair:start", { criteria, concurrency });
+    // Re-anchor a "last N days" window to now: the dialog may have sat open
+    // since `criteria` was built.
+    const fresh = repairCriteria({ statuses, preset, custom, apps, now: Date.now() });
+    const result = await dispatch("codex:repair:start", { criteria: fresh, concurrency });
     setStarting(false);
     if (result.ok) onJobChange(result.value);
     else setError(result.error.message);

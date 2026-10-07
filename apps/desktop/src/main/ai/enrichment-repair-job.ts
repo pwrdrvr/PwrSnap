@@ -35,9 +35,14 @@ export const MAX_REPAIR_CONCURRENCY = 8;
 export const BUDGET_RESERVE = 5;
 
 /** The reserve for a bucket of `capacity`: a quarter of it, at most
- *  `BUDGET_RESERVE`, so a small user-set burst still lets a repair run. */
+ *  `BUDGET_RESERVE`, so a small user-set burst still lets a repair run. At
+ *  least one token whenever the bucket holds two: a repair that takes the
+ *  last token sends the next new capture into slow mode, and slow-mode
+ *  attempts count toward the breaker that turns AI off. Only a one-token
+ *  bucket gets no reserve, since a repair could otherwise never start. */
 export function repairBudgetReserve(capacity: number): number {
-  return Math.min(BUDGET_RESERVE, Math.floor(capacity / 4));
+  if (capacity < 2) return 0;
+  return Math.max(1, Math.min(BUDGET_RESERVE, Math.floor(capacity / 4)));
 }
 /** Longest single wait for the bucket, so a cancel or a settings change is
  *  noticed even if `nextTokenAt` is far off. */
@@ -77,6 +82,9 @@ type ActiveJob = {
   /** Serializes "check the bucket, then dispatch" across workers, so N
    *  workers cannot all see the same spare token and dig into the reserve. */
   dispatchTail: Promise<unknown>;
+  /** Set by the first worker that hits a job-ending error. Workers queued
+   *  behind it on `dispatchTail` check it before dispatching anything new. */
+  stopReason: string | null;
 };
 
 type Outcome = { kind: "succeeded" | "failed" | "skipped" } | { kind: "stop"; reason: string };
@@ -116,7 +124,8 @@ export class EnrichmentRepairRunner {
       job,
       abort: new AbortController(),
       runs: new Map(),
-      dispatchTail: Promise.resolve()
+      dispatchTail: Promise.resolve(),
+      stopReason: null
     };
     this.active = active;
     this.latest = job;
@@ -145,9 +154,8 @@ export class EnrichmentRepairRunner {
   private async run(active: ActiveJob, ids: readonly string[]): Promise<void> {
     const { signal } = active.abort;
     let next = 0;
-    let stopReason: string | null = null;
     const worker = async (): Promise<void> => {
-      while (!signal.aborted && stopReason === null && next < ids.length) {
+      while (!signal.aborted && active.stopReason === null && next < ids.length) {
         const captureId = ids[next++]!;
         const status = this.deps.statusOf(captureId);
         if (status === "gone" || status === "other" || !active.job.criteria.statuses.includes(status)) {
@@ -157,7 +165,7 @@ export class EnrichmentRepairRunner {
         const outcome = await this.runOne(active, captureId);
         if (signal.aborted) return;
         if (outcome.kind === "stop") {
-          stopReason = outcome.reason;
+          active.stopReason ??= outcome.reason;
           return;
         }
         this.update(active, {
@@ -173,7 +181,7 @@ export class EnrichmentRepairRunner {
     try {
       await Promise.all(Array.from({ length: active.job.concurrency }, () => worker()));
       if (signal.aborted) return;
-      if (stopReason !== null) this.finish(active, "stopped", stopReason);
+      if (active.stopReason !== null) this.finish(active, "stopped", active.stopReason);
       else this.finish(active, "completed", null);
     } catch (error) {
       if (!signal.aborted) {
@@ -186,7 +194,13 @@ export class EnrichmentRepairRunner {
     const { signal } = active.abort;
     for (;;) {
       const dispatched = await this.dispatchPaced(active, captureId);
-      if (dispatched === null || signal.aborted) return { kind: "skipped" };
+      if (dispatched === null) return { kind: "skipped" };
+      if (signal.aborted) {
+        // Cancelled while `codex:enrich` was answering: `cancel()` could not
+        // see this run, so stop it here rather than leave it running.
+        if (!("kind" in dispatched) && dispatched.ok) await this.deps.cancelRun(dispatched.value.runId);
+        return { kind: "skipped" };
+      }
       if ("kind" in dispatched) return dispatched;
       if (!dispatched.ok) {
         const code = dispatched.error.code;
@@ -218,9 +232,10 @@ export class EnrichmentRepairRunner {
     captureId: string
   ): Promise<Result<{ runId: string }, PwrSnapError> | { kind: "stop"; reason: string } | null> {
     const turn = active.dispatchTail.then(async () => {
+      if (active.stopReason !== null) return null;
       const paced = await this.waitForBudget(active);
       if (paced !== null) return paced;
-      if (active.abort.signal.aborted) return null;
+      if (active.abort.signal.aborted || active.stopReason !== null) return null;
       return this.deps.enrich(captureId);
     });
     active.dispatchTail = turn.catch(() => undefined);

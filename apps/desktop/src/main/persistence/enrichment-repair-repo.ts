@@ -75,11 +75,6 @@ function countWhere(clauses: Clauses): number {
 }
 
 export function previewEnrichmentRepair(criteria: EnrichmentRepairCriteria): EnrichmentRepairPreview {
-  const all = baseClauses();
-  pushStatuses(all, criteria.statuses);
-  pushWindow(all, criteria);
-  pushApps(all, criteria);
-
   const byStatus = {} as Record<EnrichmentRepairStatus, number>;
   for (const status of ["failed", "never"] as const) {
     const clauses = baseClauses();
@@ -111,7 +106,8 @@ export function previewEnrichmentRepair(criteria: EnrichmentRepairCriteria): Enr
     }>;
 
   return {
-    total: countWhere(all),
+    // The two statuses are disjoint, so the batch is the sum of the picked ones.
+    total: [...new Set(criteria.statuses)].reduce((sum, status) => sum + byStatus[status], 0),
     byStatus,
     apps: apps.map(
       (row): EnrichmentRepairAppCount => ({

@@ -47,8 +47,15 @@ function invalid(message: string): Result<never, PwrSnapError> {
   return err({ kind: "validation", code: "invalid_request", message });
 }
 
-function isIsoOrNull(value: unknown): value is string | null {
-  return value === null || (typeof value === "string" && value.length <= 40 && !Number.isNaN(Date.parse(value)));
+/** A window bound as the canonical UTC ISO string `captured_at` is stored
+ *  in, or null. The repo compares the two as strings, so an offset or a
+ *  date-only value must be rewritten, not passed through. `undefined` when
+ *  the value is not a date at all. */
+function windowBound(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  if (typeof value !== "string" || value.length > 40) return undefined;
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? undefined : new Date(ms).toISOString();
 }
 
 /** Renderer input is untrusted: rebuild the criteria from checked parts. */
@@ -62,7 +69,9 @@ export function parseRepairCriteria(raw: unknown): EnrichmentRepairCriteria | nu
     if (status !== "failed" && status !== "never") return null;
     if (!parsedStatuses.includes(status)) parsedStatuses.push(status);
   }
-  if (!isIsoOrNull(value.since) || !isIsoOrNull(value.until)) return null;
+  const since = windowBound(value.since);
+  const until = windowBound(value.until);
+  if (since === undefined || until === undefined) return null;
   const apps = value.apps;
   if (typeof apps !== "object" || apps === null) return null;
   const { mode, appIds } = apps as Record<string, unknown>;
@@ -73,8 +82,8 @@ export function parseRepairCriteria(raw: unknown): EnrichmentRepairCriteria | nu
   }
   return {
     statuses: parsedStatuses,
-    since: value.since,
-    until: value.until,
+    since,
+    until,
     apps: { mode, appIds: [...new Set(appIds)] }
   };
 }

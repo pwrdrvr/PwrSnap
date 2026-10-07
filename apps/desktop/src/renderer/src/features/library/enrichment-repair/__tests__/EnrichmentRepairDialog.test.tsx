@@ -162,7 +162,11 @@ describe("EnrichmentRepairDialog", () => {
     await mount();
     await act(async () => button("Re-run 12 snaps").click());
     const start = calls.find((c) => c.name === "codex:repair:start");
-    expect((start?.req as { criteria: EnrichmentRepairCriteria }).criteria).toEqual(lastCriteria());
+    const sent = (start?.req as { criteria: EnrichmentRepairCriteria }).criteria;
+    const shown = lastCriteria();
+    expect({ ...sent, since: null }).toEqual({ ...shown, since: null });
+    // The 30-day window is re-anchored to the moment Start is pressed.
+    expect(Date.parse(sent.since!)).toBe(Date.now() - 30 * 24 * 60 * 60 * 1000);
     expect(onJobChange).toHaveBeenCalledWith(expect.objectContaining({ jobId: "job-1", state: "running" }));
   });
 

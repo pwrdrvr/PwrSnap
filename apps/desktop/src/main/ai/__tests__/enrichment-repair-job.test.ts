@@ -178,6 +178,9 @@ describe("EnrichmentRepairRunner", () => {
     expect(repairBudgetReserve(20)).toBe(BUDGET_RESERVE);
     expect(repairBudgetReserve(200)).toBe(BUDGET_RESERVE);
     expect(repairBudgetReserve(8)).toBe(2);
+    // Never the last token while the bucket holds two or more.
+    expect(repairBudgetReserve(3)).toBe(1);
+    expect(repairBudgetReserve(2)).toBe(1);
     expect(repairBudgetReserve(1)).toBe(0);
   });
 
@@ -192,6 +195,44 @@ describe("EnrichmentRepairRunner", () => {
     await h.settle();
     expect(h.dispatched).toEqual(["a", "b"]);
     expect(h.sleeps).toHaveLength(1);
+  });
+
+  test("a run that starts while cancel is underway is cancelled too", async () => {
+    let answer: (() => void) | null = null;
+    const h = harness({ ids: ["a"] });
+    const cancelled: string[] = [];
+    const deps: EnrichmentRepairDeps = {
+      ...h.deps,
+      enrich: async (captureId) => {
+        await new Promise<void>((resolve) => {
+          answer = resolve;
+        });
+        return { ok: true, value: { runId: `run-${captureId}` } };
+      },
+      cancelRun: async (runId) => {
+        cancelled.push(runId);
+      }
+    };
+    const runner = new EnrichmentRepairRunner(deps);
+    const job = runner.start(CRITERIA)!;
+    await h.settle();
+    await runner.cancel(job.jobId);
+    expect(cancelled).toEqual([]);
+    answer!();
+    await h.settle();
+    expect(cancelled).toEqual(["run-a"]);
+  });
+
+  test("once one worker stops the job, the others dispatch nothing new", async () => {
+    const h = harness({
+      ids: ["a", "b", "c", "d"],
+      enrich: (id) => (id === "a" ? fail("read_failed") : { ok: true, value: { runId: `run-${id}` } })
+    });
+    new EnrichmentRepairRunner(h.deps).start(CRITERIA, 4);
+    await h.settle();
+    await h.settle();
+    expect(h.dispatched).toEqual(["a"]);
+    expect(h.last()).toMatchObject({ state: "stopped", stopReason: "Settings could not be read." });
   });
 
   test("cancel cancels every run in flight", async () => {

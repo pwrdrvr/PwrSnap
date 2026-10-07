@@ -3965,6 +3965,23 @@
   outline-offset: 2px;
   border-radius: 4px;
 }
+/* Footer entry to the AI re-run dialog, quiet beside the toggle. */
+.psl__ai-repair {
+  appearance: none;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  padding: 5px 2px;
+  cursor: pointer;
+}
+.psl__ai-repair:hover {
+  color: var(--text-primary);
+}
+.psl__ai-repair:focus-visible {
+  outline-offset: 2px;
+}
 .psl__ai-toggle-track {
   width: 18px;
   height: 10px;

@@ -1,0 +1,132 @@
+// Progress for a background enrichment repair, shared by the dialog's
+// progress block and the collapsed toast in the lower-left stack.
+
+import { createPortal } from "react-dom";
+import { useEffect, useState, type ReactElement } from "react";
+import type { EnrichmentRepairJob } from "@pwrsnap/shared";
+
+import { formatRunDuration } from "../../shared/EnrichmentRunClock";
+import "./EnrichmentRepair.css";
+import {
+  repairJobFraction,
+  repairJobHeadline,
+  repairJobTally,
+  repairOldestInFlightMs
+} from "./enrichment-repair-model";
+
+function useNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return undefined;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  return now;
+}
+
+/** What the job is doing right now, for the line under the headline. */
+function RepairActivity({ job }: { job: EnrichmentRepairJob }): ReactElement {
+  const running = job.state === "running";
+  const now = useNow(running && (job.inFlight.length > 0 || job.waitingUntil !== null));
+  if (!running) {
+    return (
+      <span className="ps-repair-progress__detail">
+        {job.stopReason !== null ? `${job.stopReason} ` : ""}
+        {repairJobTally(job)}
+      </span>
+    );
+  }
+  const oldest = repairOldestInFlightMs(job, now);
+  const reading =
+    oldest === null
+      ? null
+      : job.inFlight.length === 1
+        ? `Reading a snap · ${formatRunDuration(oldest)}`
+        : `Reading ${job.inFlight.length} snaps · longest ${formatRunDuration(oldest)}`;
+  if (job.waitingUntil !== null) {
+    const left = Math.max(0, Date.parse(job.waitingUntil) - now);
+    return (
+      <span className="ps-repair-progress__detail">
+        {reading !== null ? `${reading} · ` : ""}Leaving AI budget for new snaps · next in{" "}
+        {formatRunDuration(left + 999)}
+      </span>
+    );
+  }
+  if (reading !== null) {
+    return (
+      <span className="ps-repair-progress__detail">
+        {reading} · {repairJobTally(job)}
+      </span>
+    );
+  }
+  return <span className="ps-repair-progress__detail">{repairJobTally(job)}</span>;
+}
+
+export function RepairProgressBar({ job }: { job: EnrichmentRepairJob }): ReactElement {
+  const fraction = repairJobFraction(job);
+  const pct = Math.floor(fraction * 100);
+  return (
+    <div
+      className="ps-repair-progress__track"
+      role="progressbar"
+      aria-label="Re-run progress"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={pct}
+    >
+      <div className="ps-repair-progress__fill" style={{ transform: `scaleX(${fraction})` }} />
+    </div>
+  );
+}
+
+export function RepairProgressSummary({ job }: { job: EnrichmentRepairJob }): ReactElement {
+  return (
+    <div className="ps-repair-progress__text">
+      <span className="ps-repair-progress__msg">{repairJobHeadline(job)}</span>
+      <RepairActivity job={job} />
+    </div>
+  );
+}
+
+/** The collapsed form: the job's progress in the lower-left toast stack.
+ *  Clicking it brings the dialog back. */
+export function EnrichmentRepairToast({
+  job,
+  onOpen,
+  onCancel,
+  onDismiss
+}: {
+  job: EnrichmentRepairJob;
+  onOpen: () => void;
+  onCancel: (jobId: string) => void;
+  onDismiss: (jobId: string) => void;
+}): ReactElement {
+  const running = job.state === "running";
+  return createPortal(
+    <div className="ps-repair-progress ps-repair-toast" role="group" aria-label="AI re-run">
+      <div className="ps-repair-progress__row">
+        <button
+          type="button"
+          className="ps-repair-toast__open"
+          onClick={onOpen}
+          aria-label={`${repairJobHeadline(job)}. Show the AI re-run`}
+          data-tip="Show the AI re-run"
+        >
+          <RepairProgressSummary job={job} />
+        </button>
+        {running ? (
+          <button type="button" className="ps-repair-toast__action" onClick={() => onCancel(job.jobId)}>
+            Stop
+          </button>
+        ) : (
+          <button type="button" className="ps-repair-toast__action" onClick={() => onDismiss(job.jobId)}>
+            Dismiss
+          </button>
+        )}
+      </div>
+      <RepairProgressBar job={job} />
+    </div>,
+    document.querySelector(".app-toast-stack") ?? document.body
+  );
+}

@@ -27,6 +27,7 @@ const baseSettings: Settings = {
     enabled: false,
     consentAcceptedAt: null,
     budgetSafetyDisabledAt: null,
+    enrichmentRateLimit: null,
     autoAcceptSuggestions: false,
     chat: {
       userGuidance: "",

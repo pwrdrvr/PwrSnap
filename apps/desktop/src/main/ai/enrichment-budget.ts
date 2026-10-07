@@ -1,12 +1,19 @@
-import type { AiEnrichmentBudgetStatus, Settings } from "@pwrsnap/shared";
+import {
+  AI_ENRICHMENT_RATE_LIMIT_DEFAULT,
+  aiEnrichmentRefillIntervalMs,
+  type AiEnrichmentBudgetStatus,
+  type Settings
+} from "@pwrsnap/shared";
 
 export const AI_ENRICHMENT_BUDGET_DEFAULTS = {
-  capacity: 20,
-  refillIntervalMs: 6_000,
+  capacity: AI_ENRICHMENT_RATE_LIMIT_DEFAULT.burst,
+  refillIntervalMs: aiEnrichmentRefillIntervalMs(AI_ENRICHMENT_RATE_LIMIT_DEFAULT),
   limitedAttemptWindowMs: 60 * 60 * 1000,
   disableThreshold: 8
 } as const;
 
+/** `capacity` / `refillIntervalMs` are the shape when the user has not set
+ *  `ai.enrichmentRateLimit`; an override in settings wins over them. */
 export type AiEnrichmentBudgetConfig = {
   capacity?: number;
   refillIntervalMs?: number;
@@ -30,8 +37,10 @@ export type AiEnrichmentBudgetDecision =
     };
 
 export class AiEnrichmentBudget {
-  private readonly capacity: number;
-  private readonly refillIntervalMs: number;
+  private readonly baseCapacity: number;
+  private readonly baseRefillIntervalMs: number;
+  private capacity: number;
+  private refillIntervalMs: number;
   private readonly limitedAttemptWindowMs: number;
   private readonly disableThreshold: number;
   private readonly nowMs: () => number;
@@ -41,9 +50,11 @@ export class AiEnrichmentBudget {
   private sawSafetyDisabled = false;
 
   constructor(config: AiEnrichmentBudgetConfig = {}) {
-    this.capacity = config.capacity ?? AI_ENRICHMENT_BUDGET_DEFAULTS.capacity;
-    this.refillIntervalMs =
+    this.baseCapacity = config.capacity ?? AI_ENRICHMENT_BUDGET_DEFAULTS.capacity;
+    this.baseRefillIntervalMs =
       config.refillIntervalMs ?? AI_ENRICHMENT_BUDGET_DEFAULTS.refillIntervalMs;
+    this.capacity = this.baseCapacity;
+    this.refillIntervalMs = this.baseRefillIntervalMs;
     this.limitedAttemptWindowMs =
       config.limitedAttemptWindowMs ??
       AI_ENRICHMENT_BUDGET_DEFAULTS.limitedAttemptWindowMs;
@@ -124,6 +135,7 @@ export class AiEnrichmentBudget {
   }
 
   private reconcileSettings(settings: Settings): void {
+    this.applyRateLimit(settings.ai.enrichmentRateLimit ?? null);
     if (settings.ai.budgetSafetyDisabledAt !== null) {
       this.sawSafetyDisabled = true;
       return;
@@ -131,6 +143,22 @@ export class AiEnrichmentBudget {
     if (!this.sawSafetyDisabled) return;
     this.reset();
     this.sawSafetyDisabled = false;
+  }
+
+  /** Reshape the bucket when the user's limit changes. Tokens already earned
+   *  at the old rate are credited first; a bigger burst adds its extra room
+   *  now (raising the limit is how a user unblocks a backlog), a smaller one
+   *  clamps. */
+  private applyRateLimit(override: Settings["ai"]["enrichmentRateLimit"]): void {
+    const capacity = override?.burst ?? this.baseCapacity;
+    const refillIntervalMs =
+      override === null ? this.baseRefillIntervalMs : aiEnrichmentRefillIntervalMs(override);
+    if (capacity === this.capacity && refillIntervalMs === this.refillIntervalMs) return;
+    this.refill();
+    this.tokens = Math.max(0, Math.min(capacity, this.tokens + Math.max(0, capacity - this.capacity)));
+    this.capacity = capacity;
+    this.refillIntervalMs = refillIntervalMs;
+    this.lastRefillAtMs = Math.max(this.lastRefillAtMs, this.nowMs() - refillIntervalMs);
   }
 
   private recordLimitedAttempt(): void {

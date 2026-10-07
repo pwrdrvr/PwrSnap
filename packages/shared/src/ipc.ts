@@ -60,6 +60,10 @@ export const EVENT_CHANNELS = {
   aiRunUpdated: "events:ai-run:updated",
   aiUsageUpdated: "events:ai-usage:updated",
   aiBudgetUpdated: "events:ai-budget:updated",
+  /** Agent → every BrowserWindow, relayed across the process split: the
+   *  enrichment repair job changed. Payload: `{ job: EnrichmentRepairJob |
+   *  null }` (null once a finished job is dismissed). */
+  enrichmentRepairJob: "events:enrichment-repair:job",
   /** Main → every BrowserWindow: run-scoped GIF/MP4 export progress.
    * Payload type: `VideoExportProgressEvent`. */
   renderProgress: "events:render:progress",

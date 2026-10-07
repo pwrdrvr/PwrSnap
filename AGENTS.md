@@ -3297,6 +3297,15 @@ Four things that bite:
   FreeBSD and WebContainers wrappers: pnpm 10.33 otherwise reaches the
   package through them first, skips it along with them, and never
   reconsiders.
+- **Every shipped target refuses it at release time, too.** pnpm never
+  removes an installed package that the lockfile now skips, so a stale tree
+  can still hold it. `verify-asar-contents` fails any Sharp native package the
+  target does not use, in the asar and in `app.asar.unpacked`, on universal
+  mac as well. Before packaging, `pruneStagedSharp` narrows each mac stage's
+  sharp manifest to the target's slices, because electron-builder follows
+  that manifest. Without it, the universal app shipped both win32 slices
+  through v1.1.15. A slice that no shipped target uses fails the release
+  instead of being pruned.
 - **What does not work.** `RTLD_DEEPBIND` on the addon fixes the glib
   binding but rebinds `free` / `operator new` / `operator delete` away from
   Chromium's allocator shim, and crashes with SIGSEGV. A `utilityProcess`

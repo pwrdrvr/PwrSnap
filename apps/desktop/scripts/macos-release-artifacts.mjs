@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { closeSync, openSync, readSync, copyFileSync, existsSync, lstatSync, readdirSync, readFileSync, statSync, renameSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { createRequire } from "node:module";
-import { pruneSharpNativePackages, sharpNativePackagesForTarget } from "./sharp-platform-packages.mjs";
+import { inspectSharpNativePackages, isSharpNativePackage, isShippedSharpNativePackage, pruneSharpNativePackages, sharpNativePackagesForTarget } from "./sharp-platform-packages.mjs";
 import { isCliEntrypoint } from "../../../scripts/lib/cli-entrypoint.mjs";
 
 const require = createRequire(import.meta.url);
@@ -47,20 +47,55 @@ function thinArm64(path) {
   if (found.length > 1) execFileSync("lipo", [path, "-thin", "arm64", "-output", path]);
   if (arches(path).join() !== "arm64") throw new Error(`Not ARM64-only: ${path}`);
 }
-export function pruneStagedArm64Sharp(stage) {
+// electron-builder's pnpm collector follows only the dependencies a package's
+// on-disk manifest declares. pnpm deploy links every supportedArchitectures
+// slice beside sharp (both Darwin arches AND both win32 arches), so an
+// unrestricted sharp manifest ships Windows DLLs inside the mac app — the
+// universal build did exactly that through v1.1.15. Restrict the deployed
+// manifest to the target's slices; atomic replacement breaks pnpm hardlinks
+// rather than editing the workspace copy.
+function stagedSharpManifestPath(stage) {
+  return join(stage, "node_modules/sharp/package.json");
+}
+function foreignSharpDeclarations(manifest, arch) {
+  const allowed = new Set(sharpNativePackagesForTarget({ platform: "darwin", arch }).map((name) => `@img/${name}`));
+  return Object.keys(manifest.optionalDependencies ?? {})
+    .filter((name) => name.startsWith("@img/") && isSharpNativePackage(name.slice("@img/".length)) && !allowed.has(name));
+}
+const scoped = (names) => names.map((name) => (name.startsWith("@img/") ? name : `@img/${name}`)).join(", ") || "<none>";
+
+export function pruneStagedSharp(stage, arch) {
+  if (!MAC_ARCHES.includes(arch)) throw new Error(`Unsupported macOS architecture: ${arch}`);
   const nodeModulesDir = join(stage, "node_modules");
-  pruneSharpNativePackages({ nodeModulesDir, platform: "darwin", arch: "arm64" });
-  // pnpm's nested optional-dependency links can rediscover Intel payloads even
-  // after pruning top-level @img. Restrict only the deployed Sharp manifest.
-  // Atomic replacement breaks pnpm hardlinks rather than editing the workspace.
-  const path = join(nodeModulesDir, "sharp/package.json");
-  const manifest = JSON.parse(readFileSync(path, "utf8"));
-  const allowed = new Set(sharpNativePackagesForTarget({ platform: "darwin", arch: "arm64" }).map((name) => `@img/${name}`));
-  for (const name of Object.keys(manifest.optionalDependencies ?? {})) {
-    if (name.startsWith("@img/sharp-") && !allowed.has(name)) delete manifest.optionalDependencies[name];
+  const target = { nodeModulesDir, platform: "darwin", arch };
+  // Refuse before deleting anything: a slice no shipped target uses (notably
+  // the Linux-only @img/sharp-wasm32, whose LGPL libvips THIRD_PARTY_LICENSES
+  // does not disclose) means the deploy or the injection changed.
+  const unknown = inspectSharpNativePackages(target).removed.filter((name) => !isShippedSharpNativePackage(name));
+  if (unknown.length > 0) {
+    throw new Error(`Staged Sharp package(s) no shipped target uses: ${scoped(unknown)}. Refusing to prune them quietly; find what put them in the stage.`);
   }
-  writeFileSync(`${path}.arm64-tmp`, JSON.stringify(manifest, null, 2) + "\n");
-  renameSync(`${path}.arm64-tmp`, path);
+  pruneSharpNativePackages(target);
+  const path = stagedSharpManifestPath(stage);
+  const manifest = JSON.parse(readFileSync(path, "utf8"));
+  for (const name of foreignSharpDeclarations(manifest, arch)) delete manifest.optionalDependencies[name];
+  writeFileSync(`${path}.${arch}-tmp`, JSON.stringify(manifest, null, 2) + "\n");
+  renameSync(`${path}.${arch}-tmp`, path);
+}
+
+// Runs on every macOS stage right before electron-builder, including in the
+// --sign-stage-only job whose stage crossed a job boundary. A stage must hold
+// exactly its target's slices and declare no others. verify-asar-contents
+// repeats the check on the built app, at any depth.
+export function assertStagedSharpTarget(stage, arch) {
+  if (!MAC_ARCHES.includes(arch)) throw new Error(`Unsupported macOS architecture: ${arch}`);
+  const plan = inspectSharpNativePackages({ nodeModulesDir: join(stage, "node_modules"), platform: "darwin", arch });
+  const declared = foreignSharpDeclarations(JSON.parse(readFileSync(stagedSharpManifestPath(stage), "utf8")), arch);
+  if (plan.missing.length === 0 && plan.removed.length === 0 && declared.length === 0) return;
+  throw new Error(
+    `Staged Sharp packages do not match darwin/${arch}: missing=${scoped(plan.missing)}, ` +
+      `foreign=${scoped(plan.removed)}, declared by sharp=${scoped(declared)}. Run the stage's Sharp prune before packaging.`
+  );
 }
 
 export function thinStagedHelpers(stage) {

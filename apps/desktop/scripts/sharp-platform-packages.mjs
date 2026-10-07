@@ -17,29 +17,57 @@ function validateTargetToken(label, value) {
   return value;
 }
 
+const shippedTargetArches = {
+  win32: ["x64", "arm64"],
+  darwin: ["x64", "arm64", "universal"]
+};
+
 /**
  * Native @img packages Sharp needs for one packaged runtime target.
  *
  * Windows Sharp packages bundle libvips in the binding package. Darwin uses a
- * separate libvips package. Keeping this mapping explicit makes an upstream
- * layout change fail closed instead of silently shipping an incomplete app.
+ * separate libvips package, and the universal app carries both Darwin slices.
+ * Keeping this mapping explicit makes an upstream layout change, or a target
+ * nobody mapped, fail closed instead of silently shipping an incomplete app.
+ *
+ * Everything else matching `isSharpNativePackage` is foreign to the target.
+ * That includes `sharp-wasm32`, which `.pnpmfile.cjs` installs on Linux only
+ * and which THIRD_PARTY_LICENSES does not disclose.
  */
 export function sharpNativePackagesForTarget({ platform, arch }) {
   const targetPlatform = validateTargetToken("platform", platform);
   const targetArch = validateTargetToken("arch", arch);
-  const binding = `sharp-${targetPlatform}-${targetArch}`;
+  if (!shippedTargetArches[targetPlatform]?.includes(targetArch)) {
+    throw new Error(`unsupported Sharp package target: ${targetPlatform}/${targetArch}`);
+  }
+  if (targetPlatform === "darwin" && targetArch === "universal") {
+    return ["arm64", "x64"].flatMap((sliceArch) =>
+      sharpNativePackagesForTarget({ platform: targetPlatform, arch: sliceArch })
+    );
+  }
 
+  const binding = `sharp-${targetPlatform}-${targetArch}`;
   if (targetPlatform === "win32") {
     return [binding];
   }
-  if (targetPlatform === "darwin") {
-    return [binding, `sharp-libvips-${targetPlatform}-${targetArch}`];
-  }
-  throw new Error(`unsupported Sharp package target: ${targetPlatform}/${targetArch}`);
+  return [binding, `sharp-libvips-${targetPlatform}-${targetArch}`];
 }
 
 export function isSharpNativePackage(packageName) {
   return sharpNativePackagePattern.test(packageName);
+}
+
+/**
+ * True for a native package that some shipped target uses. A release stage may
+ * legitimately hold another target's slice (pnpm-workspace.yaml's
+ * supportedArchitectures installs every Darwin and win32 slice), and pruning
+ * one is routine. A native package outside this set (sharp-wasm32, a linux
+ * slice) means the install changed underneath the release, so it is refused.
+ */
+export function isShippedSharpNativePackage(packageName) {
+  return Object.entries(shippedTargetArches).some(([platform, arches]) =>
+    arches.some((arch) => sharpNativePackagesForTarget({ platform, arch }).includes(packageName))
+  );
 }
 
 /**

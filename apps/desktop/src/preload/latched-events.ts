@@ -6,7 +6,8 @@
 // one-shot INTENT that exists nowhere else — `libraryOpenCapture` ("open
 // this capture in Focus") is the one today. Dropping that event loses the
 // user's action: the Library comes forward on the grid and the capture
-// they asked for never opens.
+// they asked for never opens. App notices likewise have no state to fetch;
+// losing one hides the confirmation of a completed menu command.
 //
 // And the renderer cannot promise to be listening in time. Its subscriber
 // is a React passive effect, which runs in a later task than the first
@@ -34,6 +35,14 @@
 // channel receives events live, so a second, earlier subscriber (a
 // diagnostic listener, say) would take the intent before the Library
 // mounts. Give a latched channel exactly one consumer.
+
+import { EVENT_CHANNELS } from "@pwrsnap/shared/ipc";
+
+/** One consumer per channel; installed before the renderer scripts run. */
+export const LATCHED_EVENT_CHANNELS = [
+  EVENT_CHANNELS.libraryOpenCapture,
+  EVENT_CHANNELS.appNotice
+] as const;
 
 export interface IpcEventSource {
   on(channel: string, listener: (event: unknown, payload: unknown) => void): unknown;

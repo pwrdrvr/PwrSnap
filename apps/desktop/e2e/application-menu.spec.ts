@@ -108,6 +108,12 @@ test.describe("application menu (PwrSuite menu standard)", () => {
       await app.electronApp.evaluate(({ clipboard }) => clipboard.writeText(""));
       await clickMenuItem(app, "Copy Diagnostics Info");
 
+      // Observe the transient confirmation immediately. Keep the startup
+      // interaction: preload must retain a notice until React subscribes.
+      await expect(app.window.locator(".app-toast-stack .app-notice")).toHaveText(
+        "Diagnostics info copied"
+      );
+
       const copied = await app.electronApp.evaluate(({ clipboard }) => clipboard.readText());
       const lines = copied.split("\n");
       expect(lines[0]).toMatch(/^PwrSnap \S+$/);
@@ -118,10 +124,6 @@ test.describe("application menu (PwrSuite menu standard)", () => {
         "Chrome",
         "Node"
       ]);
-
-      await expect(app.window.locator(".app-toast-stack .app-notice")).toHaveText(
-        "Diagnostics info copied"
-      );
     } finally {
       await app.close();
     }

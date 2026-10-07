@@ -6,6 +6,7 @@ import {
   repairAppRowState,
   repairJobHeadline,
   repairJobTally,
+  repairOldestInFlightMs,
   repairWindowBounds,
   toggleRepairApp
 } from "../enrichment-repair-model";
@@ -76,8 +77,8 @@ describe("job copy", () => {
     succeeded: 30,
     failed: 3,
     skipped: 1,
-    currentCaptureId: "c",
-    currentStartedAt: null,
+    concurrency: 2,
+    inFlight: [{ captureId: "c", startedAt: "2026-10-07T12:00:30.000Z" }],
     waitingUntil: null,
     stopReason: null,
     startedAt: "2026-10-07T12:00:00.000Z",
@@ -88,5 +89,16 @@ describe("job copy", () => {
     expect(repairJobHeadline(job)).toBe("Re-running AI · 34 of 128");
     expect(repairJobTally(job)).toBe("30 fixed · 3 failed again · 1 skipped");
     expect(repairJobHeadline({ ...job, state: "completed" })).toBe("AI re-run finished · 128 snaps");
+  });
+
+  test("the oldest snap in flight sets the activity clock", () => {
+    const now = Date.parse("2026-10-07T12:01:00.000Z");
+    expect(repairOldestInFlightMs(job, now)).toBe(30_000);
+    const two = {
+      ...job,
+      inFlight: [...job.inFlight, { captureId: "d", startedAt: "2026-10-07T12:00:10.000Z" }]
+    };
+    expect(repairOldestInFlightMs(two, now)).toBe(50_000);
+    expect(repairOldestInFlightMs({ ...job, inFlight: [] }, now)).toBeNull();
   });
 });

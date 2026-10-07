@@ -19,7 +19,11 @@ import {
   type Result
 } from "@pwrsnap/shared";
 import { observeAiRuns } from "../ai/ai-run-observers";
-import { EnrichmentRepairRunner, type EnrichmentRepairDeps } from "../ai/enrichment-repair-job";
+import {
+  EnrichmentRepairRunner,
+  MAX_REPAIR_CONCURRENCY,
+  type EnrichmentRepairDeps
+} from "../ai/enrichment-repair-job";
 import { bus } from "../command-bus";
 import { broadcastRendererEventToLocalWindows } from "../events";
 import { getMainLogger } from "../log";
@@ -154,6 +158,13 @@ const productionDeps: EnrichmentRepairDeps = {
   newId: () => nanoid()
 };
 
+/** Snaps in flight at once; omitted means one. Null when out of range. */
+export function parseRepairConcurrency(raw: unknown): number | null {
+  if (raw === undefined) return 1;
+  if (typeof raw !== "number" || !Number.isInteger(raw)) return null;
+  return raw >= 1 && raw <= MAX_REPAIR_CONCURRENCY ? raw : null;
+}
+
 export function registerEnrichmentRepairHandlers(deps: EnrichmentRepairDeps = productionDeps): void {
   const runner = new EnrichmentRepairRunner(deps);
 
@@ -166,13 +177,18 @@ export function registerEnrichmentRepairHandlers(deps: EnrichmentRepairDeps = pr
   bus.register("codex:repair:start", async (req) => {
     const criteria = parseRepairCriteria(req.criteria);
     if (criteria === null) return invalid("invalid repair criteria");
-    const job = runner.start(criteria);
+    const concurrency = parseRepairConcurrency(req.concurrency);
+    if (concurrency === null) {
+      return invalid(`concurrency must be a whole number from 1 to ${MAX_REPAIR_CONCURRENCY}`);
+    }
+    const job = runner.start(criteria, concurrency);
     if (job === null) {
       return err({ kind: "validation", code: "already_running", message: "a repair is already running" });
     }
     log.info("enrichment repair started", {
       jobId: job.jobId,
       total: job.total,
+      concurrency: job.concurrency,
       statuses: criteria.statuses,
       since: criteria.since,
       until: criteria.until,

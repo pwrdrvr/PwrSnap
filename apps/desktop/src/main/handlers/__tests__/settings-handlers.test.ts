@@ -358,6 +358,36 @@ describe("settings:* validation", () => {
     expect(result.error.code).toBe("invalid_ai_enabled");
   });
 
+  test.each([
+    { burst: 0, perMinute: 10 },
+    { burst: 20, perMinute: 601 },
+    { burst: 2.5, perMinute: 10 },
+    { burst: 20 },
+    "fast"
+  ])("settings:write rejects an out-of-range ai.enrichmentRateLimit %j", async (enrichmentRateLimit) => {
+    const result = await bus.dispatch(
+      "settings:write",
+      { ai: { enrichmentRateLimit } } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("invalid_ai_enrichmentRateLimit");
+  });
+
+  test("settings:write accepts an ai.enrichmentRateLimit and null to clear it", async () => {
+    const set = await bus.dispatch(
+      "settings:write",
+      { ai: { enrichmentRateLimit: { burst: 60, perMinute: 120 } } },
+      { principal: "ipc" }
+    );
+    expect(set.ok).toBe(true);
+    if (!set.ok) throw new Error("unreachable");
+    expect(set.value.ai.enrichmentRateLimit).toEqual({ burst: 60, perMinute: 120 });
+    const cleared = await bus.dispatch("settings:write", { ai: { enrichmentRateLimit: null } }, { principal: "ipc" });
+    expect(cleared.ok && cleared.value.ai.enrichmentRateLimit).toBeNull();
+  });
+
   test("settings:write rejects non-boolean general.launchAtLogin", async () => {
     const result = await bus.dispatch(
       "settings:write",

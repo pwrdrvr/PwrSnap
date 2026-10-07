@@ -12,6 +12,7 @@ import type {
   AcpAgentDiscovery,
   AcpAgentModelOption,
   AiEnrichmentBudgetStatus,
+  AiEnrichmentRateLimit,
   AiFeaturesSettingsSub,
   AiReasoningEffort,
   AiSurfaceDefault,
@@ -23,13 +24,17 @@ import type {
   CodexModelOption
 } from "@pwrsnap/shared";
 import {
+  AI_ENRICHMENT_RATE_LIMIT_BOUNDS,
+  AI_ENRICHMENT_RATE_LIMIT_DEFAULT,
   AI_REASONING_EFFORTS,
   builtInAcpAgentDisplayName,
   CODEX_CAPTION_MODELS,
   codexEffortForModel,
   DEFAULT_CODEX_CAPTION_MODEL,
   DEFAULT_ENRICHMENT_REASONING_EFFORT,
+  effectiveAiEnrichmentRateLimit,
   EVENT_CHANNELS,
+  isAiEnrichmentRateLimit,
   isAiReasoningEffort,
   resolveManagedCodexEnrichmentModel
 } from "@pwrsnap/shared";
@@ -330,6 +335,22 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
               </span>
             </div>
           </div>
+        </Row>
+        <Row
+          label="Rate limit"
+          sub={`How fast enrichment may start: a burst back to back, then a steady rate. The default (${AI_ENRICHMENT_RATE_LIMIT_DEFAULT.burst} at once, ${AI_ENRICHMENT_RATE_LIMIT_DEFAULT.perMinute} a minute) is cautious; raise it for a fast hosted model or to work through a backlog. The cost-safety cutoff still applies.`}
+          tag={settings?.ai.enrichmentRateLimit != null ? "custom" : "default"}
+        >
+          <EnrichmentRateLimitControl
+            value={settings?.ai.enrichmentRateLimit ?? null}
+            disabled={settings === null}
+            onChange={(enrichmentRateLimit) => {
+              void (async () => {
+                await patch({ ai: { enrichmentRateLimit } });
+                await refreshBudgetStatus();
+              })();
+            }}
+          />
         </Row>
       </Card>
 
@@ -801,6 +822,87 @@ function budgetBadgeClass(status: AiEnrichmentBudgetStatus | null): string {
     case undefined:
       return "";
   }
+}
+
+/** Burst + per-minute fields for `ai.enrichmentRateLimit`. Applied as a
+ *  pair; matching the default stores null so a later default change still
+ *  reaches this user. */
+function EnrichmentRateLimitControl({
+  value,
+  disabled,
+  onChange
+}: {
+  value: AiEnrichmentRateLimit | null;
+  disabled: boolean;
+  onChange: (next: AiEnrichmentRateLimit | null) => void;
+}): ReactElement {
+  const effective = effectiveAiEnrichmentRateLimit(value);
+  const [burst, setBurst] = useState(String(effective.burst));
+  const [perMinute, setPerMinute] = useState(String(effective.perMinute));
+  useEffect(() => {
+    setBurst(String(effective.burst));
+    setPerMinute(String(effective.perMinute));
+  }, [effective.burst, effective.perMinute]);
+
+  const draft = { burst: Number(burst), perMinute: Number(perMinute) };
+  const valid = burst.trim() !== "" && perMinute.trim() !== "" && isAiEnrichmentRateLimit(draft);
+  const changed = valid && (draft.burst !== effective.burst || draft.perMinute !== effective.perMinute);
+  const isDefault =
+    draft.burst === AI_ENRICHMENT_RATE_LIMIT_DEFAULT.burst &&
+    draft.perMinute === AI_ENRICHMENT_RATE_LIMIT_DEFAULT.perMinute;
+  const { burst: burstBounds, perMinute: rateBounds } = AI_ENRICHMENT_RATE_LIMIT_BOUNDS;
+
+  return (
+    <form
+      className="pss__ratelimit"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (changed) onChange(isDefault ? null : draft);
+      }}
+    >
+      <label className="pss__ratelimit-field">
+        <span>At once</span>
+        <input
+          className="pss__input"
+          type="number"
+          min={burstBounds.min}
+          max={burstBounds.max}
+          step={1}
+          value={burst}
+          disabled={disabled}
+          aria-invalid={!valid}
+          onChange={(event) => setBurst(event.target.value)}
+        />
+      </label>
+      <label className="pss__ratelimit-field">
+        <span>Per minute</span>
+        <input
+          className="pss__input"
+          type="number"
+          min={rateBounds.min}
+          max={rateBounds.max}
+          step={1}
+          value={perMinute}
+          disabled={disabled}
+          aria-invalid={!valid}
+          onChange={(event) => setPerMinute(event.target.value)}
+        />
+      </label>
+      <button className="pss__key-btn is-primary" type="submit" disabled={disabled || !changed}>
+        Apply
+      </button>
+      {value !== null ? (
+        <button className="pss__key-btn" type="button" disabled={disabled} onClick={() => onChange(null)}>
+          Use default
+        </button>
+      ) : null}
+      {!valid ? (
+        <span className="pss__ratelimit-error" role="alert">
+          Whole numbers: {burstBounds.min}–{burstBounds.max} at once, {rateBounds.min}–{rateBounds.max} a minute.
+        </span>
+      ) : null}
+    </form>
+  );
 }
 
 function budgetStatusSubLine(

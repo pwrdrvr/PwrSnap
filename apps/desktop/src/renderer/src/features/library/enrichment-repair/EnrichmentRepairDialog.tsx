@@ -28,11 +28,13 @@ import { APP_INFO } from "../captures";
 import { RepairProgressBar, RepairProgressSummary } from "./EnrichmentRepairProgress";
 import {
   ALL_APPS,
+  REPAIR_CONCURRENCY_OPTIONS,
   WINDOW_PRESETS,
   plural,
   repairAppRowState,
   repairCriteria,
   toggleRepairApp,
+  type RepairConcurrency,
   type RepairWindowPreset
 } from "./enrichment-repair-model";
 
@@ -69,6 +71,7 @@ export function EnrichmentRepairDialog({
   const [preview, setPreview] = useState<EnrichmentRepairPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const [concurrency, setConcurrency] = useState<RepairConcurrency>(1);
   const closeRef = useRef<HTMLButtonElement | null>(null);
   const dialogRef = useModal<HTMLElement>({ onClose, initialFocusRef: closeRef });
 
@@ -130,7 +133,7 @@ export function EnrichmentRepairDialog({
     if (!canStart) return;
     setStarting(true);
     setError(null);
-    const result = await dispatch("codex:repair:start", { criteria });
+    const result = await dispatch("codex:repair:start", { criteria, concurrency });
     setStarting(false);
     if (result.ok) onJobChange(result.value);
     else setError(result.error.message);
@@ -241,6 +244,27 @@ export function EnrichmentRepairDialog({
             ) : null}
           </div>
 
+          <div className="ps-repair__section">
+            <div className="ps-repair__label">
+              At a time{" "}
+              <span className="ps-repair__label-note">· the connection's own limit in AI Providers still applies</span>
+            </div>
+            <div className="ps-repair__segmented" role="radiogroup" aria-label="Snaps at a time">
+              {REPAIR_CONCURRENCY_OPTIONS.map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  role="radio"
+                  aria-checked={concurrency === option}
+                  className={"ps-repair__seg" + (concurrency === option ? " is-active" : "")}
+                  onClick={() => setConcurrency(option)}
+                >
+                  {option}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="ps-repair__section ps-repair__section--apps">
             <div className="ps-repair__apps-hdr">
               <div className="ps-repair__label">
@@ -328,9 +352,9 @@ export function EnrichmentRepairDialog({
         <footer className="ps-repair__foot">
           <span className="ps-repair__plan">
             {running
-              ? "Runs one snap at a time, newest first, and keeps some AI budget free for new snaps."
+              ? "Runs newest first and keeps some AI budget free for new snaps."
               : total > 0
-                ? `${plural(total, "snap")}, newest first, one at a time.`
+                ? `${plural(total, "snap")}, newest first, ${concurrency === 1 ? "one at a time" : `${concurrency} at a time`}.`
                 : statuses.length === 0
                   ? "Pick Failed, Never ran, or both."
                   : "Nothing to re-run."}

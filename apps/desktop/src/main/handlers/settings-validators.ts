@@ -14,6 +14,8 @@
 // treatment, revisit.
 
 import {
+  AI_ENRICHMENT_RATE_LIMIT_BOUNDS,
+  isAiEnrichmentRateLimit,
   isOverlayOutlineMode,
   isStrokePatternStyle,
   AI_REASONING_EFFORTS,
@@ -257,6 +259,19 @@ export function validateSettingsWrite(
         error: validationError(
           "invalid_ai_budgetSafetyDisabledAt",
           "settings:write: ai.budgetSafetyDisabledAt must be a string or null"
+        )
+      };
+    }
+    if (
+      !isUndefined(ai.enrichmentRateLimit) &&
+      ai.enrichmentRateLimit !== null &&
+      !isAiEnrichmentRateLimit(ai.enrichmentRateLimit)
+    ) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_ai_enrichmentRateLimit",
+          `settings:write: ai.enrichmentRateLimit must be null or { burst: ${AI_ENRICHMENT_RATE_LIMIT_BOUNDS.burst.min}–${AI_ENRICHMENT_RATE_LIMIT_BOUNDS.burst.max}, perMinute: ${AI_ENRICHMENT_RATE_LIMIT_BOUNDS.perMinute.min}–${AI_ENRICHMENT_RATE_LIMIT_BOUNDS.perMinute.max} } whole numbers`
         )
       };
     }

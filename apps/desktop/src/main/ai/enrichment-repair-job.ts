@@ -28,8 +28,17 @@ import type {
   Result
 } from "@pwrsnap/shared";
 
+/** Most snaps one repair keeps in flight. A connection's own limit
+ *  (Settings → AI Providers) still caps what reaches its endpoint. */
+export const MAX_REPAIR_CONCURRENCY = 8;
 /** Tokens left in the bucket for new captures while a repair runs. */
 export const BUDGET_RESERVE = 5;
+
+/** The reserve for a bucket of `capacity`: a quarter of it, at most
+ *  `BUDGET_RESERVE`, so a small user-set burst still lets a repair run. */
+export function repairBudgetReserve(capacity: number): number {
+  return Math.min(BUDGET_RESERVE, Math.floor(capacity / 4));
+}
 /** Longest single wait for the bucket, so a cancel or a settings change is
  *  noticed even if `nextTokenAt` is far off. */
 const MAX_BUDGET_WAIT_MS = 30_000;
@@ -63,8 +72,14 @@ export type EnrichmentRepairDeps = {
 type ActiveJob = {
   job: EnrichmentRepairJob;
   abort: AbortController;
-  currentRunId: string | null;
+  /** Run id per capture in flight, for cancel. */
+  runs: Map<string, string>;
+  /** Serializes "check the bucket, then dispatch" across workers, so N
+   *  workers cannot all see the same spare token and dig into the reserve. */
+  dispatchTail: Promise<unknown>;
 };
+
+type Outcome = { kind: "succeeded" | "failed" | "skipped" } | { kind: "stop"; reason: string };
 
 export class EnrichmentRepairRunner {
   private active: ActiveJob | null = null;
@@ -78,26 +93,31 @@ export class EnrichmentRepairRunner {
   }
 
   /** Starts a job, or returns null when one is already running. */
-  start(criteria: EnrichmentRepairCriteria): EnrichmentRepairJob | null {
+  start(criteria: EnrichmentRepairCriteria, concurrency = 1): EnrichmentRepairJob | null {
     if (this.active !== null) return null;
     const ids = this.deps.listCaptureIds(criteria);
     const job: EnrichmentRepairJob = {
       jobId: this.deps.newId(),
       state: "running",
       criteria,
+      concurrency: Math.max(1, Math.min(MAX_REPAIR_CONCURRENCY, Math.floor(concurrency))),
       total: ids.length,
       processed: 0,
       succeeded: 0,
       failed: 0,
       skipped: 0,
-      currentCaptureId: null,
-      currentStartedAt: null,
+      inFlight: [],
       waitingUntil: null,
       stopReason: null,
       startedAt: this.iso(),
       finishedAt: null
     };
-    const active: ActiveJob = { job, abort: new AbortController(), currentRunId: null };
+    const active: ActiveJob = {
+      job,
+      abort: new AbortController(),
+      runs: new Map(),
+      dispatchTail: Promise.resolve()
+    };
     this.active = active;
     this.latest = job;
     this.deps.publish(job);
@@ -108,10 +128,10 @@ export class EnrichmentRepairRunner {
   async cancel(jobId: string): Promise<EnrichmentRepairJob | null> {
     const active = this.active;
     if (active === null || active.job.jobId !== jobId) return this.latest;
-    const runId = active.currentRunId;
+    const runIds = [...active.runs.values()];
     active.abort.abort();
     this.finish(active, "cancelled", null);
-    if (runId !== null) await this.deps.cancelRun(runId);
+    await Promise.all(runIds.map((runId) => this.deps.cancelRun(runId)));
     return this.latest;
   }
 
@@ -121,11 +141,14 @@ export class EnrichmentRepairRunner {
     this.deps.publish(null);
   }
 
+  /** `concurrency` workers pull from one newest-first list. */
   private async run(active: ActiveJob, ids: readonly string[]): Promise<void> {
     const { signal } = active.abort;
-    try {
-      for (const captureId of ids) {
-        if (signal.aborted) return;
+    let next = 0;
+    let stopReason: string | null = null;
+    const worker = async (): Promise<void> => {
+      while (!signal.aborted && stopReason === null && next < ids.length) {
+        const captureId = ids[next++]!;
         const status = this.deps.statusOf(captureId);
         if (status === "gone" || status === "other" || !active.job.criteria.statuses.includes(status)) {
           this.update(active, { skipped: active.job.skipped + 1, processed: active.job.processed + 1 });
@@ -134,13 +157,11 @@ export class EnrichmentRepairRunner {
         const outcome = await this.runOne(active, captureId);
         if (signal.aborted) return;
         if (outcome.kind === "stop") {
-          this.finish(active, "stopped", outcome.reason);
+          stopReason = outcome.reason;
           return;
         }
         this.update(active, {
           processed: active.job.processed + 1,
-          currentCaptureId: null,
-          currentStartedAt: null,
           ...(outcome.kind === "succeeded"
             ? { succeeded: active.job.succeeded + 1 }
             : outcome.kind === "skipped"
@@ -148,7 +169,12 @@ export class EnrichmentRepairRunner {
               : { failed: active.job.failed + 1 })
         });
       }
-      if (!signal.aborted) this.finish(active, "completed", null);
+    };
+    try {
+      await Promise.all(Array.from({ length: active.job.concurrency }, () => worker()));
+      if (signal.aborted) return;
+      if (stopReason !== null) this.finish(active, "stopped", stopReason);
+      else this.finish(active, "completed", null);
     } catch (error) {
       if (!signal.aborted) {
         this.finish(active, "stopped", error instanceof Error ? error.message : String(error));
@@ -156,18 +182,12 @@ export class EnrichmentRepairRunner {
     }
   }
 
-  private async runOne(
-    active: ActiveJob,
-    captureId: string
-  ): Promise<{ kind: "succeeded" | "failed" | "skipped" } | { kind: "stop"; reason: string }> {
+  private async runOne(active: ActiveJob, captureId: string): Promise<Outcome> {
     const { signal } = active.abort;
     for (;;) {
-      const paced = await this.waitForBudget(active);
-      if (paced !== null) return paced;
-      if (signal.aborted) return { kind: "skipped" };
-
-      const dispatched = await this.deps.enrich(captureId);
-      if (signal.aborted) return { kind: "skipped" };
+      const dispatched = await this.dispatchPaced(active, captureId);
+      if (dispatched === null || signal.aborted) return { kind: "skipped" };
+      if ("kind" in dispatched) return dispatched;
       if (!dispatched.ok) {
         const code = dispatched.error.code;
         if (code === "ai_budget_limited") {
@@ -181,12 +201,30 @@ export class EnrichmentRepairRunner {
         return code === "not_found" ? { kind: "skipped" } : { kind: "failed" };
       }
 
-      active.currentRunId = dispatched.value.runId;
-      this.update(active, { currentCaptureId: captureId, currentStartedAt: this.iso() });
-      const terminal = await this.deps.waitForRun(dispatched.value.runId, signal);
-      active.currentRunId = null;
+      const runId = dispatched.value.runId;
+      active.runs.set(captureId, runId);
+      this.update(active, { inFlight: [...active.job.inFlight, { captureId, startedAt: this.iso() }] });
+      const terminal = await this.deps.waitForRun(runId, signal);
+      active.runs.delete(captureId);
+      this.update(active, { inFlight: active.job.inFlight.filter((run) => run.captureId !== captureId) });
       return { kind: terminal === "completed" ? "succeeded" : "failed" };
     }
+  }
+
+  /** Wait for budget above the reserve, then dispatch, one worker at a time.
+   *  Null when the job was cancelled while waiting. */
+  private dispatchPaced(
+    active: ActiveJob,
+    captureId: string
+  ): Promise<Result<{ runId: string }, PwrSnapError> | { kind: "stop"; reason: string } | null> {
+    const turn = active.dispatchTail.then(async () => {
+      const paced = await this.waitForBudget(active);
+      if (paced !== null) return paced;
+      if (active.abort.signal.aborted) return null;
+      return this.deps.enrich(captureId);
+    });
+    active.dispatchTail = turn.catch(() => undefined);
+    return turn;
   }
 
   /** Null once a token above the reserve is free; a stop outcome when the
@@ -200,7 +238,7 @@ export class EnrichmentRepairRunner {
       if (budget.value.mode === "safety_disabled") {
         return { kind: "stop", reason: STOP_CODES.ai_budget_safety_disabled! };
       }
-      if (budget.value.tokensAvailable >= BUDGET_RESERVE + 1) {
+      if (budget.value.tokensAvailable >= repairBudgetReserve(budget.value.capacity) + 1) {
         if (active.job.waitingUntil !== null) this.update(active, { waitingUntil: null });
         return null;
       }
@@ -221,8 +259,7 @@ export class EnrichmentRepairRunner {
     this.update(active, {
       state,
       stopReason,
-      currentCaptureId: null,
-      currentStartedAt: null,
+      inFlight: [],
       waitingUntil: null,
       finishedAt: this.iso()
     });

@@ -41,8 +41,8 @@ function job(criteria: EnrichmentRepairCriteria): EnrichmentRepairJob {
     succeeded: 0,
     failed: 0,
     skipped: 0,
-    currentCaptureId: null,
-    currentStartedAt: null,
+    concurrency: 1,
+    inFlight: [],
     waitingUntil: null,
     stopReason: null,
     startedAt: "2026-10-07T12:00:00.000Z",
@@ -152,5 +152,16 @@ describe("EnrichmentRepairDialog", () => {
     const start = calls.find((c) => c.name === "codex:repair:start");
     expect((start?.req as { criteria: EnrichmentRepairCriteria }).criteria).toEqual(lastCriteria());
     expect(onJobChange).toHaveBeenCalledWith(expect.objectContaining({ jobId: "job-1", state: "running" }));
+  });
+
+  test("At a time defaults to one and is sent with the start", async () => {
+    await mount();
+    expect(container.textContent).toContain("one at a time");
+    const four = [...container.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find((b) => b.textContent === "4");
+    await act(async () => four?.click());
+    expect(container.textContent).toContain("4 at a time");
+    await act(async () => button("Re-run 12 snaps").click());
+    const start = calls.find((c) => c.name === "codex:repair:start");
+    expect((start?.req as { concurrency: number }).concurrency).toBe(4);
   });
 });

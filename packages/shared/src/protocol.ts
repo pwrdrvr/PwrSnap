@@ -11,6 +11,7 @@ import type { CustomConnection, CustomConnectionInput, CustomModel, CustomModelD
 import type { BundleLayerNode } from "./bundle-manifest-schema-v2";
 import type { CaptureDuplicateJob, CaptureEditSummary } from "./capture-duplicate";
 import type { CaptureEnrichment, AiRunStatus } from "./ai-enrichment-schemas";
+import type { AiEnrichmentRateLimit } from "./ai-enrichment-rate-limit";
 
 export type CaptureInvocationOrigin =
   | "global_hotkey.quick_capture"
@@ -2810,6 +2811,9 @@ export type Settings = {
     consentAcceptedAt: string | null;
     /** ISO-8601; null unless the budget circuit breaker disabled AI. */
     budgetSafetyDisabledAt: string | null;
+    /** How fast enrichment may start runs; null = PwrSnap's default
+     *  (`AI_ENRICHMENT_RATE_LIMIT_DEFAULT`). Replaced whole on write. */
+    enrichmentRateLimit: AiEnrichmentRateLimit | null;
     /** When true, completed Codex enrichments are promoted from
      *  `suggested_*` to `accepted_*` automatically — the user doesn't
      *  have to click "Use draft" in the float-over toast. Off by
@@ -3830,6 +3834,7 @@ export type SettingsPatch = {
     enabled?: Settings["ai"]["enabled"];
     consentAcceptedAt?: Settings["ai"]["consentAcceptedAt"];
     budgetSafetyDisabledAt?: Settings["ai"]["budgetSafetyDisabledAt"];
+    enrichmentRateLimit?: Settings["ai"]["enrichmentRateLimit"];
     autoAcceptSuggestions?: Settings["ai"]["autoAcceptSuggestions"];
     chat?: Partial<ChatSettings>;
     /** Per-surface defaults. Each surface is independently optional, and
@@ -4214,10 +4219,10 @@ export type EnrichmentRepairJob = {
   failed: number;
   /** Already repaired by something else, or deleted, before its turn. */
   skipped: number;
-  /** The capture being read right now. */
-  currentCaptureId: string | null;
-  /** When the current run started (ISO), for an elapsed clock. */
-  currentStartedAt: string | null;
+  /** Snaps the job keeps in flight at once (1–8). */
+  concurrency: number;
+  /** The captures being read right now, with when each run started (ISO). */
+  inFlight: Array<{ captureId: string; startedAt: string }>;
   /** Non-null while the job holds back to leave enrichment budget for new
    *  captures: when it expects to continue (ISO). */
   waitingUntil: string | null;
@@ -5504,10 +5509,11 @@ export type Commands = {
     req: { criteria: EnrichmentRepairCriteria };
     res: EnrichmentRepairPreview;
   };
-  /** Start re-running enrichment, one capture at a time, newest first, on
-   *  every capture matching `criteria`. One job at a time. */
+  /** Start re-running enrichment, newest first, on every capture matching
+   *  `criteria`, up to `concurrency` at once. One job at a time. */
   "codex:repair:start": {
-    req: { criteria: EnrichmentRepairCriteria };
+    /** `concurrency` defaults to 1. */
+    req: { criteria: EnrichmentRepairCriteria; concurrency?: number };
     res: EnrichmentRepairJob;
   };
   /** The current or last finished job, until it is dismissed. */

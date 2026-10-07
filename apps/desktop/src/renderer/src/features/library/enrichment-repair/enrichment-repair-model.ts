@@ -110,6 +110,20 @@ export function repairCriteria(input: {
   };
 }
 
+/** Choices for how many snaps a repair keeps in flight; main caps at 8. */
+export const REPAIR_CONCURRENCY_OPTIONS = [1, 2, 4, 8] as const;
+export type RepairConcurrency = (typeof REPAIR_CONCURRENCY_OPTIONS)[number];
+
+/** How long the oldest snap in flight has been running, or null when none is. */
+export function repairOldestInFlightMs(job: EnrichmentRepairJob, now: number): number | null {
+  let oldest: number | null = null;
+  for (const entry of job.inFlight) {
+    const started = Date.parse(entry.startedAt);
+    if (Number.isFinite(started) && (oldest === null || started < oldest)) oldest = started;
+  }
+  return oldest === null ? null : Math.max(0, now - oldest);
+}
+
 export function plural(count: number, one: string, many = `${one}s`): string {
   return `${count.toLocaleString()} ${count === 1 ? one : many}`;
 }

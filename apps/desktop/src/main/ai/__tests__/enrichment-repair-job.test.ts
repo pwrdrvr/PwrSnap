@@ -1,6 +1,6 @@
-// The enrichment repair runner, against fake dependencies: one run at a
-// time, budget pacing that never asks a low bucket, and the ways a job
-// ends.
+// The enrichment repair runner, against fake dependencies: how many runs
+// it keeps in flight, budget pacing that never asks a low bucket, and the
+// ways a job ends.
 
 import { describe, expect, test } from "vitest";
 import type {
@@ -13,7 +13,12 @@ import type {
   Result
 } from "@pwrsnap/shared";
 
-import { BUDGET_RESERVE, EnrichmentRepairRunner, type EnrichmentRepairDeps } from "../enrichment-repair-job";
+import {
+  BUDGET_RESERVE,
+  EnrichmentRepairRunner,
+  repairBudgetReserve,
+  type EnrichmentRepairDeps
+} from "../enrichment-repair-job";
 
 const CRITERIA: EnrichmentRepairCriteria = {
   statuses: ["failed"],
@@ -44,8 +49,10 @@ type Harness = {
   published: Array<EnrichmentRepairJob | null>;
   dispatched: string[];
   sleeps: number[];
-  /** Resolve the in-flight run. */
+  /** Resolve the oldest run in flight. */
   finishRun: (status: AiRunStatus) => void;
+  /** Run ids in flight, oldest first. */
+  pending: () => string[];
   /** Wait until the runner is blocked on a run (or done). */
   settle: () => Promise<void>;
   last: () => EnrichmentRepairJob | null;
@@ -61,7 +68,13 @@ function harness(opts: {
   const dispatched: string[] = [];
   const sleeps: number[] = [];
   const budgets = [...(opts.budgets ?? [])];
-  let pendingRun: ((status: AiRunStatus | null) => void) | null = null;
+  const pendingRuns = new Map<string, (status: AiRunStatus | null) => void>();
+  const resolveRun = (runId: string | undefined, status: AiRunStatus | null): void => {
+    if (runId === undefined) return;
+    const resolve = pendingRuns.get(runId);
+    pendingRuns.delete(runId);
+    resolve?.(status);
+  };
   let clock = Date.parse("2026-10-07T12:00:00.000Z");
   let nextId = 0;
   const attempts = new Map<string, number>();
@@ -75,16 +88,11 @@ function harness(opts: {
       attempts.set(captureId, attempt);
       return opts.enrich?.(captureId, attempt) ?? { ok: true, value: { runId: `run-${captureId}` } };
     },
-    cancelRun: async () => {
-      pendingRun?.("cancelled");
-    },
-    waitForRun: (_runId, signal) =>
+    cancelRun: async (runId) => resolveRun(runId, "cancelled"),
+    waitForRun: (runId, signal) =>
       new Promise((resolve) => {
-        pendingRun = (status) => {
-          pendingRun = null;
-          resolve(status);
-        };
-        signal.addEventListener("abort", () => pendingRun?.(null), { once: true });
+        pendingRuns.set(runId, resolve);
+        signal.addEventListener("abort", () => resolveRun(runId, null), { once: true });
       }),
     publish: (job) => published.push(job),
     sleep: async (ms) => {
@@ -102,14 +110,15 @@ function harness(opts: {
     published,
     dispatched,
     sleeps,
-    finishRun: (status) => pendingRun?.(status),
+    finishRun: (status) => resolveRun(pendingRuns.keys().next().value, status),
+    pending: () => [...pendingRuns.keys()],
     settle,
     last: () => published.at(-1) ?? null
   };
 }
 
 describe("EnrichmentRepairRunner", () => {
-  test("runs one capture at a time and counts the outcomes", async () => {
+  test("by default runs one capture at a time and counts the outcomes", async () => {
     const h = harness({ ids: ["a", "b", "c"] });
     const runner = new EnrichmentRepairRunner(h.deps);
     const job = runner.start(CRITERIA);
@@ -117,7 +126,7 @@ describe("EnrichmentRepairRunner", () => {
 
     await h.settle();
     expect(h.dispatched).toEqual(["a"]);
-    expect(h.last()?.currentCaptureId).toBe("a");
+    expect(h.last()?.inFlight.map((entry) => entry.captureId)).toEqual(["a"]);
     h.finishRun("completed");
     await h.settle();
     expect(h.dispatched).toEqual(["a", "b"]);
@@ -132,9 +141,70 @@ describe("EnrichmentRepairRunner", () => {
       succeeded: 2,
       failed: 1,
       skipped: 0,
-      currentCaptureId: null
+      inFlight: []
     });
     expect(runner.start(CRITERIA)).not.toBeNull();
+  });
+
+  test("keeps `concurrency` runs in flight, newest first, and refills as each one ends", async () => {
+    const h = harness({ ids: ["a", "b", "c", "d", "e"] });
+    const job = new EnrichmentRepairRunner(h.deps).start(CRITERIA, 3);
+    expect(job?.concurrency).toBe(3);
+    await h.settle();
+    expect(h.dispatched).toEqual(["a", "b", "c"]);
+    expect(h.pending()).toEqual(["run-a", "run-b", "run-c"]);
+    expect(h.last()?.inFlight.map((entry) => entry.captureId)).toEqual(["a", "b", "c"]);
+
+    h.finishRun("completed");
+    await h.settle();
+    expect(h.dispatched).toEqual(["a", "b", "c", "d"]);
+    expect(h.last()?.inFlight.map((entry) => entry.captureId)).toEqual(["b", "c", "d"]);
+
+    for (let i = 0; i < 4; i += 1) {
+      h.finishRun(i === 0 ? "failed" : "completed");
+      await h.settle();
+    }
+    expect(h.last()).toMatchObject({ state: "completed", processed: 5, succeeded: 4, failed: 1, inFlight: [] });
+  });
+
+  test("concurrency is clamped to 1–8", async () => {
+    const many = harness({ ids: [] });
+    expect(new EnrichmentRepairRunner(many.deps).start(CRITERIA, 50)?.concurrency).toBe(8);
+    const none = harness({ ids: [] });
+    expect(new EnrichmentRepairRunner(none.deps).start(CRITERIA, 0)?.concurrency).toBe(1);
+  });
+
+  test("the reserve shrinks with a small user-set burst, so a repair can still run", () => {
+    expect(repairBudgetReserve(20)).toBe(BUDGET_RESERVE);
+    expect(repairBudgetReserve(200)).toBe(BUDGET_RESERVE);
+    expect(repairBudgetReserve(8)).toBe(2);
+    expect(repairBudgetReserve(1)).toBe(0);
+  });
+
+  test("parallel workers still check the bucket one at a time, so none digs into the reserve", async () => {
+    // Only one token above the reserve: the first worker takes it, the
+    // second must see the bucket after that dispatch and wait.
+    const h = harness({
+      ids: ["a", "b"],
+      budgets: [budget(BUDGET_RESERVE + 1), budget(BUDGET_RESERVE), budget(BUDGET_RESERVE + 1)]
+    });
+    new EnrichmentRepairRunner(h.deps).start(CRITERIA, 2);
+    await h.settle();
+    expect(h.dispatched).toEqual(["a", "b"]);
+    expect(h.sleeps).toHaveLength(1);
+  });
+
+  test("cancel cancels every run in flight", async () => {
+    const h = harness({ ids: ["a", "b", "c"] });
+    const runner = new EnrichmentRepairRunner(h.deps);
+    const job = runner.start(CRITERIA, 2)!;
+    await h.settle();
+    expect(h.pending()).toEqual(["run-a", "run-b"]);
+    await runner.cancel(job.jobId);
+    await h.settle();
+    expect(h.pending()).toEqual([]);
+    expect(h.dispatched).toEqual(["a", "b"]);
+    expect(h.last()).toMatchObject({ state: "cancelled", inFlight: [] });
   });
 
   test("skips captures that were repaired, run or deleted before their turn", async () => {

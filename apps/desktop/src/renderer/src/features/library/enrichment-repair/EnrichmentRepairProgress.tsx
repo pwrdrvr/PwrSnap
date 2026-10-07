@@ -7,7 +7,12 @@ import type { EnrichmentRepairJob } from "@pwrsnap/shared";
 
 import { formatRunDuration } from "../../shared/EnrichmentRunClock";
 import "./EnrichmentRepair.css";
-import { repairJobFraction, repairJobHeadline, repairJobTally } from "./enrichment-repair-model";
+import {
+  repairJobFraction,
+  repairJobHeadline,
+  repairJobTally,
+  repairOldestInFlightMs
+} from "./enrichment-repair-model";
 
 function useNow(active: boolean): number {
   const [now, setNow] = useState(() => Date.now());
@@ -23,7 +28,7 @@ function useNow(active: boolean): number {
 /** What the job is doing right now, for the line under the headline. */
 function RepairActivity({ job }: { job: EnrichmentRepairJob }): ReactElement {
   const running = job.state === "running";
-  const now = useNow(running && (job.currentStartedAt !== null || job.waitingUntil !== null));
+  const now = useNow(running && (job.inFlight.length > 0 || job.waitingUntil !== null));
   if (!running) {
     return (
       <span className="ps-repair-progress__detail">
@@ -32,18 +37,26 @@ function RepairActivity({ job }: { job: EnrichmentRepairJob }): ReactElement {
       </span>
     );
   }
+  const oldest = repairOldestInFlightMs(job, now);
+  const reading =
+    oldest === null
+      ? null
+      : job.inFlight.length === 1
+        ? `Reading a snap · ${formatRunDuration(oldest)}`
+        : `Reading ${job.inFlight.length} snaps · longest ${formatRunDuration(oldest)}`;
   if (job.waitingUntil !== null) {
     const left = Math.max(0, Date.parse(job.waitingUntil) - now);
     return (
       <span className="ps-repair-progress__detail">
-        Leaving AI budget for new snaps · resumes in {formatRunDuration(left + 999)}
+        {reading !== null ? `${reading} · ` : ""}Leaving AI budget for new snaps · next in{" "}
+        {formatRunDuration(left + 999)}
       </span>
     );
   }
-  if (job.currentStartedAt !== null) {
+  if (reading !== null) {
     return (
       <span className="ps-repair-progress__detail">
-        Reading a snap · {formatRunDuration(now - Date.parse(job.currentStartedAt))} · {repairJobTally(job)}
+        {reading} · {repairJobTally(job)}
       </span>
     );
   }

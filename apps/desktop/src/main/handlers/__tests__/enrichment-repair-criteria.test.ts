@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "vitest";
 
-import { parseRepairCriteria } from "../enrichment-repair-handlers";
+import { parseRepairConcurrency, parseRepairCriteria } from "../enrichment-repair-handlers";
 
 const valid = {
   statuses: ["failed", "never", "failed"],
@@ -32,5 +32,16 @@ describe("parseRepairCriteria", () => {
     ["no object", null]
   ])("refuses %s", (_label, raw) => {
     expect(parseRepairCriteria(raw)).toBeNull();
+  });
+});
+
+describe("parseRepairConcurrency", () => {
+  test("omitted means one; 1–8 whole numbers pass; anything else is refused", () => {
+    expect(parseRepairConcurrency(undefined)).toBe(1);
+    expect(parseRepairConcurrency(4)).toBe(4);
+    expect(parseRepairConcurrency(8)).toBe(8);
+    for (const bad of [0, 9, 2.5, -1, "4", null, Number.NaN]) {
+      expect(parseRepairConcurrency(bad)).toBeNull();
+    }
   });
 });

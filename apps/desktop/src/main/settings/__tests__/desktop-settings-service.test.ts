@@ -234,6 +234,26 @@ describe("DesktopSettingsService.write", () => {
     expect(JSON.parse(readFileSync(filePath, "utf8")).ai.customModels).toEqual([]);
   });
 
+  test("the enrichment rate limit round-trips, clears to null, and an unreadable one reads as the default", async () => {
+    const filePath = join(workDir, "settings.json");
+    const svc = new DesktopSettingsService({ filePath });
+    expect((await svc.read()).ai.enrichmentRateLimit).toBeNull();
+    await svc.write({ ai: { enrichmentRateLimit: { burst: 60, perMinute: 120 } } });
+    expect(JSON.parse(readFileSync(filePath, "utf8")).ai.enrichmentRateLimit).toEqual({ burst: 60, perMinute: 120 });
+    await svc.write({ ai: { enabled: true } });
+    expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentRateLimit).toEqual({
+      burst: 60,
+      perMinute: 120
+    });
+    await svc.write({ ai: { enrichmentRateLimit: null } });
+    expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentRateLimit).toBeNull();
+
+    const raw = defaultSettings() as unknown as { ai: Record<string, unknown> };
+    raw.ai.enrichmentRateLimit = { burst: 0, perMinute: 1e9 };
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+    expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentRateLimit).toBeNull();
+  });
+
   test("write + read round-trips", async () => {
     const svc = makeService();
     const merged = await svc.write({

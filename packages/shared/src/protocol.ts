@@ -241,7 +241,7 @@ export type VideoEditRequest = {
   /** Remove these spans from the current edit. Composes with cuts that
    *  already exist. */
   cut?: VideoRange[] | undefined;
-  /** Cut every stretch where nothing on screen changed for at least
+  /** Cut every stretch where nothing on screen changed and nobody spoke for at least
    *  `minStillSec` (default 3), keeping `paddingSec` (default 0.5) of
    *  stillness next to each change. `treatMinorAsStill` also ignores
    *  cursor movement and typing. Runs the activity analysis if needed. */
@@ -278,6 +278,9 @@ export type VideoActivityResult = {
   /** One byte per sample: 0 = nothing changed, 1–255 log-scale changed
    *  fraction of the frame. */
   magnitudes: number[];
+  /** Recorded-audio loudness per sample (`encodeSoundLevel`). Absent
+   *  when the take has no audio. */
+  sound?: number[] | undefined;
   /** Size of the grayscale frames the difference was measured on. */
   analysisWidthPx: number;
   analysisHeightPx: number;

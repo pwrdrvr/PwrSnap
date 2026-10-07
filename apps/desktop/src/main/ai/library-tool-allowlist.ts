@@ -1237,7 +1237,7 @@ const editVideo = defineTool({
     "Change which parts of a VIDEO capture export. Set exactly ONE of: " +
     "keep — replace the edit with exactly these kept spans; " +
     "cut — remove spans from the current edit (adds to existing cuts); " +
-    "cut_still — cut every stretch where nothing on screen changes for at least min_still_sec (default 3), keeping padding_sec (default 0.5) beside each change; " +
+    "cut_still — cut every stretch where nothing on screen changes and nobody is talking for at least min_still_sec (default 3), keeping padding_sec (default 0.5) beside each change; " +
     "reset=true — restore the whole clip. Returns the resulting edit (kept spans, cuts, keptDurationSec). " +
     VIDEO_EDIT_MODEL_GUIDANCE,
   annotations: { idempotentHint: false },

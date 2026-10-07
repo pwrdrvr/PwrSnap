@@ -1143,6 +1143,7 @@ export function registerRecordingHandlers(): void {
         captureId: record.id,
         sampleHz: analysis.track.sampleHz,
         magnitudes: [...analysis.track.magnitudes],
+        ...(analysis.track.sound !== undefined ? { sound: [...analysis.track.sound] } : {}),
         analysisWidthPx: analysis.width,
         analysisHeightPx: analysis.height
       });

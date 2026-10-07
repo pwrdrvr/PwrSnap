@@ -25,17 +25,22 @@ import { spawn } from "node:child_process";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CaptureRecord, VideoActivityTrack, VideoCaptureMetadata } from "@pwrsnap/shared";
-import { encodeActivityMagnitude } from "@pwrsnap/shared";
+import {
+  encodeActivityMagnitude,
+  encodeSoundLevel,
+  selectedRecordingAudioStreams
+} from "@pwrsnap/shared";
 import { getMainLogger } from "../log";
 import { runGatedCacheWrite } from "../persistence/derived-cache-gate";
 import { resolveFfmpegPath } from "./ffmpeg-resolver";
+import { buildRecordingAudioArgs, probeAudioStreamCount } from "./recording-audio";
 import { videoAssetDir } from "./video-frames";
 
 const log = getMainLogger("pwrsnap:video-activity");
 
 /** Bump when the measure changes (noise floor, scaling, encoding) so a
  *  stale cache file is never read as the new one. */
-export const ACTIVITY_VERSION = 1;
+export const ACTIVITY_VERSION = 2;
 
 /** Grayscale analysis width. Small on purpose — see the shared module:
  *  the downscale is what folds a blinking caret into "still". */
@@ -89,6 +94,74 @@ export function buildActivityArgs(input: {
     "rawvideo",
     "pipe:1"
   ];
+}
+
+/** Mono rate the loudness is measured at. Speech energy is well inside
+ *  4 kHz, and RMS needs nothing finer. */
+export const SOUND_ANALYSIS_RATE = 8000;
+
+/** The recorded audio — the same mix the waveform and exports use — as
+ *  raw mono 16-bit PCM on stdout. */
+export function buildSoundArgs(input: { sourcePath: string; streams: readonly number[] }): string[] {
+  return [
+    "-nostdin",
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-i",
+    input.sourcePath,
+    "-vn",
+    "-sn",
+    ...buildRecordingAudioArgs(input.streams),
+    "-ac",
+    "1",
+    "-ar",
+    String(SOUND_ANALYSIS_RATE),
+    "-f",
+    "s16le",
+    "pipe:1"
+  ];
+}
+
+/**
+ * RMS loudness of raw s16le mono PCM, one value per `1 / sampleHz`
+ * window, on the activity track's clock. Holds one window.
+ */
+export class SoundAccumulator {
+  private readonly windowSamples: number;
+  private pending: Buffer = Buffer.alloc(0);
+  private sumSquares = 0;
+  private count = 0;
+  readonly magnitudes: number[] = [];
+
+  constructor(sampleHz: number, rate: number = SOUND_ANALYSIS_RATE) {
+    this.windowSamples = Math.max(1, Math.round(rate / sampleHz));
+  }
+
+  push(chunk: Buffer): void {
+    this.pending = this.pending.length === 0 ? chunk : Buffer.concat([this.pending, chunk]);
+    const whole = this.pending.length - (this.pending.length % 2);
+    for (let offset = 0; offset < whole; offset += 2) {
+      const v = this.pending.readInt16LE(offset) / 32768;
+      this.sumSquares += v * v;
+      this.count += 1;
+      if (this.count === this.windowSamples) this.flushWindow();
+    }
+    this.pending = this.pending.subarray(whole);
+  }
+
+  /** The trailing partial window, if any. */
+  finish(): number[] {
+    if (this.count > 0) this.flushWindow();
+    return this.magnitudes;
+  }
+
+  private flushWindow(): void {
+    const rms = Math.sqrt(this.sumSquares / this.count);
+    this.magnitudes.push(encodeSoundLevel(rms > 0 ? 20 * Math.log10(rms) : -Infinity));
+    this.sumSquares = 0;
+    this.count = 0;
+  }
 }
 
 /** Fraction of pixels whose value moved by more than `noiseFloor`. */
@@ -150,6 +223,8 @@ type ActivityFile = {
   height: number;
   /** base64 of one byte per sample. */
   magnitudes: string;
+  /** base64 of one loudness byte per sample; absent with no audio. */
+  sound?: string;
 };
 
 /**
@@ -166,12 +241,13 @@ export async function ensureVideoActivity(
   const target = join(videoAssetDir(record.id), fileName);
   // Registered synchronously, before any await — the gate's contract.
   return runGatedCacheWrite(record.id, target, (signal) =>
-    readOrAnalyse(record, { sampleHz, width, height, target }, signal)
+    readOrAnalyse(record, video, { sampleHz, width, height, target }, signal)
   );
 }
 
 async function readOrAnalyse(
   record: CaptureRecord,
+  video: VideoCaptureMetadata,
   spec: { sampleHz: number; width: number; height: number; target: string },
   signal: AbortSignal
 ): Promise<VideoActivityAnalysis> {
@@ -199,8 +275,9 @@ async function readOrAnalyse(
     new ActivityAccumulator(spec.width, spec.height),
     signal
   );
+  const sound = await analyseSound(ffmpeg, record.legacy_src_path, video, spec.sampleHz, magnitudes.length, signal);
   const analysis: VideoActivityAnalysis = {
-    track: { sampleHz: spec.sampleHz, magnitudes },
+    track: { sampleHz: spec.sampleHz, magnitudes, ...(sound !== undefined ? { sound } : {}) },
     width: spec.width,
     height: spec.height
   };
@@ -209,7 +286,8 @@ async function readOrAnalyse(
     sampleHz: spec.sampleHz,
     width: spec.width,
     height: spec.height,
-    magnitudes: Buffer.from(Uint8Array.from(magnitudes)).toString("base64")
+    magnitudes: Buffer.from(Uint8Array.from(magnitudes)).toString("base64"),
+    ...(sound !== undefined ? { sound: Buffer.from(Uint8Array.from(sound)).toString("base64") } : {})
   };
   await mkdir(videoAssetDir(record.id), { recursive: true });
   const tmp = `${spec.target}.${String(process.pid)}.tmp`;
@@ -252,7 +330,10 @@ async function readActivityFile(path: string): Promise<VideoActivityAnalysis | n
     return {
       track: {
         sampleHz: parsed.sampleHz,
-        magnitudes: Array.from(Buffer.from(parsed.magnitudes, "base64"))
+        magnitudes: Array.from(Buffer.from(parsed.magnitudes, "base64")),
+        ...(typeof parsed.sound === "string"
+          ? { sound: Array.from(Buffer.from(parsed.sound, "base64")) }
+          : {})
       },
       width: parsed.width,
       height: parsed.height
@@ -263,10 +344,35 @@ async function readActivityFile(path: string): Promise<VideoActivityAnalysis | n
   }
 }
 
+/**
+ * Loudness per activity sample, or undefined when the take recorded no
+ * audio. Same length as the picture track: the two are read together.
+ */
+async function analyseSound(
+  ffmpeg: string,
+  sourcePath: string,
+  video: VideoCaptureMetadata,
+  sampleHz: number,
+  samples: number,
+  signal: AbortSignal
+): Promise<number[] | undefined> {
+  if (!video.hasSystemAudio && !video.hasMicrophoneAudio) return undefined;
+  const available = await probeAudioStreamCount(sourcePath, signal);
+  const streams = selectedRecordingAudioStreams(video, undefined, available).filter(
+    (index) => index < available
+  );
+  if (streams.length === 0) return undefined;
+  const accumulator = new SoundAccumulator(sampleHz);
+  await runActivityFfmpeg(ffmpeg, buildSoundArgs({ sourcePath, streams }), accumulator, signal);
+  const levels = accumulator.finish().slice(0, samples);
+  while (levels.length < samples) levels.push(0);
+  return levels;
+}
+
 function runActivityFfmpeg(
   ffmpeg: string,
   args: string[],
-  accumulator: ActivityAccumulator,
+  accumulator: { push(chunk: Buffer): void; readonly magnitudes: number[] },
   signal: AbortSignal
 ): Promise<number[]> {
   signal.throwIfAborted();

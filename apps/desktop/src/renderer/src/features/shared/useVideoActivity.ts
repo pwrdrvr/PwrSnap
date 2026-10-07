@@ -32,7 +32,11 @@ export function useVideoActivity(
       (res) =>
         land(
           res?.ok === true
-            ? { sampleHz: res.value.sampleHz, magnitudes: res.value.magnitudes }
+            ? {
+                sampleHz: res.value.sampleHz,
+                magnitudes: res.value.magnitudes,
+                ...(res.value.sound !== undefined ? { sound: res.value.sound } : {})
+              }
             : undefined
         ),
       () => land(undefined)

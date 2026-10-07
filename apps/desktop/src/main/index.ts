@@ -69,6 +69,7 @@ import {
 import { formatDiagnosticsInfo } from "./diagnostics-info";
 import { isAllowedExternalUrl } from "./external-url-allowlist";
 import { installTerminalSignalShutdown } from "./terminal-signal-shutdown";
+import { installSystemShutdown } from "./system-shutdown";
 import { installTransientWindowTeardown } from "./transient-window-teardown";
 import {
   applyWindowsChromiumStartupFeaturePolicy
@@ -1763,6 +1764,7 @@ export function bootstrapApp(): void {
   }
 
   app.whenReady().then(async () => {
+    installSystemShutdown();
     // Before any window loads. Electron's no-handler default GRANTS
     // every permission a renderer asks for; this denies by default and
     // allows only `media` (the selector's level meter + camera preview)

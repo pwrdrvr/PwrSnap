@@ -53,6 +53,7 @@ export default defineConfig({
       {
         test: {
           name: "desktop-renderer",
+          runner: "apps/desktop/src/test-setup/act-warning-runner.ts",
           globals: true,
           environment: "jsdom",
           include: [

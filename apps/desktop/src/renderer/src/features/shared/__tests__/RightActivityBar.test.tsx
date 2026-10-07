@@ -101,12 +101,14 @@ async function renderBar(params: RenderParams = {}): Promise<RenderResult> {
       onTabChange: (id) => {
         current = { ...current, active: id };
         onTabChange(id);
-        void rerender();
+        // The triggering interaction already owns an act scope. Render
+        // synchronously so tab + pin callbacks cannot overlap async scopes.
+        root?.render(paint(current));
       },
       onPinChange: (p) => {
         current = { ...current, pinned: p };
         onPinChange(p);
-        void rerender();
+        root?.render(paint(current));
       },
       renderPanel,
       testIdPrefix: "rab-test",

@@ -339,10 +339,12 @@ describe("a presenter per piece", () => {
     bridge.dispatch.mockResolvedValue({ ok: true, value: { saved: true } });
   });
 
-  test("an edit lands on the piece under the playhead, not the recording", () => {
+  test("an edit lands on the piece under the playhead, not the recording", async () => {
     const { state } = harness(withSpans([]), 6);
     expect(state.current!.editing.tag).toBe("Presenter · this piece");
-    act(() => state.current!.act({ type: "place", anchor: { h: "left", v: "top" } }));
+    await act(async () => {
+      state.current!.act({ type: "place", anchor: { h: "left", v: "top" } });
+    });
     const req = sent();
     expect(req.avatar).toBeUndefined();
     expect(req.spans).toHaveLength(1);
@@ -350,7 +352,7 @@ describe("a presenter per piece", () => {
     expect(req.spans![0]!.avatar.x).toBeLessThan(0.1);
   });
 
-  test("the presenter changes as the playhead crosses into a piece with its own", () => {
+  test("the presenter changes as the playhead crosses into a piece with its own", async () => {
     const { state, playhead } = harness(withSpans([{ start: 4, end: 10, avatar: own }]), 1);
     expect(state.current!.style.x).toBeGreaterThan(0.5);
     expect(state.current!.editing.inheritable).toBe(false);
@@ -358,7 +360,9 @@ describe("a presenter per piece", () => {
     expect(state.current!.style.x).toBe(0.05);
     expect(state.current!.editing.inheritable).toBe(true);
     // "Use the recording's presenter here" gives the piece back.
-    act(() => state.current!.act({ type: "inherit" }));
+    await act(async () => {
+      state.current!.act({ type: "inherit" });
+    });
     expect(sent().spans).toEqual([]);
   });
 
@@ -384,21 +388,27 @@ describe("a presenter per piece", () => {
     expect(req.spans![0]!.avatar).toMatchObject({ width: 0.3, x: 0.05 });
   });
 
-  test("⌘Z puts a piece's presenter back, and ⇧⌘Z brings the change again", () => {
+  test("⌘Z puts a piece's presenter back, and ⇧⌘Z brings the change again", async () => {
     const history = new EditHistory();
     const { state } = harness(withSpans([]), 6, history);
     expect(history.canUndo()).toBe(false);
-    act(() => state.current!.act({ type: "mirror" }));
+    await act(async () => {
+      state.current!.act({ type: "mirror" });
+    });
     expect(sent().spans![0]!.avatar.mirror).toBe(true);
     expect(history.canUndo()).toBe(true);
 
-    act(() => history.undo());
+    await act(async () => {
+      history.undo();
+    });
     // The whole presenter goes back: no piece of its own any more.
     expect(sent().spans).toEqual([]);
     expect(sent().avatar?.mirror).toBe(false);
     expect(history.canRedo()).toBe(true);
 
-    act(() => history.redo());
+    await act(async () => {
+      history.redo();
+    });
     expect(sent().spans).toHaveLength(1);
     expect(sent().spans![0]!.avatar.mirror).toBe(true);
     expect(history.canRedo()).toBe(false);

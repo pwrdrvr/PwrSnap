@@ -23,7 +23,7 @@
 //
 // ## What it covers, and what it does not
 //
-// GATED — the five per-capture derived-video lanes, each an ffmpeg run whose
+// GATED — the per-capture derived-video lanes, each an ffmpeg run whose
 // output is published by `rename`:
 //   • the playback rendition   (`ensureVideoPlaybackAsset`)
 //   • the waveform asset       (`ensureVideoAudioAsset`)
@@ -31,6 +31,8 @@
 //   • the poster frame         (`ensureVideoPoster`)
 //   • the activity track       (`ensureVideoActivity`) — tiny output, but a
 //     full decode of the source, so seconds of writer in the window
+//   • presenter masks and compositions (`prepareAvatarVideo`) — shared by
+//     ordinary exports and reel scenes, always in the video owner process
 //
 // NOT GATED, on purpose:
 //   • MP4/GIF exports (`recording-exporter.ts`), which also write this
@@ -109,6 +111,7 @@ type GatedWrite = {
   captureId: string;
   controller: AbortController;
   pending: Promise<unknown>;
+  consumers: number;
 };
 
 /** Keyed by capture AND artifact identity, so two callers wanting the same
@@ -145,15 +148,19 @@ function cleanupInProgressFor(captureId: string): boolean {
  * to derive something from a capture that is being deleted, or into a cache
  * that is being emptied. Callers that can fall back to the original should.
  *
- * The `AbortSignal` handed to `work` fires when a cleanup arrives mid-flight.
+ * The `AbortSignal` handed to `work` fires when a cleanup arrives mid-flight
+ * or the last consumer cancels. A caller's signal cancels only its own wait;
+ * other consumers (including callers without a signal) keep the write alive.
  * Honouring it is what makes draining bounded — `runAudioFfmpeg` already
  * kills its child on abort, so threading the signal through is enough.
  */
 export async function runGatedCacheWrite<T>(
   captureId: string,
   key: string,
-  work: (signal: AbortSignal) => Promise<T>
+  work: (signal: AbortSignal) => Promise<T>,
+  callerSignal?: AbortSignal
 ): Promise<T> {
+  callerSignal?.throwIfAborted();
   // Synchronous, before any await: a cleanup cannot slip in behind this
   // check and find no write registered.
   if (cleanupInProgressFor(captureId)) {
@@ -161,9 +168,15 @@ export async function runGatedCacheWrite<T>(
   }
   const mapKey = writeKey(captureId, key);
   const existing = writes.get(mapKey);
+  if (existing?.controller.signal.aborted) {
+    // The last consumer left, but the encoder may still own its staging
+    // file. A retry must drain that run before opening the same path.
+    await existing.pending.catch(() => undefined);
+    return runGatedCacheWrite(captureId, key, work, callerSignal);
+  }
   // Safe because `mapKey` pins both the capture and the artifact, and callers
   // derive `key` from the output path: same key, same bytes, same `T`.
-  if (existing !== undefined) return existing.pending as Promise<T>;
+  if (existing !== undefined) return consumeWrite<T>(existing, callerSignal);
 
   const controller = new AbortController();
   const pending = Promise.resolve()
@@ -178,8 +191,35 @@ export async function runGatedCacheWrite<T>(
     .finally(() => {
       if (writes.get(mapKey)?.controller === controller) writes.delete(mapKey);
     });
-  writes.set(mapKey, { captureId, controller, pending });
-  return pending;
+  const write = { captureId, controller, pending, consumers: 0 };
+  writes.set(mapKey, write);
+  return consumeWrite<T>(write, callerSignal);
+}
+
+function consumeWrite<T>(write: GatedWrite, signal?: AbortSignal): Promise<T> {
+  write.consumers += 1;
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const release = (): boolean => {
+      if (settled) return false;
+      settled = true;
+      signal?.removeEventListener("abort", abort);
+      write.consumers -= 1;
+      return true;
+    };
+    const abort = (): void => {
+      if (!release()) return;
+      if (write.consumers === 0) write.controller.abort();
+      reject(signal!.reason);
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    // Always observe the underlying write, even after this consumer leaves.
+    // It remains registered until its staging-file cleanup has finished.
+    write.pending.then(
+      (value) => { if (release()) resolve(value as T); },
+      (cause: unknown) => { if (release()) reject(cause); }
+    );
+  });
 }
 
 /**

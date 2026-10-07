@@ -332,7 +332,7 @@ describe("recording:* command-bus surface", () => {
       restart: true,
       pauseResume: false
     });
-    expect(result.value.sources.webcam).toBe(false);
+    expect(result.value.sources.webcam).toBe(true);
     expect(result.value.sources.liveAudioLevels).toBe(false);
   });
 

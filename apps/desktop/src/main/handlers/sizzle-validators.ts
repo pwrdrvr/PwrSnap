@@ -1,3 +1,4 @@
+import { AvatarStyleSchema } from "@pwrsnap/shared";
 // IPC input validators for the `sizzle:*` namespace.
 //
 // TypeScript catches misuse from the renderer at build time, but the
@@ -719,7 +720,9 @@ function validateScene(
   if (!transitionResult.ok) return transitionResult;
   const cutsResult = validateUseCaptureCuts(v.useCaptureCuts, `scene[${idx}].useCaptureCuts`);
   if (!cutsResult.ok) return cutsResult;
+  if (v.avatar !== undefined && !AvatarStyleSchema.safeParse(v.avatar).success) return { ok: false, error: validationError("invalid_avatar", "Invalid presenter appearance.") };
   const value: ValidatedScene = {
+    ...(v.avatar !== undefined ? { avatar: AvatarStyleSchema.parse(v.avatar) } : {}),
     id: v.id,
     captureId:
       typeof v.captureId === "string" && v.captureId.length > 0

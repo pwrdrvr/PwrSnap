@@ -3,7 +3,10 @@ import {
   activityLevelOfFraction,
   activityLevelOfMagnitude,
   decodeActivityMagnitude,
+  decodeSoundLevel,
   encodeActivityMagnitude,
+  encodeSoundLevel,
+  VIDEO_SPEECH_LEVEL_DB,
   videoActivityLevelString,
   videoActivityRuns,
   videoStillCuts,
@@ -105,6 +108,44 @@ describe("still spans and cuts", () => {
       { start: 2.7, end: 4.7 },
       { start: 5.9, end: 7.9 },
       { start: 9.1, end: 13 }
+    ]);
+  });
+});
+
+describe("sound keeps a still screen from reading as idle", () => {
+  const quiet = encodeSoundLevel(-55);
+  const voice = encodeSoundLevel(-24);
+  // 6 s of a still screen; someone talks from 2 to 4 s.
+  const still: VideoActivityTrack = {
+    sampleHz: 5,
+    magnitudes: Array(30).fill(0),
+    sound: [...Array(10).fill(quiet), ...Array(10).fill(voice), ...Array(10).fill(quiet)]
+  };
+
+  it("encodes loudness on a 60 dB scale", () => {
+    expect(encodeSoundLevel(-80)).toBe(0);
+    expect(encodeSoundLevel(0)).toBe(255);
+    expect(decodeSoundLevel(encodeSoundLevel(-30))).toBeCloseTo(-30, 0);
+    expect(decodeSoundLevel(0)).toBe(-Infinity);
+  });
+
+  it("room tone stays still; speech is not", () => {
+    expect(decodeSoundLevel(quiet)).toBeLessThan(VIDEO_SPEECH_LEVEL_DB);
+    expect(decodeSoundLevel(voice)).toBeGreaterThan(VIDEO_SPEECH_LEVEL_DB);
+    expect(videoStillSpans(still, { minStillSec: 1 })).toEqual([
+      { start: 0, end: 2 },
+      { start: 4, end: 6 }
+    ]);
+  });
+
+  it("never cuts the part someone is talking in", () => {
+    const cuts = videoStillCuts(still, { minStillSec: 1, paddingSec: 0.5, durationSec: 6 });
+    for (const cut of cuts) expect(cut.end <= 2 || cut.start >= 4).toBe(true);
+  });
+
+  it("a track with no audio reads as before", () => {
+    expect(videoStillSpans({ sampleHz: 5, magnitudes: Array(30).fill(0) }, { minStillSec: 1 })).toEqual([
+      { start: 0, end: 6 }
     ]);
   });
 });

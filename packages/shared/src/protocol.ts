@@ -1,3 +1,4 @@
+import type { AvatarStyle, CameraTrackMetadata, PresenterSpan, RecordingCamera } from "./camera";
 import type { CustomConnection, CustomConnectionInput, CustomModel, CustomModelDiscovery, CustomModelInput } from "./custom-models";
 // Typed `Commands` registry. Single source of truth across main /
 // preload / renderer / external transports (HTTP RPC in Phase 7, MCP
@@ -174,6 +175,11 @@ export type CaptureFamilySummary = {
  * fresh recordings start with `{ start: 0, end: durationSec }`.
  */
 export type VideoCaptureMetadata = {
+  camera?: CameraTrackMetadata | null;
+  avatar?: AvatarStyle | null;
+  /** Stretches of source time with their own presenter; `avatar` shows
+   *  everywhere else. See `presenter-spans.ts`. */
+  avatarSpans?: PresenterSpan[] | undefined;
   durationSec: number;
   containerFormat: "mp4" | "mov";
   hasSystemAudio: boolean;
@@ -239,7 +245,7 @@ export type VideoEditRequest = {
   /** Remove these spans from the current edit. Composes with cuts that
    *  already exist. */
   cut?: VideoRange[] | undefined;
-  /** Cut every stretch where nothing on screen changed for at least
+  /** Cut every stretch where nothing on screen changed and nobody spoke for at least
    *  `minStillSec` (default 3), keeping `paddingSec` (default 0.5) of
    *  stillness next to each change. `treatMinorAsStill` also ignores
    *  cursor movement and typing. Runs the activity analysis if needed. */
@@ -276,6 +282,9 @@ export type VideoActivityResult = {
   /** One byte per sample: 0 = nothing changed, 1–255 log-scale changed
    *  fraction of the frame. */
   magnitudes: number[];
+  /** Recorded-audio loudness per sample (`encodeSoundLevel`). Absent
+   *  when the take has no audio. */
+  sound?: number[] | undefined;
   /** Size of the grayscale frames the difference was measured on. */
   analysisWidthPx: number;
   analysisHeightPx: number;
@@ -480,6 +489,7 @@ export function canStartRecordingAttempt(state: RecordingState): boolean {
  * the mic toggle.
  */
 export type RecordingCapabilities = {
+  camera?: RecordingCamera;
   systemAudio: boolean;
   microphone: boolean;
 };
@@ -492,7 +502,7 @@ export type RecordingCapabilities = {
  * The recording HUD uses this snapshot to avoid advertising controls or live
  * monitoring that the active backend cannot actually perform. In particular,
  * neither shipped backend can pause/resume, switch audio tracks mid-stream,
- * report live RMS levels, or record a presenter camera today.
+ * or report live RMS levels. Camera capture is a separate browser recorder.
  */
 export type RecordingBackendCapabilities = {
   backend: "macos-native" | "windows-ffmpeg" | "unsupported";
@@ -588,13 +598,9 @@ export type RecordingPermission = "screen" | "microphone" | "systemAudio";
 /**
  * Every source a recording can draw from, in the order they are shown.
  *
- * Wider than {@link RecordingPermission} by exactly one member: `camera`
- * is a source the user can preview and choose a device for, but it has
- * no entry in {@link RecordingPermissionSnapshot} because the recorder
- * does not yet write a camera track. Keep them separate rather than
- * widening `RecordingPermission` — the permission snapshot is consumed
- * by the preflight guard, and adding a member there would make the
- * guard start blocking takes on a source nothing records.
+ * Camera permission is acquired by getUserMedia after the user enables it.
+ * It stays separate from the native screen/audio preflight snapshot so an
+ * unused camera cannot block a screen recording.
  */
 export type RecordingSourceKind = "screen" | "systemAudio" | "microphone" | "camera";
 
@@ -1860,6 +1866,8 @@ export function resolveSizzleAudioSource(
 }
 
 export type SizzleScene = {
+  /** Presenter appearance for this scene; absent inherits the capture. */
+  avatar?: AvatarStyle;
   id: string;
   /** `simple` is the legacy/current one-capture scene. `sequence`
    *  keeps one continuous narration block with many visual beats.
@@ -5234,6 +5242,30 @@ export type Commands = {
    * 3-2-1 countdown completes. Headless callers (agents, hotkey) can
    * pass `countdownSeconds: 0` to skip the countdown.
    */
+  "recording:cameraChunk": {
+    req: { token: string; bytes: number[] };
+    res: { accepted: boolean };
+  };
+  "video:camera": {
+    req: { captureId: string };
+    res: { url: string; camera: CameraTrackMetadata } | null;
+  };
+  "video:setAvatar": {
+    /** Either or both: the recording's presenter, and the whole list of
+     *  spans with their own (replaces the stored list). */
+    req: { captureId: string; avatar?: AvatarStyle | undefined; spans?: PresenterSpan[] | undefined };
+    res: { saved: true };
+  };
+  /** Main-process scene preparation. The video/cache owner resolves the
+   * source by id and publishes the presenter cache under its admission gate. */
+  "video:prepareAvatar": {
+    req: {
+      captureId: string;
+      avatar?: AvatarStyle;
+      canvas?: { width: number; height: number };
+    };
+    res: { path: string };
+  };
   "recording:start": {
     req: {
       subject: RecordingSubject;

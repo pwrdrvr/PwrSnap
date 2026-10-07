@@ -552,7 +552,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
         "Change which parts of a video capture export. Set exactly one of: " +
         "keep (replace the edit with exactly these kept spans), " +
         "cut (remove spans from the current edit; composes with existing cuts), " +
-        "cutStill (cut every stretch where nothing on screen changes for at least minStillSec, default 3, keeping paddingSec, default 0.5, next to each change), " +
+        "cutStill (cut every stretch where nothing on screen changes and nobody is talking for at least minStillSec, default 3, keeping paddingSec, default 0.5, next to each change), " +
         "or reset (restore the whole clip). Returns the resulting edit. " +
         VIDEO_EDIT_MODEL_GUIDANCE,
       inputSchema: {

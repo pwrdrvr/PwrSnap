@@ -683,3 +683,22 @@ describe("SizzleStore — back-compat read of pre-Phase-3a projects", () => {
     ]);
   });
 });
+
+it("keeps scene presenter overrides independent across save and reload", async () => {
+  const { DEFAULT_AVATAR_STYLE } = await import("@pwrsnap/shared");
+  const store = makeStore();
+  const project = await store.create("Presenter scenes");
+  const scene = { id: "left", captureId: "camera-1", scriptLine: "", durationOverrideSec: null, mediaTrim: null, audioSource: "auto" as const, transition: "cut" as const };
+  await store.update(project.id, { scenes: [
+    { ...scene, avatar: { ...DEFAULT_AVATAR_STYLE, x: 0.02, y: 0.72 } },
+    { ...scene, id: "right", avatar: { ...DEFAULT_AVATAR_STYLE, x: 0.72, y: 0.02, mirror: false } }
+  ] });
+  const saved = (await makeStore().get(project.id))!;
+  expect(saved.scenes[0]!.avatar!.x).toBe(0.02);
+  expect(saved.scenes[1]!.avatar!.x).toBe(0.72);
+  saved.scenes[1]!.avatar!.visible = false;
+  await store.update(project.id, { scenes: saved.scenes });
+  const updated = (await makeStore().get(project.id))!;
+  expect(updated.scenes[0]!.avatar!.visible).toBe(true);
+  expect(updated.scenes[1]!.avatar!.visible).toBe(false);
+});

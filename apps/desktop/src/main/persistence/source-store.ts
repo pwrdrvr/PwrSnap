@@ -1,3 +1,4 @@
+import { cameraDirectory, moveCameraDirectory } from "../recording/camera-track-store";
 // Source-store — the only writer of <userData>/captures/. Every
 // captured PNG flows through here. The plan §"Cross-cutting primitives"
 // names this as the single ownership seam for the source-immutability
@@ -346,10 +347,13 @@ export async function moveSourceToTrash(srcPath: string, captureId: string): Pro
   await mkdir(trashRoot, { recursive: true });
   const trashPath = join(trashRoot, `${captureId}${extname(srcPath)}`);
   if (!existsSync(srcPath)) {
+    await moveCameraDirectory(srcPath, trashPath, captureId);
     log.warn("trash move: source missing, nothing to move", { srcPath, captureId });
     return;
   }
   await moveFileWithExdevFallback(srcPath, trashPath);
+  try { await moveCameraDirectory(srcPath, trashPath, captureId); }
+  catch (error) { await moveFileWithExdevFallback(trashPath, srcPath); throw error; }
 }
 
 /**
@@ -363,11 +367,14 @@ export async function restoreSourceFromTrash(captureId: string, srcPath: string)
   const trashRoot = getTrashRoot();
   const trashPath = join(trashRoot, `${captureId}${extname(srcPath)}`);
   if (!existsSync(trashPath)) {
+    await moveCameraDirectory(trashPath, srcPath, captureId);
     log.warn("trash restore: trash file missing", { trashPath, captureId });
     return;
   }
   await mkdir(dirname(srcPath), { recursive: true });
   await moveFileWithExdevFallback(trashPath, srcPath);
+  try { await moveCameraDirectory(trashPath, srcPath, captureId); }
+  catch (error) { await moveFileWithExdevFallback(srcPath, trashPath); throw error; }
 }
 
 /**
@@ -379,7 +386,7 @@ export async function restoreSourceFromTrash(captureId: string, srcPath: string)
 export async function purgeOneFromTrash(captureId: string, srcPath: string): Promise<void> {
   const trashRoot = getTrashRoot();
   const trashPath = join(trashRoot, `${captureId}${extname(srcPath)}`);
-  if (!existsSync(trashPath)) return;
+  await rm(cameraDirectory(trashPath, captureId), { recursive: true, force: true });
   await rm(trashPath, { force: true });
 }
 
@@ -447,7 +454,7 @@ export async function sweepTrash(expiredCaptureIds: string[]): Promise<{ removed
     try {
       const stat = statSync(trashPath);
       if (stat.mtimeMs < cutoffMs) {
-        await rm(trashPath, { force: true });
+        await rm(trashPath, { force: true, recursive: name.endsWith(".camera") });
         removed += 1;
       }
     } catch (err) {

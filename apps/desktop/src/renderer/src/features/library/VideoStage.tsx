@@ -59,6 +59,8 @@ import {
   stepTime
 } from "../shared/video-range";
 import { VideoTransport } from "./VideoTransport";
+import { PresenterLayer } from "../camera/PresenterLayer";
+import { presenterKeyAction, usePresenter } from "../camera/usePresenter";
 import {
   isTextEntryTarget,
   nextShuttleRate,
@@ -217,19 +219,18 @@ export function VideoStage({
   // Edit undo / redo rides the window's edit-menu bridge, the same slot
   // the image editor uses — so ⌘Z, the Edit menu and its accelerator
   // all reach this stack, and an empty stack falls through to the
-  // Library's restore-last-deleted. A ref, so the registration stays
-  // put while the trim object changes identity every render.
-  const trimRef = useRef(trim);
-  trimRef.current = trim;
+  // Library's restore-last-deleted. The trim's EditHistory orders the
+  // trim and presenter stacks into one line of edits.
+  const editHistory = trim.history;
   useEffect(
     () =>
       registerEditorUndoRedo({
-        undo: () => trimRef.current.undo(),
-        redo: () => trimRef.current.redo(),
-        canUndo: () => trimRef.current.canUndo,
-        canRedo: () => trimRef.current.canRedo
+        undo: () => editHistory.undo(),
+        redo: () => editHistory.redo(),
+        canUndo: () => editHistory.canUndo(),
+        canRedo: () => editHistory.canRedo()
       }),
-    []
+    [editHistory]
   );
   const loopRef = useRef(loopInRange);
   loopRef.current = loopInRange;
@@ -496,8 +497,30 @@ export function VideoStage({
     [currentTime, durationSec, pause, play, playing, seek, setRange, setSegments, shuttle]
   );
 
+  const presenterTimeline = useMemo(
+    () => ({
+      segments,
+      durationSec,
+      subscribe: playhead.subscribe,
+      now: playhead.get,
+      history: trim.history
+    }),
+    [segments, durationSec, playhead, trim.history]
+  );
+  const presenter = usePresenter(record, presenterTimeline);
+
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
     if (isTextEntryTarget(e.target)) return;
+    if (presenter !== null) {
+      const action = presenterKeyAction(e, presenter.selected);
+      if (action !== null) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (action === "deselect") presenter.setSelected(false);
+        else presenter.act(action);
+        return;
+      }
+    }
     // A focused transport button keeps native space/enter activation.
     if ((e.key === " " || e.key === "Enter") && (e.target as HTMLElement).tagName === "BUTTON") return;
     const intent = transportIntentForKey(e);
@@ -725,7 +748,7 @@ export function VideoStage({
       void document.exitFullscreen().catch(() => undefined);
       return;
     }
-    void el.requestFullscreen?.().catch(() => undefined);
+    void (record.video?.camera ? el.parentElement : el)?.requestFullscreen?.().catch(() => undefined);
   };
 
   const onStripWidth = useCallback((w: number) => setStripWidth(w), []);
@@ -736,7 +759,15 @@ export function VideoStage({
       className="psl__video-stage"
       tabIndex={0}
       onKeyDown={onKeyDown}
-      onPointerDownCapture={() => {
+      onPointerDownCapture={(e) => {
+        // A press anywhere but the presenter, its toolbar or its lane
+        // deselects it — the same rule as an annotation in the editor.
+        if (
+          presenter?.selected === true &&
+          !(e.target instanceof Element && e.target.closest("[data-presenter-ui]") !== null)
+        ) {
+          presenter.setSelected(false);
+        }
         // Clicking anywhere in the stage arms the keyboard model.
         const root = rootRef.current;
         if (root !== null && !root.contains(document.activeElement)) {
@@ -758,6 +789,14 @@ export function VideoStage({
           onClick={() => runIntent({ type: "togglePlay" })}
           onDoubleClick={toggleFullscreen}
         />
+        {presenter !== null && (
+          <PresenterLayer
+            capture={record}
+            style={presenter.style}
+            videoRef={videoRef}
+            editing={presenter.editing}
+          />
+        )}
       </div>
       <VideoTransport
         playing={playing}
@@ -771,6 +810,11 @@ export function VideoStage({
         onTogglePlay={() => runIntent({ type: "togglePlay" })}
         onToggleLoop={() => setLoopInRange((v) => !v)}
         onSplit={() => runIntent({ type: "split" })}
+        presenter={
+          presenter === null
+            ? undefined
+            : { visible: presenter.style.visible, onToggle: () => presenter.act({ type: "toggleVisible" }) }
+        }
         onToggleMute={toggleMute}
         onFullscreen={toggleFullscreen}
       />
@@ -791,7 +835,13 @@ export function VideoStage({
         onWidthChange={onStripWidth}
         onInteractingChange={onTimelineInteracting}
         label="Recording timeline"
+        cameraLane={presenter?.lane}
       />
+      {presenter !== null && presenter.error !== "" && (
+        <p className="psl__video-audio-note" role="alert">
+          The presenter could not be saved: {presenter.error}
+        </p>
+      )}
       {video.requestedSystemAudio && !video.hasSystemAudio && (
         // The one thing left worth saying. The preview now plays what the
         // waveform draws, so the old "system audio only" apology is gone —

@@ -18,7 +18,7 @@ describe("recording backend capabilities", () => {
         screen: true,
         systemAudio: true,
         microphone: true,
-        webcam: false,
+        webcam: true,
         liveAudioLevels: false,
         liveDisconnectDetection: false,
         midRecordingToggles: false
@@ -27,7 +27,7 @@ describe("recording backend capabilities", () => {
     });
   });
 
-  test("advertises the Windows FFmpeg backend as screen-only", () => {
+  test("advertises Windows screen and separate camera capture without audio", () => {
     expect(recordingBackendCapabilities("win32")).toEqual({
       backend: "windows-ffmpeg",
       controls: { stop: true, cancel: true, restart: true, pauseResume: false },
@@ -35,7 +35,7 @@ describe("recording backend capabilities", () => {
         screen: true,
         systemAudio: false,
         microphone: false,
-        webcam: false,
+        webcam: true,
         liveAudioLevels: false,
         liveDisconnectDetection: false,
         midRecordingToggles: false

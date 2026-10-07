@@ -42,6 +42,7 @@ import {
   mergeSceneIntoPrevious,
   moveSceneBy,
   patchScene,
+  setScenePresenter,
   patchSequenceBeat,
   refitSceneOffsets,
   removeSceneById,
@@ -496,6 +497,7 @@ export function Editor(props: EditorProps): ReactElement {
 
       {project.scenes.length > 0 ? (
         <ReelPlayer
+          scenes={project.scenes}
           model={timelineModel}
           captureMap={captureMap}
           beatById={beatById}
@@ -505,6 +507,7 @@ export function Editor(props: EditorProps): ReactElement {
           renderDisabled={rendering || project.scenes.length === 0 || unscriptedSceneNumber !== null}
           renderTitle={renderTitle}
           onRender={onRender}
+          onScenePresenter={(sceneId, avatar) => onScenes(setScenePresenter(project.scenes, sceneId, avatar))}
         />
       ) : null}
 
@@ -567,6 +570,8 @@ export function Editor(props: EditorProps): ReactElement {
             return createPortal(
               <SceneInspector
                 scene={sceneRecord}
+                onScenePresenter={(avatar) => onScenes(setScenePresenter(project.scenes, sceneRecord.id, avatar))}
+                presenterCapture={(sceneRecord.kind === "sequence" ? (sceneRecord.beats ?? []).map(beat => beat.captureId) : [sceneRecord.captureId]).map(id => captureMap.get(id)).find(capture => capture?.video?.camera != null)}
                 region={region}
                 sceneCount={project.scenes.length}
                 playheadLocalSec={

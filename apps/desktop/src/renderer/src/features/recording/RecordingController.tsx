@@ -384,10 +384,11 @@ export function RecordingController(): ReactElement {
  */
 export function recordingSourceChips(
   capabilities: RecordingCapabilities
-): ReadonlyArray<"microphone" | "systemAudio"> {
-  const chips: Array<"microphone" | "systemAudio"> = [];
+): ReadonlyArray<"microphone" | "systemAudio" | "camera"> {
+  const chips: Array<"microphone" | "systemAudio" | "camera"> = [];
   if (capabilities.microphone) chips.push("microphone");
   if (capabilities.systemAudio) chips.push("systemAudio");
+  if (capabilities.camera) chips.push("camera");
   return chips;
 }
 

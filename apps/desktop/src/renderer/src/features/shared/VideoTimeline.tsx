@@ -14,7 +14,8 @@
 //   • hovering a part offers `Cut` (or `Keep` over a cut) — the same
 //     thing X does at the playhead;
 //   • `Cut idle` removes every stretch where nothing on screen changed
-//     for IDLE_MIN_SEC or more, read off the activity lane, and
+//     and nobody spoke for IDLE_MIN_SEC or more, read off the activity
+//     track (picture and sound), and
 //     previews what it will remove while hovered.
 //
 // Used in two places with the same machinery:
@@ -60,6 +61,7 @@ import {
   type VideoPiece,
   type VideoRange
 } from "@pwrsnap/shared";
+import { CAMERA_LANE_H, CameraLane, type CameraLaneModel } from "../camera/CameraLane";
 import type { PlayheadSource } from "./playhead";
 import { SequenceWaveform } from "./SequenceWaveform";
 import {
@@ -78,6 +80,9 @@ import {
 
 export type VideoTimelineProps = {
   durationSec: number;
+  /** A recording with a camera track gets a lane under the filmstrip;
+   *  dragging it is how the camera is synced. */
+  cameraLane?: CameraLaneModel | undefined;
   /** Playhead position. Ignored (not rendered) in `compact` mode.
    *  During playback this prop only carries DISCRETE positions (seek,
    *  pause) — the live head arrives on `playhead`. */
@@ -668,6 +673,7 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
   );
 
   const filmH = compact ? 40 : 56;
+  const cameraH = !compact && props.cameraLane !== undefined ? CAMERA_LANE_H : 0;
   const waveH = compact ? 0 : 24;
   const showActivity = !compact && activity !== undefined;
   const actH = showActivity ? ACTIVITY_H : 0;
@@ -816,7 +822,7 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
         <div
           ref={stripRef}
           className="vtl__strip"
-          style={{ height: `${filmH + actH + waveH}px` }}
+          style={{ height: `${filmH + cameraH + actH + waveH}px` }}
           onPointerDown={beginDrag({ kind: "scrub" })}
           onPointerMove={onPointerMove}
           onPointerLeave={() => setHoverPiece(null)}
@@ -855,6 +861,10 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
             )}
           </div>
 
+          {cameraH > 0 && props.cameraLane !== undefined && (
+            <CameraLane lane={props.cameraLane} durationSec={durationSec} width={width} />
+          )}
+
           {/* Activity lane — how much of the frame changed, per moment.
               Bars rise with the level; long still stretches (what
               `Cut idle` removes) are hatched. */}
@@ -863,6 +873,8 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
               className={`vtl__act${actPaths === null ? " is-loading" : ""}`}
               style={{ height: `${actH}px` }}
               aria-hidden="true"
+              data-tip="Screen activity"
+              data-tip-detail={`Taller bars: more of the screen changed\nShort bars: the cursor moved or someone typed\nHatched: nothing moved and nobody spoke for ${IDLE_MIN_SEC} s or more`}
               data-testid="video-timeline-activity"
             >
               {actPaths !== null && width > 0 && (
@@ -1102,7 +1114,7 @@ export function VideoTimeline(props: VideoTimelineProps): ReactElement {
             onPointerLeave={() => setIdlePreview(false)}
             onFocus={() => setIdlePreview(true)}
             onBlur={() => setIdlePreview(false)}
-            title={`Cut every stretch where nothing on screen changed for ${IDLE_MIN_SEC} s or more, keeping ${IDLE_PAD_SEC} s either side`}
+            title={`Cut every stretch where nothing on screen changed and nobody spoke for ${IDLE_MIN_SEC} s or more, keeping ${IDLE_PAD_SEC} s either side`}
             data-testid="video-timeline-cut-idle"
           >
             Cut idle −{formatSpan(idle.savedSec, 0)}

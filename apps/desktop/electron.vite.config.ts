@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
+import { cpSync, copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
@@ -142,6 +142,10 @@ function copyDirFiles({
 
 export default defineConfig(({ command }) => {
   const isBuild = command === "build";
+  // Self-host the exact installed WASM runtime. No CDN or runtime download.
+  const mediaPipeAssets = resolve(__dirname, "src/renderer/public/mediapipe");
+  mkdirSync(mediaPipeAssets, { recursive: true });
+  cpSync(resolve(__dirname, "node_modules/@mediapipe/tasks-vision/wasm"), mediaPipeAssets, { recursive: true });
   const productionDefine = isBuild
     ? { "process.env.NODE_ENV": JSON.stringify("production") }
     : {};
@@ -251,7 +255,11 @@ export default defineConfig(({ command }) => {
       },
       build: {
         minify: "esbuild",
-        sourcemap: false
+        sourcemap: false,
+        rollupOptions: { input: {
+          index: resolve(__dirname, "src/renderer/index.html"),
+          camera: resolve(__dirname, "src/renderer/camera.html")
+        } }
       }
     }
   };

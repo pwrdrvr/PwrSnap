@@ -17,6 +17,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import type { CaptureRecord, VideoCaptureMetadata } from "@pwrsnap/shared";
+import { EditHistory } from "../../shared/edit-history";
 import type { UseVideoTrimRange } from "../../shared/useVideoTrimRange";
 import { __resetEditMenuBridgeForTests, useEditMenuBridge } from "../../../lib/editMenuBridge";
 
@@ -64,7 +65,7 @@ function trimStub(
   range: { start: number; end: number },
   setRange: (next: { start: number; end: number }) => void = () => undefined
 ): UseVideoTrimRange {
-  return {
+  return withHistory({
     range,
     segments: [range],
     exportSegments: undefined,
@@ -75,7 +76,19 @@ function trimStub(
     canRedo: false,
     undo: () => undefined,
     redo: () => undefined
-  };
+  });
+}
+/** The stub's own undo stack as the stage's shared history. */
+function withHistory(t: Omit<UseVideoTrimRange, "history">): UseVideoTrimRange {
+  const history = new EditHistory();
+  history.register({
+    pastStamp: () => (t.canUndo ? 1 : undefined),
+    futureStamp: () => (t.canRedo ? 1 : undefined),
+    undo: () => t.undo(),
+    redo: () => t.redo(),
+    dropFuture: () => undefined
+  });
+  return { ...t, history };
 }
 const trim = trimStub({ start: 0, end: 10 });
 
@@ -788,7 +801,7 @@ describe("VideoStage cuts", () => {
       const base = trimStub({ start: current[0]!.start, end: current[current.length - 1]!.end });
       root!.render(
         createElement(Host, {
-          trim: {
+          trim: withHistory({
             ...base,
             segments: current,
             exportSegments: current.length > 1 ? current : undefined,
@@ -797,7 +810,7 @@ describe("VideoStage cuts", () => {
             undo: () => {
               undoCount += 1;
             }
-          }
+          })
         })
       );
     }

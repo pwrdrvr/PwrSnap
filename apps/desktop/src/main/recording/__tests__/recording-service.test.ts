@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => {
     nextSpawnError: null as Error | null,
     binaryPath: "/fake/PwrSnapRecorder",
     binaryExists: true,
+    beginCamera: vi.fn(async () => undefined),
+    cancelCamera: vi.fn(async () => undefined),
     isPackaged: false,
     stateLog: [] as Array<{ phase: string }>,
     /** Full broadcast log including rect/displayId payloads — used
@@ -42,6 +44,16 @@ const mocks = vi.hoisted(() => {
     }>
   };
 });
+
+vi.mock("../camera-recording", () => ({
+  beginCameraRecording: mocks.beginCamera,
+  cancelCameraRecording: mocks.cancelCamera,
+  finishCameraRecording: async () => null,
+  markCameraScreenStart: vi.fn(),
+  markCameraScreenStartUtc: vi.fn(),
+  prepareCameraPreview: vi.fn(),
+  confirmCameraPreviewExclusion: vi.fn()
+}));
 
 class FakeChild extends EventEmitter {
   stdin = { write: vi.fn() };
@@ -1324,6 +1336,29 @@ describe("Windows FFmpeg recorder", () => {
     await vi.advanceTimersByTimeAsync(0);
     await cancelPromise;
   }
+
+  test("restart keeps the selected camera and a later camera-off take stays off", async () => {
+    const service = await loadWindowsService();
+    const camera = { deviceId: "presenter-camera", label: "Presenter camera" };
+    await service.start({ subject: SUBJECT, capabilities: { ...CAPS, camera }, countdownSeconds: 0 });
+    expect(mocks.beginCamera).toHaveBeenLastCalledWith(camera);
+    // Caller state can change after start; the take owns a snapshot.
+    camera.deviceId = "different-camera";
+    const restart = service.restart();
+    mocks.spawnedChildren[0]!.emit("exit", 0, null);
+    await vi.advanceTimersByTimeAsync(3_100);
+    await restart;
+
+    expect(mocks.beginCamera).toHaveBeenCalledTimes(2);
+    expect(mocks.beginCamera).toHaveBeenLastCalledWith({ deviceId: "presenter-camera", label: "Presenter camera" });
+    expect(mocks.cancelCamera).toHaveBeenCalled();
+    expect(mocks.spawnCalls[1]!.args).toContain("info");
+    await cancelAndExit(service, mocks.spawnedChildren[1]!);
+
+    await service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+    expect(mocks.beginCamera).toHaveBeenCalledTimes(2);
+    await cancelAndExit(service, mocks.spawnedChildren[2]!);
+  });
 
   test.each([
     { label: "explicit true", captureCursor: true, drawMouse: "1" },

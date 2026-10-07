@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   planWindowsFfmpegCapture,
+  windowsCaptureStartUtcMs,
   WINDOWS_FFMPEG_CAPTURE_CURSOR_DEFAULT
 } from "../windows-ffmpeg-capture";
 
@@ -64,4 +65,12 @@ describe("planWindowsFfmpegCapture", () => {
       expect(plan.args.indexOf("-draw_mouse")).toBeLessThan(plan.args.indexOf("-i"));
     }
   );
+});
+
+test("camera sync uses the input's first-frame UTC timestamp, independent of process startup", () => {
+  expect(windowsCaptureStartUtcMs("[gdigrab] Capturing desktop\nInput #0, gdigrab, from 'desktop':\n  Duration: N/A, start: 1791150123.123456, bitrate: 500 kb/s")).toBeCloseTo(1791150123123.456, 2);
+  expect(windowsCaptureStartUtcMs("Duration: N/A, start: 0.000000")).toBeNull();
+  const plan = planWindowsFfmpegCapture({ rect: RECT, outputPath: OUTPUT_PATH, cameraSync: true });
+  expect(plan.args).toContain("-nostats");
+  expect(plan.args[plan.args.indexOf("-loglevel") + 1]).toBe("info");
 });

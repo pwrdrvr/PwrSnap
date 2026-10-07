@@ -582,13 +582,22 @@ export function buildWeakCopyleftBundledBinaries(platformRecords = []) {
 
 /**
  * Bundled binaries that are not npm packages, so there is no installed
- * directory to read. Today this is only the CI-injected FFmpeg executable.
+ * directory to read: CI-injected FFmpeg and the checked-in selfie model.
+ * The model carries its own Apache-2.0 license beside the weights.
  *
  * Everything else in the notice — including every shipped platform package —
  * is read from disk and is therefore subject to the materialization check.
  */
 export function buildBundledBinaryRecords() {
   return [
+    {
+      name: "MediaPipe Selfie Segmentation landscape model",
+      version: "float16/1 (490e9ea734313e0de)",
+      declaredLicense: "Apache-2.0",
+      source: "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter_landscape/float16/1/selfie_segmenter_landscape.tflite",
+      bundledBinary: true,
+      licenseText: "Copyright Google. Model card: https://storage.googleapis.com/mediapipe-assets/Model%20Card%20MediaPipe%20Selfie%20Segmentation.pdf\n\n" + readFileSync(join(repoRoot, "apps/desktop/src/renderer/public/models/LICENSE"), "utf8"),
+    },
     {
       name: "FFmpeg",
       version: BUNDLED_FFMPEG.version,

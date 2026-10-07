@@ -1,3 +1,13 @@
+import {
+  CameraTrackMetadataSchema,
+  AvatarStyleSchema,
+  normalizePresenterSpans,
+  PresenterSpansSchema,
+  recoverCameraTiming,
+  type AvatarStyle,
+  type CameraTrackMetadata,
+  type PresenterSpan
+} from "@pwrsnap/shared";
 // Video-captures metadata read/write surface. Companion to
 // captures-repo.ts — every video metadata mutation goes through here.
 // The 1:1 FK to `captures.id` means we never INSERT a video_captures
@@ -24,6 +34,9 @@ import { getDb } from "./db";
 import { prepareCached } from "./prepare-cached";
 
 type VideoRow = {
+  camera_json?: string | null;
+  avatar_json?: string | null;
+  avatar_spans_json?: string | null;
   capture_id: string;
   duration_sec: number;
   container_format: "mp4" | "mov";
@@ -76,6 +89,9 @@ function segmentsFromRow(row: VideoRow): VideoRange[] {
 function rowToMetadata(row: VideoRow): VideoCaptureMetadata {
   return {
     durationSec: row.duration_sec,
+    camera: recoverCameraTiming(parseCameraJson(row.camera_json), row.duration_sec),
+    avatar: parseAvatarJson(row.avatar_json),
+    ...presenterSpansField(row.avatar_spans_json, row.duration_sec),
     containerFormat: row.container_format,
     hasSystemAudio: row.has_system_audio === 1,
     hasMicrophoneAudio: row.has_microphone_audio === 1,
@@ -436,4 +452,37 @@ export function recordExport(input: RecordExportInsert): void {
     path: input.path,
     size: input.byteSize
   });
+}
+
+export function setVideoCamera(captureId: string, camera: CameraTrackMetadata): void {
+  getDb().prepare("UPDATE video_captures SET camera_json = ? WHERE capture_id = ?").run(JSON.stringify(camera), captureId);
+}
+export function setVideoAvatar(captureId: string, avatar: AvatarStyle): void {
+  getDb().prepare("UPDATE video_captures SET avatar_json = ? WHERE capture_id = ?").run(JSON.stringify(AvatarStyleSchema.parse(avatar)), captureId);
+}
+
+function parseCameraJson(raw?: string | null): CameraTrackMetadata | null {
+  try { return CameraTrackMetadataSchema.safeParse(JSON.parse(raw ?? "null")).data ?? null; } catch { return null; }
+}
+/** Replaces the recording's presenter spans; an empty list clears them. */
+export function setVideoAvatarSpans(captureId: string, spans: readonly PresenterSpan[], durationSec: number): PresenterSpan[] {
+  const normalized = normalizePresenterSpans(PresenterSpansSchema.parse(spans), durationSec);
+  getDb()
+    .prepare("UPDATE video_captures SET avatar_spans_json = ? WHERE capture_id = ?")
+    .run(normalized.length === 0 ? null : JSON.stringify(normalized), captureId);
+  return normalized;
+}
+
+function presenterSpansField(raw: string | null | undefined, durationSec: number): { avatarSpans?: PresenterSpan[] } {
+  try {
+    const parsed = PresenterSpansSchema.safeParse(JSON.parse(raw ?? "null")).data;
+    const spans = parsed === undefined ? [] : normalizePresenterSpans(parsed, durationSec);
+    return spans.length === 0 ? {} : { avatarSpans: spans };
+  } catch {
+    return {};
+  }
+}
+
+function parseAvatarJson(raw?: string | null): AvatarStyle | null {
+  try { return AvatarStyleSchema.safeParse(JSON.parse(raw ?? "null")).data ?? null; } catch { return null; }
 }

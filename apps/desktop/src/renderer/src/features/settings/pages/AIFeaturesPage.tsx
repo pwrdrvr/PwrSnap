@@ -917,7 +917,10 @@ function budgetStatusSubLine(
   if (status.mode === "slow") {
     return `Slow mode: ${tokenLabel}; next token ${formatNextTokenAt(status.nextTokenAt)}.`;
   }
-  return `${tokenLabel}; refill cadence is one token every ${Math.round(status.refillIntervalMs / 1000)}s.`;
+  // Per minute, not "every Ns": a raised limit refills in under a second,
+  // which whole seconds would round to a wrong number.
+  const perMinute = Math.round(60_000 / status.refillIntervalMs);
+  return `${tokenLabel}; refills ${perMinute} a minute.`;
 }
 
 // ---- Usage ---------------------------------------------------------------

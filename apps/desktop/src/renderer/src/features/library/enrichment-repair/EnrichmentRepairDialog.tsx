@@ -75,6 +75,10 @@ export function EnrichmentRepairDialog({
   const closeRef = useRef<HTMLButtonElement | null>(null);
   const dialogRef = useModal<HTMLElement>({ onClose, initialFocusRef: closeRef });
 
+  // Every app any preview has named, so a picked app that drops to zero in
+  // a narrower window keeps its name and icon.
+  const seenApps = useRef(new Map<string, EnrichmentRepairAppCount>());
+
   const criteria = useMemo(
     () => repairCriteria({ statuses, preset, custom, apps, now: Date.now() }),
     [statuses, preset, custom, apps]
@@ -94,6 +98,7 @@ export function EnrichmentRepairDialog({
       void dispatch("codex:repair:preview", { criteria }).then((result) => {
         if (cancelled) return;
         if (result.ok) {
+          for (const app of result.value.apps) seenApps.current.set(app.appKey, app);
           setPreview(result.value);
           setError(null);
         } else {
@@ -113,7 +118,8 @@ export function EnrichmentRepairDialog({
     const rows = [...(preview?.apps ?? [])];
     for (const appKey of apps.appIds) {
       if (!rows.some((row) => row.appKey === appKey)) {
-        rows.push({ appKey, bundleId: null, name: null, count: 0 });
+        const seen = seenApps.current.get(appKey);
+        rows.push({ appKey, bundleId: seen?.bundleId ?? null, name: seen?.name ?? null, count: 0 });
       }
     }
     const query = appQuery.trim().toLowerCase();

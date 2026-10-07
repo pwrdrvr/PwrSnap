@@ -29,6 +29,7 @@ const PREVIEW: EnrichmentRepairPreview = {
 let container: HTMLDivElement;
 let root: Root;
 let calls: Array<{ name: string; req: unknown }>;
+let preview: EnrichmentRepairPreview;
 let onJobChange: ReturnType<typeof vi.fn<(job: EnrichmentRepairJob | null) => void>>;
 
 function job(criteria: EnrichmentRepairCriteria): EnrichmentRepairJob {
@@ -53,6 +54,7 @@ function job(criteria: EnrichmentRepairCriteria): EnrichmentRepairJob {
 beforeEach(() => {
   vi.useFakeTimers();
   calls = [];
+  preview = PREVIEW;
   onJobChange = vi.fn<(job: EnrichmentRepairJob | null) => void>();
   Object.defineProperty(window, "pwrsnapApi", {
     configurable: true,
@@ -60,7 +62,7 @@ beforeEach(() => {
       on: () => () => undefined,
       dispatch: vi.fn(async (name: string, req: { criteria: EnrichmentRepairCriteria }) => {
         calls.push({ name, req });
-        if (name === "codex:repair:preview") return { ok: true, value: PREVIEW };
+        if (name === "codex:repair:preview") return { ok: true, value: preview };
         if (name === "codex:repair:start") return { ok: true, value: job(req.criteria) };
         return { ok: false, error: { kind: "unknown", code: "unexpected", message: name } };
       })
@@ -136,6 +138,16 @@ describe("EnrichmentRepairDialog", () => {
     });
     await flushPreview();
     expect(lastCriteria().apps).toEqual({ mode: "exclude", appIds: ["com.tinyspeck.slackmacgap"] });
+  });
+
+  test("a picked app that drops to zero in a narrower window keeps its name", async () => {
+    await mount();
+    await act(async () => button("Safari").click());
+    preview = { ...PREVIEW, total: 0, apps: PREVIEW.apps.filter((app) => app.name !== "Safari") };
+    await act(async () => button("24 hours").click());
+    await flushPreview();
+    expect(button("Safari").getAttribute("aria-pressed")).toBe("true");
+    expect(container.textContent).not.toContain("com.apple.safari");
   });
 
   test("Never ran joins the batch when ticked", async () => {

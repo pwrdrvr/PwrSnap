@@ -24,6 +24,9 @@
 //     An edit adopted from upstream is undoable too — the state it
 //     replaced goes on the stack — so a cut an agent made is one ⌘Z
 //     away from gone.
+//   • Its entries are stamped from `history`, an EditHistory another
+//     stack on the same surface can join (the video stage's presenter),
+//     so one ⌘Z walks both in the order the edits happened.
 //
 // Two persistence modes, named by the caller's `persist`:
 //   • "edit" (Library): the whole edit, cuts included; persists with
@@ -46,6 +49,7 @@ import {
   type VideoRange
 } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
+import { EditHistory, type EditHistorySource } from "./edit-history";
 import { clampRange, exportSegmentsOf, isValidRange, videoSegmentsDepKey } from "./video-range";
 
 export const PERSIST_DEBOUNCE_MS = 150;
@@ -76,7 +80,11 @@ export type UseVideoTrimRange = {
   canRedo: boolean;
   undo: () => void;
   redo: () => void;
+  /** The surface's shared undo order; this hook is one of its stacks. */
+  history: EditHistory;
 };
+
+type Entry = { stamp: number; segments: VideoRange[] };
 
 function seedRange(persisted: VideoRange | null, durationSec: number): VideoRange {
   if (persisted === null) return { start: 0, end: durationSec };
@@ -126,8 +134,10 @@ export function useVideoTrimRange(input: UseVideoTrimRangeInput): UseVideoTrimRa
   /** The last committed edit — the base every handle drag clips, and
    *  what the next undo entry records. */
   const committedRef = useRef(segments);
-  const pastRef = useRef<VideoRange[][]>([]);
-  const futureRef = useRef<VideoRange[][]>([]);
+  const pastRef = useRef<Entry[]>([]);
+  const futureRef = useRef<Entry[]>([]);
+  const [editHistory] = useState(() => new EditHistory());
+  const sourceRef = useRef<EditHistorySource | null>(null);
   const draggingRef = useRef(false);
   const pendingRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -162,6 +172,16 @@ export function useVideoTrimRange(input: UseVideoTrimRangeInput): UseVideoTrimRa
     flush?.();
   }, []);
 
+  /** Put the edit being replaced on the undo stack, stamped from the
+   *  shared history (which drops every other stack's redo). */
+  const record = useCallback((replaced: VideoRange[]): void => {
+    const source = sourceRef.current;
+    const stamp = source === null ? 0 : editHistory.stamp(source);
+    pastRef.current.push({ stamp, segments: replaced });
+    if (pastRef.current.length > TRIM_HISTORY_LIMIT) pastRef.current.shift();
+    futureRef.current = [];
+  }, [editHistory]);
+
   // Capture switch: persist what the previous capture was waiting on,
   // then hard reset (drop history, drop pending, reseed).
   useEffect(() => {
@@ -194,9 +214,7 @@ export function useVideoTrimRange(input: UseVideoTrimRangeInput): UseVideoTrimRa
       return;
     }
     // Someone else changed the edit. Keep what it replaced one undo away.
-    pastRef.current.push(current);
-    if (pastRef.current.length > TRIM_HISTORY_LIMIT) pastRef.current.shift();
-    futureRef.current = [];
+    record(current);
     committedRef.current = upstream;
     setLocalBoth(upstream);
     syncHistory();
@@ -246,9 +264,7 @@ export function useVideoTrimRange(input: UseVideoTrimRangeInput): UseVideoTrimRa
         setLocalBoth(prev);
         return;
       }
-      pastRef.current.push(prev);
-      if (pastRef.current.length > TRIM_HISTORY_LIMIT) pastRef.current.shift();
-      futureRef.current = [];
+      record(prev);
       committedRef.current = next;
       setLocalBoth(next);
       syncHistory();
@@ -293,10 +309,13 @@ export function useVideoTrimRange(input: UseVideoTrimRangeInput): UseVideoTrimRa
   );
 
   const step = useCallback(
-    (from: { current: VideoRange[][] }, to: { current: VideoRange[][] }): void => {
-      const target = from.current.pop();
-      if (target === undefined) return;
-      to.current.push(committedRef.current);
+    (from: { current: Entry[] }, to: { current: Entry[] }): void => {
+      const entry = from.current.pop();
+      if (entry === undefined) return;
+      // The entry keeps its stamp as it crosses: it still names when
+      // that edit happened, which is what orders it against the others.
+      to.current.push({ stamp: entry.stamp, segments: committedRef.current });
+      const target = entry.segments;
       committedRef.current = target;
       draggingRef.current = false;
       setLocalBoth(target);
@@ -307,6 +326,30 @@ export function useVideoTrimRange(input: UseVideoTrimRangeInput): UseVideoTrimRa
   );
   const undo = useCallback(() => step(pastRef, futureRef), [step]);
   const redo = useCallback(() => step(futureRef, pastRef), [step]);
+
+  const undoRef = useRef(undo);
+  undoRef.current = undo;
+  const redoRef = useRef(redo);
+  redoRef.current = redo;
+  useEffect(() => {
+    const source: EditHistorySource = {
+      pastStamp: () => pastRef.current.at(-1)?.stamp,
+      futureStamp: () => futureRef.current.at(-1)?.stamp,
+      undo: () => undoRef.current(),
+      redo: () => redoRef.current(),
+      dropFuture: () => {
+        if (futureRef.current.length === 0) return;
+        futureRef.current = [];
+        syncHistory();
+      }
+    };
+    sourceRef.current = source;
+    const unregister = editHistory.register(source);
+    return () => {
+      unregister();
+      sourceRef.current = null;
+    };
+  }, [editHistory, syncHistory]);
 
   const range = useMemo(() => videoSegmentsOuterRange(segments), [segments]);
   const exportSegments = useMemo(() => exportSegmentsOf(segments), [segments]);
@@ -322,6 +365,7 @@ export function useVideoTrimRange(input: UseVideoTrimRangeInput): UseVideoTrimRa
     canUndo: history.canUndo,
     canRedo: history.canRedo,
     undo,
-    redo
+    redo,
+    history: editHistory
   };
 }

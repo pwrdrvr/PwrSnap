@@ -14,6 +14,7 @@ import { PresenterLayer, type PresenterEditing } from "../PresenterLayer";
 import { applyPresenterAction, presenterKeyAction, usePresenter, type PresenterState } from "../usePresenter";
 import { createPlayheadSource } from "../../shared/playhead";
 import { PresenterToolbar } from "../PresenterToolbar";
+import { EditHistory } from "../../shared/edit-history";
 
 const bridge = vi.hoisted(() => ({ dispatch: vi.fn() }));
 vi.mock("../../../lib/pwrsnap", async (importOriginal) => ({
@@ -313,9 +314,15 @@ describe("a presenter per piece", () => {
   const withSpans = (spans: unknown[]) =>
     ({ ...capture, video: { ...capture.video, durationSec: 10, avatarSpans: spans } }) as unknown as CaptureRecord;
 
-  function harness(record: CaptureRecord, at: number) {
+  function harness(record: CaptureRecord, at: number, history?: EditHistory) {
     const playhead = createPlayheadSource(at);
-    const timeline = { segments, durationSec: 10, subscribe: playhead.subscribe, now: playhead.get };
+    const timeline = {
+      segments,
+      durationSec: 10,
+      subscribe: playhead.subscribe,
+      now: playhead.get,
+      ...(history ? { history } : {})
+    };
     const state: { current: PresenterState | null } = { current: null };
     function Probe({ r }: { r: CaptureRecord }): null {
       state.current = usePresenter(r, timeline);
@@ -374,6 +381,26 @@ describe("a presenter per piece", () => {
     const req = sent();
     expect(req.avatar?.width).toBe(0.3);
     expect(req.spans![0]!.avatar).toMatchObject({ width: 0.3, x: 0.05 });
+  });
+
+  test("⌘Z puts a piece's presenter back, and ⇧⌘Z brings the change again", () => {
+    const history = new EditHistory();
+    const { state } = harness(withSpans([]), 6, history);
+    expect(history.canUndo()).toBe(false);
+    act(() => state.current!.act({ type: "mirror" }));
+    expect(sent().spans![0]!.avatar.mirror).toBe(true);
+    expect(history.canUndo()).toBe(true);
+
+    act(() => history.undo());
+    // The whole presenter goes back: no piece of its own any more.
+    expect(sent().spans).toEqual([]);
+    expect(sent().avatar?.mirror).toBe(false);
+    expect(history.canRedo()).toBe(true);
+
+    act(() => history.redo());
+    expect(sent().spans).toHaveLength(1);
+    expect(sent().spans![0]!.avatar.mirror).toBe(true);
+    expect(history.canRedo()).toBe(false);
   });
 
   test("one piece and no spans: no scope, edits change the recording's presenter", () => {

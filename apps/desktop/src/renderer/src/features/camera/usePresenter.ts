@@ -2,6 +2,10 @@
 // style, the selection, an optimistic copy while a save is in flight, and
 // the keyboard bindings. The stage, its toolbar, the transport button and
 // the camera lane all read from here, so they can never disagree.
+//
+// Every saved change is undoable. The stack joins the stage's EditHistory
+// (the trim's), so ⌘Z walks presenter and cut edits in the order they
+// happened.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -25,6 +29,7 @@ import {
   type VideoRange
 } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
+import type { EditHistory, EditHistorySource } from "../shared/edit-history";
 import type { CameraLaneModel } from "./CameraLane";
 import type { PresenterEditing } from "./PresenterLayer";
 import type { PresenterAction } from "./PresenterToolbar";
@@ -76,6 +81,11 @@ export function presenterKeyAction(
   return null;
 }
 
+/** Undo depth, as for the trim. */
+const PRESENTER_HISTORY_LIMIT = 100;
+type PresenterSnapshot = { readonly avatar: AvatarStyle; readonly spans: PresenterSpan[] };
+type PresenterEntry = { readonly stamp: number; readonly snapshot: PresenterSnapshot };
+
 /** What an edit on the stage changes once the clip has pieces: the piece
  *  under the playhead, or every piece at once. */
 export type PresenterScope = "piece" | "all";
@@ -109,6 +119,8 @@ export function usePresenter(
     /** The stage's playhead; edits land on the piece it is in. */
     readonly subscribe: TimeSubscribe;
     readonly now: () => number;
+    /** The stage's shared undo order. */
+    readonly history?: EditHistory;
   }
 ): PresenterState | null {
   const camera = record.video?.camera ?? null;
@@ -120,6 +132,8 @@ export function usePresenter(
   const [scope, setScope] = useState<PresenterScope>("piece");
   const [error, setError] = useState("");
   const strip = useCameraStrip(record.id, camera);
+  const pastRef = useRef<PresenterEntry[]>([]);
+  const futureRef = useRef<PresenterEntry[]>([]);
 
   // A new capture starts unselected; the broadcast that follows a save
   // carries the saved style, which retires the optimistic copy.
@@ -129,6 +143,8 @@ export function usePresenter(
     setPendingSpans(null);
     setScope("piece");
     setError("");
+    pastRef.current = [];
+    futureRef.current = [];
   }, [record.id]);
   useEffect(() => {
     setPending(null);
@@ -165,7 +181,7 @@ export function usePresenter(
     [active, base, geometry]
   );
 
-  const save = useCallback(
+  const write = useCallback(
     (next: { avatar?: AvatarStyle; spans?: PresenterSpan[] }): void => {
       if (next.avatar) setPending(next.avatar);
       if (next.spans) setPendingSpans(next.spans);
@@ -187,6 +203,55 @@ export function usePresenter(
     },
     [record.id]
   );
+
+  // What an undo puts back: the recording's presenter and every piece's.
+  // Read through a ref so a stack step always snapshots what shows now.
+  const snapshotRef = useRef<PresenterSnapshot | null>(null);
+  snapshotRef.current = base === null ? null : { avatar: base, spans };
+  const history = timeline?.history;
+  const sourceRef = useRef<EditHistorySource | null>(null);
+
+  /** Save a change, keeping what it replaced one undo away. */
+  const save = useCallback(
+    (next: { avatar?: AvatarStyle; spans?: PresenterSpan[] }): void => {
+      const before = snapshotRef.current;
+      if (before !== null) {
+        const source = sourceRef.current;
+        const stamp = history && source ? history.stamp(source) : 0;
+        pastRef.current.push({ stamp, snapshot: before });
+        if (pastRef.current.length > PRESENTER_HISTORY_LIMIT) pastRef.current.shift();
+        futureRef.current = [];
+      }
+      write(next);
+    },
+    [history, write]
+  );
+
+  useEffect(() => {
+    if (!history) return;
+    const step = (from: { current: PresenterEntry[] }, to: { current: PresenterEntry[] }): void => {
+      const entry = from.current.pop();
+      const now = snapshotRef.current;
+      if (entry === undefined || now === null) return;
+      to.current.push({ stamp: entry.stamp, snapshot: now });
+      write({ avatar: entry.snapshot.avatar, spans: entry.snapshot.spans });
+    };
+    const source: EditHistorySource = {
+      pastStamp: () => pastRef.current.at(-1)?.stamp,
+      futureStamp: () => futureRef.current.at(-1)?.stamp,
+      undo: () => step(pastRef, futureRef),
+      redo: () => step(futureRef, pastRef),
+      dropFuture: () => {
+        futureRef.current = [];
+      }
+    };
+    sourceRef.current = source;
+    const unregister = history.register(source);
+    return () => {
+      unregister();
+      sourceRef.current = null;
+    };
+  }, [history, write]);
 
   // Read at edit time, not render time: the playhead moves without
   // re-rendering this hook.

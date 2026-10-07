@@ -219,19 +219,18 @@ export function VideoStage({
   // Edit undo / redo rides the window's edit-menu bridge, the same slot
   // the image editor uses — so ⌘Z, the Edit menu and its accelerator
   // all reach this stack, and an empty stack falls through to the
-  // Library's restore-last-deleted. A ref, so the registration stays
-  // put while the trim object changes identity every render.
-  const trimRef = useRef(trim);
-  trimRef.current = trim;
+  // Library's restore-last-deleted. The trim's EditHistory orders the
+  // trim and presenter stacks into one line of edits.
+  const editHistory = trim.history;
   useEffect(
     () =>
       registerEditorUndoRedo({
-        undo: () => trimRef.current.undo(),
-        redo: () => trimRef.current.redo(),
-        canUndo: () => trimRef.current.canUndo,
-        canRedo: () => trimRef.current.canRedo
+        undo: () => editHistory.undo(),
+        redo: () => editHistory.redo(),
+        canUndo: () => editHistory.canUndo(),
+        canRedo: () => editHistory.canRedo()
       }),
-    []
+    [editHistory]
   );
   const loopRef = useRef(loopInRange);
   loopRef.current = loopInRange;
@@ -499,8 +498,14 @@ export function VideoStage({
   );
 
   const presenterTimeline = useMemo(
-    () => ({ segments, durationSec, subscribe: playhead.subscribe, now: playhead.get }),
-    [segments, durationSec, playhead]
+    () => ({
+      segments,
+      durationSec,
+      subscribe: playhead.subscribe,
+      now: playhead.get,
+      history: trim.history
+    }),
+    [segments, durationSec, playhead, trim.history]
   );
   const presenter = usePresenter(record, presenterTimeline);
 

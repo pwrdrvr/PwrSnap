@@ -15,9 +15,50 @@ settings substrate, popover sizing gotchas, native binding repair), read
 
 ## Development Setup
 
-1. Install Node.js from `.nvmrc` (currently `v24.14.1`).
-2. Run `pnpm install` from the repo root.
-3. Run `pnpm dev` for the desktop app.
+PwrSnap is a pnpm workspace (`apps/desktop` + `packages/*`). It needs the
+Node.js version in `.nvmrc` (currently `v24.14.1`), selected through nvm, and
+the pnpm version pinned in the root `package.json`:
+
+```bash
+git clone https://github.com/pwrdrvr/PwrSnap.git
+cd PwrSnap
+source ~/.nvm/nvm.sh
+nvm use
+pnpm install
+pnpm dev
+```
+
+The root `preinstall` script refuses an install under the wrong Node. Do not
+bypass it: native modules compiled against the wrong ABI fail later, at test
+or launch time (see [better-sqlite3 Native Binding
+Repair](#better-sqlite3-native-binding-repair)).
+
+Keep a separate `pnpm install` in each worktree. Sharing root `node_modules`
+does not supply all package-local dependency links, and sharing package
+`node_modules` can bind workspace imports to the donor checkout's source and
+make native staging mutate shared dependencies.
+
+### Linux: Electron's sandbox helper
+
+On Linux, install and desktop dev/preview warn when Electron's setuid sandbox
+helper lacks root ownership or mode `4755`. If Electron reports the SUID
+sandbox error, run these commands from the repository root:
+
+```bash
+pnpm fix:linux-sandbox
+pnpm dev
+```
+
+The fixer resolves this checkout's installed Electron helper, runs `sudo chown
+root:root` followed by `sudo chmod 4755`, and verifies the result. It is safe to
+repeat; run PwrSnap as your normal user. Reinstallation or Electron replacement
+may require repeating the repair. `pnpm check:linux-sandbox` repeats the
+read-only advisory check. User namespaces may permit launch without the setuid
+helper; mount policy (such as `nosuid`) and other security restrictions can
+still prevent startup after repair. Install and launch never request sudo
+automatically or disable sandboxing. Both commands do nothing on other
+platforms. Linux is a development and CI platform for PwrSnap; no Linux
+package is distributed.
 
 Useful checks (all run from the repo root):
 
@@ -48,8 +89,17 @@ makes Vitest run the full workspace suite.
   `apps/desktop/package.json`. They are generator output maintained outside
   this repo; do not vendor them back in.
 
-See the "How it's built" table in [README.md](README.md#how-its-built) for
-the layer → stack → path mapping.
+### How it's built
+
+| Layer                | Stack                                                    | Where it lives                                  |
+| -------------------- | -------------------------------------------------------- | ----------------------------------------------- |
+| Desktop shell        | Electron + TypeScript + React 19 + electron-vite         | `apps/desktop/`                                 |
+| Capture pipeline     | Electron/OS capture + `sharp`; Swift/C++ window helpers  | `apps/desktop/src/main/capture/`                |
+| Render pipeline      | `sharp` for resize + crop + thumbnail caching            | `apps/desktop/src/main/render/`                 |
+| Persistence          | `better-sqlite3` (WAL) + durable `.pwrsnap` bundles      | `apps/desktop/src/main/persistence/`            |
+| AI                   | Codex App Server and ACP clients; direct API adapters    | `apps/desktop/src/main/ai/`                     |
+| Shared types         | Cross-process commands + IPC channels + result envelopes | `packages/shared/`                              |
+| Settings + secrets   | Single substrate (JSON + Electron `safeStorage`)         | `apps/desktop/src/main/settings/`               |
 
 ## Pull Requests
 
@@ -67,14 +117,20 @@ the layer → stack → path mapping.
 - Update `THIRD_PARTY_LICENSES` with `pnpm licenses:generate` when dependency
   changes affect bundled notices.
 
-## Codex App Server (the AI brain)
+## AI backends
 
-All AI features in PwrSnap go through the user's installed Codex CLI / Codex
-Desktop instance over stdio JSON-RPC — annotation, description generation,
-tag suggestion, smart filenames, sensitive-data review, and (Phase 5+) voice
-describe. **No direct OpenAI / Anthropic / xAI calls** in `apps/desktop`.
+AI is optional and off until the user turns it on. Built-in Codex and ACP
+paths are agent clients: PwrSnap talks to the user's installed Codex CLI or
+Codex Desktop over Codex App Server (stdio JSON-RPC), or to an installed ACP
+agent. User-configured direct API connections call OpenAI Responses,
+OpenAI-compatible Chat Completions, or Anthropic Messages from main, with no
+agent or proxy in between; that code lives under
+`apps/desktop/src/main/ai/direct-api/`. Never route a custom model through
+Codex/ACP as a fallback. [AGENTS.md](AGENTS.md) and
+[docs/architecture.md](docs/architecture.md) hold the credential, capability,
+and sandbox rules, including the capture-enrichment jail.
 
-Protocol types are consumed from the published
+Codex protocol types are consumed from the published
 `@pwrdrvr/codex-app-server-protocol` package. To move to a newer Codex
 protocol surface, publish a new package version from
 `github.com/pwrdrvr/codex-app-server-protocol`, then bump the exact pin in
@@ -290,8 +346,10 @@ Do not chase this as a database bug. Repair the native sidecar from the repo
 root:
 
 ```bash
+source ~/.nvm/nvm.sh
+nvm use
 pnpm install
-cd apps/desktop && node ./scripts/rebuild-native-for-electron.mjs
+pnpm rebuild:electron-native
 ```
 
 The script keeps two binaries on purpose:
@@ -311,9 +369,19 @@ version, and `process.arch`.
 
 ## Release Pipeline
 
-The desktop release pipeline (universal DMG, signing, notarization,
-auto-update, stable `PwrSnap.dmg` URL) is documented in
-[docs/desktop-release-runbook.md](docs/desktop-release-runbook.md).
+Every tagged desktop release is published only after the macOS
+sign/notarization job, the Windows signing job, and the Linux build gate all
+succeed. Release installers include the controlled FFmpeg sidecar used for
+video processing. The pipeline (Apple Silicon and universal DMGs, Windows x64
+installer, signing, notarization, updater metadata, stable-name aliases) is
+documented in [docs/desktop-release-runbook.md](docs/desktop-release-runbook.md);
+Homebrew and Winget follow-up is in
+[docs/package-manager-release-runbook.md](docs/package-manager-release-runbook.md).
+
+Pull-request preview artifacts are not production-signed and expire after 14
+days; the Windows preview is unsigned and the macOS preview is not notarized.
+They are for development testing, not normal installation. Windows build and
+source notes are in [docs/windows/README.md](docs/windows/README.md).
 
 ## Design Documents
 

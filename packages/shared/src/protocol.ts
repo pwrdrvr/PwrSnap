@@ -5248,6 +5248,16 @@ export type Commands = {
     res: void;
   };
   /**
+   * Open the platform's sound settings (macOS: Sound, at Input; Windows:
+   * Settings › Sound), where the input device and its level are set. The
+   * selector's microphone picker links here. The URI is chosen in main.
+   * Unsupported platforms return `permission_settings_unsupported`.
+   */
+  "permissions:openSoundSettings": {
+    req: Record<string, never>;
+    res: void;
+  };
+  /**
    * Begin a recording session against the given subject (fixed rect or
    * full display) with the requested audio capabilities. Returns the
    * session id; lifecycle updates land on `EVENT_CHANNELS.recordingState`.

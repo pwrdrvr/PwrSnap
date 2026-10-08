@@ -280,3 +280,26 @@ describe("openSystemSettingsFor", () => {
     }
   );
 });
+
+describe("openSoundSettings", () => {
+  // The microphone picker's "Sound settings" link. The renderer names no
+  // URI; main picks one per platform, or refuses.
+  test("opens Sound at Input on macOS and Settings › Sound on Windows", async () => {
+    const { openSoundSettings } = await import("../recording-permissions");
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    await openSoundSettings();
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    await openSoundSettings();
+    expect(electronMock.shellOpenUrls).toEqual([
+      "x-apple.systempreferences:com.apple.preference.sound?input",
+      "ms-settings:sound"
+    ]);
+  });
+
+  test("refuses elsewhere instead of opening something unrelated", async () => {
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+    const { openSoundSettings, UnsupportedSoundSettingsError } = await import("../recording-permissions");
+    await expect(openSoundSettings()).rejects.toBeInstanceOf(UnsupportedSoundSettingsError);
+    expect(electronMock.shellOpenUrls).toEqual([]);
+  });
+});

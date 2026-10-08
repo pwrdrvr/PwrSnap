@@ -56,11 +56,13 @@ import {
   setVideoSegments
 } from "../persistence/video-repo";
 import {
+  openSoundSettings,
   openSystemSettingsFor,
   readRecordingPermissionEvidence,
   readRecordingReadiness,
   requestPermission,
-  UnsupportedPermissionSettingsError
+  UnsupportedPermissionSettingsError,
+  UnsupportedSoundSettingsError
 } from "../recording/recording-permissions";
 import {
   guardScreenCapture,
@@ -715,6 +717,23 @@ export function registerRecordingHandlers(): void {
       await markScreenCapturePrompted();
     }
     return ok(result);
+  });
+
+  bus.register("permissions:openSoundSettings", async () => {
+    try {
+      await openSoundSettings();
+      return ok(undefined);
+    } catch (cause) {
+      if (cause instanceof UnsupportedSoundSettingsError) {
+        return err(permissionError("permission_settings_unsupported", cause.message));
+      }
+      log.warn("permissions:openSoundSettings failed", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err(
+        permissionError("open_settings_failed", cause instanceof Error ? cause.message : String(cause))
+      );
+    }
   });
 
   bus.register("permissions:openSystemSettings", async (req) => {

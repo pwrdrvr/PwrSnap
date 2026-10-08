@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import type { RecordingDevicePreference } from "@pwrsnap/shared";
 import {
   describeMicError,
+  savedMicrophonePresence,
   segmentsForRms,
   useMicrophoneMonitor,
   type MicrophoneMonitor
@@ -373,5 +374,42 @@ describe("opening the saved microphone", () => {
     });
     expect(latest?.clipping).toBe(false);
     expect(latest?.meter.get().levelDb).toBe(-20);
+  });
+});
+
+describe("savedMicrophonePresence", () => {
+  // Record's check, when the chip never opened the microphone. Contrived
+  // devices.
+  const GRANOLA = { deviceId: "id-granola", label: "Granola Interface" };
+  const enumerateDevices = vi.fn();
+
+  beforeEach(() => {
+    enumerateDevices.mockReset();
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { enumerateDevices } });
+  });
+  afterEach(() => {
+    Reflect.deleteProperty(navigator, "mediaDevices");
+  });
+
+  test("attached by id, or by name under a new id", async () => {
+    enumerateDevices.mockResolvedValue([{ kind: "audioinput", ...GRANOLA }]);
+    expect(await savedMicrophonePresence(GRANOLA)).toBe("attached");
+    expect(await savedMicrophonePresence({ deviceId: "old-salt", label: GRANOLA.label })).toBe("attached");
+  });
+
+  test("missing when neither matches, and the default pseudo-device does not count", async () => {
+    enumerateDevices.mockResolvedValue([
+      { kind: "audioinput", deviceId: "default", label: "Default - Granola Interface" },
+      { kind: "audioinput", deviceId: "id-oatmeal", label: "Oatmeal Desk Mic (USB)" },
+      { kind: "videoinput", deviceId: "id-granola", label: "Granola Interface" }
+    ]);
+    expect(await savedMicrophonePresence(GRANOLA)).toBe("missing");
+  });
+
+  test("unknown when the names are hidden or enumeration fails", async () => {
+    enumerateDevices.mockResolvedValue([{ kind: "audioinput", deviceId: "x", label: "" }]);
+    expect(await savedMicrophonePresence(GRANOLA)).toBe("unknown");
+    enumerateDevices.mockRejectedValue(new Error("nope"));
+    expect(await savedMicrophonePresence(GRANOLA)).toBe("unknown");
   });
 });

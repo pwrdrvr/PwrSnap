@@ -823,6 +823,19 @@ describe("permissions:* command-bus surface", () => {
     }
   });
 
+  test("permissions:openSoundSettings is a typed refusal where there is no page", async () => {
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+    try {
+      const result = await bus.dispatch("permissions:openSoundSettings", {}, { principal: "ipc" });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected error");
+      expect(result.error.kind).toBe("permission");
+      expect(result.error.code).toBe("permission_settings_unsupported");
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    }
+  });
+
   test("permissions:openSystemSettings rejects unknown permission names", async () => {
     const result = await bus.dispatch(
       "permissions:openSystemSettings",

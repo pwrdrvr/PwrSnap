@@ -351,3 +351,30 @@ export async function openSystemSettingsFor(
   // opening an unrelated Settings page.
   throw new UnsupportedPermissionSettingsError(permission);
 }
+
+/** The platform has no sound-settings page this command knows. */
+export class UnsupportedSoundSettingsError extends Error {
+  constructor() {
+    super(`PwrSnap has no sound-settings action for ${process.platform}.`);
+    this.name = "UnsupportedSoundSettingsError";
+  }
+}
+
+/**
+ * Open the platform's sound settings, where the input device and its level
+ * live. The microphone picker links here: its clipping advice tells the
+ * user to turn the input level down, and this is where that is done. Same
+ * rule as `openSystemSettingsFor`: the renderer names no URI, and every URI
+ * stays hardcoded here.
+ */
+export async function openSoundSettings(): Promise<void> {
+  if (process.platform === "darwin") {
+    await shell.openExternal("x-apple.systempreferences:com.apple.preference.sound?input");
+    return;
+  }
+  if (process.platform === "win32") {
+    await shell.openExternal("ms-settings:sound");
+    return;
+  }
+  throw new UnsupportedSoundSettingsError();
+}

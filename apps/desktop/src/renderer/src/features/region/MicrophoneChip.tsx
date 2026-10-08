@@ -47,7 +47,9 @@ export function MicrophoneChip({
   onToggle,
   onArm,
   onPick,
-  onOpenSettings
+  onOpenSettings,
+  onOpenSoundSettings,
+  openRequest = 0
 }: {
   readonly state: SourceChipState;
   readonly why: string | undefined;
@@ -61,6 +63,13 @@ export function MicrophoneChip({
   /** `null` = follow the system default. */
   readonly onPick: (preference: RecordingDevicePreference | null) => void;
   readonly onOpenSettings: () => void;
+  /** The footer's Sound settings link; absent where there is no such page. */
+  readonly onOpenSoundSettings?: (() => void) | undefined;
+  /**
+   * Bumped by the selector to open the picker without a click: Record
+   * found the saved microphone gone. The value at mount is not a request.
+   */
+  readonly openRequest?: number;
 }): ReactElement {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLSpanElement | null>(null);
@@ -71,6 +80,25 @@ export function MicrophoneChip({
     getStream: monitor.getStream,
     deviceKey: open && on ? monitor.activeDeviceId : null
   });
+
+  // A request opens the picker and puts the keyboard on System default,
+  // the row the take falls back to, so ↵ / Space / the arrows work
+  // without reaching for the mouse.
+  const handledRequest = useRef(openRequest);
+  const focusOnOpen = useRef(false);
+  useEffect(() => {
+    if (openRequest === handledRequest.current) return;
+    handledRequest.current = openRequest;
+    if (openRequest === 0) return;
+    triggerRef.current = rootRef.current?.querySelector<HTMLElement>(".ps-chip__devices") ?? null;
+    focusOnOpen.current = true;
+    setOpen(true);
+  }, [openRequest]);
+  useEffect(() => {
+    if (!open || !focusOnOpen.current) return;
+    focusOnOpen.current = false;
+    popRef.current?.querySelector<HTMLElement>('[data-testid="region-hud-mic-default"]')?.focus();
+  }, [open]);
 
   // Nothing to pick from once the chip is switched off.
   useEffect(() => {
@@ -234,10 +262,26 @@ export function MicrophoneChip({
                     : "Hear yourself. Nothing is saved."}
             </span>
           </div>
+          {monitor.devices.length > 0 || onOpenSoundSettings !== undefined ? (
+            <div className="mic-pop__ft">
+              <span>{inputCount(monitor.devices.length)}</span>
+              {onOpenSoundSettings !== undefined ? (
+                <button type="button" className="mic-pop__link" onClick={onOpenSoundSettings}>
+                  Sound settings
+                  <span aria-hidden="true"> ↗</span>
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       ) : null}
     </span>
   );
+}
+
+function inputCount(n: number): string {
+  if (n === 0) return "";
+  return n === 1 ? "1 input" : `${n} inputs`;
 }
 
 /**

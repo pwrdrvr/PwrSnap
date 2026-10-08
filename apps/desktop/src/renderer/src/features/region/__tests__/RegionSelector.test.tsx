@@ -2651,9 +2651,92 @@ describe("U7 — recording source chips", () => {
       expect(getUserMedia).not.toHaveBeenCalled();
       expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(GRANOLA.label);
       await keyDown("r");
+      // Record first checks the saved microphone is still attached.
+      await settle();
+      expect(getUserMedia).not.toHaveBeenCalled();
       expect(submitRegion.mock.calls[0]?.[0].sources).toEqual({
         ...MIC_ON,
         microphoneDevice: { label: GRANOLA.label }
+      });
+    });
+
+    describe("the check at Record", () => {
+      const MUESLI = { deviceId: "id-muesli", label: "Muesli Mic" };
+
+      async function quickCaptureWithSaved(saved: typeof MUESLI): Promise<void> {
+        await mountScene({
+          mode: "auto",
+          quickCaptureAction: "ask",
+          sources: MIC_ON,
+          devices: { microphone: saved, camera: null }
+        });
+        await mouseMove(400, 300);
+        await drawRect();
+      }
+
+      test("a saved microphone that has gone stops the take and opens the picker", async () => {
+        // The chip said "Muesli Mic". Recording something else would make
+        // the chip a lie; failing the start would tell the user after the
+        // fact. Neither: the picker opens on the default, and says why.
+        const opened = getUserMedia.getMockImplementation()!;
+        getUserMedia.mockImplementation(async (constraints: { audio: true | { deviceId: { exact: string } } }) => {
+          if (constraints.audio !== true && constraints.audio.deviceId.exact === MUESLI.deviceId) {
+            throw Object.assign(new Error("not attached"), { name: "OverconstrainedError" });
+          }
+          return opened(constraints);
+        });
+        await quickCaptureWithSaved(MUESLI);
+        expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(MUESLI.label);
+        await keyDown("r");
+        await settle();
+        expect(submitRegion).not.toHaveBeenCalled();
+        const picker = container!.querySelector('[data-testid="region-hud-mic-devices"]');
+        expect(picker).not.toBeNull();
+        expect(picker!.textContent).toContain("“Muesli Mic” is not connected");
+        expect(document.activeElement).toBe(
+          container!.querySelector("[data-testid='region-hud-mic-default']")
+        );
+        // The picker opened the default, and the chip now names it.
+        expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(OATMEAL.label);
+        // The next Record takes the default the chip shows.
+        await keyDown("r");
+        await settle();
+        expect(submitRegion).toHaveBeenCalledTimes(1);
+        expect(submitRegion.mock.calls[0]?.[0].sources).toEqual(MIC_ON);
+        // The fallback is for this take; the saved pick is not overwritten.
+        expect(window.pwrsnapApi!.dispatch).not.toHaveBeenCalledWith("settings:write", expect.anything());
+      });
+
+      test("hidden device names leave the decision to the recorder", async () => {
+        enumerateDevices.mockResolvedValue([
+          { kind: "audioinput", deviceId: "default", label: "" },
+          { kind: "audioinput", deviceId: "id-x", label: "" }
+        ]);
+        await quickCaptureWithSaved(MUESLI);
+        await keyDown("r");
+        await settle();
+        expect(submitRegion.mock.calls[0]?.[0].sources).toEqual({
+          ...MIC_ON,
+          microphoneDevice: { label: MUESLI.label }
+        });
+      });
+
+      test("a check that answers after the selection was dropped does nothing", async () => {
+        let answer: (devices: unknown[]) => void = () => undefined;
+        enumerateDevices.mockImplementation(
+          () => new Promise((resolve) => {
+            answer = resolve;
+          })
+        );
+        await quickCaptureWithSaved(GRANOLA);
+        await keyDown("r");
+        // A second press while the check is out does not start a second one.
+        await keyDown("r");
+        expect(enumerateDevices).toHaveBeenCalledTimes(1);
+        await keyDown("Escape");
+        await act(async () => answer([{ kind: "audioinput", ...GRANOLA }]));
+        await settle();
+        expect(submitRegion).not.toHaveBeenCalled();
       });
     });
   });

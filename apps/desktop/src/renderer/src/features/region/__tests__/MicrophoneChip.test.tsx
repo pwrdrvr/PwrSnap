@@ -42,7 +42,8 @@ const onToggle = vi.fn();
 async function render(
   monitor: MicrophoneMonitor,
   preference: RecordingDevicePreference | null = null,
-  state: SourceChipState = "live"
+  state: SourceChipState = "live",
+  extra: { onOpenSoundSettings?: () => void; openRequest?: number } = {}
 ): Promise<void> {
   await act(async () => {
     root.render(
@@ -56,6 +57,7 @@ async function render(
         onArm={onArm}
         onPick={onPick}
         onOpenSettings={() => undefined}
+        {...extra}
       />
     );
   });
@@ -96,6 +98,40 @@ describe("microphoneDeviceName", () => {
 });
 
 describe("MicrophoneChip", () => {
+  test("the footer counts the inputs and links to Sound settings", async () => {
+    const onOpenSoundSettings = vi.fn();
+    await render(fakeMonitor(), null, "live", { onOpenSoundSettings });
+    await openPicker();
+    const footer = host.querySelector(".mic-pop__ft");
+    expect(footer?.textContent).toBe("2 inputs" + "Sound settings ↗");
+    const link = host.querySelector<HTMLButtonElement>(".mic-pop__link")!;
+    expect(link.tagName).toBe("BUTTON");
+    expect(link.textContent).toBe("Sound settings ↗");
+    await act(async () => link.click());
+    expect(onOpenSoundSettings).toHaveBeenCalledOnce();
+  });
+
+  test("no Sound settings link where the platform has no page for it", async () => {
+    await render(fakeMonitor());
+    await openPicker();
+    expect(host.querySelector(".mic-pop__ft")?.textContent).toBe("2 inputs");
+    expect(host.querySelector(".mic-pop__link")).toBeNull();
+  });
+
+  test("a request opens the picker on System default; the value at mount is not one", async () => {
+    await render(fakeMonitor(), null, "live", { openRequest: 3 });
+    expect(pop()).toBeNull();
+    await render(fakeMonitor(), null, "live", { openRequest: 4 });
+    expect(pop()).not.toBeNull();
+    expect(document.activeElement).toBe(rows()[0]);
+    // Escape still hands focus to the caret, as if the caret had opened it.
+    await act(async () => {
+      document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(pop()).toBeNull();
+    expect(document.activeElement).toBe(caret());
+  });
+
   test("names the device on the chip, before anything is opened", async () => {
     await render(fakeMonitor({ activeLabel: "Granola Interface" }));
     expect(host.querySelector(".ps-chip__dev")?.textContent).toBe("Granola Interface");

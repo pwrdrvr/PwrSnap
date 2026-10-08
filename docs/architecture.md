@@ -176,7 +176,12 @@ AVFoundation knows nothing of Chromium ids, so `recording:start` carries
 `microphoneDevice: { label }` and the recorder matches it against the
 attached inputs' names, ignoring the trailing "(Built-in)" / "(USB)" tag
 that Chromium adds. A name that matches nothing fails the start rather than
-recording a different microphone than the chip showed. The microphone picker's
+recording a different microphone than the chip showed. That failure is the
+backstop, not the path a user meets: when the chip never opened the microphone
+(a Quick Capture that only offers Record), Record first lists the inputs, and a
+saved device that has gone opens the picker on the system default, with a note
+saying so, instead of starting. A chip that did open the microphone already fell
+back to the default and names it. The microphone picker's
 gain check (a dBFS peak meter with a peak hold and a clip latch, and a short
 record-and-play-back test) runs on the selector's own preview stream and keeps
 the test in renderer memory. It never reaches the take or the disk, and it

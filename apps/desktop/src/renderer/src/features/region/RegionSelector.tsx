@@ -80,7 +80,7 @@ import {
   microphoneChipState,
   microphoneChipWhy
 } from "../shared/source-chip-state";
-import { useMicrophoneMonitor } from "../shared/useMicrophoneMonitor";
+import { savedMicrophonePresence, useMicrophoneMonitor } from "../shared/useMicrophoneMonitor";
 
 const HASH_PARAM_DISPLAY_ID = "displayId";
 const NUDGE_PX = 1;
@@ -329,6 +329,18 @@ export function RegionSelector() {
   // system default. A ref for the same reason as `sourcesRef`: `commit()`
   // is captured once at mount.
   const micDeviceRef = useRef<string | null>(null);
+  // Whether that name came from a device that is open (and so is known to
+  // be attached), and the saved pick it came from otherwise. Refs for the
+  // same reason: Record reads them from `commit()`.
+  const micOpenRef = useRef(false);
+  const micPreferenceRef = useRef<RecordingDevicePreference | null>(null);
+  // The check at Record (see `commit`). The generation is bumped by every
+  // reset, so a check that resolves after the selector moved on is dropped.
+  const micCheckGenRef = useRef(0);
+  const micCheckInFlightRef = useRef(false);
+  // Bumped to open the microphone picker from outside it: the check at
+  // Record found the saved microphone gone.
+  const [micPickerRequest, setMicPickerRequest] = useState(0);
   // Whether the microphone stream may be opened for this show.
   //
   // Opening it lights the macOS orange indicator and, on first use,
@@ -702,6 +714,10 @@ export function RegionSelector() {
       : micPreference !== null && micPreference.label !== ""
         ? micPreference.label
         : null;
+  micOpenRef.current = sourcesArmed && mic.activeLabel !== null;
+  micPreferenceRef.current = micPreference;
+  const soundSettingsOffered =
+    window.pwrsnapApi?.platform === "darwin" || window.pwrsnapApi?.platform === "win32";
   const micState = microphoneChipState({
     on: sources?.microphone === true,
     armed: sourcesArmed,
@@ -834,6 +850,10 @@ export function RegionSelector() {
       setAudioOffered(payload.sources !== undefined);
       const nextSources = payload.sources ?? (payload.cameraOffered ? { microphone: false, systemAudio: false } : null);
       setMicPreference(payload.devices?.microphone ?? null);
+      micPreferenceRef.current = payload.devices?.microphone ?? null;
+      micCheckGenRef.current += 1;
+      micCheckInFlightRef.current = false;
+      setMicPickerRequest(0);
       setCameraPreference(payload.devices?.camera ?? null);
       sourcesRef.current = nextSources;
       setSources(nextSources);
@@ -1293,7 +1313,7 @@ export function RegionSelector() {
    * a missing `action` as "snap" — so every pre-chooser call site and
    * every fixed-`snap` show keep exactly their old wire shape.
    */
-  function commit(action: SelectorTerminalAction = primaryAction()): void {
+  function commit(action: SelectorTerminalAction = primaryAction(), micChecked = false): void {
     if (submittedRef.current) return;
     // A recording is one rectangular stream, so Record is dead against a
     // 2+-pick set (see recordAvailable). The HUD button is disabled and
@@ -1307,6 +1327,37 @@ export function RegionSelector() {
     // the chooser's Record.
     const isRecording = intentRef.current === "video" || action === "record";
     if (isRecording && !cameraReadyRef.current) return;
+    // The check at Record. When the microphone was never opened (a Quick
+    // Capture that only offers Record), the chip is showing the saved
+    // name and the recorder would be asked for it. If that device has
+    // gone, say so here and do not start: the picker opens, which opens
+    // the default with the "not connected" note, and the next Record
+    // takes the default the chip now names. The recorder still refuses a
+    // device that goes between here and the start.
+    const savedMic = micPreferenceRef.current;
+    if (
+      isRecording &&
+      !micChecked &&
+      sourcesRef.current?.microphone === true &&
+      micDeviceRef.current !== null &&
+      !micOpenRef.current &&
+      savedMic !== null
+    ) {
+      if (micCheckInFlightRef.current) return;
+      micCheckInFlightRef.current = true;
+      const generation = micCheckGenRef.current;
+      void savedMicrophonePresence(savedMic).then((presence) => {
+        if (generation !== micCheckGenRef.current || submittedRef.current) return;
+        micCheckInFlightRef.current = false;
+        if (presence !== "missing") {
+          commit(action, true);
+          return;
+        }
+        setSourcesTouched(true);
+        setMicPickerRequest((n) => n + 1);
+      });
+      return;
+    }
     // The renderer's rects are in CSS pixels. Main + screencapture
     // expect display-logical pixels. Scale back via the inverse of the
     // snapshot's css-to-logical factor. On standard displays this is
@@ -1486,6 +1537,8 @@ export function RegionSelector() {
   }
 
   function resetToSnap(): void {
+    micCheckGenRef.current += 1;
+    micCheckInFlightRef.current = false;
     if (submittedRef.current) {
       setCameraOffered(false);
       cameraOfferedRef.current = false;
@@ -3084,6 +3137,7 @@ export function RegionSelector() {
                 armed={sourcesArmed}
                 monitor={mic}
                 preference={micPreference}
+                openRequest={micPickerRequest}
                 onToggle={() => toggleSource("microphone")}
                 // Opening the picker is a direct request to see this
                 // microphone, so it earns the stream the way a flip does.
@@ -3097,6 +3151,14 @@ export function RegionSelector() {
                     permission: "microphone"
                   });
                 }}
+                // Main knows a sound-settings page on macOS and Windows only.
+                onOpenSoundSettings={
+                  soundSettingsOffered
+                    ? () => {
+                        void dispatch("permissions:openSoundSettings", {});
+                      }
+                    : undefined
+                }
               />
               <SourceChip
                 source="systemAudio"

@@ -183,6 +183,36 @@ function isMissingDevice(cause: unknown): boolean {
   return name === "NotFoundError" || name === "OverconstrainedError";
 }
 
+/**
+ * Whether a saved microphone is attached, asked without opening anything.
+ *
+ * Record calls this when the chip never opened the microphone (a Quick
+ * Capture that only offers Record). The chip is showing the saved name and
+ * the recorder would be asked for it, so a device that has gone is caught
+ * here, in the selector, instead of as a failed start after the user
+ * pressed Record. Names are visible without a stream because main's
+ * permission check grants `media` to PwrSnap's own pages (see
+ * media-permissions.ts). `unknown` when the names are hidden anyway or the
+ * enumeration fails: the recorder's refusal remains the backstop.
+ */
+export async function savedMicrophonePresence(
+  preference: RecordingDevicePreference
+): Promise<"attached" | "missing" | "unknown"> {
+  if (typeof navigator === "undefined" || navigator.mediaDevices?.enumerateDevices === undefined) {
+    return "unknown";
+  }
+  try {
+    const inputs = (await navigator.mediaDevices.enumerateDevices()).filter(
+      (d) => d.kind === "audioinput" && !isDefaultPseudoDevice(d.deviceId)
+    );
+    if (!inputs.some((d) => d.label !== "")) return "unknown";
+    const listed = inputs.map((d) => ({ deviceId: d.deviceId, label: displayDeviceLabel(d.label) }));
+    return resolveDevicePreference(listed, preference).kind === "missing" ? "missing" : "attached";
+  } catch {
+    return "unknown";
+  }
+}
+
 export function useMicrophoneMonitor({ enabled, preference }: MonitorOptions): MicrophoneMonitor {
   const [segments, setSegments] = useState(0);
   const [silent, setSilent] = useState(false);

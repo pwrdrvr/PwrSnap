@@ -34,6 +34,10 @@ type ModePayload = {
   intent?: "snap" | "video";
   cursor?: boolean;
   sources?: { microphone: boolean; systemAudio: boolean };
+  devices?: {
+    microphone: { deviceId: string; label: string } | null;
+    camera: { deviceId: string; label: string } | null;
+  };
   quickCaptureAction?: "ask" | "snap" | "record";
   invocationId?: string;
   generation?: number;
@@ -2518,6 +2522,139 @@ describe("U7 — recording source chips", () => {
       expect(micChip()).toBeNull();
       const payload = await commitAndRead();
       expect(payload).not.toHaveProperty("sources");
+    });
+  });
+
+  // Which microphone, not just whether. Contrived devices.
+  describe("the microphone picker", () => {
+    const OATMEAL = { deviceId: "id-oatmeal", label: "Oatmeal Desk Mic (USB)" };
+    const GRANOLA = { deviceId: "id-granola", label: "Granola Interface" };
+    const MIC_ON = { microphone: true, systemAudio: false };
+
+    function labelled(deviceId: string, label: string): MediaStream {
+      const track = { stop: vi.fn(), label, getSettings: () => ({ deviceId }) };
+      return { getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream;
+    }
+
+    beforeEach(() => {
+      enumerateDevices.mockResolvedValue([
+        { kind: "audioinput", deviceId: "default", label: `Default - ${OATMEAL.label}` },
+        { kind: "audioinput", ...OATMEAL },
+        { kind: "audioinput", ...GRANOLA }
+      ]);
+      getUserMedia.mockImplementation(async (constraints: { audio: true | { deviceId: { exact: string } } }) =>
+        constraints.audio === true
+          ? labelled("default", `Default - ${OATMEAL.label}`)
+          : constraints.audio.deviceId.exact === GRANOLA.deviceId
+            ? labelled(GRANOLA.deviceId, GRANOLA.label)
+            : labelled(OATMEAL.deviceId, OATMEAL.label)
+      );
+    });
+
+    async function settle(): Promise<void> {
+      for (let i = 0; i < 6; i += 1) {
+        await act(async () => {
+          await Promise.resolve();
+        });
+      }
+    }
+
+    test("the chip names the default, and the commit leaves the choice to the recorder", async () => {
+      await mountScene({ mode: "auto", intent: "video", sources: MIC_ON });
+      await settle();
+      expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(OATMEAL.label);
+      await drawRect();
+      const payload = await commitAndRead();
+      expect(payload.sources).toEqual(MIC_ON);
+    });
+
+    test("the saved microphone is opened, named, and handed to the recorder", async () => {
+      await mountScene({
+        mode: "auto",
+        intent: "video",
+        sources: MIC_ON,
+        devices: { microphone: GRANOLA, camera: null }
+      });
+      await settle();
+      expect(getUserMedia).toHaveBeenCalledWith({ audio: { deviceId: { exact: GRANOLA.deviceId } } });
+      expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(GRANOLA.label);
+      await drawRect();
+      const payload = await commitAndRead();
+      expect(payload.sources).toEqual({ ...MIC_ON, microphoneDevice: { label: GRANOLA.label } });
+    });
+
+    test("a pick is saved through settings and used by this take", async () => {
+      await mountScene({ mode: "auto", intent: "video", sources: MIC_ON });
+      await settle();
+      await act(async () => {
+        micChip()!.querySelector<HTMLButtonElement>(".ps-chip__devices")!.click();
+      });
+      const row = Array.from(container!.querySelectorAll<HTMLButtonElement>(".mic-pop__row")).find(
+        (candidate) => candidate.textContent === GRANOLA.label
+      )!;
+      await act(async () => row.click());
+      await settle();
+      expect(window.pwrsnapApi!.dispatch).toHaveBeenCalledWith("settings:write", {
+        recording: { microphoneDevice: GRANOLA }
+      });
+      expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(GRANOLA.label);
+      // Back to "System default" is saved as null, not as the default's id.
+      await act(async () => {
+        container!.querySelector<HTMLButtonElement>("[data-testid='region-hud-mic-default']")!.click();
+      });
+      await settle();
+      expect(window.pwrsnapApi!.dispatch).toHaveBeenLastCalledWith("settings:write", {
+        recording: { microphoneDevice: null }
+      });
+      await act(async () => {
+        container!.querySelector<HTMLButtonElement>(".mic-pop__row:nth-child(3)")!.click();
+      });
+      await settle();
+      await keyDown("Escape");
+      await drawRect();
+      const payload = await commitAndRead();
+      expect(payload.sources).toEqual({ ...MIC_ON, microphoneDevice: { label: GRANOLA.label } });
+    });
+
+    test("turning the microphone on or off never writes settings", async () => {
+      await mountScene({ mode: "auto", intent: "video", sources: MIC_ON, devices: { microphone: GRANOLA, camera: null } });
+      await keyDown("m");
+      await keyDown("m");
+      await settle();
+      expect(window.pwrsnapApi!.dispatch).not.toHaveBeenCalledWith("settings:write", expect.anything());
+    });
+
+    test("a microphone switched off sends no name", async () => {
+      await mountScene({
+        mode: "auto",
+        intent: "video",
+        sources: { microphone: false, systemAudio: false },
+        devices: { microphone: GRANOLA, camera: null }
+      });
+      await drawRect();
+      const payload = await commitAndRead();
+      expect(payload.sources).toEqual({ microphone: false, systemAudio: false });
+    });
+
+    test("an unopened microphone on a Quick Capture asks the recorder for the saved one", async () => {
+      // The chip shows the saved name before anything is opened, so that
+      // is what the take is told to record; the recorder refuses rather
+      // than substitute a different microphone.
+      await mountScene({
+        mode: "auto",
+        quickCaptureAction: "ask",
+        sources: MIC_ON,
+        devices: { microphone: GRANOLA, camera: null }
+      });
+      await mouseMove(400, 300);
+      await drawRect();
+      expect(getUserMedia).not.toHaveBeenCalled();
+      expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(GRANOLA.label);
+      await keyDown("r");
+      expect(submitRegion.mock.calls[0]?.[0].sources).toEqual({
+        ...MIC_ON,
+        microphoneDevice: { label: GRANOLA.label }
+      });
     });
   });
 });

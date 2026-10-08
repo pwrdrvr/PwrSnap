@@ -55,7 +55,8 @@ export function peakOf(buffer: Float32Array): number {
 /** Amplitude → whole dBFS, clamped to [`METER_FLOOR_DB`, 0]. */
 export function toDbfs(amplitude: number): number {
   if (!(amplitude > 0)) return METER_FLOOR_DB;
-  const db = Math.round(20 * Math.log10(amplitude));
+  // `|| 0`: a hair under full scale rounds to −0, which would read "−0 dB".
+  const db = Math.round(20 * Math.log10(amplitude)) || 0;
   return Math.max(METER_FLOOR_DB, Math.min(0, db));
 }
 

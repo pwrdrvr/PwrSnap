@@ -1,0 +1,131 @@
+// The camera chip opens the SAVED camera, names the camera it opened, and
+// reports a pick so the selector can save it. Contrived devices.
+import { act, useState } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import type { RecordingCamera, RecordingDevicePreference } from "@pwrsnap/shared";
+import { CameraChip } from "../CameraChip";
+
+const CORNFLAKE = { kind: "videoinput", deviceId: "cam-cornflake", label: "Cornflake Cam" };
+const PORRIDGE = { kind: "videoinput", deviceId: "cam-porridge-new-salt", label: "Porridge Cam (1a2b:3c4d)" };
+
+let root: Root, host: HTMLDivElement;
+const getUserMedia = vi.fn();
+const enumerateDevices = vi.fn();
+const pick = vi.fn();
+const change = vi.fn();
+
+function media(deviceId: string, label: string) {
+  const track = { stop: vi.fn(), label, getSettings: () => ({ deviceId }), onended: null };
+  return { getTracks: () => [track], getVideoTracks: () => [track] };
+}
+
+function overconstrained(): Error {
+  const e = new Error("OverconstrainedError");
+  e.name = "OverconstrainedError";
+  return e;
+}
+
+function Harness({ preferred }: { preferred: RecordingDevicePreference | null }) {
+  const [enabled, setEnabled] = useState(false);
+  const [value, setValue] = useState<RecordingCamera | undefined>(undefined);
+  return (
+    <CameraChip
+      enabled={enabled}
+      onToggle={setEnabled}
+      value={value}
+      onChange={(camera) => {
+        setValue(camera);
+        change(camera);
+      }}
+      onReady={() => undefined}
+      preferred={preferred}
+      onPick={pick}
+    />
+  );
+}
+
+const chip = () => host.querySelector<HTMLButtonElement>(".ps-chip__body")!;
+const device = () => host.querySelector(".ps-chip__dev")?.textContent;
+
+async function mountAndArm(preferred: RecordingDevicePreference | null): Promise<void> {
+  await act(async () => root.render(<Harness preferred={preferred} />));
+  // Off: the saved camera is not opened, and not named.
+  expect(getUserMedia).not.toHaveBeenCalled();
+  expect(device()).toBeUndefined();
+  await act(async () => chip().click());
+  for (let i = 0; i < 4; i += 1) await act(async () => Promise.resolve());
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  enumerateDevices.mockResolvedValue([CORNFLAKE, PORRIDGE]);
+  Object.defineProperty(navigator, "mediaDevices", {
+    configurable: true,
+    value: { getUserMedia, enumerateDevices, addEventListener: vi.fn(), removeEventListener: vi.fn() }
+  });
+  vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue();
+  host = document.createElement("div");
+  document.body.append(host);
+  root = createRoot(host);
+});
+
+afterEach(async () => {
+  await act(async () => root.unmount());
+  host.remove();
+  vi.restoreAllMocks();
+});
+
+test("the saved camera is opened by id and named on the chip", async () => {
+  getUserMedia.mockResolvedValue(media(PORRIDGE.deviceId, PORRIDGE.label));
+  await mountAndArm({ deviceId: PORRIDGE.deviceId, label: PORRIDGE.label });
+  expect(getUserMedia).toHaveBeenCalledTimes(1);
+  expect(getUserMedia).toHaveBeenCalledWith({ video: { deviceId: { exact: PORRIDGE.deviceId } }, audio: false });
+  expect(device()).toBe(PORRIDGE.label);
+  expect(change).toHaveBeenLastCalledWith({ deviceId: PORRIDGE.deviceId });
+});
+
+test("a stale id is found again by name", async () => {
+  getUserMedia
+    .mockRejectedValueOnce(overconstrained())
+    .mockResolvedValueOnce(media(CORNFLAKE.deviceId, CORNFLAKE.label))
+    .mockResolvedValueOnce(media(PORRIDGE.deviceId, PORRIDGE.label));
+  await mountAndArm({ deviceId: "cam-porridge-old-salt", label: PORRIDGE.label });
+  expect(getUserMedia).toHaveBeenLastCalledWith({
+    video: { deviceId: { exact: PORRIDGE.deviceId } },
+    audio: false
+  });
+  expect(device()).toBe(PORRIDGE.label);
+  expect(change).toHaveBeenLastCalledWith({ deviceId: PORRIDGE.deviceId });
+  expect(host.querySelector(".camera-pop__note--warn")).toBeNull();
+});
+
+test("an unplugged saved camera opens the first camera and the popover says so", async () => {
+  getUserMedia
+    .mockRejectedValueOnce(overconstrained())
+    .mockResolvedValueOnce(media(CORNFLAKE.deviceId, CORNFLAKE.label));
+  await mountAndArm({ deviceId: "cam-muesli", label: "Muesli Cam" });
+  // The chip names the camera that is actually open: that is the take's.
+  expect(device()).toBe(CORNFLAKE.label);
+  await act(async () => host.querySelector<HTMLButtonElement>(".ps-chip__devices")!.click());
+  expect(host.querySelector(".camera-pop__note--warn")?.textContent).toContain("“Muesli Cam” is not connected");
+});
+
+test("picking a camera reports it with its name, for the selector to save", async () => {
+  getUserMedia.mockImplementation(async (constraints: { video: true | { deviceId: { exact: string } } }) =>
+    constraints.video === true || constraints.video.deviceId.exact === CORNFLAKE.deviceId
+      ? media(CORNFLAKE.deviceId, CORNFLAKE.label)
+      : media(PORRIDGE.deviceId, PORRIDGE.label)
+  );
+  await mountAndArm(null);
+  expect(getUserMedia).toHaveBeenCalledWith({ video: true, audio: false });
+  await act(async () => host.querySelector<HTMLButtonElement>(".ps-chip__devices")!.click());
+  const rows = [...host.querySelectorAll<HTMLButtonElement>(".camera-pop__row")];
+  await act(async () => rows[1]!.click());
+  for (let i = 0; i < 4; i += 1) await act(async () => Promise.resolve());
+  expect(pick).toHaveBeenCalledWith({ deviceId: PORRIDGE.deviceId, label: PORRIDGE.label });
+  expect(device()).toBe(PORRIDGE.label);
+  // The camera already open is never reported as a pick.
+  await act(async () => rows[1]!.click());
+  expect(pick).toHaveBeenCalledTimes(1);
+});

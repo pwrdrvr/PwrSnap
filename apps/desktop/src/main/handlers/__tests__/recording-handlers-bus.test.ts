@@ -225,6 +225,36 @@ describe("recording microphone preflight", () => {
     expect(mocks.askForMediaAccess).not.toHaveBeenCalled();
   });
 
+  test("a named microphone rides through to the recorder", async () => {
+    const capabilities = {
+      microphone: true,
+      systemAudio: false,
+      microphoneDevice: { label: "Granola Interface (USB)" }
+    };
+    expect(await bus.dispatch("recording:start", { ...request, capabilities }, { principal: "ipc" })).toMatchObject({
+      ok: true
+    });
+    expect(mocks.start).toHaveBeenCalledWith(expect.objectContaining({ capabilities }));
+  });
+
+  // A name with the microphone off, or a malformed one, means the caller
+  // meant something this request cannot say. Refuse rather than guess.
+  test.each([
+    [{ microphone: false, systemAudio: false, microphoneDevice: { label: "Granola Interface" } }],
+    [{ microphone: true, systemAudio: false, microphoneDevice: { label: "" } }],
+    [{ microphone: true, systemAudio: false, microphoneDevice: "Granola Interface" }],
+    [{ microphone: true, systemAudio: false, microphoneDevice: { label: "Granola", deviceId: "x" } }]
+  ])("refuses a microphone name it cannot honour: %j", async (capabilities) => {
+    expect(
+      await bus.dispatch(
+        "recording:start",
+        { ...request, capabilities } as unknown as typeof request,
+        { principal: "ipc" }
+      )
+    ).toMatchObject({ ok: false });
+    expect(mocks.start).not.toHaveBeenCalled();
+  });
+
   test("does not ask for unselected microphone access", async () => {
     mocks.mediaAccess.microphone = "not-determined";
     expect(await bus.dispatch("recording:start", {

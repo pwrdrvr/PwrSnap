@@ -972,6 +972,48 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     ).toBe(true);
   });
 
+  test("device choices default to none, survive a restart, and clear back to null", async () => {
+    expect(defaultSettings().recording.microphoneDevice).toBeNull();
+    expect(defaultSettings().recording.cameraDevice).toBeNull();
+    const filePath = join(workDir, "settings.json");
+    // A file from before the pickers has no device fields at all.
+    writeFileSync(filePath, JSON.stringify({ schemaVersion: 1, recording: {} }), "utf8");
+    expect((await new DesktopSettingsService({ filePath }).read()).recording.microphoneDevice).toBeNull();
+
+    const mic = { deviceId: "chromium-id-granola", label: "Granola Interface (USB)" };
+    const camera = { deviceId: "chromium-id-bran", label: "Bran Flake Cam" };
+    await new DesktopSettingsService({ filePath }).write({
+      recording: { microphoneDevice: mic, cameraDevice: camera }
+    });
+    const restarted = await new DesktopSettingsService({ filePath }).read();
+    expect(restarted.recording.microphoneDevice).toEqual(mic);
+    expect(restarted.recording.cameraDevice).toEqual(camera);
+    // Picking a device names it; it never arms the source.
+    expect(restarted.recording.includeMicrophone).toBe(defaultSettings().recording.includeMicrophone);
+
+    await new DesktopSettingsService({ filePath }).write({ recording: { microphoneDevice: null } });
+    const cleared = await new DesktopSettingsService({ filePath }).read();
+    expect(cleared.recording.microphoneDevice).toBeNull();
+    expect(cleared.recording.cameraDevice).toEqual(camera);
+  });
+
+  test("a malformed device choice on disk reads as no choice, not a corrupt file", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        recording: { microphoneDevice: { label: "Muesli Mic" }, cameraDevice: "cam", showRegionFrame: false }
+      }),
+      "utf8"
+    );
+    const settings = await new DesktopSettingsService({ filePath }).read();
+    expect(settings.recording.microphoneDevice).toBeNull();
+    expect(settings.recording.cameraDevice).toBeNull();
+    // The rest of the block is untouched.
+    expect(settings.recording.showRegionFrame).toBe(false);
+  });
+
   test("v1 recording block preserves an explicit cursor:false choice", async () => {
     const filePath = join(workDir, "settings.json");
     writeFileSync(

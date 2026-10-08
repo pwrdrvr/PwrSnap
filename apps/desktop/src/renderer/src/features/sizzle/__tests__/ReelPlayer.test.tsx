@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import type { CaptureRecord, SizzleScene, SizzleSequenceBeat, SizzleWordTiming } from "@pwrsnap/shared";
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import type { AvatarStyle, CaptureRecord, SizzleScene, SizzleSequenceBeat, SizzleWordTiming } from "@pwrsnap/shared";
 import { createPlayheadSource } from "../../shared/playhead";
 import { ReelPlayer } from "../ReelPlayer";
 import { buildTimelineModel, type TimelineModel } from "../timeline/timeline-model";
@@ -212,5 +212,156 @@ describe("ReelPlayer", () => {
     });
     expect(el.querySelector<HTMLInputElement>('[data-testid="sizzle-reel-volume"]')!.value).toBe("0");
     expect(el.querySelector('[data-testid="sizzle-reel-mute"]')?.getAttribute("aria-pressed")).toBe("true");
+  });
+});
+
+describe("editing a scene's presenter on the reel stage", () => {
+  const cameraCapture = (id: string): CaptureRecord =>
+    ({
+      id,
+      kind: "video",
+      width_px: 1600,
+      height_px: 900,
+      edits_version: 0,
+      video: {
+        durationSec: 8,
+        defaultRange: { start: 0, end: 8 },
+        segments: [{ start: 0, end: 8 }],
+        camera: { version: 1, durationSec: 8, width: 1280, height: 720, offsetSec: 0, sha256: "a".repeat(64), mimeType: "video/mp4" },
+        avatar: { visible: true, background: "original", x: 0.7, y: 0.7, width: 0.25, mirror: false, crop: { x: 0, y: 0, width: 1, height: 1 } }
+      }
+    }) as unknown as CaptureRecord;
+  const VIDEO_CAPTURES = new Map<string, CaptureRecord>([
+    ["cap_a", cameraCapture("cap_a")],
+    ["cap_b", cameraCapture("cap_b")]
+  ]);
+  const FRAME = { width: 800, height: 450 };
+
+  beforeEach(() => {
+    vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(FRAME.width);
+    vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(FRAME.height);
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+      () => ({ x: 0, y: 0, left: 0, top: 0, right: FRAME.width, bottom: FRAME.height, width: FRAME.width, height: FRAME.height, toJSON: () => ({}) }) as DOMRect
+    );
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe(): void {}
+        disconnect(): void {}
+      }
+    );
+    Element.prototype.setPointerCapture = () => undefined;
+    vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  async function mountStage(head: ReturnType<typeof createPlayheadSource>) {
+    const onScenePresenter = vi.fn<(sceneId: string, avatar: AvatarStyle | null) => void>();
+    const tree = (playing: boolean) =>
+      createElement(ReelPlayer, {
+        model: model(),
+        captureMap: VIDEO_CAPTURES,
+        beatById: new Map(),
+        head,
+        playback: stubPlayback({ playing }),
+        renderLabel: "Render · 0:15",
+        renderDisabled: false,
+        renderTitle: undefined,
+        onRender: () => undefined,
+        onScenePresenter
+      });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(tree(false));
+    });
+    const el = container;
+    return {
+      el,
+      onScenePresenter,
+      setPlaying: async (playing: boolean) => {
+        await act(async () => {
+          root?.render(tree(playing));
+        });
+      },
+      select: async () => {
+        const obj = el.querySelector<HTMLElement>('[data-testid="sizzle-reel-outgoing"] [data-testid="presenter-object"]')!;
+        await act(async () => {
+          obj.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 650, clientY: 380 }));
+          obj.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, button: 0, clientX: 650, clientY: 380 }));
+        });
+      },
+      toolbar: () => el.querySelector('[data-testid="presenter-toolbar"]')
+    };
+  }
+
+  test("paused, a press selects it and a toolbar change writes that scene's presenter", async () => {
+    const stage = await mountStage(createPlayheadSource(2));
+    expect(stage.toolbar()).toBeNull();
+    await stage.select();
+    expect(stage.toolbar()).not.toBeNull();
+    await act(async () => {
+      stage.el.querySelector<HTMLButtonElement>('[data-testid="presenter-mirror"]')!.click();
+    });
+    expect(stage.onScenePresenter).toHaveBeenCalledTimes(1);
+    const [sceneId, avatar] = stage.onScenePresenter.mock.calls[0]!;
+    expect(sceneId).toBe("s1");
+    expect(avatar?.mirror).toBe(true);
+  });
+
+  test("playing lets go, and the presenter is not selectable until paused again", async () => {
+    const stage = await mountStage(createPlayheadSource(2));
+    await stage.select();
+    expect(stage.toolbar()).not.toBeNull();
+    await stage.setPlaying(true);
+    expect(stage.toolbar()).toBeNull();
+    await stage.setPlaying(false);
+    // Pausing does not bring the old selection back.
+    expect(stage.toolbar()).toBeNull();
+    // While playing, a press on it selects nothing.
+    await stage.setPlaying(true);
+    await stage.select();
+    await stage.setPlaying(false);
+    expect(stage.toolbar()).toBeNull();
+    await stage.select();
+    expect(stage.toolbar()).not.toBeNull();
+  });
+
+  test("moving to another clip lets go", async () => {
+    const head = createPlayheadSource(2);
+    const stage = await mountStage(head);
+    await stage.select();
+    expect(stage.toolbar()).not.toBeNull();
+    await act(async () => {
+      head.set(10);
+    });
+    expect(stage.el.querySelector<HTMLElement>('[data-testid="sizzle-reel-outgoing"]')!.dataset.beat).toBe("b");
+    expect(stage.toolbar()).toBeNull();
+  });
+
+  test("a press elsewhere on the stage lets go", async () => {
+    const stage = await mountStage(createPlayheadSource(2));
+    await stage.select();
+    expect(stage.toolbar()).not.toBeNull();
+    await act(async () => {
+      stage.el
+        .querySelector<HTMLElement>('[data-testid="sizzle-reel-stage"]')!
+        .dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+    });
+    expect(stage.toolbar()).toBeNull();
+  });
+
+  test("inside a transition the presenter is only shown", async () => {
+    const stage = await mountStage(createPlayheadSource(7.8));
+    expect(stage.el.querySelector('[data-testid="sizzle-reel-incoming"]')).not.toBeNull();
+    await stage.select();
+    expect(stage.toolbar()).toBeNull();
+    expect(stage.onScenePresenter).not.toHaveBeenCalled();
   });
 });

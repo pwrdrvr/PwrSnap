@@ -100,6 +100,60 @@ build cannot do is show the strokes, or move its own edits to the capture
 into the bundle. Adding a kind is still additive (no `schemaVersion` bump),
 but it is not free; weigh it against reusing an existing kind.
 
+**Presenter cameras are separate sources.** In the capture selector the
+camera is a source chip beside the microphone (`K`); arming it opens a live
+preview, and its caret a device list. A sandboxed Electron renderer
+records the selected camera to its own immutable file; it is never muxed into
+or painted onto the screen original. `<capture-id>.camera` beside the screen
+file holds the source and a timing/hash manifest. Copy, trash, restore and
+purge treat both sources as one capture. Source time maps through a stored
+camera-start minus screen-start offset (the native host clock converted through UTC on macOS,
+gdigrab's input timestamp on Windows); an editor sync adjustment can refine it.
+Earlier macOS recordings whose incompatible uptime epochs put the entire camera
+hours outside the screen timeline are recovered on read by aligning their ends.
+This is labelled estimated timing; the source, manifest and stored index remain
+untouched. In UI copy CAMERA is the source (device, file, timeline lane) and
+PRESENTER is the object drawn on the canvas; "avatar" is the schema's name only.
+The presenter is edited as an object on the Library's video stage, never in a
+form: select it, drag it (it snaps to the edges and centre lines), resize it
+from a corner, and use the toolbar that rides above it for look, framing,
+mirror, position, size and frame-step sync. The timeline's camera lane shows
+where the camera ran, and dragging it is the sync control.
+During native macOS recording, the same camera stream may appear in a
+nonfocusable preview outside the recorded rectangle. Native ScreenCaptureKit
+must confirm its explicit window exclusion before the preview becomes visible.
+Missing exclusion, changed display geometry, or no free area hides the preview;
+other platforms keep it hidden. Electron content protection alone is insufficient.
+
+Background removal uses the bundled Apache-2.0 MediaPipe landscape selfie
+segmenter in a worker on both platforms. It is a soft person mask, with
+imperfect hair and fast-motion edges. Raw recording never depends on a mask
+pass. Masks and composed videos are disposable caches keyed by source hash,
+model revision and processing settings. Nothing uploads camera frames.
+The agent owns presenter preparation in split mode; reel scenes request it
+through the video command bus. Shared mask and composition jobs survive one
+consumer cancelling while another still needs them. Cache cleanup aborts and
+drains these jobs in the owning process before removing their files.
+Crop, placement, size, mirror, background, outline shape, visibility and sync
+adjustment are data: a Library default and optional independent overrides on
+each reel scene. A scene inherits the recording's presenter until it is edited,
+in the scene inspector or on the paused reel stage; either writes the scene's
+own copy. Within one recording, a kept piece (between splits)
+can carry its own presenter: these are source-time spans stored apart from
+the cut list, so re-trimming never re-times them, and outside any span the
+recording's presenter shows. Scene overrides replace both. A cut-out's edge
+tightness ramps the soft mask with the same lookup in preview and in FFmpeg.
+A recording nobody has edited gets a computed default
+for its camera and canvas aspect (a head-and-shoulders cut-out flush in the
+bottom-right, unmirrored). Every renderer resolves the style through the same
+shared geometry (`packages/shared/src/presenter.ts`), and circle and rounded
+outlines use one corner-radius rule in CSS and in the FFmpeg alpha mask, so the
+stage preview and the exported file agree.
+Preview overlays the camera at the screen's source time; export composes it
+on the final reel canvas before applying cuts and speed changes, so letterboxing
+the screen never moves the presenter. The delivered video is
+opaque, and the original camera remains editable.
+
 **Recorded audio remains editable.** On macOS, the capture selector
 offers independent system-audio and default-microphone choices, both
 opt-in, with a live level meter on the microphone. The original MP4
@@ -142,7 +196,9 @@ next preview and render. A clip that needs the removed footage back opts
 out (`useCaptureCuts: false`) without touching the capture. Agents decide
 what to cut without seeing a frame: `video:inspect` returns a
 run-length-encoded on-screen activity track with the still stretches
-already found — one cached ffmpeg pass per capture
+already found. A stretch counts as still only if the picture holds AND the
+recorded audio stays below speech level, because a static screen with someone
+talking over it is content, not idle. One cached ffmpeg pass per capture
 (`recording/video-activity.ts`), a derived-cache lane like the filmstrip
 and waveform.
 
@@ -184,12 +240,16 @@ Linux) commits before `capture:duplicate` answers. Anything else, which
 includes every Windows copy, answers at once with a job. The bytes stream
 outside the captures-root lock so screenshots are not blocked. Progress goes
 to every window on `events:capture-duplicate:job`, relayed across the process
-split because `capture:*` is agent-owned. The job can be cancelled. Until the
-commit, the bytes live under `<copy>.partial`, and no row points at that name.
+split because `capture:*` is agent-owned. Screen and camera clones are attempted
+outside the captures-root lock; if either needs a byte copy, that work belongs
+to the same cancellable job. Until the commit, screen bytes live under
+`<copy>.partial` and camera bytes under `<copy-id>.camera.partial`, and no row
+points at them.
 An intent row (`capture_duplicate_intents`) names the staging and destination
 paths before anything is written. It is deleted in the transaction that
 inserts the capture, so a crash leaves a record, and the next start removes
-those two paths. Recovery never lists the captures root
+those paths and the camera directories derived from the copy id. Recovery
+never lists the captures root
 (`capture/file-copy.ts`, `capture/duplicate-jobs.ts`).
 
 ## AI uses the user's chosen agent or direct API

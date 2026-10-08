@@ -1,3 +1,4 @@
+import type { AvatarStyle, SizzleScene } from "@pwrsnap/shared";
 // The reel player: a stage for the WHOLE reel plus its transport, sitting
 // directly above the timeline that scrubs it.
 //
@@ -35,6 +36,7 @@ import type { ReelPlayback } from "./useReelPlayback";
 import type { TimelineModel } from "./timeline/timeline-model";
 
 export function ReelPlayer({
+  scenes,
   model,
   captureMap,
   beatById,
@@ -43,8 +45,10 @@ export function ReelPlayer({
   renderLabel,
   renderDisabled,
   renderTitle,
-  onRender
+  onRender,
+  onScenePresenter
 }: {
+  scenes?: SizzleScene[];
   model: TimelineModel;
   captureMap: Map<string, CaptureRecord>;
   /** Stored beats by id — a video clip's trim and fit policy live there,
@@ -57,6 +61,9 @@ export function ReelPlayer({
   renderDisabled: boolean;
   renderTitle: string | undefined;
   onRender: () => void;
+  /** Edit a scene's own presenter from the stage. Absent: the stage
+   *  only shows it. */
+  onScenePresenter?: ((sceneId: string, avatar: AvatarStyle | null) => void) | undefined;
 }): ReactElement {
   const clips = useMemo(() => flattenReelClips(model), [model]);
   const playing = playback.playing;
@@ -164,9 +171,32 @@ export function ReelPlayer({
     });
   }, [followCuts, videoBeatId, head]);
 
+  // The presenter is edited on a still frame of one clip: paused, with no
+  // transition in flight. Playing, or moving to another clip, lets go.
+  const [presenterSelected, setPresenterSelected] = useState(false);
+  const activeBeat = active?.clip.beatId;
+  useEffect(() => {
+    setPresenterSelected(false);
+  }, [activeBeat, playing]);
+  const activeSceneId = active?.clip.sceneId;
+  const presenterEdit =
+    onScenePresenter !== undefined && activeSceneId !== undefined && !playing && frame.blend === null
+      ? {
+          selected: presenterSelected,
+          onSelect: setPresenterSelected,
+          onChange: (avatar: AvatarStyle | null) => onScenePresenter(activeSceneId, avatar)
+        }
+      : undefined;
+
   return (
     <section className="szl__reel" aria-label="Reel player" data-testid="sizzle-reel-player">
-      <div className="szl__reel-stage" data-testid="sizzle-reel-stage">
+      <div
+        className="szl__reel-stage"
+        data-testid="sizzle-reel-stage"
+        // A press anywhere else on the stage lets go of the presenter
+        // (the presenter's own box stops its press from reaching here).
+        onPointerDown={presenterSelected ? () => setPresenterSelected(false) : undefined}
+      >
         {active === undefined ? (
           <span className="szl__sequence-preview-empty">No clips yet</span>
         ) : (
@@ -174,6 +204,7 @@ export function ReelPlayer({
             <StageLayer
               key={`out:${active.clip.beatId}`}
               role="outgoing"
+              avatar={scenes?.find(scene => scene.id === active.clip.sceneId)?.avatar}
               captureId={active.clip.captureId}
               capture={captureMap.get(active.clip.captureId) ?? null}
               kenBurns={
@@ -196,11 +227,13 @@ export function ReelPlayer({
               videoRef={videoRef}
               dataBeat={active.clip.beatId}
               testId="sizzle-reel-outgoing"
+              presenterEdit={presenterEdit}
             />
             {frame.blend !== null && incoming !== undefined ? (
               <StageLayer
                 key={`in:${incoming.clip.beatId}`}
                 role="incoming"
+                avatar={scenes?.find(scene => scene.id === incoming.clip.sceneId)?.avatar}
                 captureId={incoming.clip.captureId}
                 capture={captureMap.get(incoming.clip.captureId) ?? null}
                 kenBurns={

@@ -58,7 +58,35 @@ export type VideoActivityTrack = {
   /** 0 = no pixel changed. 1–255 = changed fraction on a log scale from
    *  1e-5 (1) to the whole frame (255) — see `encodeActivityMagnitude`. */
   magnitudes: readonly number[];
+  /** Loudness of the recorded audio per sample, on the same clock —
+   *  see `encodeSoundLevel`. Absent when the take has no audio. A still
+   *  screen with someone talking over it is not idle: a sample at or
+   *  above `VIDEO_SPEECH_LEVEL_DB` never counts as still. */
+  sound?: readonly number[] | undefined;
 };
+
+/** dBFS (RMS) a sample must reach to count as someone talking. Room
+ *  tone on a laptop mic sits around -55 to -50; speech -35 to -15. */
+export const VIDEO_SPEECH_LEVEL_DB = -42;
+
+const SOUND_FLOOR_DB = -60;
+
+/** RMS dBFS → one byte: 0 at or below -60 dBFS, 255 at 0 dBFS. */
+export function encodeSoundLevel(db: number): number {
+  if (!Number.isFinite(db) || db <= SOUND_FLOOR_DB) return 0;
+  return Math.min(255, Math.max(1, Math.round(((db - SOUND_FLOOR_DB) / -SOUND_FLOOR_DB) * 255)));
+}
+
+export function decodeSoundLevel(level: number): number {
+  if (!(level > 0)) return -Infinity;
+  return SOUND_FLOOR_DB + (Math.min(255, level) / 255) * -SOUND_FLOOR_DB;
+}
+
+/** Whether sample `i` has speech-level sound. */
+export function videoSampleIsAudible(track: VideoActivityTrack, i: number): boolean {
+  const level = track.sound?.[i];
+  return level !== undefined && decodeSoundLevel(level) >= VIDEO_SPEECH_LEVEL_DB;
+}
 
 const LOG_FLOOR = -5;
 
@@ -145,8 +173,8 @@ export type VideoStillSpanOptions = {
   maxLevel?: VideoActivityLevel | undefined;
 };
 
-/** Stretches where the level never rose above `maxLevel` for at least
- *  `minStillSec`. Times are source seconds. */
+/** Stretches where the level never rose above `maxLevel`, and nobody
+ *  was talking, for at least `minStillSec`. Times are source seconds. */
 export function videoStillSpans(
   track: VideoActivityTrack,
   options: VideoStillSpanOptions = {}
@@ -164,7 +192,7 @@ export function videoStillSpans(
     runStart = null;
   };
   track.magnitudes.forEach((m, i) => {
-    if (activityLevelOfMagnitude(m) <= maxLevel) {
+    if (activityLevelOfMagnitude(m) <= maxLevel && !videoSampleIsAudible(track, i)) {
       if (runStart === null) runStart = i;
     } else {
       close(i);
@@ -220,4 +248,4 @@ export const VIDEO_EDIT_MODEL_GUIDANCE =
 
 export const VIDEO_ACTIVITY_GUIDANCE =
   "Activity levels per sample: 0 still (nothing visible changed; caret blinks and spinners count as still), 1 minor (cursor movement, typing), 2 moderate (part of the window repainted), 3 major (scroll, navigation, window switch). " +
-  "stillSpans lists stretches of level 0 (or 0–1 with treatMinorAsStill) lasting at least minStillSec — the usual candidates to cut. No frames need to be viewed.";
+  "stillSpans lists stretches of level 0 (or 0–1 with treatMinorAsStill) with no speech-level audio, lasting at least minStillSec — the usual candidates to cut. A still screen with someone talking over it is never listed. No frames need to be viewed.";

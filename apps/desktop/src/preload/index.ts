@@ -313,7 +313,7 @@ const pwrsnapApi = {
      *  Omitted for image captures, and omitted by any selector show
      *  that never offered the chips — main then falls back to the
      *  persisted defaults, which is the pre-chip behavior. */
-    sources?: { microphone: boolean; systemAudio: boolean };
+    sources?: import("@pwrsnap/shared").RecordingCapabilities;
     /** Multi-window pick. Each entry is one picked window's EXTENT —
      *  a rectangle on the frozen screen, in the same global logical-px
      *  space as `rect`. `rect` is ALWAYS the union bounding box of

@@ -1,3 +1,7 @@
+import { AvatarStyleSchema, PresenterSpansSchema, RecordingCameraSchema } from "@pwrsnap/shared";
+import { acceptCameraChunk } from "../recording/camera-recording";
+import { prepareAvatarVideo } from "../recording/avatar-video";
+import { setVideoAvatar, setVideoAvatarSpans } from "../persistence/video-repo";
 // Command-bus handlers for the `permissions:*`, `recording:*`, and
 // `video:*` namespaces. Splits cleanly off settings-handlers and
 // capture-handlers because:
@@ -21,7 +25,6 @@ import { ok, err, recordingFailureSummary,
   videoActivityRuns,
   videoKeptDurationSec,
   videoPlaybackNeedsPreparation,
-  videoSpansKey,
   videoStillCuts,
   videoStillSpans
 } from "@pwrsnap/shared";
@@ -77,6 +80,7 @@ import {
 import {
   computeOutputDimensions,
   exportVideoRange,
+  exportSegmentsKey,
   GIF_PRESETS,
   MP4_AUDIO_BITRATE,
   MP4_PRESETS
@@ -334,12 +338,14 @@ export function validateRecordingStartRequest(
   const capabilities = value.capabilities;
   if (
     !isObjectRecord(capabilities) ||
-    !hasOnlyKeys(capabilities, ["systemAudio", "microphone"]) ||
+    !hasOnlyKeys(capabilities, ["systemAudio", "microphone", "camera"]) ||
     typeof capabilities.systemAudio !== "boolean" ||
     typeof capabilities.microphone !== "boolean"
   ) {
     return invalid();
   }
+
+  if (capabilities.camera !== undefined && !RecordingCameraSchema.safeParse(capabilities.camera).success) return invalid();
 
   if (
     value.countdownSeconds !== undefined &&
@@ -596,6 +602,73 @@ function getService(): RecordingService {
 }
 
 export function registerRecordingHandlers(): void {
+  bus.register("recording:cameraChunk", async (req, ctx) => {
+    if (ctx.principal !== "ipc") return ok({ accepted: false });
+    return ok({ accepted: await acceptCameraChunk(req.token, ctx.sourceWindowId, req.bytes) });
+  });
+  bus.register("video:camera", async req => {
+    const capture = getCaptureById(req.captureId);
+    const camera = capture?.video?.camera;
+    return ok(capture && !capture.deleted_at && camera ? { camera, url: `pwrsnap-capture://c/${capture.id}` } : null);
+  });
+  bus.register("video:setAvatar", async req => {
+    const capture = getCaptureById(req.captureId);
+    const avatar = req.avatar === undefined ? undefined : AvatarStyleSchema.safeParse(req.avatar);
+    const spans = req.spans === undefined ? undefined : PresenterSpansSchema.safeParse(req.spans);
+    if (
+      (avatar === undefined && spans === undefined) ||
+      avatar?.success === false ||
+      spans?.success === false ||
+      !capture?.video?.camera ||
+      capture.deleted_at
+    ) {
+      return err(validationError("invalid_avatar", "Choose a recording with a camera and valid presenter settings."));
+    }
+    if (avatar?.success) setVideoAvatar(capture.id, avatar.data);
+    if (spans?.success) setVideoAvatarSpans(capture.id, spans.data, capture.video.durationSec);
+    broadcastCapturesChanged([capture.id]);
+    return ok({ saved: true as const });
+  });
+  bus.register("video:prepareAvatar", async (req, ctx) => {
+    if (ctx.principal !== "bridge") {
+      return err({
+        kind: "permission",
+        code: "internal_command",
+        message: "video:prepareAvatar is main-process-only"
+      });
+    }
+    if (typeof req.captureId !== "string" || req.captureId.length === 0) {
+      return err(validationError("invalid_capture_id", "Choose a recording to prepare."));
+    }
+    const capture = getCaptureById(req.captureId);
+    if (!capture || capture.deleted_at || capture.kind !== "video" || !capture.video) {
+      return err(validationError("not_a_video", "That recording is unavailable."));
+    }
+    const avatar = req.avatar === undefined ? undefined : AvatarStyleSchema.safeParse(req.avatar);
+    if (avatar && !avatar.success) {
+      return err(validationError("invalid_avatar", "Choose valid presenter settings."));
+    }
+    if (req.canvas !== undefined && (
+      !req.canvas || ![req.canvas.width, req.canvas.height].every(
+        (value) => Number.isInteger(value) && value >= 2 && value <= 8192
+      )
+    )) {
+      return err(validationError("invalid_canvas", "Choose valid presenter canvas dimensions."));
+    }
+    try {
+      const path = await prepareAvatarVideo(capture, avatar?.data, ctx.signal, req.canvas);
+      return ok({ path });
+    } catch (cause) {
+      const cancelled = ctx.signal.aborted || (cause as Error)?.name === "AbortError";
+      if (!cancelled) log.error("presenter preparation failed", { captureId: capture.id, cause });
+      return err({
+        kind: "render",
+        code: cancelled ? "cancelled" : "avatar_preparation_failed",
+        message: "Presenter preparation did not complete."
+      });
+    }
+  });
+
   // ---- permissions ----
 
   bus.register("permissions:readiness", async () => {
@@ -1080,6 +1153,7 @@ export function registerRecordingHandlers(): void {
         captureId: record.id,
         sampleHz: analysis.track.sampleHz,
         magnitudes: [...analysis.track.magnitudes],
+        ...(analysis.track.sound !== undefined ? { sound: [...analysis.track.sound] } : {}),
         analysisWidthPx: analysis.width,
         analysisHeightPx: analysis.height
       });
@@ -1409,7 +1483,7 @@ export function registerRecordingHandlers(): void {
     const durationSec = videoKeptDurationSec(spans);
     // The cache key the exporter would use for these spans — see
     // `exportSegmentsKey` in recording-exporter.ts.
-    const segmentsKey = spans.length > 1 ? videoSpansKey(spans) : "";
+    const segmentsKey = exportSegmentsKey({ record, spans });
     // The MP4 audio the grid is showing — or, when omitted, the same
     // preference an export with no `audio` resolves — so a cache lookup
     // lands on the row the next click would populate. Narrowed to the

@@ -48,6 +48,7 @@ const MIME_BY_EXT: Record<string, string> = {
   // the float-over <video> element + native drag-out both rely on
   // the right Content-Type to render correctly.
   ".mp4": "video/mp4",
+  ".webm": "video/webm",
   ".mov": "video/quicktime",
   ".gif": "image/gif"
 };

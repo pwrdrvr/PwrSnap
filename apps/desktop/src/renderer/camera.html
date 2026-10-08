@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>PwrSnap Camera</title>
+    <style>
+      html, body { margin: 0; background: #000; color: #fff; overflow: hidden; }
+      video { display: block; width: 100vw; height: calc(100vh - 24px); object-fit: contain; transform: scaleX(-1); }
+      footer { height: 24px; display: grid; place-items: center; font: 11px system-ui; color: #ff8a1f; }
+    </style>
+  </head>
+  <body>
+    <footer>Camera · excluded from recording</footer>
+    <script type="module" src="/src/features/camera/camera-worker.ts"></script>
+  </body>
+</html>

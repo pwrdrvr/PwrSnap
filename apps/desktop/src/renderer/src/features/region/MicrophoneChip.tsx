@@ -10,7 +10,7 @@
 // everything here; the recording HUD never opens this.
 
 import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactElement } from "react";
-import type { RecordingDevicePreference } from "@pwrsnap/shared";
+import { resolveDevicePreference, type RecordingDevicePreference } from "@pwrsnap/shared";
 import { useDismissable } from "../../lib/useDismissable";
 import { useFocusReturn } from "../../lib/useFocusReturn";
 import { SourceChip, type SourceChipState } from "../shared/SourceChip";
@@ -141,10 +141,8 @@ export function MicrophoneChip({
 
   const device = microphoneDeviceName({ on, monitor, preference });
   const followDefault = preference === null || monitor.missing !== null;
-  const pickedId = followDefault
-    ? null
-    : (monitor.devices.find((d) => d.deviceId === preference.deviceId) ??
-        monitor.devices.find((d) => d.label === preference.label))?.deviceId ?? null;
+  const resolved = followDefault ? null : resolveDevicePreference(monitor.devices, preference);
+  const pickedId = resolved?.kind === "found" ? resolved.device.deviceId : null;
   const caretOffered = on && state !== "denied";
 
   return (

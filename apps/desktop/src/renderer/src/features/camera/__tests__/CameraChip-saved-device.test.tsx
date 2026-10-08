@@ -111,6 +111,22 @@ test("an unplugged saved camera opens the first camera and the popover says so",
   expect(host.querySelector(".camera-pop__note--warn")?.textContent).toContain("“Muesli Cam” is not connected");
 });
 
+test("a saved camera that comes back clears the not-connected note", async () => {
+  getUserMedia
+    .mockRejectedValueOnce(overconstrained())
+    .mockResolvedValueOnce(media(CORNFLAKE.deviceId, CORNFLAKE.label))
+    .mockResolvedValueOnce(media("cam-muesli", "Muesli Cam"));
+  await mountAndArm({ deviceId: "cam-muesli", label: "Muesli Cam" });
+  // Plugged back in; off and on again opens it by its saved id.
+  await act(async () => chip().click());
+  await act(async () => chip().click());
+  for (let i = 0; i < 4; i += 1) await act(async () => Promise.resolve());
+  expect(getUserMedia).toHaveBeenLastCalledWith({ video: { deviceId: { exact: "cam-muesli" } }, audio: false });
+  expect(device()).toBe("Muesli Cam");
+  await act(async () => host.querySelector<HTMLButtonElement>(".ps-chip__devices")!.click());
+  expect(host.querySelector(".camera-pop__note--warn")).toBeNull();
+});
+
 test("picking a camera reports it with its name, for the selector to save", async () => {
   getUserMedia.mockImplementation(async (constraints: { video: true | { deviceId: { exact: string } } }) =>
     constraints.video === true || constraints.video.deviceId.exact === CORNFLAKE.deviceId

@@ -357,6 +357,33 @@ describe("opening the saved microphone", () => {
     expect(latest?.fault).toBe("none");
   });
 
+  test("a microphone unplugged while open stops being named and is reopened", async () => {
+    const saved = { deviceId: "id-granola", label: "Granola Interface" };
+    const opened = stream("id-granola", "Granola Interface");
+    getUserMedia
+      .mockResolvedValueOnce(opened)
+      .mockRejectedValueOnce(overconstrained())
+      .mockResolvedValueOnce(stream("default", "Default - Oatmeal Desk Mic (USB)"));
+    enumerateDevices.mockResolvedValue(listed.filter((d) => d.label !== "Granola Interface"));
+    await mount(saved);
+    expect(latest?.activeLabel).toBe("Granola Interface");
+    // Still naming the device here is what let Record ask the recorder for
+    // a microphone that was gone.
+    const track = opened.getAudioTracks()[0] as unknown as { onended: (() => void) | null };
+    await act(async () => {
+      track.onended?.();
+    });
+    for (let i = 0; i < 4; i += 1) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    expect(getUserMedia).toHaveBeenCalledTimes(3);
+    expect(latest?.activeLabel).toBe("Oatmeal Desk Mic (USB)");
+    expect(latest?.followsDefault).toBe(true);
+    expect(latest?.missing).toEqual(saved);
+  });
+
   test("a full-scale signal latches the clip indicator", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     getUserMedia.mockResolvedValue(stream("default", "Default - Oatmeal Desk Mic (USB)"));

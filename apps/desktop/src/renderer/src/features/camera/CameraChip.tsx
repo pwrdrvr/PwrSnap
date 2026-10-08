@@ -21,6 +21,7 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import {
   displayDeviceLabel,
+  isMissingDeviceError,
   resolveDevicePreference,
   type RecordingCamera,
   type RecordingDevicePreference
@@ -118,8 +119,7 @@ export function CameraChip({
       .catch((cause: unknown) => {
         // The saved id is gone. Open any camera, so there is a grant to
         // read names with, and look for the saved one by name below.
-        const name = cause instanceof Error ? cause.name : "";
-        if (saved === null || (name !== "NotFoundError" && name !== "OverconstrainedError")) throw cause;
+        if (saved === null || !isMissingDeviceError(cause)) throw cause;
         return openCamera("");
       })
       .then(async (media) => {
@@ -131,6 +131,7 @@ export function CameraChip({
         const track = media.getVideoTracks()[0]!;
         const selected = track.getSettings().deviceId;
         if (!selected) throw new Error("This camera did not provide a device identifier.");
+        let lost: RecordingDevicePreference | null = null;
         if (saved !== null && selected !== saved.deviceId) {
           // Opened something other than the saved id. Either the saved
           // camera is here under a new id, or it is not here at all.
@@ -150,8 +151,11 @@ export function CameraChip({
           }
           // Kept, not cleared: the next arm this show tries it again, in
           // case it was only unplugged for a moment.
-          if (found.kind === "missing") setMissing(saved);
+          if (found.kind === "missing") lost = saved;
         }
+        // Set either way: a saved camera that is back (replugged, then the
+        // chip re-armed) must not keep the "not connected" note.
+        if (saved !== null) setMissing(lost);
         setOpenLabel(displayDeviceLabel(track.label ?? ""));
         track.onended = () => {
           if (retired) return;

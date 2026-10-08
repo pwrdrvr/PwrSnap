@@ -48,6 +48,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   displayDeviceLabel,
   isDefaultPseudoDevice,
+  isMissingDeviceError,
   resolveDevicePreference,
   type RecordingDevicePreference
 } from "@pwrsnap/shared";
@@ -175,12 +176,6 @@ export function describeMicError(cause: unknown): {
         message: "Microphone could not be opened"
       };
   }
-}
-
-/** A `getUserMedia` rejection that means "no device answers to that id". */
-function isMissingDevice(cause: unknown): boolean {
-  const name = cause instanceof Error ? cause.name : "";
-  return name === "NotFoundError" || name === "OverconstrainedError";
 }
 
 /**
@@ -333,6 +328,8 @@ export function useMicrophoneMonitor({ enabled, preference }: MonitorOptions): M
       setSilent(false);
       setActiveDeviceId(null);
       setActiveLabel(null);
+      setMissing(null);
+      setFollowsDefault(true);
       setClipping(false);
       meter.reset();
       return;
@@ -365,7 +362,7 @@ export function useMicrophoneMonitor({ enabled, preference }: MonitorOptions): M
         try {
           stream = await open(preferredId);
         } catch (cause) {
-          if (preferredId === undefined || !isMissingDevice(cause)) throw cause;
+          if (preferredId === undefined || !isMissingDeviceError(cause)) throw cause;
           lookByName = true;
           stream = await open(undefined);
         }
@@ -413,6 +410,18 @@ export function useMicrophoneMonitor({ enabled, preference }: MonitorOptions): M
         setActiveDeviceId(track?.getSettings().deviceId ?? preferredId ?? null);
         const trackLabel = displayDeviceLabel(track?.label ?? "");
         setActiveLabel(trackLabel !== "" ? trackLabel : null);
+        if (track !== undefined) {
+          // Unplugged while open. Stop naming it at once, so Record checks
+          // the saved device instead of asking the recorder for one that is
+          // gone, and reopen: by id fails, the default opens, and the
+          // picker says the saved device is not connected. A `stop()` of
+          // our own does not fire `ended`.
+          track.onended = () => {
+            if (disposed) return;
+            setActiveLabel(null);
+            setAttempt((n) => n + 1);
+          };
+        }
 
         context = new AudioContext();
         const analyser = context.createAnalyser();

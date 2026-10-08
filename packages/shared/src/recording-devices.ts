@@ -61,6 +61,16 @@ export function displayDeviceLabel(label: string): string {
   return label.replace(/^(Default|Communications) - /, "");
 }
 
+/**
+ * Whether a `getUserMedia` rejection means "no device answers to that id",
+ * as opposed to a refusal or a busy device. The chips fall back to the
+ * default and look for the saved device by name only on this answer.
+ */
+export function isMissingDeviceError(cause: unknown): boolean {
+  const name = cause instanceof Error ? cause.name : "";
+  return name === "NotFoundError" || name === "OverconstrainedError";
+}
+
 export type DeviceCandidate = {
   readonly deviceId: string;
   readonly label: string;

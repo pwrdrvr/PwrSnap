@@ -59,6 +59,14 @@ export type SourceChipProps = {
   readonly level?: number;
   /** Overrides the default source name. */
   readonly label?: string;
+  /**
+   * The device this source will record from, shown beside the name at
+   * control density. Answers "WHICH microphone?" before the take rather
+   * than in playback. Dense and static densities have no room for it.
+   */
+  readonly device?: string | undefined;
+  /** A clipped sample arrived recently. Lights the meter's top segment. */
+  readonly clipping?: boolean;
   /** Short reason shown in place of a meter — "needs access", "macOS only". */
   readonly why?: string;
   /**
@@ -240,6 +248,8 @@ export function SourceChip({
   state,
   level,
   label,
+  device,
+  clipping = false,
   why,
   detail,
   act,
@@ -361,6 +371,7 @@ export function SourceChip({
       className={className}
       data-state={state}
       data-source={source}
+      {...(clipping ? { "data-clipping": "true" } : {})}
       title={hudTitle}
       {...(grouped ? { role: "group", "aria-label": name } : {})}
       {...(testId !== undefined ? { "data-testid": testId } : {})}
@@ -385,6 +396,9 @@ export function SourceChip({
       >
         <SourceGlyph source={source} />
         {density === "dense" ? null : <span className="ps-chip__name">{name}</span>}
+        {density === "control" && device !== undefined && device !== "" ? (
+          <span className="ps-chip__dev">{device}</span>
+        ) : null}
         {showMeter ? <SourceMeter level={level} tone={tone} /> : null}
         {why !== undefined ? <span className="ps-chip__why">{why}</span> : null}
       </button>

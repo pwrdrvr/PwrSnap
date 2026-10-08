@@ -138,6 +138,9 @@
   font: 400 11px/1.4 var(--font-sans);
   color: var(--text-muted);
 }
+.camera-pop__note--warn {
+  color: var(--warn-text);
+}
 .camera-pop__err {
   margin: 0 8px 6px;
   font: 500 11px/1.35 var(--font-sans);

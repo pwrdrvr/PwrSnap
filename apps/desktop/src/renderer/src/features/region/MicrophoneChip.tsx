@@ -1,0 +1,285 @@
+// The microphone, as a recording source chip in the region selector, and
+// its device picker.
+//
+// The chip names the device the take will record from. Its caret opens a
+// picker that changes the device (saved through the settings substrate by
+// the caller), shows a level meter fine enough to set gain by, with a peak
+// hold and a clip latch, and offers a short record-and-play-back test.
+//
+// Pre-record only. The selector is gone before the take starts, and so is
+// everything here; the recording HUD never opens this.
+
+import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactElement } from "react";
+import type { RecordingDevicePreference } from "@pwrsnap/shared";
+import { useDismissable } from "../../lib/useDismissable";
+import { useFocusReturn } from "../../lib/useFocusReturn";
+import { SourceChip, type SourceChipState } from "../shared/SourceChip";
+import { METER_FLOOR_DB, meterFraction, type LevelMeterStore } from "../shared/mic-level-meter";
+import type { MicrophoneMonitor } from "../shared/useMicrophoneMonitor";
+import { MIC_TEST_SECONDS, useMicrophoneTest } from "../shared/useMicrophoneTest";
+import "./microphone-chip.css";
+
+/** The label the chip and the picker show for the device the take will use. */
+export function microphoneDeviceName({
+  on,
+  monitor,
+  preference
+}: {
+  readonly on: boolean;
+  readonly monitor: Pick<MicrophoneMonitor, "activeLabel" | "followsDefault">;
+  readonly preference: RecordingDevicePreference | null;
+}): string | undefined {
+  if (!on) return undefined;
+  // The device that is actually open is the only name we KNOW.
+  if (monitor.activeLabel !== null) return monitor.activeLabel;
+  // Unopened (a Quick Capture that only offers Record): the saved pick is
+  // what the recorder will be asked for.
+  if (preference !== null && preference.label !== "") return preference.label;
+  return "System default";
+}
+
+export function MicrophoneChip({
+  state,
+  why,
+  armed,
+  monitor,
+  preference,
+  onToggle,
+  onArm,
+  onPick,
+  onOpenSettings
+}: {
+  readonly state: SourceChipState;
+  readonly why: string | undefined;
+  /** The stream may be opened for this show (see `sourcesArmed`). */
+  readonly armed: boolean;
+  readonly monitor: MicrophoneMonitor;
+  readonly preference: RecordingDevicePreference | null;
+  readonly onToggle: () => void;
+  /** Opening the picker is an explicit act: it may open the microphone. */
+  readonly onArm: () => void;
+  /** `null` = follow the system default. */
+  readonly onPick: (preference: RecordingDevicePreference | null) => void;
+  readonly onOpenSettings: () => void;
+}): ReactElement {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLSpanElement | null>(null);
+  const popRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLElement | null>(null);
+  const on = state !== "off" && state !== "unsupported";
+  const test = useMicrophoneTest({
+    getStream: monitor.getStream,
+    deviceKey: open && on ? monitor.activeDeviceId : null
+  });
+
+  // Nothing to pick from once the chip is switched off.
+  useEffect(() => {
+    if (!on) setOpen(false);
+  }, [on]);
+  // A prewarmed selector that is hidden takes its picker down with it.
+  useEffect(() => {
+    const hidden = (): void => {
+      if (document.hidden) setOpen(false);
+    };
+    document.addEventListener("visibilitychange", hidden);
+    return () => document.removeEventListener("visibilitychange", hidden);
+  }, []);
+
+  useDismissable({
+    open,
+    onDismiss: () => setOpen(false),
+    surfaceRef: popRef,
+    triggerRef,
+    dismissOnFocusLeave: true
+  });
+  // A row click blurs itself (the HUD drops focus after every click), so a
+  // close can strand focus on <body>; hand it back to the caret.
+  useFocusReturn({ open, containerRef: popRef, returnFocusRef: triggerRef });
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: PointerEvent): void => {
+      const root = rootRef.current;
+      if (root !== null && event.target instanceof Node && root.contains(event.target)) return;
+      setOpen(false);
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    return () => document.removeEventListener("pointerdown", onDown, true);
+  }, [open]);
+  // Closing the picker ends a test in flight.
+  const cancelTest = test.cancel;
+  useEffect(() => {
+    if (!open) cancelTest();
+  }, [open, cancelTest]);
+
+  const device = microphoneDeviceName({ on, monitor, preference });
+  const followDefault = preference === null || monitor.missing !== null;
+  const pickedId = followDefault
+    ? null
+    : (monitor.devices.find((d) => d.deviceId === preference.deviceId) ??
+        monitor.devices.find((d) => d.label === preference.label))?.deviceId ?? null;
+  const caretOffered = on && state !== "denied";
+
+  return (
+    <span
+      className="mic-chip"
+      ref={rootRef}
+      onPointerDown={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        // The selector binds M, A, K, Enter and Space on window. Inside the
+        // picker those keys belong to its rows and buttons.
+        if (open) event.stopPropagation();
+      }}
+    >
+      <SourceChip
+        source="microphone"
+        state={state}
+        level={monitor.segments / 7}
+        // Armed but unopened: the chip knows the user's choice and nothing
+        // about the signal, so it must not draw a meter that reads as silence.
+        noMeter={!armed}
+        device={device}
+        clipping={monitor.clipping}
+        {...(why !== undefined ? { why } : {})}
+        {...(state === "ask" ? { act: "Allow", onAct: () => void monitor.request() } : {})}
+        {...(state === "denied" ? { act: "Settings", onAct: onOpenSettings } : {})}
+        kbd="M"
+        hasDevices={caretOffered}
+        onOpenDevices={() => {
+          triggerRef.current = rootRef.current?.querySelector<HTMLElement>(".ps-chip__devices") ?? null;
+          if (!open) onArm();
+          setOpen((value) => !value);
+        }}
+        onToggle={onToggle}
+        testId="region-hud-mic"
+      />
+      {open ? (
+        <div
+          ref={popRef}
+          className="mic-pop"
+          role="dialog"
+          aria-label="Microphone"
+          data-testid="region-hud-mic-devices"
+        >
+          <div className="mic-pop__hd">Microphone</div>
+          <div className="mic-pop__list" role="radiogroup" aria-label="Microphone device">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={followDefault}
+              className="mic-pop__row"
+              data-testid="region-hud-mic-default"
+              onClick={() => {
+                if (!followDefault || monitor.missing !== null) onPick(null);
+              }}
+            >
+              <span className="mic-pop__dot" aria-hidden="true" />
+              <span className="mic-pop__name">System default</span>
+              {monitor.defaultLabel !== null ? (
+                <span className="mic-pop__sub">{monitor.defaultLabel}</span>
+              ) : null}
+            </button>
+            {monitor.devices.length === 0 ? (
+              <span className="mic-pop__empty">
+                {monitor.error ?? (armed ? "Opening microphone…" : "Turn the microphone on to list devices")}
+              </span>
+            ) : (
+              monitor.devices.map((entry) => (
+                <button
+                  key={entry.deviceId}
+                  type="button"
+                  role="radio"
+                  aria-checked={entry.deviceId === pickedId}
+                  className="mic-pop__row"
+                  onClick={() => {
+                    if (entry.deviceId === pickedId) return;
+                    onPick({ deviceId: entry.deviceId, label: entry.label });
+                  }}
+                >
+                  <span className="mic-pop__dot" aria-hidden="true" />
+                  <span className="mic-pop__name">{entry.label}</span>
+                </button>
+              ))
+            )}
+          </div>
+          {monitor.missing !== null ? (
+            <p className="mic-pop__note mic-pop__note--warn" role="status">
+              {monitor.missing.label !== "" ? `“${monitor.missing.label}”` : "The saved microphone"} is not
+              connected. This take records from the system default.
+            </p>
+          ) : null}
+          <MicLevelMeter store={monitor.meter} live={armed && monitor.activeLabel !== null} />
+          <p className="mic-pop__note" aria-live="polite" data-testid="region-hud-mic-advice">
+            {monitor.clipping
+              ? "Clipping. Turn the input level down in Sound settings, or move back from the microphone."
+              : "Speak at your normal volume. Peaks between −18 and −6 dB are a good level."}
+          </p>
+          <div className="mic-pop__test">
+            <button
+              type="button"
+              className="mic-pop__test-btn"
+              data-testid="region-hud-mic-test"
+              disabled={!test.available || monitor.activeLabel === null}
+              aria-describedby="mic-pop-test-status"
+              onClick={() => (test.phase === "idle" || test.phase === "failed" ? test.start() : test.cancel())}
+            >
+              {test.phase === "recording" || test.phase === "playing" ? "Stop" : `Test ${MIC_TEST_SECONDS} s`}
+            </button>
+            <span id="mic-pop-test-status" className="mic-pop__test-status" role="status">
+              {test.phase === "recording"
+                ? `Recording… ${test.secondsLeft}`
+                : test.phase === "playing"
+                  ? "Playing back"
+                  : test.phase === "failed"
+                    ? test.error
+                    : "Hear yourself. Nothing is saved."}
+            </span>
+          </div>
+        </div>
+      ) : null}
+    </span>
+  );
+}
+
+/**
+ * The picker's meter: the current peak as a bar, the held peak as a tick,
+ * and CLIP. Subscribes to the monitor's store, so only this re-renders as
+ * the level moves.
+ */
+export function MicLevelMeter({
+  store,
+  live
+}: {
+  readonly store: LevelMeterStore;
+  readonly live: boolean;
+}): ReactElement {
+  const reading = useSyncExternalStore(store.subscribe, store.get, store.get);
+  const silent = !live || reading.peakDb <= METER_FLOOR_DB;
+  const readout = silent ? "−∞ dB" : `${reading.peakDb === 0 ? "0" : `−${-reading.peakDb}`} dB`;
+  return (
+    <div className="mic-meter" data-clipping={reading.clipping} data-testid="region-hud-mic-meter">
+      <div
+        className="mic-meter__track"
+        role="meter"
+        aria-label="Input peak"
+        aria-valuemin={METER_FLOOR_DB}
+        aria-valuemax={0}
+        aria-valuenow={live ? reading.peakDb : METER_FLOOR_DB}
+        aria-valuetext={reading.clipping ? `${readout}, clipping` : readout}
+      >
+        <span
+          className="mic-meter__fill"
+          style={{ "--level": live ? meterFraction(reading.levelDb) : 0 } as CSSProperties}
+        />
+        {!silent ? (
+          <span className="mic-meter__hold" style={{ left: `${meterFraction(reading.peakDb) * 100}%` }} />
+        ) : null}
+      </div>
+      <span className="mic-meter__db" aria-hidden="true">
+        {readout}
+      </span>
+      <span className="mic-meter__clip" data-on={reading.clipping} aria-hidden="true">
+        CLIP
+      </span>
+    </div>
+  );
+}

@@ -41,6 +41,10 @@ struct StartRequest: Decodable {
     let outputPath: String
     let systemAudio: Bool
     let microphone: Bool
+    /// The input the selector showed, by its Chromium name. Nil records
+    /// the system default. A name that matches no attached input fails the
+    /// start with `microphone_unavailable` rather than falling back.
+    let microphoneDevice: String?
     /// Whether the recording bakes in the mouse cursor. Optional for
     /// back-compat with older callers — `nil` defaults to `true`, which
     /// is the behavior before this field existed (cursor always shown).
@@ -313,7 +317,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             }
             writer.add(mi)
             micInput = mi
-            guard setUpMicrophoneCapture(into: mi, writer: writer) else { return }
+            guard setUpMicrophoneCapture(into: mi, writer: writer, named: req.microphoneDevice) else { return }
         }
 
         // Sleep until the requested wall-clock capture time. The TS
@@ -543,14 +547,37 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         return err.domain == "com.apple.ScreenCaptureKit.SCStreamErrorDomain" && err.code == -3805
     }
 
+    private func microphoneDevice(named name: String?) -> AVCaptureDevice? {
+        guard let name else { return AVCaptureDevice.default(for: .audio) }
+        let types: [AVCaptureDevice.DeviceType]
+        if #available(macOS 14.0, *) {
+            types = [.microphone, .external]
+        } else {
+            types = [.builtInMicrophone, .externalUnknown]
+        }
+        let devices = AVCaptureDevice.DiscoverySession(
+            deviceTypes: types, mediaType: .audio, position: .unspecified
+        ).devices
+        guard let index = indexOfMicrophone(named: name, among: devices.map(\.localizedName)) else {
+            diag("microphone \"\(name)\" not among \(devices.map(\.localizedName))")
+            return nil
+        }
+        return devices[index]
+    }
+
     private func setUpMicrophoneCapture(
         into input: AVAssetWriterInput,
-        writer: AVAssetWriter
+        writer: AVAssetWriter,
+        named requested: String?
     ) -> Bool {
         let session = AVCaptureSession()
         session.sessionPreset = .high
-        guard let device = AVCaptureDevice.default(for: .audio) else {
-            emitError("microphone_unavailable", "No default microphone is connected. Choose an input in macOS Sound settings.")
+        guard let device = microphoneDevice(named: requested) else {
+            if let requested {
+                emitError("microphone_unavailable", "The microphone \"\(requested)\" is not connected. Choose another in the capture selector.")
+            } else {
+                emitError("microphone_unavailable", "No default microphone is connected. Choose an input in macOS Sound settings.")
+            }
             return false
         }
         let micInputDevice: AVCaptureDeviceInput

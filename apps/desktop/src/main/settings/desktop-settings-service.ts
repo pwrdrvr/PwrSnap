@@ -1,4 +1,4 @@
-import { parseCustomAi } from "@pwrsnap/shared";
+import { parseCustomAi, RecordingDevicePreferenceSchema, type RecordingDevicePreference } from "@pwrsnap/shared";
 // Internal settings persistence adapter. DesktopSettingsStore is the sole
 // production owner. The first read hydrates an immutable snapshot from disk;
 // subsequent reads stay in memory for the process lifetime. Reads
@@ -279,6 +279,10 @@ export function defaultSettings(
       // any platform. Off is a taste preference, not a safety valve.
       showRegionFrame: true,
       showRecentCaptureSidebar: true,
+      // No device chosen: the system default microphone, and the first
+      // camera Chromium offers. The selector's chips write a choice.
+      microphoneDevice: null,
+      cameraDevice: null,
       lastRoutedPermissionFingerprint: "",
       // Fresh install has never triggered the macOS Screen Recording
       // prompt, so the System Permissions page + the capture gate show
@@ -393,6 +397,11 @@ function pickStringOrNull(value: unknown, fallback: string | null): string | nul
   if (value === null) return null;
   if (typeof value === "string") return value;
   return fallback;
+}
+
+function pickDevicePreference(value: unknown): RecordingDevicePreference | null {
+  const parsed = RecordingDevicePreferenceSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
 }
 
 function pickMode(value: unknown): "auto" | "pinned" {
@@ -1080,6 +1089,11 @@ function parseV1(
         recording.showRecentCaptureSidebar,
         defaults.recording.showRecentCaptureSidebar
       ),
+      // The device choices landed with the selector's device pickers;
+      // older files have none, and a malformed one reads as "no choice"
+      // rather than failing the whole file.
+      microphoneDevice: pickDevicePreference(recording.microphoneDevice),
+      cameraDevice: pickDevicePreference(recording.cameraDevice),
       lastRoutedPermissionFingerprint: pickString(
         recording.lastRoutedPermissionFingerprint,
         defaults.recording.lastRoutedPermissionFingerprint

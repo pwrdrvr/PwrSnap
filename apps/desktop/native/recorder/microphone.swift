@@ -38,3 +38,29 @@ final class MicForwarder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
         }
     }
 }
+
+// MARK: - Choosing the input by name
+
+/// Strip one trailing " (…)" group. Chromium names a macOS input after its
+/// CoreAudio name plus a parenthesised tag — the transport ("Desk Mic (USB)",
+/// "Studio Mic (Built-in)") or a USB vendor:product pair — while
+/// AVFoundation's `localizedName` is the bare CoreAudio name.
+func strippingTrailingParenthetical(_ name: String) -> String {
+    guard name.hasSuffix(")"), let open = name.range(of: " (", options: .backwards) else { return name }
+    let stem = String(name[..<open.lowerBound])
+    return stem.isEmpty ? name : stem
+}
+
+/// Index of the device the selector named, or nil when none matches.
+///
+/// An exact name wins over a tag-stripped one, so a device whose own name
+/// ends in a parenthesis is never shadowed by another whose stripped label
+/// happens to equal it. Two devices with one name are indistinguishable by
+/// name; the first is taken, the same answer AVFoundation's own ordering
+/// would give a user picking from a list of identical rows.
+func indexOfMicrophone(named requested: String, among names: [String]) -> Int? {
+    if let exact = names.firstIndex(of: requested) { return exact }
+    let stem = strippingTrailingParenthetical(requested)
+    if stem != requested, let tagged = names.firstIndex(of: stem) { return tagged }
+    return nil
+}

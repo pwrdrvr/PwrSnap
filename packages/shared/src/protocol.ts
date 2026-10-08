@@ -1,4 +1,5 @@
 import type { AvatarStyle, CameraTrackMetadata, PresenterSpan, RecordingCamera } from "./camera";
+import type { RecordingDevicePreference, RecordingMicrophone } from "./recording-devices";
 import type { CustomConnection, CustomConnectionInput, CustomModel, CustomModelDiscovery, CustomModelInput } from "./custom-models";
 // Typed `Commands` registry. Single source of truth across main /
 // preload / renderer / external transports (HTTP RPC in Phase 7, MCP
@@ -492,6 +493,10 @@ export type RecordingCapabilities = {
   camera?: RecordingCamera;
   systemAudio: boolean;
   microphone: boolean;
+  /** The input to record from when `microphone` is on. Omitted means the
+   *  system default input. Matched by name in the native recorder, which
+   *  refuses the take rather than record a different microphone. */
+  microphoneDevice?: RecordingMicrophone;
 };
 
 /**
@@ -3058,6 +3063,16 @@ export type Settings = {
      *  recording does, so turning it back on shows the same tabs. Main
      *  reads it live (`setFloatOverRecentSidebarVisible`). */
     showRecentCaptureSidebar: boolean;
+    /** The microphone a new recording uses, chosen from the selector's
+     *  microphone chip. `null` follows the system default input. It names
+     *  the device, never whether to record it: `includeMicrophone` still
+     *  seeds that. See `RecordingDevicePreference` for why it carries
+     *  both an id and a label. */
+    microphoneDevice: RecordingDevicePreference | null;
+    /** The camera a new recording uses, chosen from the selector's camera
+     *  chip. `null` opens whichever camera Chromium offers first. Like the
+     *  microphone, the chip still starts OFF on every show. */
+    cameraDevice: RecordingDevicePreference | null;
     /** Whether IMAGE captures include the mouse cursor. Defaults ON.
      *  Reserved for the Phase 3 image-cursor work — the field is
      *  persisted now so adding it later needs no schema change, but

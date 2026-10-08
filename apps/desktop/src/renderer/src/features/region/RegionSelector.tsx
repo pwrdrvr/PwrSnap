@@ -1,4 +1,5 @@
 import { CameraChip } from "../camera/CameraChip";
+import { MicrophoneChip } from "./MicrophoneChip";
 // Region-selector renderer.
 //
 // State machine (post-feedback redesign):
@@ -49,6 +50,7 @@ import { acceleratorToDisplayKeys, MAX_SELECTOR_EXTENTS } from "@pwrsnap/shared"
 import type {
   QuickCaptureAction,
   RecordingCapabilities,
+  RecordingDevicePreference,
   SelectorTerminalAction
 } from "@pwrsnap/shared";
 import type {
@@ -315,6 +317,18 @@ export function RegionSelector() {
   const [cameraReady, setCameraReady] = useState(true);
   const cameraReadyRef = useRef(true);
   const [sources, setSources] = useState<RecordingCapabilities | null>(null);
+  // The saved microphone and camera, seeded per show from
+  // `settings.recording.microphoneDevice` / `.cameraDevice`. Unlike the
+  // on/off seeds above, a pick here IS written back: "which microphone" is
+  // a property of the desk, not of one take, and asking it again on every
+  // recording is the friction the picker exists to remove. Turning a source
+  // on or off still never writes.
+  const [micPreference, setMicPreference] = useState<RecordingDevicePreference | null>(null);
+  const [cameraPreference, setCameraPreference] = useState<RecordingDevicePreference | null>(null);
+  // The microphone name the commit hands the recorder, or null for the
+  // system default. A ref for the same reason as `sourcesRef`: `commit()`
+  // is captured once at mount.
+  const micDeviceRef = useRef<string | null>(null);
   // Whether the microphone stream may be opened for this show.
   //
   // Opening it lights the macOS orange indicator and, on first use,
@@ -671,8 +685,23 @@ export function RegionSelector() {
   const sourcesArmed =
     sourcesOffered && (intent === "video" || primary === "record" || sourcesTouched);
   const mic = useMicrophoneMonitor({
-    enabled: sourcesArmed && sources?.microphone === true
+    enabled: sourcesArmed && sources?.microphone === true,
+    preference: micPreference
   });
+  // Which microphone the recorder is asked for. Opened: the device the
+  // meter is on, unless that is the default (no pick, or a saved pick that
+  // is not attached — the picker says so). Not opened (a Quick Capture that
+  // only offers Record, or an open that failed): the saved pick, which the
+  // chip is showing, and which the recorder refuses the take over rather
+  // than record a different microphone in its place.
+  micDeviceRef.current =
+    sourcesArmed && mic.activeLabel !== null
+      ? mic.followsDefault
+        ? null
+        : mic.activeLabel
+      : micPreference !== null && micPreference.label !== ""
+        ? micPreference.label
+        : null;
   const micState = microphoneChipState({
     on: sources?.microphone === true,
     armed: sourcesArmed,
@@ -804,6 +833,8 @@ export function RegionSelector() {
       audioOfferedRef.current = payload.sources !== undefined;
       setAudioOffered(payload.sources !== undefined);
       const nextSources = payload.sources ?? (payload.cameraOffered ? { microphone: false, systemAudio: false } : null);
+      setMicPreference(payload.devices?.microphone ?? null);
+      setCameraPreference(payload.devices?.camera ?? null);
       sourcesRef.current = nextSources;
       setSources(nextSources);
       // A new show has not been touched yet, so the microphone stays
@@ -1125,6 +1156,27 @@ export function RegionSelector() {
     setSources((prev) => (prev === null ? prev : { ...prev, [kind]: !prev[kind] }));
   }
 
+  /** The sources a commit ships, with the microphone named when it is on. */
+  function committedSources(base: RecordingCapabilities): RecordingCapabilities {
+    const { microphoneDevice: _stale, ...rest } = base;
+    const label = micDeviceRef.current;
+    return rest.microphone && label !== null ? { ...rest, microphoneDevice: { label } } : rest;
+  }
+
+  /**
+   * Save a device pick. The in-show state moves first so the chip follows
+   * at once; a write that fails costs only the memory of the pick, never
+   * this take, which already uses it.
+   */
+  function saveDevice(
+    key: "microphoneDevice" | "cameraDevice",
+    preference: RecordingDevicePreference | null
+  ): void {
+    const recording =
+      key === "microphoneDevice" ? { microphoneDevice: preference } : { cameraDevice: preference };
+    void dispatch("settings:write", { recording }).catch(() => undefined);
+  }
+
   /**
    * Drop the pick set WITHOUT touching the rect.
    *
@@ -1325,7 +1377,7 @@ export function RegionSelector() {
           ...(action === "record" ? { action } : {}),
           ...(isRecording ? { captureCursor: captureCursorRef.current } : {}),
           ...(isRecording && sourcesRef.current !== null
-            ? { sources: sourcesRef.current }
+            ? { sources: committedSources(sourcesRef.current) }
             : {}),
           // No `extents`. A one-window mask covers its own union box
           // edge to edge, so it can only ever produce the same pixels
@@ -1412,7 +1464,7 @@ export function RegionSelector() {
       // read, same reason. Omitted when main never seeded them, which
       // leaves main on the persisted defaults rather than letting a
       // renderer that was never asked answer for the user.
-      ...(isRecording && sourcesRef.current !== null ? { sources: sourcesRef.current } : {})
+      ...(isRecording && sourcesRef.current !== null ? { sources: committedSources(sourcesRef.current) } : {})
     });
     // Full reset, same as the pick path above. Hand-rolling a partial
     // one here left `shiftHeld` / `spaceHeld` latched: the ⇧ keyup is
@@ -3026,31 +3078,25 @@ export function RegionSelector() {
           )}
           {sourcesOffered && audioOffered && (
             <>
-              <SourceChip
-                source="microphone"
+              <MicrophoneChip
                 state={micState}
-                level={mic.segments / 7}
-                // Armed but unopened: the chip knows the user's choice
-                // and nothing about the signal, so it must not draw a
-                // meter that would read as silence.
-                noMeter={!sourcesArmed}
-                {...(micWhy !== undefined ? { why: micWhy } : {})}
-                {...(micState === "ask"
-                  ? { act: "Allow", onAct: () => void mic.request() }
-                  : {})}
-                {...(micState === "denied"
-                  ? {
-                      act: "Settings",
-                      onAct: () => {
-                        void dispatch("permissions:openSystemSettings", {
-                          permission: "microphone"
-                        });
-                      }
-                    }
-                  : {})}
-                kbd="M"
+                why={micWhy}
+                armed={sourcesArmed}
+                monitor={mic}
+                preference={micPreference}
                 onToggle={() => toggleSource("microphone")}
-                testId="region-hud-mic"
+                // Opening the picker is a direct request to see this
+                // microphone, so it earns the stream the way a flip does.
+                onArm={() => setSourcesTouched(true)}
+                onPick={(preference) => {
+                  setMicPreference(preference);
+                  saveDevice("microphoneDevice", preference);
+                }}
+                onOpenSettings={() => {
+                  void dispatch("permissions:openSystemSettings", {
+                    permission: "microphone"
+                  });
+                }}
               />
               <SourceChip
                 source="systemAudio"
@@ -3076,6 +3122,11 @@ export function RegionSelector() {
                 setCameraOn(next);
               }}
               value={sources?.camera}
+              preferred={cameraPreference}
+              onPick={(preference) => {
+                setCameraPreference(preference);
+                saveDevice("cameraDevice", preference);
+              }}
               onReady={(ready) => {
                 cameraReadyRef.current = ready;
                 setCameraReady(ready);

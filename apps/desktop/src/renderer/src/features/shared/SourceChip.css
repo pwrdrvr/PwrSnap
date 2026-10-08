@@ -115,6 +115,18 @@
   color: inherit;
 }
 
+/* The device name. Truncated, not wrapped: the selector HUD is one row,
+   and a USB interface's full name would otherwise push the Record button
+   off it. The picker shows the whole name. */
+.ps-chip__dev {
+  max-width: 148px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font: 500 11px/1.2 var(--font-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ps-chip__why {
   color: currentColor;
   font: 500 11px/1 var(--font-sans);
@@ -297,6 +309,9 @@
 .ps-meter i[data-on="true"] { background: var(--accent); }
 .ps-meter i[data-on="true"]:nth-child(6) { background: var(--warn); }
 .ps-meter i[data-on="true"]:nth-child(7) { background: var(--danger); }
+/* Clipping latches the top segment red whatever the level is now: the
+   shout that clipped is usually over before anyone looks. */
+.ps-chip[data-clipping="true"] .ps-meter i:nth-child(7) { background: var(--danger); }
 
 /* Flat: granted and on, but no samples. Distinct from "off" (grey) and
    from "live at zero" — the segments are tinted, not dark. */

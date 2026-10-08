@@ -174,8 +174,13 @@ and its name. The name is the fallback when the per-profile salt changes the
 id, and it is the only key the native microphone recorder can use:
 AVFoundation knows nothing of Chromium ids, so `recording:start` carries
 `microphoneDevice: { label }` and the recorder matches it against the
-attached inputs' names, ignoring the trailing "(Built-in)" / "(USB)" tag
-that Chromium adds. A name that matches nothing fails the start rather than
+attached inputs. Chromium's label is not always the CoreAudio name, so the
+match is a ladder: the device name, ignoring the trailing "(Built-in)" /
+"(USB)" tag Chromium adds; then the input's data source name, which Chromium
+uses for some virtual devices; then the one Bluetooth input whose name
+contains the label as whole words, because Chromium shows a headset's product
+name ("AirPods") where macOS shows the owner's name for it. Two such headsets
+are not guessed between. A name that matches nothing fails the start rather than
 recording a different microphone than the chip showed. That failure is the
 backstop, not the path a user meets: when the chip never opened the microphone
 (a Quick Capture that only offers Record), Record first lists the inputs, and a

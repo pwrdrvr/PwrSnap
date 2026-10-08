@@ -461,7 +461,9 @@ export type RecordingFailureCode =
 export function recordingFailureSummary(code: RecordingFailureCode): string {
   switch (code) {
     case "microphone_unavailable":
-      return "PwrSnap couldn't start your microphone. Check microphone access and the default input in macOS Sound settings, then retry.";
+      // Covers a named input that is gone as well as the default, so it
+      // points at the selector's choice, not only at the default input.
+      return "PwrSnap couldn't open the microphone. Check that the input chosen in the capture selector is connected and that PwrSnap has microphone access, then retry.";
     case "recorder_unavailable":
       return "PwrSnap couldn't find the video recorder.";
     case "recorder_start_failed":

@@ -30,6 +30,8 @@ export type VideoTransportProps = {
   volume: number;
   onTogglePlay: () => void;
   onToggleLoop: () => void;
+  /** The recording's presenter (camera track). Omitted → no button. */
+  presenter?: { visible: boolean; onToggle: () => void } | undefined;
   /** Split at the playhead. Omitted → no split button. */
   onSplit?: (() => void) | undefined;
   onToggleMute: () => void;
@@ -126,6 +128,46 @@ export function VideoTransport(props: VideoTransportProps): ReactElement {
       </span>
 
       <span className="psl__vt-spacer" />
+
+      {props.presenter !== undefined && (
+        <button
+          type="button"
+          className={`psl__vt-btn${props.presenter.visible ? " is-on" : ""}`}
+          data-tip={props.presenter.visible ? "Hide presenter" : "Show presenter"}
+          data-tip-keys="H"
+          aria-label="Show presenter"
+          aria-pressed={props.presenter.visible}
+          onMouseDown={keepFocus}
+          onClick={props.presenter.onToggle}
+          data-testid="video-transport-presenter"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            {props.presenter.visible ? (
+              <>
+                <rect x="1.4" y="4" width="9.2" height="8" rx="2" />
+                <path d="M10.6 7.6l4-2.2v5.2l-4-2.2z" />
+              </>
+            ) : (
+              <>
+                <rect x="1.4" y="4" width="9.2" height="8" rx="2" />
+                <path d="M10.6 7.6l4-2.2v5.2l-4-2.2z" />
+                <path d="M1.5 2.5l12 11" />
+              </>
+            )}
+          </svg>
+          <span className="psl__vt-btn-label">presenter</span>
+        </button>
+      )}
 
       {props.onSplit !== undefined && (
         <button

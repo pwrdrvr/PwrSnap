@@ -99,6 +99,7 @@ import { closeAcpAgentPool } from "./ai/acp-agent-pool";
 import { closeCodexAgentPool } from "./ai/codex-agent-pool";
 import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerCodexHandlers } from "./handlers/codex-handlers";
+import { registerEnrichmentRepairHandlers } from "./handlers/enrichment-repair-handlers";
 import { registerDiagnosticsHandlers } from "./handlers/diagnostics-handlers";
 import {
   registerLogsHandlers,
@@ -235,7 +236,7 @@ import {
   listCaptures,
   listExpiredTrash
 } from "./persistence/captures-repo";
-import { insertVideoMetadata } from "./persistence/video-repo";
+import { insertVideoMetadata, setVideoCamera } from "./persistence/video-repo";
 import {
   seedCapturesForE2E,
   type E2ESeedCaptureInput
@@ -1194,6 +1195,7 @@ async function runInteractiveRecord(
     // recording — worse than the pre-chip behavior, where the same
     // setting was simply ignored end-to-end. protocol.ts states the rule:
     // unsupported controls are omitted, not rendered as if they might work.
+    cameraOffered: recordingSources.webcam,
     ...(recordingSources.microphone || recordingSources.systemAudio
       ? {
           sourcesDefault: {
@@ -2055,6 +2057,7 @@ export function bootstrapApp(): void {
       );
       registerCaptureStorageHandlers();
       registerCodexHandlers();
+      registerEnrichmentRepairHandlers();
       registerCodexProfileHandlers();
       registerAcpHandlers();
       // `capture:saveAs` is the one capture verb owned by the Library in
@@ -2460,6 +2463,11 @@ export function bootstrapApp(): void {
         // recording (which would need TCC permission + a Mac).
         seedVideoMetadata: (input: Parameters<typeof insertVideoMetadata>[0]) =>
           insertVideoMetadata(input),
+        // Index a camera track for a seeded video. The caller writes the
+        // `<id>.camera/` directory (track.json + source) beside the
+        // screen file first, exactly where a recording would leave it.
+        seedVideoCamera: (captureId: string, camera: Parameters<typeof setVideoCamera>[1]) =>
+          setVideoCamera(captureId, camera),
         // Seed a real bundle-backed capture by running the production
         // persistCaptureFromTempV2 pipeline — packs `.pwrsnap`, writes
         // the per-capture source.png cache under <userData>/render-cache/<id>/.

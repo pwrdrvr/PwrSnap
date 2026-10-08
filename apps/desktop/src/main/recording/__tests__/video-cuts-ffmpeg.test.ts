@@ -64,6 +64,7 @@ function audioSeconds(path: string): number {
 
 const DURATION = 8;
 let source: string;
+let talking: string;
 
 function record(): CaptureRecord {
   return {
@@ -106,9 +107,20 @@ describe.skipIf(ffmpeg === null)("cut editing through real FFmpeg", () => {
       "-f", "lavfi", "-i", `testsrc2=s=320x180:r=20:d=${DURATION}`,
       "-f", "lavfi", "-i", `sine=frequency=440:sample_rate=48000:duration=${DURATION}`,
       "-vf", "select='lt(t\\,2)+gte(t\\,6)+eq(n\\,40)'",
+      // Silent while the frame is held, so the stretch is idle in sound
+      // as well as picture.
+      "-af", "volume=enable='between(t,2,6)':volume=0",
       "-fps_mode", "passthrough",
       "-map", "0:v", "-map", "1:a", "-c:v", "mpeg4", "-q:v", "3", "-c:a", "aac",
       source
+    ]);
+    talking = join(state.root, "still-with-voice.mp4");
+    // The same held frame, with the tone running straight through it:
+    // someone talking over a screen that does not move.
+    run([
+      "-i", source, "-f", "lavfi", "-i", `sine=frequency=220:sample_rate=48000:duration=${DURATION}`,
+      "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac",
+      talking
     ]);
   }, 30_000);
   afterAll(() => {
@@ -130,6 +142,18 @@ describe.skipIf(ffmpeg === null)("cut editing through real FFmpeg", () => {
     // Cached: a second call reads the file rather than re-running ffmpeg.
     const again = await ensureVideoActivity(record(), video);
     expect(again.track.magnitudes).toEqual(track.magnitudes);
+    expect(again.track.sound).toEqual(track.sound);
+  }, 30_000);
+
+  test("a still screen with someone talking over it is not idle", async () => {
+    const { track } = await ensureVideoActivity(
+      { ...record(), id: "talking-fixture", legacy_src_path: talking } as CaptureRecord,
+      video
+    );
+    expect(track.sound).toHaveLength(track.magnitudes.length);
+    // The picture alone would call 2–6 s still; the voice keeps it.
+    expect(videoStillSpans({ ...track, sound: undefined }, { minStillSec: 1 })).toHaveLength(1);
+    expect(videoStillSpans(track, { minStillSec: 1 })).toEqual([]);
   }, 30_000);
 
   test("a cut GIF runs exactly the kept length, including the span inside the still", async () => {

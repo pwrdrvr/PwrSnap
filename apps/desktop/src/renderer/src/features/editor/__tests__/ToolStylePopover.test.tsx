@@ -91,6 +91,7 @@ function makeSettings(overrides?: {
       enabled: false,
       consentAcceptedAt: null,
       budgetSafetyDisabledAt: null,
+      enrichmentRateLimit: null,
       autoAcceptSuggestions: false,
       chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false },
       defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} },

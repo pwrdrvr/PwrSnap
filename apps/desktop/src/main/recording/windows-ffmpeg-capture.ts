@@ -20,6 +20,7 @@ export function planWindowsFfmpegCapture(input: {
   rect: WindowsFfmpegCaptureRect;
   outputPath: string;
   captureCursor?: boolean | undefined;
+  cameraSync?: boolean;
 }): WindowsFfmpegCapturePlan {
   const effectiveCaptureCursor =
     input.captureCursor ?? WINDOWS_FFMPEG_CAPTURE_CURSOR_DEFAULT;
@@ -29,7 +30,8 @@ export function planWindowsFfmpegCapture(input: {
     args: [
       "-hide_banner",
       "-loglevel",
-      "warning",
+      input.cameraSync ? "info" : "warning",
+      ...(input.cameraSync ? ["-nostats"] : []),
       "-y",
       "-f",
       "gdigrab",
@@ -58,4 +60,11 @@ export function planWindowsFfmpegCapture(input: {
       input.outputPath
     ]
   };
+}
+
+/** gdigrab's input banner reports the UTC timestamp of its first packet. */
+export function windowsCaptureStartUtcMs(stderr: string): number | null {
+  const match = /Input #0, gdigrab,[\s\S]*?Duration: N\/A, start: (\d+\.\d+)/.exec(stderr);
+  const seconds = match ? Number(match[1]) : NaN;
+  return Number.isFinite(seconds) && seconds > 1_000_000_000 ? seconds * 1000 : null;
 }

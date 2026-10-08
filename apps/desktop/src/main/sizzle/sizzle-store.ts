@@ -1,3 +1,4 @@
+import { AvatarStyleSchema } from "@pwrsnap/shared";
 import { copyFile, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
@@ -372,7 +373,9 @@ function sanitizeScene(s: SizzleScene): SizzleScene {
   const captureId =
     kind === "sequence" ? beats[0]?.captureId ?? s.captureId : s.captureId;
   const narration = s.narration ?? s.scriptLine ?? "";
+  const presenter = AvatarStyleSchema.safeParse(s.avatar);
   const base: SizzleScene = {
+    ...(presenter.success ? { avatar: presenter.data } : {}),
     id: s.id || `sc_${randomUUID().slice(0, 10)}`,
     captureId,
     scriptLine: kind === "sequence" ? narration : s.scriptLine ?? "",

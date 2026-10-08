@@ -74,7 +74,8 @@ declare global {
         /** Recording-only: the audio sources armed on the selector's
          *  source chips. Omitted for image captures and for shows that
          *  never offered the chips. */
-        sources?: { microphone: boolean; systemAudio: boolean };
+        sources?: import("@pwrsnap/shared").RecordingCapabilities;
+  cameraOffered?: boolean;
         /** Multi-window pick — one entry per picked window extent, in
          *  the same global logical-px space as `rect`. `rect` is always
          *  their union bounding box. */
@@ -142,7 +143,8 @@ declare global {
            *  `settings.recording.includeMicrophone` /
            *  `.includeSystemAudio`. Absent on a show that offers no
            *  recording, which is also what leaves the chips hidden. */
-          sources?: { microphone: boolean; systemAudio: boolean };
+          sources?: import("@pwrsnap/shared").RecordingCapabilities;
+  cameraOffered?: boolean;
           invocationId?: string;
           generation?: number;
           /** Snap-vs-Record policy for this show, from

@@ -1,3 +1,5 @@
+import { beginCameraRecording, markCameraScreenStart, markCameraScreenStartUtc, prepareCameraPreview, confirmCameraPreviewExclusion, finishCameraRecording, cancelCameraRecording } from "./camera-recording";
+import { setVideoCamera } from "../persistence/video-repo";
 // Main-process recording service. Wraps the `PwrSnapRecorder` Swift
 // binary (apps/desktop/native/recorder/main.swift) over stdin/stdout
 // JSON-RPC and exposes a typed start/stop/cancel API to the rest of
@@ -47,7 +49,7 @@ import {
   setRecordingState
 } from "./recording-state";
 import { resolveFfmpegPath } from "./ffmpeg-resolver";
-import { planWindowsFfmpegCapture } from "./windows-ffmpeg-capture";
+import { planWindowsFfmpegCapture, windowsCaptureStartUtcMs } from "./windows-ffmpeg-capture";
 
 const log = getMainLogger("pwrsnap:recording-service");
 
@@ -63,7 +65,7 @@ function snapshotStartOptions(opts: StartOptions): StartOptions {
       opts.subject.kind === "display"
         ? { ...opts.subject }
         : { ...opts.subject, rect: { ...opts.subject.rect } },
-    capabilities: { ...opts.capabilities },
+    capabilities: { ...opts.capabilities, ...(opts.capabilities.camera ? { camera: { ...opts.capabilities.camera } } : {}) },
     countdownSeconds: opts.countdownSeconds,
     captureCursor: opts.captureCursor
   };
@@ -196,7 +198,7 @@ type RecorderStoppedEvent = {
   outputPath: string;
 };
 type RecorderErrorEvent = { event: "error"; code: string; message: string };
-type RecorderEvent = RecorderStartedEvent | RecorderStoppedEvent | RecorderErrorEvent;
+type RecorderEvent = RecorderStartedEvent | RecorderStoppedEvent | RecorderErrorEvent | { event: "timeline"; utcTimeMs?: number } | { event: "cameraPreview"; excluded: boolean };
 
 /**
  * Real recorder backed by the Swift binary. Single session lifetime
@@ -334,6 +336,15 @@ class NativeRecorderService implements RecordingService {
 
     setRecordingState({ phase: "preflight", sessionId, rect: physicalRect, displayId });
 
+    try { if (options.capabilities.camera) await beginCameraRecording(options.capabilities.camera); }
+    catch (cause) {
+      if (this.sessionId !== sessionId) throw new Error("cancelled");
+      await this.cleanup();
+      publishRecordingFailure({ sessionId, code: "recorder_start_failed", displayId, cause });
+      throw cause;
+    }
+    if (this.sessionId !== sessionId) throw new Error("cancelled");
+
     // Spawn the recorder IMMEDIATELY (parallel with the countdown).
     // The Swift recorder's first call to SCShareableContent can take
     // 3–5s on a cold launch (the OS enumerates all on-screen windows
@@ -439,6 +450,14 @@ class NativeRecorderService implements RecordingService {
     // narrowed this to JUST the HUD instead of every PwrSnap PID.
     const captureAtMs = Date.now() + options.countdownSeconds * 1000;
     const excludePids = collectOurPids();
+    let cameraPreview: ReturnType<typeof prepareCameraPreview>;
+    try { cameraPreview = prepareCameraPreview(displayId, physicalRect); }
+    catch (cause) {
+      confirmCameraPreviewExclusion(false);
+      log.warn("camera preview unavailable; recording remains hidden", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
     try {
       child.stdin.write(
         JSON.stringify({
@@ -452,7 +471,8 @@ class NativeRecorderService implements RecordingService {
           // recorder falls back to its `showsCursor ?? true` default.
           showsCursor: options.captureCursor,
           captureAtMs,
-          excludePids
+          excludePids,
+          cameraPreview
         }) + "\n"
       );
     } catch (cause) {
@@ -750,7 +770,16 @@ class NativeRecorderService implements RecordingService {
         continue;
       }
       switch (parsed.event) {
+        case "timeline":
+          // Older helper binaries do not emit UTC. Their generic `started`
+          // receipt is a usable fallback; never use an incompatible uptime.
+          if (parsed.utcTimeMs !== undefined) markCameraScreenStartUtc(parsed.utcTimeMs);
+          break;
+        case "cameraPreview":
+          confirmCameraPreviewExclusion(parsed.excluded === true);
+          break;
         case "started":
+          markCameraScreenStart();
           this.startResolve?.();
           this.startResolve = null;
           this.startReject = null;
@@ -796,6 +825,7 @@ class NativeRecorderService implements RecordingService {
   }
 
   private async cleanup(options: { preserveTempDir?: boolean } = {}): Promise<void> {
+    const cameraCleanup = cancelCameraRecording();
     // Defense in depth: the Swift recorder is supposed to exit on
     // its own after `stop` (or after we kill it on cancel/timeout),
     // but bugs in the Swift side could leave the process alive with
@@ -836,6 +866,7 @@ class NativeRecorderService implements RecordingService {
     } else {
       await this.cleanupTempDir();
     }
+    await cameraCleanup;
   }
 }
 
@@ -855,9 +886,11 @@ type PersistStoppedRecordingInput = {
 };
 
 async function persistStoppedRecording(stopped: PersistStoppedRecordingInput): Promise<{ captureId: string }> {
+  const camera = await finishCameraRecording();
   const stored = await runWithCapturesDirFallback((outputDir) =>
     adoptExistingFileAsSource(stopped.outputPath, outputDir)
   );
+  const cameraMetadata = camera ? await camera.adopt(stored.srcPath, stored.id) : null;
   await stopped.onSourceAdopted?.();
   const sizeInfo = await statSource(stored.srcPath);
   const subject = stopped.subject;
@@ -891,6 +924,7 @@ async function persistStoppedRecording(stopped: PersistStoppedRecordingInput): P
     requestedMicrophone: stopped.requestedMicrophone,
     subject
   });
+  if (cameraMetadata) setVideoCamera(record.id, cameraMetadata);
   try {
     await renameVideoSourceToEffectiveFilename(record.id);
   } catch (cause) {
@@ -923,6 +957,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
   private child: ChildProcessWithoutNullStreams | null = null;
   private sessionId: string | null = null;
   private subject: RecordingSubject | null = null;
+  private capabilities: RecordingCapabilities | null = null;
   /** Raw request snapshot. `undefined` intentionally preserves the documented
    *  default-on behavior when restart() plans the replacement FFmpeg process. */
   private captureCursor: boolean | undefined = undefined;
@@ -1028,11 +1063,13 @@ class WindowsFfmpegRecorderService implements RecordingService {
     const capturePlan = planWindowsFfmpegCapture({
       rect: captureRect,
       outputPath,
-      captureCursor: options.captureCursor
+      captureCursor: options.captureCursor,
+      cameraSync: options.capabilities.camera !== undefined
     });
 
     this.sessionId = sessionId;
     this.subject = options.subject;
+    this.capabilities = snapshotStartOptions(options).capabilities;
     this.captureCursor = options.captureCursor;
     this.tempDir = tmpDir;
     this.outputPath = outputPath;
@@ -1040,6 +1077,14 @@ class WindowsFfmpegRecorderService implements RecordingService {
     this.stopRequested = false;
 
     setRecordingState({ phase: "preflight", sessionId, rect: hudRect, displayId });
+    try { if (options.capabilities.camera) await beginCameraRecording(options.capabilities.camera); }
+    catch (cause) {
+      if (this.sessionId !== sessionId) throw new Error("cancelled");
+      await this.cleanup();
+      publishRecordingFailure({ sessionId, code: "recorder_start_failed", displayId, cause });
+      throw cause;
+    }
+    if (this.sessionId !== sessionId) throw new Error("cancelled");
 
     if (options.countdownSeconds > 0) {
       for (let n = options.countdownSeconds; n > 0; n--) {
@@ -1086,6 +1131,9 @@ class WindowsFfmpegRecorderService implements RecordingService {
     }
     this.child = child;
     this.startedAtMs = Date.now();
+    markCameraScreenStart();
+    const utcToHostMs = Number(process.hrtime.bigint()) / 1e6 - Date.now();
+    let cameraSyncBanner = options.capabilities.camera ? "" : null;
     this.exitPromise = new Promise((resolve) => {
       child.on("exit", (code, signal) => {
         log.info("Windows ffmpeg recorder exited", { code, signal });
@@ -1104,6 +1152,16 @@ class WindowsFfmpegRecorderService implements RecordingService {
     });
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
+      if (this.sessionId !== sessionId) return;
+      if (cameraSyncBanner !== null) {
+        cameraSyncBanner = (cameraSyncBanner + chunk).slice(-8192);
+        const utcMs = windowsCaptureStartUtcMs(cameraSyncBanner);
+        if (utcMs !== null) {
+          markCameraScreenStart(utcMs + utcToHostMs);
+          this.startedAtMs = utcMs;
+          cameraSyncBanner = null;
+        }
+      }
       this.rememberStderr(chunk);
       log.warn("Windows ffmpeg recorder stderr", { chunk: chunk.trim() });
     });
@@ -1126,7 +1184,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
       rect: hudRect,
       displayId,
       // gdigrab is video-only; an audio request is rejected upstream.
-      capabilities: { systemAudio: false, microphone: false }
+      capabilities: { ...options.capabilities, systemAudio: false, microphone: false }
     });
     return { sessionId };
   }
@@ -1234,16 +1292,17 @@ class WindowsFfmpegRecorderService implements RecordingService {
   }
 
   async restart(): Promise<{ sessionId: string }> {
-    if (this.subject === null) {
+    if (this.subject === null || this.capabilities === null) {
       throw new Error("not_recording");
     }
     const subject = this.subject;
+    const capabilities = this.capabilities;
     const captureCursor = this.captureCursor;
     const trustedWindowIdentity = this.trustedWindowIdentity;
     await this.cancel();
     const restarted = await this.start({
       subject,
-      capabilities: { systemAudio: false, microphone: false },
+      capabilities: { ...capabilities, systemAudio: false, microphone: false },
       captureCursor,
       countdownSeconds: 3
     });
@@ -1341,6 +1400,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
   }
 
   private async cleanup(options: { preserveTempDir?: boolean } = {}): Promise<void> {
+    const cameraCleanup = cancelCameraRecording();
     const child = this.child;
     if (child !== null && !child.killed) {
       try {
@@ -1352,6 +1412,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
     this.child = null;
     this.sessionId = null;
     this.subject = null;
+    this.capabilities = null;
     this.captureCursor = undefined;
     this.outputPath = null;
     this.startedAtMs = 0;
@@ -1365,6 +1426,7 @@ class WindowsFfmpegRecorderService implements RecordingService {
     } else {
       await this.cleanupTempDir();
     }
+    await cameraCleanup;
   }
 }
 

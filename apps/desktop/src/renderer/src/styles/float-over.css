@@ -739,6 +739,11 @@
   flex-wrap: nowrap;
   overflow: hidden;
 }
+/* One line here: the summary ellipsizes, the run clock keeps its digits. */
+.fo__ai-row .ps-codex-pill__headline {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
 .fo__ai-row .ps-codex-pill__summary {
   min-width: 0;
   overflow: hidden;

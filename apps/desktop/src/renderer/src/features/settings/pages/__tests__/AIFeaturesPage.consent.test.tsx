@@ -258,3 +258,54 @@ describe("AIFeaturesPage — enrichment consent", () => {
     });
   });
 });
+
+describe("AIFeaturesPage — enrichment rate limit", () => {
+  function field(label: string): HTMLInputElement {
+    const found = Array.from(container?.querySelectorAll("label") ?? []).find(
+      (candidate) => candidate.textContent?.trim().startsWith(label)
+    );
+    const input = found?.querySelector("input");
+    if (input === null || input === undefined) throw new Error(`field not found: ${label}`);
+    return input;
+  }
+
+  async function type(input: HTMLInputElement, value: string): Promise<void> {
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  test("shows the default and applies an override as a pair", async () => {
+    await renderPage("2026-10-01T00:00:00.000Z", { enrichmentRateLimit: null });
+    expect(field("At once").value).toBe("20");
+    expect(field("Per minute").value).toBe("10");
+    expect(button("Apply").disabled).toBe(true);
+
+    await type(field("At once"), "60");
+    await type(field("Per minute"), "120");
+    await act(async () => {
+      button("Apply").click();
+      await Promise.resolve();
+    });
+    expect(patchMock).toHaveBeenCalledWith({ ai: { enrichmentRateLimit: { burst: 60, perMinute: 120 } } });
+  });
+
+  test("an out-of-range value cannot be applied", async () => {
+    await renderPage("2026-10-01T00:00:00.000Z", { enrichmentRateLimit: null });
+    await type(field("Per minute"), "0");
+    expect(button("Apply").disabled).toBe(true);
+    expect(container?.textContent).toContain("Whole numbers");
+  });
+
+  test("Use default clears an override to null", async () => {
+    await renderPage("2026-10-01T00:00:00.000Z", { enrichmentRateLimit: { burst: 60, perMinute: 120 } });
+    expect(field("At once").value).toBe("60");
+    await act(async () => {
+      button("Use default").click();
+      await Promise.resolve();
+    });
+    expect(patchMock).toHaveBeenCalledWith({ ai: { enrichmentRateLimit: null } });
+  });
+});

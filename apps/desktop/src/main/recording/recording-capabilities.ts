@@ -23,7 +23,7 @@ export function recordingBackendCapabilities(
         screen: true,
         systemAudio: true,
         microphone: true,
-        webcam: false,
+        webcam: true,
         liveAudioLevels: false,
         liveDisconnectDetection: false,
         midRecordingToggles: false
@@ -40,7 +40,7 @@ export function recordingBackendCapabilities(
         screen: true,
         systemAudio: false,
         microphone: false,
-        webcam: false,
+        webcam: true,
         liveAudioLevels: false,
         liveDisconnectDetection: false,
         midRecordingToggles: false

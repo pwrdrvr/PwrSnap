@@ -1,3 +1,4 @@
+import { resolveCameraSource } from "./recording/camera-track-store";
 // Custom protocol handlers — the seam that lets renderers display
 // captured images without ever crossing the structured-clone boundary.
 //
@@ -228,6 +229,14 @@ function screenSnapshotFileObserver(
  */
 export function installProtocolHandlers(resolver: ProtocolResolver): void {
   protocol.handle(SCHEMES.capture, async (request) => {
+    const cameraMatch = /^pwrsnap-capture:\/\/c\/([a-zA-Z0-9_-]+)$/.exec(request.url);
+    if (cameraMatch) {
+      try {
+        const screenPath = await resolver.captureSourcePath(cameraMatch[1]!);
+        const source = screenPath ? await resolveCameraSource(screenPath, cameraMatch[1]!) : null;
+        return source ? await fileResponse(source, request, { cors: true, cacheControl: CAPTURE_SOURCE_CACHE_CONTROL }) : new Response("not found", { status: 404 });
+      } catch { return new Response("Camera track unavailable", { status: 404 }); }
+    }
     // Per-layer raster source: `pwrsnap-capture://s/<id>/<sha>`. Checked
     // before the base `r/<id>` shape since both share the scheme. The
     // editor's raster LayerView loads each layer's bytes through here.

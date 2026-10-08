@@ -60,6 +60,7 @@ import type {
   UpdateTrain
 } from "@pwrsnap/shared";
 import {
+  isAiEnrichmentRateLimit,
   isOverlayOutlineMode,
   isStrokePatternStyle,
   DEFAULT_AI_SURFACE_DEFAULTS,
@@ -177,6 +178,7 @@ export function defaultSettings(
       enabled: false,
       consentAcceptedAt: null,
       budgetSafetyDisabledAt: null,
+      enrichmentRateLimit: null,
       autoAcceptSuggestions: false,
       chat: { ...DEFAULT_CHAT_SETTINGS, sensitiveDataPatterns: [] },
       // Empty surface objects mean "follow the managed default". Runtime and
@@ -925,6 +927,11 @@ function parseV1(
         ai.budgetSafetyDisabledAt,
         defaults.ai.budgetSafetyDisabledAt
       ),
+      // An unreadable override falls back to the default rather than to
+      // some other limit the user never chose.
+      enrichmentRateLimit: isAiEnrichmentRateLimit(ai.enrichmentRateLimit)
+        ? { burst: ai.enrichmentRateLimit.burst, perMinute: ai.enrichmentRateLimit.perMinute }
+        : defaults.ai.enrichmentRateLimit,
       autoAcceptSuggestions: pickBoolean(
         ai.autoAcceptSuggestions,
         defaults.ai.autoAcceptSuggestions
@@ -2052,6 +2059,8 @@ function mergeAi(current: Settings["ai"], patch: SettingsPatch["ai"]): Settings[
       patch.budgetSafetyDisabledAt !== undefined
         ? patch.budgetSafetyDisabledAt
         : current.budgetSafetyDisabledAt,
+    enrichmentRateLimit:
+      patch.enrichmentRateLimit !== undefined ? patch.enrichmentRateLimit : current.enrichmentRateLimit,
     autoAcceptSuggestions:
       patch.autoAcceptSuggestions !== undefined
         ? patch.autoAcceptSuggestions

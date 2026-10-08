@@ -1,3 +1,4 @@
+import { ScenePresenterField } from "../camera/ScenePresenterField";
 // The scene inspector — the right-rail drawer for a selected SCENE (plan
 // PR 8), sharing the clip inspector's slot and styling. What a scene has
 // that a clip does not: the transition INTO the scene (type and
@@ -14,6 +15,8 @@ import {
   sizzleTransitionDurationSec,
   sizzleTransitionType,
   type SizzleScene,
+  type AvatarStyle,
+  type CaptureRecord,
   type SizzleTransitionType
 } from "@pwrsnap/shared";
 import { formatSpan, formatTimecode } from "../shared/video-range";
@@ -26,6 +29,12 @@ export type SceneInspectorProps = {
   scene: SizzleScene;
   region: TimelineSceneRegion;
   sceneCount: number;
+  /** The scene's recording with a camera track, if it has one. */
+  presenterCapture?: CaptureRecord | undefined;
+  /** Output canvas the presenter is placed on. */
+  presenterCanvas?: { width: number; height: number } | undefined;
+  /** Give the scene its own presenter, or `null` to inherit again. */
+  onScenePresenter?: ((avatar: AvatarStyle | null) => void) | undefined;
   /** The project playhead, as seconds into THIS scene — null when it sits
    *  in another scene. */
   playheadLocalSec: number | null;
@@ -185,6 +194,15 @@ export function SceneInspector(props: SceneInspectorProps): ReactElement {
               </p>
             ))}
           </div>
+        ) : null}
+
+        {props.presenterCapture !== undefined && props.onScenePresenter !== undefined ? (
+          <ScenePresenterField
+            capture={props.presenterCapture}
+            sceneAvatar={scene.avatar}
+            canvas={props.presenterCanvas ?? { width: 1920, height: 1080 }}
+            onChange={props.onScenePresenter}
+          />
         ) : null}
 
         {/* ── Transition into this scene ── */}

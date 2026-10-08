@@ -473,6 +473,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       keepPwrSnapChrome,
       protectWindowIds,
       latencyTrace: trace,
+      cameraOffered: recordingSources.webcam,
       quickCaptureAction,
       // Seed the selector's `C` toggle from the persisted default. Only
       // consumed if the user chooses Record, but it has to be in the

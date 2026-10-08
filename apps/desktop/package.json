@@ -6,7 +6,7 @@
   "description": "Screen capture with a local-first library",
   "author": "PwrDrvr LLC",
   "license": "MIT",
-  "copyright": "Copyright © 2026 PwrDrvr LLC",
+  "copyright": "Copyright \u00a9 2026 PwrDrvr LLC",
   "type": "module",
   "main": "out/main/index.js",
   "scripts": {
@@ -31,11 +31,13 @@
     "tray-icon": "node ./scripts/generate-tray-icon.mjs",
     "probe:linux-capture": "electron ./scripts/linux-capture-probe.mjs",
     "probe:quit-reentry": "electron ./scripts/electron-quit-reentry-probe.mjs",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test:camera": "pnpm build && node ./scripts/test-camera-pipeline.mjs"
   },
   "dependencies": {
     "@fontsource/geist-mono": "^5.3.0",
     "@fontsource/geist-sans": "^5.3.0",
+    "@mediapipe/tasks-vision": "1.0.1",
     "@modelcontextprotocol/sdk": "1.31.0",
     "@pwrdrvr/agent-acp": "^0.16.1",
     "@pwrdrvr/agent-chat-react": "^0.1.3",

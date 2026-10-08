@@ -592,6 +592,9 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             return false
         }
         session.addInput(micInputDevice)
+        // Which input the take records from, in the main log. The chip named
+        // one; this line is the only evidence of which one actually opened.
+        diag("microphone: \"\(device.localizedName)\" (requested \(requested.map { "\"\($0)\"" } ?? "system default"))")
         let micOutput = AVCaptureAudioDataOutput()
         guard session.canAddOutput(micOutput) else {
             emitError("microphone_unavailable", "The microphone capture session could not deliver audio samples.")

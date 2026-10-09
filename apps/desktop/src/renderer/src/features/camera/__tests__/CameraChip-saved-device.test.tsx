@@ -146,3 +146,66 @@ test("picking a camera reports it with its name, for the selector to save", asyn
   await act(async () => rows[1]!.click());
   expect(pick).toHaveBeenCalledTimes(1);
 });
+
+type Media = ReturnType<typeof media>;
+async function unplug(opened: Media): Promise<void> {
+  const track = opened.getVideoTracks()[0]! as { onended: (() => void) | null };
+  await act(async () => track.onended?.());
+  for (let i = 0; i < 4; i += 1) await act(async () => Promise.resolve());
+}
+
+test("an unplugged camera is reopened: the first camera opens and the popover names the unplugged one", async () => {
+  const porridge = media(PORRIDGE.deviceId, PORRIDGE.label);
+  getUserMedia.mockResolvedValueOnce(porridge);
+  await mountAndArm({ deviceId: PORRIDGE.deviceId, label: PORRIDGE.label });
+  expect(device()).toBe("Porridge Cam");
+
+  enumerateDevices.mockResolvedValue([CORNFLAKE]);
+  getUserMedia
+    .mockRejectedValueOnce(overconstrained())
+    .mockResolvedValueOnce(media(CORNFLAKE.deviceId, CORNFLAKE.label));
+  await unplug(porridge);
+  // Looked for by its id first, then any camera.
+  expect(getUserMedia).toHaveBeenNthCalledWith(2, {
+    video: { deviceId: { exact: PORRIDGE.deviceId } },
+    audio: false
+  });
+  expect(getUserMedia).toHaveBeenNthCalledWith(3, { video: true, audio: false });
+  expect(device()).toBe(CORNFLAKE.label);
+  expect(change).toHaveBeenLastCalledWith({ deviceId: CORNFLAKE.deviceId });
+  expect(host.querySelector(".camera-chip__err")).toBeNull();
+  await act(async () => host.querySelector<HTMLButtonElement>(".ps-chip__devices")!.click());
+  expect(host.querySelector(".camera-pop__note--warn")?.textContent).toContain(
+    `“${PORRIDGE.label}” is not connected`
+  );
+});
+
+test("with no camera chosen, an unplug reopens the first camera without a note", async () => {
+  const first = media(CORNFLAKE.deviceId, CORNFLAKE.label);
+  getUserMedia.mockResolvedValueOnce(first);
+  await mountAndArm(null);
+
+  getUserMedia.mockResolvedValueOnce(media(PORRIDGE.deviceId, PORRIDGE.label));
+  await unplug(first);
+  expect(getUserMedia).toHaveBeenCalledTimes(2);
+  expect(getUserMedia).toHaveBeenLastCalledWith({ video: true, audio: false });
+  expect(device()).toBe("Porridge Cam");
+  expect(change).toHaveBeenLastCalledWith({ deviceId: PORRIDGE.deviceId });
+  await act(async () => host.querySelector<HTMLButtonElement>(".ps-chip__devices")!.click());
+  expect(host.querySelector(".camera-pop__note--warn")).toBeNull();
+});
+
+test("unplugging the only camera says it disconnected and drops it from the take", async () => {
+  const porridge = media(PORRIDGE.deviceId, PORRIDGE.label);
+  getUserMedia.mockResolvedValueOnce(porridge);
+  await mountAndArm({ deviceId: PORRIDGE.deviceId, label: PORRIDGE.label });
+
+  const gone = (): Error => Object.assign(new Error("Requested device not found"), { name: "NotFoundError" });
+  getUserMedia.mockRejectedValueOnce(overconstrained()).mockRejectedValueOnce(gone());
+  await unplug(porridge);
+  expect(getUserMedia).toHaveBeenCalledTimes(3);
+  expect(host.querySelector(".camera-chip__err")?.textContent).toBe(
+    "Camera disconnected. Connect a camera or turn it off to continue."
+  );
+  expect(change).toHaveBeenLastCalledWith(undefined);
+});

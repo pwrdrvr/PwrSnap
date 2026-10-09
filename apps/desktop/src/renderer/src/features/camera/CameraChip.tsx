@@ -8,8 +8,13 @@
 //
 // While armed, the take may not start until the stream is open
 // (`onReady(false)`): a recording the user asked to include the camera in
-// must not silently start without it. A stream that fails or disconnects
-// keeps blocking until the user picks another camera or turns it off.
+// must not silently start without it. A stream that fails keeps blocking
+// until the user picks another camera or turns it off.
+//
+// A camera unplugged while open is reopened, the way the microphone is: the
+// unplugged camera is looked for again by id and by name, and when neither
+// answers the first camera opens and the popover says the unplugged one is
+// not connected. Only when no camera opens does the take stay blocked.
 //
 // The saved camera (`settings.recording.cameraDevice`) is opened by id, and
 // by name when the id is gone (Chromium's ids are salted per profile). If
@@ -59,6 +64,11 @@ export function CameraChip({
   pick.current = onPick;
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [error, setError] = useState("");
+  // Bumped by an unplug, to open a camera again with nothing else changed.
+  const [attempt, setAttempt] = useState(0);
+  // The last open ended by an unplug, so a reopen that finds no camera says
+  // the camera went away rather than echoing Chromium's NotFoundError.
+  const disconnected = useRef(false);
   const [open, setOpen] = useState(false);
   const change = useRef(onChange);
   change.current = onChange;
@@ -90,6 +100,7 @@ export function CameraChip({
       setOpenLabel("");
       setError("");
       setOpen(false);
+      disconnected.current = false;
       ready.current(true);
       // Disarming drops the camera from the take. Only on the way down:
       // a chip that mounts disarmed has nothing to drop.
@@ -157,13 +168,26 @@ export function CameraChip({
         // chip re-armed) must not keep the "not connected" note.
         if (saved !== null) setMissing(lost);
         setOpenLabel(displayDeviceLabel(track.label ?? ""));
+        disconnected.current = false;
+        // The open camera is a choice (saved or picked) unless it is the
+        // first camera, opened because nothing was chosen or the choice is
+        // not attached.
+        const chosen = lost === null && (deviceId !== "" || saved !== null);
+        // Unplugged. Look for it again as a saved camera is looked for. A
+        // fallback camera unplugged leaves the choice it stood in for to be
+        // looked for. A `stop()` of our own does not fire `ended`.
         track.onended = () => {
           if (retired) return;
+          if (chosen) {
+            pendingPreference.current = { deviceId: selected, label: displayDeviceLabel(track.label ?? "") };
+          }
+          disconnected.current = true;
           ready.current(false);
           setStream(null);
           setOpenLabel("");
-          setError("Camera disconnected. Choose a camera or turn it off to continue.");
           change.current(undefined);
+          setDeviceId("");
+          setAttempt((n) => n + 1);
         };
         setStream(media);
         change.current({ deviceId: selected });
@@ -176,7 +200,13 @@ export function CameraChip({
         ready.current(false);
         setStream(null);
         setOpenLabel("");
-        setError(cause instanceof Error ? cause.message : "Camera unavailable");
+        setError(
+          disconnected.current && isMissingDeviceError(cause)
+            ? "Camera disconnected. Connect a camera or turn it off to continue."
+            : cause instanceof Error
+              ? cause.message
+              : "Camera unavailable"
+        );
         change.current(undefined);
       });
     navigator.mediaDevices.addEventListener("devicechange", enumerate);
@@ -186,7 +216,7 @@ export function CameraChip({
       navigator.mediaDevices.removeEventListener("devicechange", enumerate);
       ready.current(true);
     };
-  }, [enabled, deviceId]);
+  }, [enabled, deviceId, attempt]);
 
   useDismissable({
     open,

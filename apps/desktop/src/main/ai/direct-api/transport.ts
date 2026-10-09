@@ -183,6 +183,7 @@ export async function discoverApi(endpoint: Pick<CustomConnection, "baseUrl" | "
   const models: CustomModelDiscovery["models"] = [];
   for (const row of array(body.data).map(record)) {
     const id = string(row.id);
+    // oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
     if (id.length === 0 || id.length > 200 || /[\x00-\x1f\x7f]/.test(id) || seen.has(id)) continue;
     seen.add(id);
     // Only a row that SAYS so. Never from the model's name.
@@ -190,6 +191,7 @@ export async function discoverApi(endpoint: Pick<CustomConnection, "baseUrl" | "
     // Only explicit display metadata. IDs/aliases may be server-side paths;
     // never turn those into invented names or assume a path is locally readable.
     const displayName = string(row.display_name).trim();
+    // oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
     const hasName = displayName.length > 0 && displayName.length <= 120 && !/[\x00-\x1f\x7f]/.test(displayName);
     models.push({ id, ...(hasName ? { displayName } : {}), vision: typeof vision === "boolean" ? vision : null });
     if (models.length >= 1000) break;

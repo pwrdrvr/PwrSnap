@@ -392,7 +392,7 @@ describe("Codex handlers", () => {
     });
     expect(completedEvent).toBeDefined();
     expect(
-      (completedEvent?.payload as { enrichment?: { status?: string } | null }).enrichment?.status
+      (completedEvent!.payload as { enrichment?: { status?: string } | null }).enrichment?.status
     ).toBe("completed");
   });
 
@@ -1233,7 +1233,7 @@ describe("Codex handlers", () => {
     );
     expect(broadcast).toBeDefined();
     expect(
-      (broadcast?.payload as { enrichment?: { acceptedTitle?: string | null } | null })
+      (broadcast!.payload as { enrichment?: { acceptedTitle?: string | null } | null })
         .enrichment?.acceptedTitle
     ).toBe("User-edited title");
   });

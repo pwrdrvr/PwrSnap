@@ -487,7 +487,7 @@ describe("EditorChrome", () => {
     });
     expect(sidebarWrites.length).toBeGreaterThan(0);
     expect(
-      (sidebarWrites[sidebarWrites.length - 1]?.req as {
+      (sidebarWrites[sidebarWrites.length - 1]!.req as {
         editor: { sidebar: { pinned: boolean } };
       }).editor.sidebar.pinned
     ).toBe(true);

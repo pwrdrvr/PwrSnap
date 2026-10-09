@@ -820,7 +820,7 @@ function AuthStep({ connection, secret, initialKind, rejected, onCheck, onDone }
       if (!(d?.kind === "error" && d.rejected)) onDone();
     } finally { setBusy(null); }
   };
-  const useNoAuth = async (): Promise<void> => {
+  const applyNoAuth = async (): Promise<void> => {
     setBusy("save"); setNote(null);
     try {
       if (!(await saveAuth({ type: "none" }))) return;
@@ -916,7 +916,7 @@ function AuthStep({ connection, secret, initialKind, rejected, onCheck, onDone }
           </p>
           <div className="pss__dapi-actions">
             {saved.type !== "none" ? (
-              <button className="pss__key-btn is-primary" type="button" disabled={busy !== null} onClick={() => { void useNoAuth(); }}>
+              <button className="pss__key-btn is-primary" type="button" disabled={busy !== null} onClick={() => { void applyNoAuth(); }}>
                 {busy === "save" ? "Saving…" : "Use no auth"}
               </button>
             ) : (
@@ -1031,6 +1031,7 @@ function ModelsStep({ connection, models, discovery, onDiscover, onSaved }: {
   };
   const addManual = (): void => {
     const id = adding?.trim() ?? "";
+    // oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
     if (id === "" || id.length > 200 || /[\x00-\x1f\x7f]/.test(id)) return;
     if (rows.some((r) => r.modelId === id)) edit(id, { checked: true });
     else setManual((prev) => [...prev, id]);

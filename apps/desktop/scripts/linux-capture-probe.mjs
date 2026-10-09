@@ -577,7 +577,7 @@ Doubled edges = misaligned. Read the shift off the 100px ruler.</div>
         t.textContent = "y" + y; g.appendChild(t);
       }
     }
-  <\/script>`;
+  </script>`;
 
   await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
   // The grab rides in through executeJavaScript rather than the page URL: a
@@ -1015,11 +1015,10 @@ app.whenReady().then(async () => {
   say(`build   ${describeCheckout()}`);
 
   const { waylandSession } = await reportEnvironment();
-  const { displays, primary, cursor } = reportDisplays();
+  const { primary, cursor } = reportDisplays();
   const target =
     cursor === null ? primary : screen.getDisplayNearestPoint(cursor);
 
-  let overlay = null;
   if (DO_OVERLAY) {
     head("3. Selector-shaped overlay geometry");
     say(`  Two windows, both constructed exactly like createSelectorWindow() at`);
@@ -1040,7 +1039,6 @@ app.whenReady().then(async () => {
     const bare = await reportOverlayGeometry(target, "bare");
     const full = await reportOverlayGeometry(target, "fullscreen");
     const anchored = await reportOverlayGeometry(target, "reanchor");
-    overlay = { bare, full, anchored };
     const offsets = (r) =>
       r.positioned === null ? "unknown (echo)" : `${num(r.offsetX)},${num(r.offsetY)}`;
     say("");

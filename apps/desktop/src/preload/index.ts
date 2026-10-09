@@ -261,7 +261,7 @@ const pwrsnapApi = {
    * Expose this one operation, never the Electron or webUtils objects.
    */
   getPathForFile(file: File): string {
-    return resolveDroppedFilePath(file, webUtils.getPathForFile);
+    return resolveDroppedFilePath(file, (droppedFile) => webUtils.getPathForFile(droppedFile));
   },
   /**
    * Dispatch a command-bus command. Returns the typed Result envelope

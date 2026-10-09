@@ -7,6 +7,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { availableParallelism, cpus, freemem, loadavg, platform, totalmem } from "node:os";
 import { relative, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
+import { pnpmCommand } from "./lib/pnpm-command.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const iterations = Number(process.env.CHECK_BENCH_ITERATIONS ?? "3");
@@ -92,8 +93,8 @@ for (let iteration = 0; iteration < iterations; iteration++) {
   for (const compiler of iteration % 2 ? ["native", "legacy"] : ["legacy", "native"]) {
     const start = performance.now();
     const before = { load: loadavg(), freeBytes: freemem() };
-    assertSuccess(run(platform() === "win32" ? "pnpm.cmd" : "pnpm",
-      [compiler === "legacy" ? "typecheck:legacy" : "typecheck"], { shell: platform() === "win32" }));
+    const invocation = pnpmCommand([compiler === "legacy" ? "typecheck:legacy" : "typecheck"]);
+    assertSuccess(run(invocation.command, invocation.args));
     const sample = { iteration, compiler, seconds: (performance.now() - start) / 1000, before, after: { load: loadavg(), freeBytes: freemem() } };
     report.samples.push(sample);
     console.log(JSON.stringify(sample));

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { testArguments } from "../check-changed.mjs";
+import { pnpmCommand } from "../lib/pnpm-command.mjs";
 
 describe("changed-work test selection", () => {
   it("selects import-related tests for ordinary source and preserves exact paths", () => {
@@ -17,5 +18,17 @@ describe("changed-work test selection", () => {
   });
   it("does not invent related tests for an empty change set", () => {
     expect(testArguments([])).toEqual([]);
+  });
+});
+
+describe("package-manager invocation", () => {
+  it("keeps native Windows paths and test filenames as separate argv entries", () => {
+    const args = ["exec", "vitest", "related", "path with spaces & symbols.ts"];
+    expect(pnpmCommand(args, "C:\\Program Files\\pnpm-native.exe"))
+      .toEqual({ command: "C:\\Program Files\\pnpm-native.exe", args });
+  });
+  it("runs a JS package-manager launcher with Node", () => {
+    expect(pnpmCommand(["lint"], "/tools/pnpm.cjs"))
+      .toEqual({ command: process.execPath, args: ["/tools/pnpm.cjs", "lint"] });
   });
 });

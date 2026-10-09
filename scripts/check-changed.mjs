@@ -5,6 +5,7 @@ import { closeSync, openSync, readFileSync, unlinkSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { isCliEntrypoint } from "./lib/cli-entrypoint.mjs";
+import { pnpmCommand } from "./lib/pnpm-command.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 function git(...args) {
@@ -58,9 +59,9 @@ async function main() {
     for (const args of [["lint"], deleted ? ["test"] : tests].filter((args) => args.length)) {
       if (interrupted) break;
       console.log(`Checking ${files.length} changed paths: pnpm ${args.join(" ")}`);
+      const invocation = pnpmCommand(args);
       const status = await new Promise((accept, reject) => {
-        child = spawn(process.platform === "win32" ? "pnpm.cmd" : "pnpm", args,
-          { cwd: root, stdio: "inherit", shell: process.platform === "win32" });
+        child = spawn(invocation.command, invocation.args, { cwd: root, stdio: "inherit" });
         child.once("error", reject);
         child.once("exit", (code) => accept(code ?? 1));
       });

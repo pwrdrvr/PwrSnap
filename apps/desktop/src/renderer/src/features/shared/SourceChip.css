@@ -117,9 +117,14 @@
 
 /* The device name. Truncated, not wrapped: the selector HUD is one row,
    and a USB interface's full name would otherwise push the Record button
-   off it. The picker shows the whole name. */
+   off it. The picker shows the whole name.
+
+   A fixed width, not a max-width: the HUD is centred, so a chip that
+   resized with the name moved every control on the bar each time a
+   different device was picked. */
 .ps-chip__dev {
-  max-width: 148px;
+  flex: none;
+  width: 148px;
   overflow: hidden;
   color: var(--text-muted);
   font: 500 11px/1.2 var(--font-sans);

@@ -276,7 +276,7 @@ export function CameraChip({
                   }}
                 >
                   <span className="camera-pop__dot" aria-hidden="true" />
-                  {device.label || `Camera ${index + 1}`}
+                  <span className="camera-pop__name">{device.label || `Camera ${index + 1}`}</span>
                 </button>
               ))
             )}

@@ -211,14 +211,15 @@ export function CameraChip({
   const current = deviceId || value?.deviceId || "";
   const label = devices.find((d) => d.deviceId === current)?.label;
   // The camera that is open is the camera the take records. Before it has
-  // opened, the saved choice is what the chip is about to open.
-  const deviceName = !enabled
-    ? undefined
-    : openLabel !== ""
+  // opened, and while the chip is off, the saved choice is what K would
+  // open. With no choice and no list yet there is no name to give: the
+  // camera Chromium opens first is unknown until it opens.
+  const deviceName =
+    enabled && openLabel !== ""
       ? openLabel
       : label
         ? displayDeviceLabel(label)
-        : (pendingPreference.current?.label ?? undefined);
+        : (pendingPreference.current?.label || undefined);
 
   return (
     <span

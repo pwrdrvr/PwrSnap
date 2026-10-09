@@ -19,21 +19,28 @@ import type { MicrophoneMonitor } from "../shared/useMicrophoneMonitor";
 import { MIC_TEST_SECONDS, useMicrophoneTest } from "../shared/useMicrophoneTest";
 import "./microphone-chip.css";
 
-/** The label the chip and the picker show for the device the take will use. */
+/**
+ * The label the chip and the picker show for the device the take will use,
+ * or would use if the microphone were turned on: an off chip still names
+ * the saved pick, so the tile says which microphone M would arm.
+ */
 export function microphoneDeviceName({
-  on,
+  state,
   monitor,
   preference
 }: {
-  readonly on: boolean;
+  readonly state: SourceChipState;
   readonly monitor: Pick<MicrophoneMonitor, "activeLabel" | "followsDefault">;
   readonly preference: RecordingDevicePreference | null;
 }): string | undefined {
-  if (!on) return undefined;
-  // The device that is actually open is the only name we KNOW.
-  if (monitor.activeLabel !== null) return monitor.activeLabel;
-  // Unopened (a Quick Capture that only offers Record): the saved pick is
-  // what the recorder will be asked for.
+  // No microphone subsystem: there is nothing to name.
+  if (state === "unsupported") return undefined;
+  // The device that is actually open is the only name we KNOW. Gated on
+  // the state, because the monitor closes one render after the chip turns
+  // off and its last label would otherwise linger.
+  if (state !== "off" && monitor.activeLabel !== null) return monitor.activeLabel;
+  // Unopened (off, or a Quick Capture that only offers Record): the saved
+  // pick is what the recorder will be asked for.
   if (preference !== null && preference.label !== "") return preference.label;
   return "System default";
 }
@@ -139,7 +146,7 @@ export function MicrophoneChip({
     if (!open) cancelTest();
   }, [open, cancelTest]);
 
-  const device = microphoneDeviceName({ on, monitor, preference });
+  const device = microphoneDeviceName({ state, monitor, preference });
   const followDefault = preference === null || monitor.missing !== null;
   const resolved = followDefault ? null : resolveDevicePreference(monitor.devices, preference);
   const pickedId = resolved?.kind === "found" ? resolved.device.deviceId : null;

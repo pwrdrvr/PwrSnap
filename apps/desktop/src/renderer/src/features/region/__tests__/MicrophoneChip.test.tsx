@@ -89,11 +89,18 @@ describe("microphoneDeviceName", () => {
   test("names the open device, else the saved pick, else the default", () => {
     const open = { activeLabel: "Granola Interface", followsDefault: false };
     const closed = { activeLabel: null, followsDefault: true };
-    expect(microphoneDeviceName({ on: true, monitor: open, preference: null })).toBe("Granola Interface");
-    expect(microphoneDeviceName({ on: true, monitor: closed, preference: OATMEAL })).toBe(OATMEAL.label);
-    expect(microphoneDeviceName({ on: true, monitor: closed, preference: null })).toBe("System default");
-    // A chip that is off records nothing, so it names nothing.
-    expect(microphoneDeviceName({ on: false, monitor: open, preference: null })).toBeUndefined();
+    expect(microphoneDeviceName({ state: "live", monitor: open, preference: null })).toBe("Granola Interface");
+    expect(microphoneDeviceName({ state: "live", monitor: closed, preference: OATMEAL })).toBe(OATMEAL.label);
+    expect(microphoneDeviceName({ state: "live", monitor: closed, preference: null })).toBe("System default");
+  });
+
+  // An off tile names what M would arm. Not the monitor's last label: it
+  // closes a render after the chip turns off.
+  test("an off chip names the saved pick, or the default", () => {
+    const stale = { activeLabel: "Granola Interface", followsDefault: false };
+    expect(microphoneDeviceName({ state: "off", monitor: stale, preference: OATMEAL })).toBe(OATMEAL.label);
+    expect(microphoneDeviceName({ state: "off", monitor: stale, preference: null })).toBe("System default");
+    expect(microphoneDeviceName({ state: "unsupported", monitor: stale, preference: OATMEAL })).toBeUndefined();
   });
 });
 

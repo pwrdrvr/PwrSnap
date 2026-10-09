@@ -3,7 +3,7 @@
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { RecordingCamera, RecordingDevicePreference } from "@pwrsnap/shared";
+import { shortDeviceLabel, type RecordingCamera, type RecordingDevicePreference } from "@pwrsnap/shared";
 import { CameraChip } from "../CameraChip";
 
 const CORNFLAKE = { kind: "videoinput", deviceId: "cam-cornflake", label: "Cornflake Cam" };
@@ -50,9 +50,10 @@ const device = () => host.querySelector(".ps-chip__dev")?.textContent;
 
 async function mountAndArm(preferred: RecordingDevicePreference | null): Promise<void> {
   await act(async () => root.render(<Harness preferred={preferred} />));
-  // Off: the saved camera is not opened, and not named.
+  // Off: the saved camera is not opened, but it is named, so the tile says
+  // which camera K would turn on.
   expect(getUserMedia).not.toHaveBeenCalled();
-  expect(device()).toBeUndefined();
+  expect(device()).toBe(preferred !== null ? shortDeviceLabel(preferred.label) : undefined);
   await act(async () => chip().click());
   for (let i = 0; i < 4; i += 1) await act(async () => Promise.resolve());
 }

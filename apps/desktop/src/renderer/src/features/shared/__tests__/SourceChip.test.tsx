@@ -324,22 +324,23 @@ describe("SourceChip", () => {
 
   // The hotkey rode in as a trailing "M" on the button's accessible name,
   // which said nothing about what it was. `aria-keyshortcuts` is the
-  // attribute for exactly this, so the visible badge is decorative.
-  test("the hotkey is announced as a shortcut, not as part of the name", () => {
+  // attribute for exactly this. Nothing draws it on the chip: the
+  // selector's shortcut legend lists it.
+  test("the hotkey is announced as a shortcut, not drawn and not part of the name", () => {
     const el = mount(<SourceChip source="microphone" state="off" kbd="M" testId="chip" />);
     expect(toggle(el).getAttribute("aria-keyshortcuts")).toBe("M");
-    expect(el.querySelector(".ps-chip__kbd")!.getAttribute("aria-hidden")).toBe("true");
+    expect(el.querySelector("kbd")).toBeNull();
+    expect(toggle(el).textContent).toBe("Microphone");
   });
 
-  // One predicate for the badge and the announcement. Only the control
-  // density draws the badge AND has a key handler behind it — announcing
-  // a shortcut the surface neither draws nor binds is the same
+  // Only the control density has a key handler behind it — announcing a
+  // shortcut the surface does not bind is the same
   // two-predicates-that-must-agree bug as the hint legend's.
   test("a density that draws no badge announces no shortcut", () => {
     const el = mount(
       <SourceChip source="microphone" state="live" density="dense" kbd="M" testId="chip" />
     );
-    expect(el.querySelector(".ps-chip__kbd")).toBeNull();
+    expect(el.querySelector("kbd")).toBeNull();
     expect(toggle(el).getAttribute("aria-keyshortcuts")).toBeNull();
   });
 

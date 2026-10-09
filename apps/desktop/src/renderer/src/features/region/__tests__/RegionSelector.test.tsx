@@ -532,6 +532,41 @@ async function pickWindowSnap(): Promise<void> {
   await mouseUp(cx, cy);
 }
 
+// The keyboard legend was a full-width line above the HUD on every show.
+// It is folded behind a "?" now, and stays in the DOM so its copy is still
+// one source of truth.
+describe("the keyboard legend is behind a ?", () => {
+  const toggle = (): HTMLButtonElement =>
+    container!.querySelector<HTMLButtonElement>('[data-testid="region-hint-toggle"]')!;
+  const legend = (): HTMLElement => container!.querySelector<HTMLElement>(".region-hint")!;
+
+  test("folded by default, opened and closed by the button", async () => {
+    await mount();
+    expect(legend().hidden).toBe(true);
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    // A press on the "?" is the row's, not a canvas gesture.
+    expect(toggle().closest("[data-region-hud]")).not.toBeNull();
+    await act(async () => toggle().click());
+    expect(legend().hidden).toBe(false);
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+    // The button gives focus back, so the next ↵ still captures.
+    expect(document.activeElement).not.toBe(toggle());
+    await act(async () => toggle().click());
+    expect(legend().hidden).toBe(true);
+  });
+
+  test("the ? key does the same", async () => {
+    await mount();
+    await keyDown("?", { shiftKey: true });
+    expect(legend().hidden).toBe(false);
+    await keyDown("?", { shiftKey: true });
+    expect(legend().hidden).toBe(true);
+    // ⌘? is not ours.
+    await keyDown("?", { shiftKey: true, metaKey: true });
+    expect(legend().hidden).toBe(true);
+  });
+});
+
 describe("U1 — crosshair guide-lines", () => {
   test("mounts in snap mode and seeds the crosshair to viewport center", async () => {
     await mount();

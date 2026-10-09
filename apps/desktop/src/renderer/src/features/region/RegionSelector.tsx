@@ -390,6 +390,12 @@ export function RegionSelector() {
   //   'rectangle' — the whole box, opaque. What a rect capture has
   //                 always produced.
   const [outputMode, setOutputMode] = useState<OutputMode>("windows");
+  // The keyboard legend, folded behind a "?" until asked for. It was a
+  // full-width line above the HUD on every show, mostly restating keys
+  // the HUD's own buttons already name. Not reset per show: someone who
+  // opened it wants it on the next capture too. It is NOT persisted
+  // across launches; that would be a setting.
+  const [hintOpen, setHintOpen] = useState(false);
 
   // Refs mirror state so global event handlers (registered once on
   // mount) read the freshest values without closure-capture stale-data.
@@ -1709,6 +1715,12 @@ export function RegionSelector() {
       // modifiers — ⌘R is Reload in a dev build and ⌃R is a shell
       // history search the user may have muscle-memory for; neither must
       // start a screen recording.
+      // `?` shows or hides the keyboard legend, like the "?" button.
+      if (event.key === "?" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        event.preventDefault();
+        setHintOpen((open) => !open);
+        return;
+      }
       if (
         (event.key === "r" || event.key === "R") &&
         !event.metaKey &&
@@ -3204,7 +3216,29 @@ export function RegionSelector() {
         </div>
       )}
 
-        <div className="region-hint">
+        {/* `data-region-hud`: a press on the "?" is the row's, not a
+            canvas gesture (see the guard in onMouseDown). */}
+        <div className="region-hint-row" data-region-hud>
+        <button
+          type="button"
+          className="region-hint-toggle"
+          aria-label="Keyboard shortcuts"
+          aria-expanded={hintOpen}
+          aria-controls="region-hint"
+          aria-keyshortcuts="?"
+          data-tip={hintOpen ? "Hide keyboard shortcuts" : "Keyboard shortcuts"}
+          data-tip-keys="?"
+          data-testid="region-hint-toggle"
+          onClick={(event) => {
+            setHintOpen((open) => !open);
+            // Same reason as the HUD: a focused button would take the ↵
+            // that is meant to capture.
+            event.currentTarget.blur();
+          }}
+        >
+          ?
+        </button>
+        <div className="region-hint" id="region-hint" hidden={!hintOpen}>
         {intent === "video" && (
           <>
             <span>
@@ -3296,6 +3330,7 @@ export function RegionSelector() {
           <kbd>esc</kbd>
           {interaction.kind === "snap" && !hasPicks ? "cancel" : "back"}
         </span>
+        </div>
         </div>
       </div>
       <style>{`@keyframes ps-rec-pulse {

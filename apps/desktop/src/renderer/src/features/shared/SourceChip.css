@@ -124,14 +124,16 @@
    control on the centred bar, each time the reason or the device
    changed. A tile is the same box in every state.
 
-   Areas, not flow: the act / caret / kbd siblings are each optional, and
-   the sub line must sit under all of them. */
+   Areas, not flow: the act and caret siblings are each optional, and
+   the sub line must sit under all of them. No key badge: the selector's
+   shortcut legend lists M / A / K, and a badge on each tile cost the bar
+   ~75px. */
 .ps-chip--tile {
   display: inline-grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   grid-template-areas:
-    "body caret kbd"
-    "sub  sub   sub";
+    "body caret"
+    "sub  sub";
   align-content: center;
   align-items: center;
   column-gap: 6px;
@@ -142,18 +144,19 @@
    that asks for it, so the top line keeps its width. */
 .ps-chip--tile.ps-chip--act {
   grid-template-areas:
-    "body caret kbd"
-    "sub  act   act";
+    "body caret"
+    "sub  act";
 }
 /* Microphone and camera name a device, so they get a fixed box, sized
    so the top line never cuts the source word: the microphone's carries a
-   meter, a caret and a key. The system-audio tile has neither a device
+   meter and a caret. The system-audio tile has neither a device
    nor a meter, and keeps its natural width (at the same height). */
 .ps-chip--tile[data-source="microphone"] {
-  width: 192px;
+  /* Also fits "MacBook Pro Microphone" whole on the second line. */
+  width: 176px;
 }
 .ps-chip--tile[data-source="camera"] {
-  width: 160px;
+  width: 148px;
 }
 .ps-chip--tile > .ps-chip__body {
   grid-area: body;
@@ -162,7 +165,6 @@
   gap: 8px;
 }
 .ps-chip--tile > .ps-chip__devices { grid-area: caret; }
-.ps-chip--tile > .ps-chip__kbd { grid-area: kbd; }
 .ps-chip--tile > .ps-chip__act {
   grid-area: act;
   justify-self: end;
@@ -202,15 +204,6 @@
   color: currentColor;
   font: 500 11px/1 var(--font-sans);
   opacity: 0.9;
-}
-
-.ps-chip__kbd {
-  padding: 1px 5px;
-  border: 1px solid var(--border-default);
-  border-radius: 3px;
-  background: color-mix(in srgb, var(--text-primary) 5%, transparent);
-  color: var(--text-secondary);
-  font: 600 10px/1 var(--font-mono);
 }
 
 /* The caret opens the device picker. Rendered only when there is more

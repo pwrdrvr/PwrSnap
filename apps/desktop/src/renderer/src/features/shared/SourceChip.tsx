@@ -78,7 +78,8 @@ export type SourceChipProps = {
   /** Inline action label — "Allow", "Settings". Implies `onAct`. */
   readonly act?: string;
   readonly onAct?: () => void;
-  /** Hotkey glyph. Omitted in dense/static densities. */
+  /** The key that toggles this source. Announced at control density
+   *  (`aria-keyshortcuts`), never drawn: the selector's legend lists it. */
   readonly kbd?: string;
   /** Draw the device caret. Only meaningful with `onOpenDevices`. */
   readonly hasDevices?: boolean;
@@ -338,9 +339,10 @@ export function SourceChip({
   const hasAct = act !== undefined && !inert;
   const hasCaret = hasDevices === true && !inert;
   const grouped = hasAct || hasCaret;
-  // Only the selector's control density both draws the badge and has a
-  // key handler behind it.
-  const showKbd = kbd !== undefined && density === "control";
+  // Only the selector's control density has a key handler behind it. The
+  // key is announced, not drawn: the selector's shortcut legend (behind its
+  // "?") lists M / A / K, and a badge on every tile cost the bar ~75px.
+  const keyBound = kbd !== undefined && density === "control";
 
   // The chip is a GROUP, not a button.
   //
@@ -398,10 +400,10 @@ export function SourceChip({
         {...(density === "dense" ? { "aria-label": name } : {})}
         // The real home for "press M". It rode in as a trailing "M" on
         // the button's name before, which said nothing about what it
-        // was. Gated on `showKbd`, not on `kbd` alone: announcing a
-        // shortcut the surface neither draws nor binds is the same
+        // was. Gated on `keyBound`, not on `kbd` alone: announcing a
+        // shortcut the surface does not bind is the same
         // two-predicates-that-must-agree bug as the hint legend's.
-        {...(showKbd ? { "aria-keyshortcuts": kbd } : {})}
+        {...(keyBound ? { "aria-keyshortcuts": kbd } : {})}
         {...(subline ? { "aria-describedby": subId } : {})}
         onClick={onToggle}
       >
@@ -430,12 +432,6 @@ export function SourceChip({
         >
           <Caret />
         </button>
-      ) : null}
-      {showKbd ? (
-        // Decorative now that `aria-keyshortcuts` carries the fact.
-        <kbd className="ps-chip__kbd" aria-hidden="true">
-          {kbd}
-        </kbd>
       ) : null}
       {subline ? (
         // Outside the toggle, so it is not part of the button's name, but

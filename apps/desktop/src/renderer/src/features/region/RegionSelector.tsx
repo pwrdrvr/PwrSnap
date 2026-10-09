@@ -1954,7 +1954,7 @@ export function RegionSelector() {
       // focus and its onClick fires normally; treating a HUD press as
       // a canvas gesture would toggle a pick under the bar.
       if (
-        event.target instanceof HTMLElement &&
+        event.target instanceof Element &&
         event.target.closest("[data-region-hud]") !== null
       ) {
         return;
@@ -2122,7 +2122,7 @@ export function RegionSelector() {
       // not re-snap the selection out from under the click. Free when
       // no HUD is rendered — nothing can match the selector then.
       if (
-        event.target instanceof HTMLElement &&
+        event.target instanceof Element &&
         event.target.closest("[data-region-hud]") !== null
       ) {
         return;
@@ -2271,7 +2271,7 @@ export function RegionSelector() {
       // HUD button toggled a pick for the window under the ORIGINAL
       // press while the button the user released on got no click.
       if (
-        event.target instanceof HTMLElement &&
+        event.target instanceof Element &&
         event.target.closest("[data-region-hud]") !== null
       ) {
         pendingPickRef.current = null;
@@ -3006,7 +3006,7 @@ export function RegionSelector() {
             // `e.target` is the DEEPEST node — a chip's <span>, or the
             // Capture button's <kbd> — and blur() on a non-focusable
             // node is a no-op, so the <button> kept focus.
-            if (e.target instanceof HTMLElement) e.target.closest("button")?.blur();
+            if (e.target instanceof Element) e.target.closest("button")?.blur();
           }}
         >
           {/* Output shape. Hidden at one pick, where the union box is

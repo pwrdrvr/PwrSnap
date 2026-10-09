@@ -984,6 +984,30 @@ describe("U5 — multi-window pick set", () => {
     expect(document.body.dataset.snap).toBe("window");
   });
 
+  // The chips' glyphs and the device chevron are SVG, and an SVGElement is
+  // not an HTMLElement. The HUD guard tested `instanceof HTMLElement`, so a
+  // press on the drawn chevron fell through to the canvas and toggled the
+  // window under the bar: with one pick, the HUD vanished instead of the
+  // picker opening.
+  test("a press on an SVG inside the HUD is the HUD's, not the window's under it", async () => {
+    await mountScene();
+    await clickWindow(WIN);
+    expect(pickBoxes()).toHaveLength(1);
+    const glyph = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    hud()!.appendChild(glyph);
+    const c = centerOf(WIN);
+    // Two acts: the press's state must land before the release reads it.
+    await act(async () => {
+      glyph.dispatchEvent(new MouseEvent("mousedown", { clientX: c.x, clientY: c.y, button: 0, bubbles: true }));
+    });
+    await act(async () => {
+      glyph.dispatchEvent(new MouseEvent("mouseup", { clientX: c.x, clientY: c.y, button: 0, bubbles: true }));
+    });
+    glyph.remove();
+    expect(pickBoxes()).toHaveLength(1);
+    expect(hud()).not.toBeNull();
+  });
+
   test("clicking the desktop with a set live keeps it, and settles in snap", async () => {
     await mountScene();
     await clickWindow(WIN);

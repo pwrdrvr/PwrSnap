@@ -32,7 +32,7 @@ import {
   type RecordingDevicePreference
 } from "@pwrsnap/shared";
 import { useDismissable } from "../../lib/useDismissable";
-import { SourceChip, type SourceChipState } from "../shared/SourceChip";
+import { chipDensity, SourceChip, type SourceChipState, type SourceChipVariant } from "../shared/SourceChip";
 import "./camera.css";
 
 export function CameraChip({
@@ -42,7 +42,8 @@ export function CameraChip({
   onChange,
   onReady,
   preferred = null,
-  onPick
+  onPick,
+  variant = "tile"
 }: {
   readonly enabled: boolean;
   readonly onToggle: (next: boolean) => void;
@@ -53,6 +54,8 @@ export function CameraChip({
   readonly preferred?: RecordingDevicePreference | null;
   /** The user picked a camera from the list. */
   readonly onPick?: (preference: RecordingDevicePreference) => void;
+  /** Which HUD the chip sits in: the tile row, the Shutter's orbs, the Clapperboard's slate. */
+  readonly variant?: SourceChipVariant;
 }): ReactElement {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState(value?.deviceId ?? "");
@@ -254,6 +257,7 @@ export function CameraChip({
   return (
     <span
       className="camera-chip"
+      data-variant={variant}
       ref={caretRef}
       onPointerDown={(event) => event.stopPropagation()}
       onKeyDown={(event) => event.stopPropagation()}
@@ -270,9 +274,15 @@ export function CameraChip({
           setOpen((v) => !v);
         }}
         onToggle={() => onToggle(!enabled)}
+        density={chipDensity(variant)}
+        // The orb and the slate cell carry the picture themselves, so the
+        // tile row's floating bubble is not needed there.
+        {...(variant !== "tile" && enabled && stream !== null
+          ? { media: <CameraPreview stream={stream} /> }
+          : {})}
         testId="region-hud-camera"
       />
-      {enabled && !open && stream !== null ? (
+      {variant === "tile" && enabled && !open && stream !== null ? (
         <span className="camera-bubble" aria-hidden="true">
           <CameraPreview stream={stream} />
         </span>

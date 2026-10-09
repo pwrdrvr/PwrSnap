@@ -13,7 +13,7 @@ import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, 
 import { resolveDevicePreference, type RecordingDevicePreference } from "@pwrsnap/shared";
 import { useDismissable } from "../../lib/useDismissable";
 import { useFocusReturn } from "../../lib/useFocusReturn";
-import { SourceChip, type SourceChipState } from "../shared/SourceChip";
+import { chipDensity, SourceChip, type SourceChipState, type SourceChipVariant } from "../shared/SourceChip";
 import { METER_FLOOR_DB, meterFraction, type LevelMeterStore } from "../shared/mic-level-meter";
 import type { MicrophoneMonitor } from "../shared/useMicrophoneMonitor";
 import { MIC_TEST_SECONDS, useMicrophoneTest } from "../shared/useMicrophoneTest";
@@ -56,7 +56,8 @@ export function MicrophoneChip({
   onPick,
   onOpenSettings,
   onOpenSoundSettings,
-  openRequest = 0
+  openRequest = 0,
+  variant = "tile"
 }: {
   readonly state: SourceChipState;
   readonly why: string | undefined;
@@ -65,8 +66,12 @@ export function MicrophoneChip({
   readonly monitor: MicrophoneMonitor;
   readonly preference: RecordingDevicePreference | null;
   readonly onToggle: () => void;
-  /** Opening the picker is an explicit act: it may open the microphone. */
-  readonly onArm: () => void;
+  /**
+   * Opening the picker is an explicit act: it may open the microphone. The
+   * selector draws this chip only once the stream is already armed, so
+   * nothing there needs it.
+   */
+  readonly onArm?: () => void;
   /** `null` = follow the system default. */
   readonly onPick: (preference: RecordingDevicePreference | null) => void;
   readonly onOpenSettings: () => void;
@@ -77,6 +82,8 @@ export function MicrophoneChip({
    * found the saved microphone gone. The value at mount is not a request.
    */
   readonly openRequest?: number;
+  /** Which HUD the chip sits in: the tile row, the Shutter's orbs, the Clapperboard's slate. */
+  readonly variant?: SourceChipVariant;
 }): ReactElement {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLSpanElement | null>(null);
@@ -155,6 +162,7 @@ export function MicrophoneChip({
   return (
     <span
       className="mic-chip"
+      data-variant={variant}
       ref={rootRef}
       onPointerDown={(event) => event.stopPropagation()}
       onKeyDown={(event) => {
@@ -179,10 +187,11 @@ export function MicrophoneChip({
         hasDevices={caretOffered}
         onOpenDevices={() => {
           triggerRef.current = rootRef.current?.querySelector<HTMLElement>(".ps-chip__devices") ?? null;
-          if (!open) onArm();
+          if (!open) onArm?.();
           setOpen((value) => !value);
         }}
         onToggle={onToggle}
+        density={chipDensity(variant)}
         testId="region-hud-mic"
       />
       {open ? (

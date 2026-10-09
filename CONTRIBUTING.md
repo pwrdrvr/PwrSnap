@@ -62,7 +62,17 @@ package is distributed.
 
 Useful checks (all run from the repo root):
 
-- `pnpm typecheck` — workspace-wide TypeScript check
+- `pnpm typecheck` — workspace-wide native TypeScript 7 check
+- `pnpm typecheck:legacy` — the same projects with TypeScript 6
+- `pnpm check:changed` — full lint plus tests related to committed and working
+  changes since the `origin/main` merge base, including untracked files. Tooling
+  changes and deletions run the full unit suite. Only one such check can run
+  across this repository's local worktrees at a time. Run expensive checks
+  sequentially; direct `lint`/`test` invocations do not acquire this lock.
+- `pnpm check:benchmark` — compare compiler file inventories, probe type and
+  unused-binding errors, then measure three sequential pairs on this machine;
+  results are written to `.local/check-performance/paired.json`. Set
+  `CHECK_BENCH_ITERATIONS` (1–20) or `CHECK_BENCH_OUTPUT` to customize a run.
 - `pnpm test` — Vitest unit + integration suite
 - `pnpm test:desktop-e2e` — Playwright + Electron end-to-end suite
 - `pnpm test:desktop-e2e:docker` — the Linux/xvfb E2E subset on Docker, used

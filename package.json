@@ -31,12 +31,16 @@
     "test:desktop-e2e:docker": "./scripts/e2e/run-docker.sh",
     "release:check": "node ./scripts/check-desktop-release-metadata.mjs",
     "fix:linux-sandbox": "node ./scripts/linux-sandbox.mjs --fix",
-    "check:linux-sandbox": "node ./scripts/linux-sandbox.mjs --warn"
+    "check:linux-sandbox": "node ./scripts/linux-sandbox.mjs --warn",
+    "typecheck:legacy": "pnpm -r --if-present typecheck:legacy",
+    "check:benchmark": "node ./scripts/benchmark-dev-checks.mjs",
+    "check:changed": "node ./scripts/check-changed.mjs"
   },
   "devDependencies": {
     "@types/node": "24.12.4",
     "jsdom": "^29.0.2",
     "typescript": "^6.0.2",
+    "typescript-native": "npm:typescript@7.0.2",
     "vitest": "^4.1.11"
   }
 }

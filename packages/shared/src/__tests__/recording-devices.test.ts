@@ -2,9 +2,11 @@ import { describe, expect, test } from "vitest";
 import {
   displayDeviceLabel,
   isDefaultPseudoDevice,
+  isMissingDeviceError,
   RecordingDevicePreferenceSchema,
   RecordingMicrophoneSchema,
-  resolveDevicePreference
+  resolveDevicePreference,
+  shortDeviceLabel
 } from "../recording-devices";
 
 const attached = [
@@ -60,6 +62,22 @@ describe("device labels", () => {
     expect(displayDeviceLabel("Granola Interface")).toBe("Granola Interface");
     // Only a leading prefix: a device can have "Default" in its own name.
     expect(displayDeviceLabel("Granola Default - Mic")).toBe("Granola Default - Mic");
+  });
+
+  test("a chip's short name drops Chromium's one trailing tag", () => {
+    expect(shortDeviceLabel("Oatmeal Desk Mic (USB)")).toBe("Oatmeal Desk Mic");
+    expect(shortDeviceLabel("Granola Interface (1a2b:3c4d)")).toBe("Granola Interface");
+    expect(shortDeviceLabel("Default - Oatmeal Desk Mic (Built-in)")).toBe("Oatmeal Desk Mic");
+    expect(shortDeviceLabel("Granola Interface")).toBe("Granola Interface");
+    expect(shortDeviceLabel("(USB)")).toBe("(USB)");
+  });
+
+  test("a missing device is told apart from a refusal", () => {
+    const named = (name: string): Error => Object.assign(new Error(name), { name });
+    expect(isMissingDeviceError(named("NotFoundError"))).toBe(true);
+    expect(isMissingDeviceError(named("OverconstrainedError"))).toBe(true);
+    expect(isMissingDeviceError(named("NotAllowedError"))).toBe(false);
+    expect(isMissingDeviceError("NotFoundError")).toBe(false);
   });
 
   test("pseudo-device ids", () => {

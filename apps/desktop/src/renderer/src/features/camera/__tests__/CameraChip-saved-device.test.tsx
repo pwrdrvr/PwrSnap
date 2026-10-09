@@ -81,7 +81,7 @@ test("the saved camera is opened by id and named on the chip", async () => {
   await mountAndArm({ deviceId: PORRIDGE.deviceId, label: PORRIDGE.label });
   expect(getUserMedia).toHaveBeenCalledTimes(1);
   expect(getUserMedia).toHaveBeenCalledWith({ video: { deviceId: { exact: PORRIDGE.deviceId } }, audio: false });
-  expect(device()).toBe(PORRIDGE.label);
+  expect(device()).toBe("Porridge Cam");
   expect(change).toHaveBeenLastCalledWith({ deviceId: PORRIDGE.deviceId });
 });
 
@@ -95,7 +95,7 @@ test("a stale id is found again by name", async () => {
     video: { deviceId: { exact: PORRIDGE.deviceId } },
     audio: false
   });
-  expect(device()).toBe(PORRIDGE.label);
+  expect(device()).toBe("Porridge Cam");
   expect(change).toHaveBeenLastCalledWith({ deviceId: PORRIDGE.deviceId });
   expect(host.querySelector(".camera-pop__note--warn")).toBeNull();
 });
@@ -140,7 +140,7 @@ test("picking a camera reports it with its name, for the selector to save", asyn
   await act(async () => rows[1]!.click());
   for (let i = 0; i < 4; i += 1) await act(async () => Promise.resolve());
   expect(pick).toHaveBeenCalledWith({ deviceId: PORRIDGE.deviceId, label: PORRIDGE.label });
-  expect(device()).toBe(PORRIDGE.label);
+  expect(device()).toBe("Porridge Cam");
   // The camera already open is never reported as a pick.
   await act(async () => rows[1]!.click());
   expect(pick).toHaveBeenCalledTimes(1);

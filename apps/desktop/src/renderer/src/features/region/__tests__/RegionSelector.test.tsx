@@ -14,7 +14,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 
-import { MAX_SELECTOR_EXTENTS } from "@pwrsnap/shared";
+import { MAX_SELECTOR_EXTENTS, shortDeviceLabel } from "@pwrsnap/shared";
 
 import type {
   SelectorRawSnapshotDescriptor,
@@ -2586,7 +2586,7 @@ describe("U7 — recording source chips", () => {
     test("the chip names the default, and the commit leaves the choice to the recorder", async () => {
       await mountScene({ mode: "auto", intent: "video", sources: MIC_ON });
       await settle();
-      expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(OATMEAL.label);
+      expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(shortDeviceLabel(OATMEAL.label));
       await drawRect();
       const payload = await commitAndRead();
       expect(payload.sources).toEqual(MIC_ON);
@@ -2601,7 +2601,7 @@ describe("U7 — recording source chips", () => {
       });
       await settle();
       expect(getUserMedia).toHaveBeenCalledWith({ audio: { deviceId: { exact: GRANOLA.deviceId } } });
-      expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(GRANOLA.label);
+      expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(shortDeviceLabel(GRANOLA.label));
       await drawRect();
       const payload = await commitAndRead();
       expect(payload.sources).toEqual({ ...MIC_ON, microphoneDevice: { label: GRANOLA.label } });
@@ -2621,7 +2621,7 @@ describe("U7 — recording source chips", () => {
       expect(window.pwrsnapApi!.dispatch).toHaveBeenCalledWith("settings:write", {
         recording: { microphoneDevice: GRANOLA }
       });
-      expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(GRANOLA.label);
+      expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(shortDeviceLabel(GRANOLA.label));
       // Back to "System default" is saved as null, not as the default's id.
       await act(async () => {
         container!.querySelector<HTMLButtonElement>("[data-testid='region-hud-mic-default']")!.click();
@@ -2673,7 +2673,7 @@ describe("U7 — recording source chips", () => {
       await mouseMove(400, 300);
       await drawRect();
       expect(getUserMedia).not.toHaveBeenCalled();
-      expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(GRANOLA.label);
+      expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(shortDeviceLabel(GRANOLA.label));
       await keyDown("r");
       // Record first checks the saved microphone is still attached.
       await settle();
@@ -2710,7 +2710,7 @@ describe("U7 — recording source chips", () => {
           return opened(constraints);
         });
         await quickCaptureWithSaved(MUESLI);
-        expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(MUESLI.label);
+        expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(shortDeviceLabel(MUESLI.label));
         await keyDown("r");
         await settle();
         expect(submitRegion).not.toHaveBeenCalled();
@@ -2721,7 +2721,7 @@ describe("U7 — recording source chips", () => {
           container!.querySelector("[data-testid='region-hud-mic-default']")
         );
         // The picker opened the default, and the chip now names it.
-        expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(OATMEAL.label);
+        expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(shortDeviceLabel(OATMEAL.label));
         // The next Record takes the default the chip shows.
         await keyDown("r");
         await settle();

@@ -167,38 +167,29 @@ describe("SourceChip", () => {
     expect(el.querySelector(".ps-chip__why")?.textContent).toBe("quiet");
   });
 
-  // The selector HUD is centred, so a chip that changes width moves every
-  // control on it. An audio chip there has one reserved slot that holds the
-  // meter or the reason, and is present even when there is neither.
-  test("the selector puts the reason in the meter's reserved slot", () => {
-    const el = mount(<SourceChip source="microphone" state="silent" why="no signal" />);
-    expect(el.querySelector(".ps-chip__status .ps-chip__why")?.textContent).toBe("no signal");
-    expect(el.querySelector(".ps-meter")).toBeNull();
-    expect(el.querySelector(".ps-chip__status")?.hasAttribute("data-tip")).toBe(false);
+  // The selector draws a two-line tile: the source and its meter on top,
+  // the reason and then the device below. One line carrying all of that
+  // made the microphone chip ~400px wide.
+  test("the selector's tile puts the reason and the device on the second line", () => {
+    const el = mount(
+      <SourceChip source="microphone" state="silent" why="no signal" device="Granola Interface (USB)" />
+    );
+    const body = el.querySelector(".ps-chip__body")!;
+    expect(body.querySelector(".ps-meter")?.getAttribute("data-tone")).toBe("flat");
+    expect(body.querySelector(".ps-chip__why")).toBeNull();
+    const sub = el.querySelector(".ps-chip__sub")!;
+    expect(sub.querySelector(".ps-chip__why")?.textContent).toBe("no signal");
+    // The chip's copy drops Chromium's tag; the picker shows the whole name.
+    expect(sub.querySelector(".ps-chip__dev")?.textContent).toBe("Granola Interface");
+    // The toggle's name stays the source; the line describes it.
+    expect(body.textContent).toBe("Microphone");
+    expect(body.getAttribute("aria-describedby")).toBe(sub.id);
   });
 
-  test("the selector's slot holds the meter when live", () => {
-    const el = mount(<SourceChip source="microphone" state="live" level={0.5} />);
-    expect(el.querySelector(".ps-chip__status .ps-meter")).not.toBeNull();
-  });
-
-  test("the selector's slot is reserved with nothing in it", () => {
-    const el = mount(<SourceChip source="systemAudio" state="off" />);
-    expect(el.querySelector(".ps-chip__status")?.childElementCount).toBe(0);
-  });
-
-  // A sentence the slot cuts off is also its tooltip.
-  test("a long reason rides in the slot's tooltip", () => {
-    const why = "Microphone is in use by another app";
-    const el = mount(<SourceChip source="microphone" state="silent" why={why} />);
-    expect(el.querySelector(".ps-chip__status")?.getAttribute("data-tip")).toBe(why);
-  });
-
-  test("a named device takes the source word's place, which stays the accessible name", () => {
-    const el = mount(<SourceChip source="microphone" state="live" device="Granola Interface" />);
-    expect(el.querySelector(".ps-chip__name")).toBeNull();
-    expect(el.querySelector(".ps-chip__dev")?.textContent).toBe("Granola Interface");
-    expect(el.querySelector(".ps-chip__body .sr-only")?.textContent).toBe("Microphone");
+  test("a tile with nothing to say below draws one line", () => {
+    const el = mount(<SourceChip source="systemAudio" state="live" noMeter />);
+    expect(el.querySelector(".ps-chip__sub")).toBeNull();
+    expect(el.querySelector(".ps-chip__body")?.hasAttribute("aria-describedby")).toBe(false);
   });
 
   test("a landed receipt still fills", () => {

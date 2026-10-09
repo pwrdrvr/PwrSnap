@@ -71,6 +71,19 @@ export function isMissingDeviceError(cause: unknown): boolean {
   return name === "NotFoundError" || name === "OverconstrainedError";
 }
 
+/**
+ * A device name short enough for a chip: without Chromium's one trailing
+ * tag — the transport ("(Built-in)", "(Virtual)", "(Bluetooth)") or a USB
+ * "(vendor:product)" pair. The picker still shows the whole name. A name
+ * that is nothing but a tag is kept.
+ */
+export function shortDeviceLabel(label: string): string {
+  const name = displayDeviceLabel(label);
+  if (!name.endsWith(")")) return name;
+  const open = name.lastIndexOf(" (");
+  return open > 0 ? name.slice(0, open) : name;
+}
+
 export type DeviceCandidate = {
   readonly deviceId: string;
   readonly label: string;

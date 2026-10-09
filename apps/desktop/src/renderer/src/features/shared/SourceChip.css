@@ -115,40 +115,84 @@
   color: inherit;
 }
 
-/* The device name, in place of the source word (the glyph says which
-   source). Truncated, not wrapped: the selector HUD is one row, and a USB
-   interface's full name would otherwise push the Record button off it.
-   The picker shows the whole name.
+/* ---------------- the selector's tile (control density) ----------------
+   Two lines in a fixed box. The top line is the source, its meter and
+   its controls; the bottom line is the reason, when there is one, then
+   the device. Using height rather than width keeps the HUD narrow: one
+   row of single-line chips carrying the device and the reason needed
+   ~400px for the microphone alone, and resized itself, moving every
+   control on the centred bar, each time the reason or the device
+   changed. A tile is the same box in every state.
 
-   A fixed width, not a max-width: the HUD is centred, so a chip that
-   resized with the name moved every control on the bar each time a
-   different device was picked. */
-.ps-chip__dev {
-  flex: none;
-  width: 120px;
+   Areas, not flow: the act / caret / kbd siblings are each optional, and
+   the sub line must sit under all of them. */
+.ps-chip--tile {
+  display: inline-grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-areas:
+    "body caret kbd"
+    "sub  sub   sub";
+  align-content: center;
+  align-items: center;
+  column-gap: 6px;
+  row-gap: 3px;
+  height: 40px;
+}
+/* The grant action ("Allow") rides on the bottom line, beside the reason
+   that asks for it, so the top line keeps its width. */
+.ps-chip--tile.ps-chip--act {
+  grid-template-areas:
+    "body caret kbd"
+    "sub  act   act";
+}
+/* Microphone and camera name a device, so they get a fixed box, sized
+   so the top line never cuts the source word: the microphone's carries a
+   meter, a caret and a key. The system-audio tile has neither a device
+   nor a meter, and keeps its natural width (at the same height). */
+.ps-chip--tile[data-source="microphone"] {
+  width: 192px;
+}
+.ps-chip--tile[data-source="camera"] {
+  width: 160px;
+}
+.ps-chip--tile > .ps-chip__body {
+  grid-area: body;
+  min-width: 0;
+  /* `gap: inherit` would take the tile's 3px row gap as well. */
+  gap: 8px;
+}
+.ps-chip--tile > .ps-chip__devices { grid-area: caret; }
+.ps-chip--tile > .ps-chip__kbd { grid-area: kbd; }
+.ps-chip--tile > .ps-chip__act {
+  grid-area: act;
+  justify-self: end;
+  margin-right: 0;
+  padding: 1px 6px;
+}
+.ps-chip--tile .ps-chip__name {
+  min-width: 0;
   overflow: hidden;
-  /* The chip's label now, in place of the source word, so it takes the
-     chip's own colour rather than a muted secondary one. */
-  color: inherit;
+  text-overflow: ellipsis;
+}
+/* The meter sits at the end of the top line, against the caret. */
+.ps-chip--tile .ps-meter {
+  margin-left: auto;
+}
+/* Indented under the source word: glyph (14px) + the body's 8px gap. */
+.ps-chip__sub {
+  grid-area: sub;
+  min-width: 0;
+  padding-left: 22px;
+  overflow: hidden;
   font: 500 11px/1.2 var(--font-sans);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-/* The audio chips' meter-or-reason slot at control density. The floor
-   fits "no signal", so a microphone going quiet swaps the meter for the
-   reason in the same space. The rarer, longer permission reasons may
-   widen it, up to the ceiling; past that the reason is cut off and its
-   full text is the slot's tooltip. */
-.ps-chip__status {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  min-width: 52px;
-  max-width: 128px;
-  overflow: hidden;
+.ps-chip__dev {
+  color: var(--text-muted);
 }
-.ps-chip__status > .ps-chip__why {
+
+.ps-chip__why {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

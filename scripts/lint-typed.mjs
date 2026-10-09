@@ -8,7 +8,8 @@ const root = resolve(import.meta.dirname, "..");
 export function typedLintFiles(directory = root) {
   const config = JSON.parse(readFileSync(resolve(directory, "oxlint.typed.json"), "utf8"));
   return [...globSync(config.overrides.flatMap((override) => override.files),
-    { cwd: directory, exclude: config.ignorePatterns })].sort();
+    { cwd: directory, exclude: config.ignorePatterns })]
+    .map((file) => file.replaceAll("\\", "/")).sort();
 }
 
 export function typedLintPaths(directory = root) {

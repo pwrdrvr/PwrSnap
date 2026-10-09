@@ -774,8 +774,8 @@ export function positionAppDocumentWindowForSource(
  * keyboard focus in Claude / Terminal / etc. is preserved.
  *
  * The `installDevelopmentDockIcon` call inside
- * `showDockWithDevelopmentIcon` paints the dev/prod icon — no-op in
- * packaged builds, but harmless to call either way.
+ * `showDockWithDevelopmentIcon` paints the development icon only;
+ * packaged builds keep the native bundled icon.
  */
 export function reclaimDockIconIfLibraryAlive(options: { force?: boolean } = {}): void {
   if (process.platform !== "darwin") return;
@@ -1168,7 +1168,7 @@ export function createLocalAgentConsentWindow(): BrowserWindow {
     label: `local-agent-consent/${window.id}`,
     onShow: () => {
       if (process.platform === "darwin") {
-        void app.dock?.show();
+        showDockWithDevelopmentIcon();
         app.focus({ steal: true });
       }
       window.moveTop();

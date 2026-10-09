@@ -106,11 +106,13 @@ describe("installDevelopmentDockIcon", () => {
 
   it("sets the icon AFTER the Dock is shown (never before the tile exists)", async () => {
     const { showDockWithDevelopmentIcon } = await import("../development-dock-icon");
+    mocks.dockIsVisible.mockReturnValue(false);
 
     showDockWithDevelopmentIcon({ platform: "darwin", nodeEnv: "development" });
     // Synchronously, before show() resolves: no setIcon yet.
     expect(mocks.dockSetIcon).not.toHaveBeenCalled();
 
+    mocks.dockIsVisible.mockReturnValue(true);
     await Promise.resolve();
     await Promise.resolve();
 
@@ -122,6 +124,7 @@ describe("installDevelopmentDockIcon", () => {
 
   it("coalesces concurrent shows so overlapping transitions can't race", async () => {
     const { showDockWithDevelopmentIcon } = await import("../development-dock-icon");
+    mocks.dockIsVisible.mockReturnValue(false);
     let resolveShow!: () => void;
     mocks.dockShow.mockImplementationOnce(
       () =>
@@ -137,10 +140,41 @@ describe("installDevelopmentDockIcon", () => {
     // Only one show() — the second call coalesced.
     expect(mocks.dockShow).toHaveBeenCalledTimes(1);
 
+    mocks.dockIsVisible.mockReturnValue(true);
     resolveShow();
     await Promise.resolve();
     await Promise.resolve();
 
     expect(mocks.dockSetIcon).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a visible packaged Dock tile alone across repeated show requests", async () => {
+    const { showDockWithDevelopmentIcon } = await import("../development-dock-icon");
+
+    showDockWithDevelopmentIcon({ platform: "darwin", nodeEnv: "production" });
+    showDockWithDevelopmentIcon({ platform: "darwin", nodeEnv: "production" });
+    await Promise.resolve();
+
+    expect(mocks.dockShow).not.toHaveBeenCalled();
+    expect(mocks.createFromPath).not.toHaveBeenCalled();
+    expect(mocks.dockSetIcon).not.toHaveBeenCalled();
+  });
+
+  it("shows a hidden packaged Dock tile once and keeps the bundled icon", async () => {
+    const { showDockWithDevelopmentIcon } = await import("../development-dock-icon");
+    mocks.dockIsVisible.mockReturnValue(false);
+
+    showDockWithDevelopmentIcon({ platform: "darwin", nodeEnv: "production" });
+    showDockWithDevelopmentIcon({ platform: "darwin", nodeEnv: "production" });
+    expect(mocks.dockShow).toHaveBeenCalledTimes(1);
+
+    mocks.dockIsVisible.mockReturnValue(true);
+    // Let the show promise and its finally settle before another request.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    showDockWithDevelopmentIcon({ platform: "darwin", nodeEnv: "production" });
+
+    expect(mocks.dockShow).toHaveBeenCalledTimes(1);
+    expect(mocks.createFromPath).not.toHaveBeenCalled();
+    expect(mocks.dockSetIcon).not.toHaveBeenCalled();
   });
 });

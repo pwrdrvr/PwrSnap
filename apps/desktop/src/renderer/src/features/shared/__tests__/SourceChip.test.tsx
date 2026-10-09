@@ -160,12 +160,45 @@ describe("SourceChip", () => {
     expect(chip.hasAttribute("data-tip")).toBe(false);
   });
 
-  // Only the receipt trades the meter away. The selector and the HUD draw a
-  // reason (when they have one) beside whatever meter the state allows.
-  test("interactive densities keep the meter beside a reason", () => {
-    const el = mount(<SourceChip source="microphone" state="silent" why="quiet" />);
+  // The recording HUD draws a reason beside whatever meter the state allows.
+  test("the dense HUD keeps the meter beside a reason", () => {
+    const el = mount(<SourceChip source="microphone" state="silent" why="quiet" density="dense" />);
     expect(el.querySelector(".ps-meter")?.getAttribute("data-tone")).toBe("flat");
     expect(el.querySelector(".ps-chip__why")?.textContent).toBe("quiet");
+  });
+
+  // The selector HUD is centred, so a chip that changes width moves every
+  // control on it. An audio chip there has one reserved slot that holds the
+  // meter or the reason, and is present even when there is neither.
+  test("the selector puts the reason in the meter's reserved slot", () => {
+    const el = mount(<SourceChip source="microphone" state="silent" why="no signal" />);
+    expect(el.querySelector(".ps-chip__status .ps-chip__why")?.textContent).toBe("no signal");
+    expect(el.querySelector(".ps-meter")).toBeNull();
+    expect(el.querySelector(".ps-chip__status")?.hasAttribute("data-tip")).toBe(false);
+  });
+
+  test("the selector's slot holds the meter when live", () => {
+    const el = mount(<SourceChip source="microphone" state="live" level={0.5} />);
+    expect(el.querySelector(".ps-chip__status .ps-meter")).not.toBeNull();
+  });
+
+  test("the selector's slot is reserved with nothing in it", () => {
+    const el = mount(<SourceChip source="systemAudio" state="off" />);
+    expect(el.querySelector(".ps-chip__status")?.childElementCount).toBe(0);
+  });
+
+  // A sentence the slot cuts off is also its tooltip.
+  test("a long reason rides in the slot's tooltip", () => {
+    const why = "Microphone is in use by another app";
+    const el = mount(<SourceChip source="microphone" state="silent" why={why} />);
+    expect(el.querySelector(".ps-chip__status")?.getAttribute("data-tip")).toBe(why);
+  });
+
+  test("a named device takes the source word's place, which stays the accessible name", () => {
+    const el = mount(<SourceChip source="microphone" state="live" device="Granola Interface" />);
+    expect(el.querySelector(".ps-chip__name")).toBeNull();
+    expect(el.querySelector(".ps-chip__dev")?.textContent).toBe("Granola Interface");
+    expect(el.querySelector(".ps-chip__body .sr-only")?.textContent).toBe("Microphone");
   });
 
   test("a landed receipt still fills", () => {

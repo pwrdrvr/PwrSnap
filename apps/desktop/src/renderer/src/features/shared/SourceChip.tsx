@@ -52,6 +52,14 @@ export type SourceChipState =
   /** This recorder cannot capture this source at all. */
   | "unsupported";
 
+/**
+ * The selector's short reasons ("no signal", "no microphone") fit the
+ * status slot whole. Longer ones are the monitor's sentences ("Microphone
+ * is in use by another app"), which the slot cuts off, so they also ride
+ * in a tooltip.
+ */
+const WHY_FITS_CHARS = 16;
+
 export type SourceChipProps = {
   readonly source: RecordingSourceKind;
   readonly state: SourceChipState;
@@ -364,6 +372,8 @@ export function SourceChip({
   // window sized to its own pill, which an in-page tooltip could not leave
   // and would cover the HUD's buttons inside. So it keeps the native
   // `title`, which the OS draws in a window of its own.
+  const showDevice = density === "control" && device !== undefined && device !== "";
+  const statusSlot = density === "control" && isAudio;
   const hudTitle =
     density === "dense" ? (why === undefined ? name : `${name} — ${why}`) : undefined;
   return (
@@ -395,12 +405,35 @@ export function SourceChip({
         onClick={onToggle}
       >
         <SourceGlyph source={source} />
-        {density === "dense" ? null : <span className="ps-chip__name">{name}</span>}
-        {density === "control" && device !== undefined && device !== "" ? (
-          <span className="ps-chip__dev">{device}</span>
-        ) : null}
-        {showMeter ? <SourceMeter level={level} tone={tone} /> : null}
-        {why !== undefined ? <span className="ps-chip__why">{why}</span> : null}
+        {density === "dense" ? null : showDevice ? (
+          // The glyph already says which source this is, and the selector
+          // HUD is one row: the device name takes the word's place, and the
+          // word stays the button's accessible name.
+          <span className="sr-only">{name}</span>
+        ) : (
+          <span className="ps-chip__name">{name}</span>
+        )}
+        {showDevice ? <span className="ps-chip__dev">{device}</span> : null}
+        {statusSlot ? (
+          // One slot for the meter OR the reason, reserved even when empty,
+          // so switching the source on, or a microphone going quiet, does
+          // not resize the chip and move every control on the centred HUD.
+          <span
+            className="ps-chip__status"
+            {...(why !== undefined && why.length > WHY_FITS_CHARS ? { "data-tip": why } : {})}
+          >
+            {why !== undefined ? (
+              <span className="ps-chip__why">{why}</span>
+            ) : showMeter ? (
+              <SourceMeter level={level} tone={tone} />
+            ) : null}
+          </span>
+        ) : (
+          <>
+            {showMeter ? <SourceMeter level={level} tone={tone} /> : null}
+            {why !== undefined ? <span className="ps-chip__why">{why}</span> : null}
+          </>
+        )}
       </button>
       {hasAct ? (
         // No stopPropagation any more: there is no enclosing button left

@@ -115,19 +115,41 @@
   color: inherit;
 }
 
-/* The device name. Truncated, not wrapped: the selector HUD is one row,
-   and a USB interface's full name would otherwise push the Record button
-   off it. The picker shows the whole name.
+/* The device name, in place of the source word (the glyph says which
+   source). Truncated, not wrapped: the selector HUD is one row, and a USB
+   interface's full name would otherwise push the Record button off it.
+   The picker shows the whole name.
 
    A fixed width, not a max-width: the HUD is centred, so a chip that
    resized with the name moved every control on the bar each time a
    different device was picked. */
 .ps-chip__dev {
   flex: none;
-  width: 148px;
+  width: 120px;
   overflow: hidden;
-  color: var(--text-muted);
+  /* The chip's label now, in place of the source word, so it takes the
+     chip's own colour rather than a muted secondary one. */
+  color: inherit;
   font: 500 11px/1.2 var(--font-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The audio chips' meter-or-reason slot at control density. The floor
+   fits "no signal", so a microphone going quiet swaps the meter for the
+   reason in the same space. The rarer, longer permission reasons may
+   widen it, up to the ceiling; past that the reason is cut off and its
+   full text is the slot's tooltip. */
+.ps-chip__status {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  min-width: 52px;
+  max-width: 128px;
+  overflow: hidden;
+}
+.ps-chip__status > .ps-chip__why {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

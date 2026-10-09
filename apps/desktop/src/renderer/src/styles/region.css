@@ -599,7 +599,6 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
 .region-hud__shutter:hover > i {
   transform: scale(0.94);
 }
-.region-hud__shutter[data-action="record"],
 .region-hud[data-mode="record"] .region-hud__shutter {
   box-shadow: inset 0 0 0 3px var(--accent);
 }
@@ -630,12 +629,16 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
 }
 
 /* --- Clapperboard --------------------------------------------------- */
+/* No `overflow: hidden` here. The device popovers and the camera's error
+   are positioned against the HUD and sit ABOVE it, so clipping the HUD
+   clipped them away entirely. The stripe and the slate round their own
+   corners instead. */
 .region-hud--clapperboard {
-  overflow: hidden;
   border-radius: 14px;
 }
 .region-hud__clap {
   height: 8px;
+  border-radius: 13px 13px 0 0;
   background: repeating-linear-gradient(-56deg, var(--accent) 0 9px, #0c0b0a 9px 18px);
   box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.6);
 }
@@ -729,6 +732,11 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
 }
 .region-hud__slate {
   display: flex;
+  /* Rounds the cells' warn fills into the HUD's bottom corners. The
+     popovers are not clipped by it: their containing block is the HUD,
+     an ancestor of this box. */
+  overflow: hidden;
+  border-radius: 0 0 13px 13px;
   background: rgba(0, 0, 0, 0.28);
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 8%, transparent);
 }

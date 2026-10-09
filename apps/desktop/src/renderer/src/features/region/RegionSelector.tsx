@@ -1566,6 +1566,19 @@ export function RegionSelector() {
       setCameraOffered(false);
       cameraOfferedRef.current = false;
       setCameraOn(false);
+      // Release the microphone. Its stream follows Record mode, so leaving
+      // the mode set kept the `getUserMedia` stream — and the macOS orange
+      // indicator — alive after the selector was dismissed: `hideSelector()`
+      // only blurs and hides this pre-warmed window, so the React tree and
+      // its effects survive and the monitor's cleanup never runs. The next
+      // show re-seeds the mode from its policy.
+      //
+      // Only on the way out. Escape stepping back from a selection lands
+      // here too, and the show goes on: a Record mode the user chose, or
+      // the `record` policy's, must survive redrawing the rectangle, or the
+      // next ↵ takes a still nobody asked for.
+      terminalRef.current = "snap";
+      setTerminal("snap");
     }
     setInteraction({ kind: "snap" });
     setSnapTarget({ kind: "display" });
@@ -1585,14 +1598,6 @@ export function RegionSelector() {
     // drop the dim + flag so they don't survive into the next gesture or
     // the next show of this pre-warmed window.
     clearDiscardPending();
-    // Release the microphone. Its stream follows Record mode, so leaving
-    // the mode set kept the `getUserMedia` stream — and the macOS orange
-    // indicator — alive after the selector was dismissed: `hideSelector()`
-    // only blurs and hides this pre-warmed window, so the React tree and
-    // its effects survive and the monitor's cleanup never runs. The next
-    // show re-seeds the mode from its policy.
-    terminalRef.current = "snap";
-    setTerminal("snap");
   }
 
   function cancel(): void {

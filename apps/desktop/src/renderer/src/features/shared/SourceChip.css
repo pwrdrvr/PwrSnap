@@ -605,11 +605,16 @@
 .ps-chip.ps-chip--cell[data-state]:hover {
   background: color-mix(in srgb, var(--text-primary) 4%, transparent);
 }
+/* `:hover` too, or the hover tint above outranks the fill and a
+   blocked source loses its colour under the pointer. */
 .ps-chip.ps-chip--cell[data-state="ask"],
-.ps-chip.ps-chip--cell[data-state="nodevice"] {
+.ps-chip.ps-chip--cell[data-state="ask"]:hover,
+.ps-chip.ps-chip--cell[data-state="nodevice"],
+.ps-chip.ps-chip--cell[data-state="nodevice"]:hover {
   background: var(--warn-soft);
 }
-.ps-chip.ps-chip--cell[data-state="denied"] {
+.ps-chip.ps-chip--cell[data-state="denied"],
+.ps-chip.ps-chip--cell[data-state="denied"]:hover {
   background: var(--danger-soft);
 }
 .ps-chip--cell > .ps-chip__body {

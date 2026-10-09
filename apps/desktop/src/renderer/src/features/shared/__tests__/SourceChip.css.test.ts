@@ -163,5 +163,17 @@ describe("SourceChip.css", () => {
     );
     expect(ruleFor(chipCss, ".ps-chip--cell > .ps-chip__cap").body).toMatch(/min-width\s*:\s*0/);
   });
+
+  // The device popovers (and the camera's error line) anchor to the HUD
+  // and open ABOVE it. A clipping HUD swallowed them whole: the
+  // Clapperboard first shipped with `overflow: hidden` for its rounded
+  // stripe, and its microphone picker opened invisibly.
+  test("the HUD the popovers anchor to does not clip them", () => {
+    expect(ruleFor(regionCss, ".region-hud").body).toMatch(/position\s*:\s*relative/);
+    for (const selector of [".region-hud", ".region-hud--shutter", ".region-hud--clapperboard"]) {
+      expect(ruleFor(regionCss, selector).body, selector).not.toMatch(/overflow\s*:/);
+    }
+    expect(ruleFor(regionCss, ".region-hud .mic-chip").body).toMatch(/position\s*:\s*static/);
+  });
 });
 

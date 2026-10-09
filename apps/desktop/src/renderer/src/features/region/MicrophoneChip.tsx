@@ -52,7 +52,6 @@ export function MicrophoneChip({
   monitor,
   preference,
   onToggle,
-  onArm,
   onPick,
   onOpenSettings,
   onOpenSoundSettings,
@@ -66,12 +65,6 @@ export function MicrophoneChip({
   readonly monitor: MicrophoneMonitor;
   readonly preference: RecordingDevicePreference | null;
   readonly onToggle: () => void;
-  /**
-   * Opening the picker is an explicit act: it may open the microphone. The
-   * selector draws this chip only once the stream is already armed, so
-   * nothing there needs it.
-   */
-  readonly onArm?: () => void;
   /** `null` = follow the system default. */
   readonly onPick: (preference: RecordingDevicePreference | null) => void;
   readonly onOpenSettings: () => void;
@@ -187,7 +180,6 @@ export function MicrophoneChip({
         hasDevices={caretOffered}
         onOpenDevices={() => {
           triggerRef.current = rootRef.current?.querySelector<HTMLElement>(".ps-chip__devices") ?? null;
-          if (!open) onArm?.();
           setOpen((value) => !value);
         }}
         onToggle={onToggle}

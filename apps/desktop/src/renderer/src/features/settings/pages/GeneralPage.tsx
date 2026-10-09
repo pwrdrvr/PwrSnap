@@ -245,7 +245,7 @@ export function GeneralPage(): ReactElement {
 
       <Card eyebrow="CAPTURE" title="After you select">
         <Row
-          label="What ↵ does once you have a selection"
+          label="Which mode the selector starts in"
           sub="Ask offers both and starts on Snap: ↵ snaps, or press R to switch to Record and then ↵. Snap hides the Record action entirely. Record starts on Record, and S switches back to Snap. The Video Capture hotkey always records, whichever you pick."
           tag="action"
         >

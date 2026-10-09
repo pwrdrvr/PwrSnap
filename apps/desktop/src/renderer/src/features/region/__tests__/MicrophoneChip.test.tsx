@@ -36,7 +36,6 @@ function fakeMonitor(over: Partial<MicrophoneMonitor> = {}): MicrophoneMonitor {
 let root: Root;
 let host: HTMLDivElement;
 const onPick = vi.fn();
-const onArm = vi.fn();
 const onToggle = vi.fn();
 
 async function render(
@@ -54,7 +53,6 @@ async function render(
         monitor={monitor}
         preference={preference}
         onToggle={onToggle}
-        onArm={onArm}
         onPick={onPick}
         onOpenSettings={() => undefined}
         {...extra}
@@ -149,7 +147,6 @@ describe("MicrophoneChip", () => {
   test("the caret opens a device list with System default first", async () => {
     await render(fakeMonitor());
     await openPicker();
-    expect(onArm).toHaveBeenCalledOnce();
     expect(pop()?.getAttribute("role")).toBe("dialog");
     const labels = rows().map((row) => row.querySelector(".mic-pop__name")?.textContent);
     expect(labels).toEqual(["System default", OATMEAL.label, GRANOLA.label]);

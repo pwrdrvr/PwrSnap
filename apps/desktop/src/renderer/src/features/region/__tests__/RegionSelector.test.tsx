@@ -2012,6 +2012,32 @@ describe("U6 — Snap-vs-Record chooser", () => {
     expect(submitRegion.mock.calls[0]?.[0].action).toBe("record");
   });
 
+  test("Escape stepping back from a selection keeps the chosen mode", async () => {
+    // The show goes on after a step back: the user is redrawing, not
+    // leaving. Dropping to Snap here made the next ↵ take a still under
+    // the `record` policy, with the rocker silently flipped.
+    await mountScene({ mode: "auto", quickCaptureAction: "record" });
+    await drawRect();
+    await keyDown("Escape");
+    expect(document.body.dataset.interaction).toBe("snap");
+    await drawRect();
+    expect(primaryButton().dataset.action).toBe("record");
+    await keyDown("Enter");
+    expect(submitRegion.mock.calls[0]?.[0].action).toBe("record");
+  });
+
+  test("leaving the selector resets the mode for the next show", async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "ask" });
+    await drawRect();
+    await keyDown("r");
+    await keyDown("Enter");
+    expect(submitRegion.mock.calls[0]?.[0].action).toBe("record");
+    // Same pre-warmed window, no re-seed yet: the mode must not survive
+    // the commit that hid it.
+    expect(document.body.dataset.quickAction).toBe("ask");
+    expect(hud()).toBeNull();
+  });
+
   test("ask: S switches back to Snap", async () => {
     await mountScene({ mode: "auto", quickCaptureAction: "ask" });
     await drawRect();

@@ -609,6 +609,9 @@ const pwrsnapApi = {
       /** Snap-vs-Record policy for this show, from
        *  `settings.recording.quickCaptureAction`. `undefined` = "ask". */
       quickCaptureAction?: "ask" | "snap" | "record";
+      /** HUD style for this show, from `settings.recording.selectorHud`.
+       *  `undefined` = "shutter". */
+      hudStyle?: "shutter" | "clapperboard";
     }) => void
   ): () => void {
     const wrapped = (_event: unknown, payload: unknown) =>
@@ -622,6 +625,7 @@ const pwrsnapApi = {
           invocationId?: string;
           generation?: number;
           quickCaptureAction?: "ask" | "snap" | "record";
+          hudStyle?: "shutter" | "clapperboard";
         }
       );
     ipcRenderer.on(REGION_SELECTOR_MODE_CHANNEL, wrapped);

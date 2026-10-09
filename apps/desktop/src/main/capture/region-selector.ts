@@ -26,7 +26,12 @@ import {
   type IpcMainInvokeEvent
 } from "electron";
 import { join } from "node:path";
-import type { QuickCaptureAction, RecordingCapabilities, RecordingDeviceDefaults } from "@pwrsnap/shared";
+import type {
+  QuickCaptureAction,
+  RecordingCapabilities,
+  RecordingDeviceDefaults,
+  SelectorHudStyle
+} from "@pwrsnap/shared";
 import { getMainLogger } from "../log";
 import { getPreloadPath } from "../window";
 import {
@@ -842,6 +847,9 @@ export async function pickRegion(
      *  otherwise render a Record button, bind `R`, and then quietly
      *  take a still. Ignored when `intent === "video"`. */
     quickCaptureAction?: QuickCaptureAction;
+    /** How the HUD is drawn, from `settings.recording.selectorHud`.
+     *  Omitted means the default (shutter). */
+    hudStyle?: SelectorHudStyle;
   } = {}
 ): Promise<SelectorResult> {
   const mode: SelectorMode = opts.mode ?? "auto";
@@ -853,6 +861,7 @@ export async function pickRegion(
   const devicesDefault = opts.devicesDefault;
   const latencyTrace = opts.latencyTrace;
   const quickCaptureAction = opts.quickCaptureAction;
+  const hudStyle = opts.hudStyle;
   const requestStartedAt = Date.now();
   const elapsedFromRequest = (): number => Date.now() - requestStartedAt;
   log.info("capture selector requested", {
@@ -1170,6 +1179,7 @@ export async function pickRegion(
             ...(devicesDefault !== undefined ? { devices: devicesDefault } : {}),
             cameraOffered: opts.cameraOffered === true,
             quickCaptureAction,
+            ...(hudStyle !== undefined ? { hudStyle } : {}),
             ...(latencyTrace !== undefined && presentationGeneration !== undefined
               ? {
                   invocationId: latencyTrace.invocation.id,

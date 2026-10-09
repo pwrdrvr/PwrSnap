@@ -111,6 +111,7 @@ function makeSettings(): Settings {
     storage: { filenameTimestampZone: "local", capturesLocation: "documents" },
     recording: {
       quickCaptureAction: "ask",
+      selectorHud: "shutter",
       includeSystemAudio: false,
       includeMicrophone: false,
       mp4IncludeMicrophone: true,

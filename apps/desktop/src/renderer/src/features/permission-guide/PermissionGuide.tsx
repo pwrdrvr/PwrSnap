@@ -154,8 +154,8 @@ export function PermissionGuide(): ReactElement | null {
 
         {!state.packaged && phase !== "granted" ? (
           <div className="pgd__note">
-            <b>Development build.</b> Launched from a terminal, macOS checks the terminal's
-            Screen Recording grant, not this app's.
+            <b>Development build.</b> When it is launched from a terminal, macOS checks the
+            terminal's Screen Recording grant instead of this app's.
           </div>
         ) : null}
 

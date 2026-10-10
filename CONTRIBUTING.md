@@ -65,7 +65,9 @@ Useful checks (all run from the repo root):
 - `pnpm typecheck` — workspace-wide native TypeScript 7 check
 - `pnpm typecheck:legacy` — the same projects with TypeScript 6
 - `pnpm check:changed` — full lint plus tests related to committed and working
-  changes since the `origin/main` merge base, including untracked files. Tooling
+  changes since the `origin/main` merge base, including untracked files. Tests
+  importing the filesystem also run, since source-reading contract tests have
+  no discoverable import edge to the files they guard. Tooling
   changes and deletions run the full unit suite. Only one such check can run
   across this repository's local worktrees at a time. Run expensive checks
   sequentially; direct `lint`/`test` invocations do not acquire this lock.

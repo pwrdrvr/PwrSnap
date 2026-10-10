@@ -1,12 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { testArguments } from "../check-changed.mjs";
+import { sourceReadingTests, testArguments } from "../check-changed.mjs";
 import { pnpmCommand } from "../lib/pnpm-command.mjs";
 
 describe("changed-work test selection", () => {
   it("selects import-related tests for ordinary source and preserves exact paths", () => {
     expect(testArguments(["packages/shared/src/result.ts", "apps/desktop/src/file with spaces.tsx"]))
       .toEqual(["exec", "vitest", "related", "--run", "--config", "vitest.workspace.ts",
-        "packages/shared/src/result.ts", "apps/desktop/src/file with spaces.tsx"]);
+        "packages/shared/src/result.ts", "apps/desktop/src/file with spaces.tsx", ...sourceReadingTests()]);
+  });
+  it("includes source-reading guards when only their guarded source changes", () => {
+    const args = testArguments(["apps/desktop/src/main/capture/region-selector.ts"]);
+    expect(args).toContain("apps/desktop/src/main/capture/__tests__/selector-overlay-fullscreen.test.ts");
+    expect(args).toContain("apps/desktop/src/renderer/src/styles/__tests__/focus-ring-contract.test.ts");
+    expect(args).toContain("apps/desktop/scripts/native-recorder-audio-contract.test.mjs");
+  });
+  it("does not duplicate a source-reading test that itself changed", () => {
+    const file = "apps/desktop/src/main/capture/__tests__/selector-overlay-fullscreen.test.ts";
+    expect(testArguments([file]).filter((arg) => arg === file)).toHaveLength(1);
   });
   it.each([
     "pnpm-lock.yaml", "package.json", "packages/shared/tsconfig.json",

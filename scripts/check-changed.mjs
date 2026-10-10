@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, globSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { isCliEntrypoint } from "./lib/cli-entrypoint.mjs";
@@ -12,6 +12,21 @@ function git(...args) {
   return execFileSync("git", args, { cwd: root, encoding: "utf8" });
 }
 
+export function sourceReadingTests() {
+  // A source read has no Vite import edge. Conservatively seed every test
+  // importing fs, including fixture readers, rather than maintaining a list
+  // of guarded source paths. Passing a test itself to `related` selects it.
+  return globSync([
+    "scripts/**/*.test.mjs",
+    "apps/desktop/scripts/**/*.test.mjs",
+    "apps/desktop/src/**/*.test.{ts,tsx}",
+    "packages/shared/src/**/*.test.ts"
+  ], { cwd: root })
+    .filter((file) => /["'](?:node:)?fs(?:\/promises)?["']/.test(readFileSync(resolve(root, file), "utf8")))
+    .map((file) => file.replaceAll("\\", "/"))
+    .sort();
+}
+
 export function testArguments(files) {
   // Tooling, fixtures, setup, removals and unsupported file types can affect
   // tests without a discoverable Vite import edge. In those cases run all tests.
@@ -20,7 +35,8 @@ export function testArguments(files) {
     /(^|\/)(?:package\.json|tsconfig[^/]*|vitest[^/]*|[^/]*\.config\.[^/]*)$/.test(file))) {
     return ["test"];
   }
-  return files.length ? ["exec", "vitest", "related", "--run", "--config", "vitest.workspace.ts", ...files] : [];
+  return files.length ? ["exec", "vitest", "related", "--run", "--config", "vitest.workspace.ts",
+    ...new Set([...files, ...sourceReadingTests()])] : [];
 }
 
 async function main() {

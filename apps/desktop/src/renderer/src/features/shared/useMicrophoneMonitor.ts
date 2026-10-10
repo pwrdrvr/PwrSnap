@@ -58,16 +58,29 @@ import { createLevelMeterStore, peakOf, type LevelMeterStore } from "./mic-level
 const METER_SEGMENTS = 7;
 /** Sampling cadence. Fast enough to feel live, far below frame rate. */
 const SAMPLE_INTERVAL_MS = 33;
-/** Silence for this long, while enabled, flips the chip to `silent`. */
+/** No signal at all for this long, while enabled, flips the chip to `silent`. */
 const SILENCE_GRACE_MS = 3_000;
 /**
- * Full-scale reference for the meter. Speech at a normal distance sits
- * around 0.05–0.15 RMS; mapping 1.0 to full scale would leave a working
- * microphone showing one segment. 0.35 puts conversational speech
- * around the middle of the meter and leaves the top two segments — the
- * warm ones — for genuine clipping.
+ * The dBFS peak at which each of the seven segments lights — the SAME
+ * scale as the picker's meter, which reads whole dBFS peaks. The chip
+ * used to quantize linear RMS against a 0.35 full scale, so its first
+ * segment needed about −32 dBFS RMS: the picker read −33 dB and moved
+ * while the chip sat dark, and a quiet room flipped it to "no signal".
+ *
+ * The middle segments follow the picker's own advice ("peaks between −18
+ * and −6 dB are a good level"): good speech lights four or five, the warm
+ * sixth means hot, and the seventh is the clip zone. A quiet room lights
+ * one, which is the honest reading of a working microphone.
  */
-const RMS_FULL_SCALE = 0.35;
+const SEGMENT_THRESHOLDS_DB = [-54, -42, -30, -18, -12, -6, -1] as const;
+/**
+ * Below this a buffer carries no signal: −80 dBFS, under the noise floor
+ * of any working input. What it catches is a muted or dead input, which
+ * delivers zeros — the case the `silent` state exists to flag. Ambient
+ * noise in a quiet room sits well above it, so silence of the ROOM never
+ * reads as a fault of the MICROPHONE.
+ */
+const NO_SIGNAL_PEAK = 1e-4;
 
 export type MicPermission = "granted" | "denied" | "prompt" | "unsupported";
 
@@ -88,7 +101,7 @@ export type MicDevice = {
 export type MicrophoneMonitor = {
   /** 0..7 — already quantized to meter segments. */
   readonly segments: number;
-  /** True once enabled and no samples above the floor for 3s. */
+  /** True once enabled and the input has carried no signal at all for 3s. */
   readonly silent: boolean;
   readonly permission: MicPermission;
   readonly devices: readonly MicDevice[];
@@ -131,19 +144,18 @@ type MonitorOptions = {
   readonly preference?: RecordingDevicePreference | null | undefined;
 };
 
-function rmsOf(buffer: Float32Array): number {
-  let sum = 0;
-  for (let i = 0; i < buffer.length; i += 1) {
-    const sample = buffer[i]!;
-    sum += sample * sample;
-  }
-  return Math.sqrt(sum / buffer.length);
+/** Map a buffer's peak amplitude to a lit-segment count (0..7). */
+export function segmentsForPeak(peak: number): number {
+  if (!(peak > 0)) return 0;
+  const db = Math.min(0, 20 * Math.log10(peak));
+  let lit = 0;
+  for (const threshold of SEGMENT_THRESHOLDS_DB) if (db >= threshold) lit += 1;
+  return Math.min(METER_SEGMENTS, lit);
 }
 
-/** Map an RMS reading to a lit-segment count. */
-export function segmentsForRms(rms: number): number {
-  const scaled = Math.min(1, Math.max(0, rms / RMS_FULL_SCALE));
-  return Math.round(scaled * METER_SEGMENTS);
+/** True when a buffer's peak carries any signal at all (see `NO_SIGNAL_PEAK`). */
+export function hasSignal(peak: number): boolean {
+  return peak > NO_SIGNAL_PEAK;
 }
 
 /** A `getUserMedia` rejection, turned into something a chip can say. */
@@ -436,10 +448,11 @@ export function useMicrophoneMonitor({ enabled, preference }: MonitorOptions): M
 
         timer = setInterval(() => {
           analyser.getFloatTimeDomainData(buffer);
-          const next = segmentsForRms(rmsOf(buffer));
+          const peak = peakOf(buffer);
+          const next = segmentsForPeak(peak);
           // The fine meter goes to its own store; only the clip latch, which
           // flips a few times a minute at most, reaches React state.
-          meter.push(peakOf(buffer), Date.now());
+          meter.push(peak, Date.now());
           const nowClipping = meter.get().clipping;
           if (nowClipping !== wasClipping) {
             wasClipping = nowClipping;
@@ -452,7 +465,7 @@ export function useMicrophoneMonitor({ enabled, preference }: MonitorOptions): M
             setSegments(next);
           }
           const now = Date.now();
-          if (next > 0) lastSoundAt = now;
+          if (hasSignal(peak)) lastSoundAt = now;
           const nowSilent = now - lastSoundAt >= SILENCE_GRACE_MS;
           if (nowSilent !== wasSilent) {
             wasSilent = nowSilent;

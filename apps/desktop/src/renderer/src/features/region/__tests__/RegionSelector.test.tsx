@@ -39,6 +39,7 @@ type ModePayload = {
     camera: { deviceId: string; label: string } | null;
   };
   quickCaptureAction?: "ask" | "snap" | "record";
+  hudStyle?: "shutter" | "clapperboard";
   invocationId?: string;
   generation?: number;
 };
@@ -1928,21 +1929,27 @@ describe("U5 — multi-window pick set", () => {
 // ---------------------------------------------------------------------
 // U6 — Snap-vs-Record chooser (issue #75)
 // ---------------------------------------------------------------------
-// The chooser is NOT a modal step. `↵` still commits, and what it
-// commits is the policy's primary action; the other action lives on a
-// second key + a second button. So the tests below are mostly about two
-// things: which action a keystroke maps to, and whether the payload
-// gained an `action` field (a snap must stay byte-for-byte identical to
-// the pre-chooser wire shape).
+// The chooser is NOT a modal step. `↵` commits whichever mode is chosen:
+// Snap or Record. The mode starts where the policy says, and R / S (or
+// the HUD's mode control) switch it without committing. So the tests
+// below are mostly about two things: which mode a keystroke leaves the
+// show in, and whether the payload gained an `action` field (a snap must
+// stay byte-for-byte identical to the pre-chooser wire shape).
 describe("U6 — Snap-vs-Record chooser", () => {
-  /** The primary (↵) button; its `data-action` says what it commits. */
+  /** The shutter (↵); its `data-action` says what it commits. */
   function primaryButton(): HTMLElement {
     return hudButton("region-hud-capture");
   }
 
-  /** The secondary action button, or null when none is offered. */
-  function altButton(): HTMLElement | null {
-    const el = container?.querySelector('[data-testid="region-hud-alt"]');
+  /** The mode control's Record half, or null when no choice is offered. */
+  function recordModeButton(): HTMLElement | null {
+    const el = container?.querySelector('[data-testid="region-hud-mode-record"]');
+    return el instanceof HTMLElement ? el : null;
+  }
+
+  /** The mode control's Snap half, or null when no choice is offered. */
+  function snapModeButton(): HTMLElement | null {
+    const el = container?.querySelector('[data-testid="region-hud-mode-snap"]');
     return el instanceof HTMLElement ? el : null;
   }
 
@@ -1969,15 +1976,21 @@ describe("U6 — Snap-vs-Record chooser", () => {
     await drawRect();
     expect(document.body.dataset.chooserBar).toBe("true");
     expect(primaryButton().dataset.action).toBe("snap");
-    expect(primaryButton().textContent).toContain("Capture");
-    expect(altButton()?.dataset.action).toBe("record");
-    expect(altButton()?.textContent).toContain("Record");
+    expect(primaryButton().getAttribute("aria-label")).toContain("Capture");
+    expect(snapModeButton()?.getAttribute("aria-pressed")).toBe("true");
+    expect(recordModeButton()?.getAttribute("aria-pressed")).toBe("false");
   });
 
-  test("ask: R records the latched selection", async () => {
+  test("ask: R switches to Record without committing, and ↵ records", async () => {
     await mountScene({ mode: "auto", quickCaptureAction: "ask" });
     await drawRect();
     await keyDown("r");
+    // Choosing is not committing: the sources come out in Record mode,
+    // and the user has to be able to look at them before the take.
+    expect(submitRegion).not.toHaveBeenCalled();
+    expect(primaryButton().dataset.action).toBe("record");
+    expect(recordModeButton()?.getAttribute("aria-pressed")).toBe("true");
+    await keyDown("Enter");
     expect(submitRegion).toHaveBeenCalledTimes(1);
     const payload = submitRegion.mock.calls[0]?.[0];
     expect(payload.action).toBe("record");
@@ -1987,13 +2000,53 @@ describe("U6 — Snap-vs-Record chooser", () => {
     expect(payload.rect).toEqual({ x: 100, y: 100, w: 200, h: 200 });
   });
 
-  test("ask: the Record button commits the same thing R does", async () => {
+  test("ask: the mode control's Record does what R does, and the shutter commits it", async () => {
     await mountScene({ mode: "auto", quickCaptureAction: "ask" });
     await drawRect();
-    const alt = altButton();
-    expect(alt).not.toBeNull();
-    await clickEl(alt as HTMLElement);
+    const record = recordModeButton();
+    expect(record).not.toBeNull();
+    await clickEl(record as HTMLElement);
+    expect(submitRegion).not.toHaveBeenCalled();
+    expect(primaryButton().dataset.action).toBe("record");
+    await clickEl(primaryButton());
     expect(submitRegion.mock.calls[0]?.[0].action).toBe("record");
+  });
+
+  test("Escape stepping back from a selection keeps the chosen mode", async () => {
+    // The show goes on after a step back: the user is redrawing, not
+    // leaving. Dropping to Snap here made the next ↵ take a still under
+    // the `record` policy, with the rocker silently flipped.
+    await mountScene({ mode: "auto", quickCaptureAction: "record" });
+    await drawRect();
+    await keyDown("Escape");
+    expect(document.body.dataset.interaction).toBe("snap");
+    await drawRect();
+    expect(primaryButton().dataset.action).toBe("record");
+    await keyDown("Enter");
+    expect(submitRegion.mock.calls[0]?.[0].action).toBe("record");
+  });
+
+  test("leaving the selector resets the mode for the next show", async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "ask" });
+    await drawRect();
+    await keyDown("r");
+    await keyDown("Enter");
+    expect(submitRegion.mock.calls[0]?.[0].action).toBe("record");
+    // Same pre-warmed window, no re-seed yet: the mode must not survive
+    // the commit that hid it.
+    expect(document.body.dataset.quickAction).toBe("ask");
+    expect(hud()).toBeNull();
+  });
+
+  test("ask: S switches back to Snap", async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "ask" });
+    await drawRect();
+    await keyDown("r");
+    await keyDown("s");
+    expect(submitRegion).not.toHaveBeenCalled();
+    expect(primaryButton().dataset.action).toBe("snap");
+    const payload = await commitAndRead();
+    expect(payload).not.toHaveProperty("action");
   });
 
   test("ask: R records a single-window pick without extents", async () => {
@@ -2003,22 +2056,24 @@ describe("U6 — Snap-vs-Record chooser", () => {
     await clickWindow(WIN);
     expect(document.body.dataset.pickCount).toBe("1");
     await keyDown("R");
+    await keyDown("Enter");
     const payload = submitRegion.mock.calls[0]?.[0];
     expect(payload.action).toBe("record");
     expect(payload).not.toHaveProperty("extents");
     expect(payload.snappedWindowId).toBe(WIN.windowId);
   });
 
-  test("R needs a bare press — ⌘R / ⌃R must not start a recording", async () => {
+  test("R needs a bare press — ⌘R / ⌃R must not switch to Record", async () => {
     // ⌘R is Reload in a dev build and ⌃R is a shell history search.
-    // Neither may be a screen recording.
+    // Neither may set up a screen recording.
     await mountScene({ mode: "auto", quickCaptureAction: "ask" });
     await drawRect();
     await keyDown("r", { metaKey: true });
     await keyDown("r", { ctrlKey: true });
-    expect(submitRegion).not.toHaveBeenCalled();
+    expect(primaryButton().dataset.action).toBe("snap");
     await keyDown("r");
-    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(primaryButton().dataset.action).toBe("record");
+    expect(submitRegion).not.toHaveBeenCalled();
   });
 
   test("C toggles the cursor bake on the chooser path", async () => {
@@ -2030,10 +2085,16 @@ describe("U6 — Snap-vs-Record chooser", () => {
     // sampled before the selector even showed. An unqualified label
     // promised the user a toggle over the screenshot they were about
     // to take.
+    // Snap mode has nothing to bake the cursor into, so C is not
+    // advertised or bound until Record is chosen.
+    expect(regionHintText()).not.toContain("rec cursor");
+    await keyDown("r");
     expect(regionHintText()).toContain("rec cursor: on");
+    expect(hudButton("region-hud-cursor").getAttribute("aria-pressed")).toBe("true");
     await keyDown("c");
     expect(regionHintText()).toContain("rec cursor: off");
-    await keyDown("r");
+    expect(hudButton("region-hud-cursor").getAttribute("aria-pressed")).toBe("false");
+    await keyDown("Enter");
     expect(submitRegion.mock.calls[0]?.[0].captureCursor).toBe(false);
   });
 
@@ -2059,12 +2120,12 @@ describe("U6 — Snap-vs-Record chooser", () => {
     expect(submitRegion.mock.calls[0]?.[0]).not.toHaveProperty("action");
   });
 
-  test("record policy: ↵ records and S takes the snap", async () => {
+  test("record policy: the show starts on Record, and ↵ records", async () => {
     await mountScene({ mode: "auto", quickCaptureAction: "record" });
     await drawRect();
     expect(primaryButton().dataset.action).toBe("record");
-    expect(primaryButton().textContent).toContain("Record");
-    expect(altButton()?.dataset.action).toBe("snap");
+    expect(primaryButton().getAttribute("aria-label")).toContain("Record");
+    expect(snapModeButton()?.getAttribute("aria-pressed")).toBe("false");
     await keyDown("Enter");
     expect(submitRegion.mock.calls[0]?.[0].action).toBe("record");
   });
@@ -2080,15 +2141,17 @@ describe("U6 — Snap-vs-Record chooser", () => {
     expect(regionHintText()).toContain("snap");
   });
 
-  test("record policy: S escapes to a plain snap", async () => {
+  test("record policy: S switches to a plain snap", async () => {
     await mountScene({ mode: "auto", quickCaptureAction: "record" });
     await drawRect();
     await keyDown("s");
+    expect(submitRegion).not.toHaveBeenCalled();
+    await keyDown("Enter");
     expect(submitRegion).toHaveBeenCalledTimes(1);
     expect(submitRegion.mock.calls[0]?.[0]).not.toHaveProperty("action");
   });
 
-  test("S is unbound unless Record has taken over ↵", async () => {
+  test("S is unbound unless Record is chosen", async () => {
     await mountScene({ mode: "auto", quickCaptureAction: "ask" });
     await drawRect();
     await keyDown("s");
@@ -2105,10 +2168,12 @@ describe("U6 — Snap-vs-Record chooser", () => {
     await clickWindow(WIN, { metaKey: true });
     await clickWindow(WIN_B);
     expect(document.body.dataset.pickCount).toBe("2");
-    const alt = altButton();
-    expect(alt).not.toBeNull();
-    expect((alt as HTMLButtonElement).disabled).toBe(true);
+    const record = recordModeButton();
+    expect(record).not.toBeNull();
+    expect(record?.getAttribute("aria-disabled")).toBe("true");
     await keyDown("r");
+    await clickEl(record as HTMLElement);
+    expect(primaryButton().dataset.action).toBe("snap");
     expect(submitRegion).not.toHaveBeenCalled();
     // The legend says why, rather than the key silently doing nothing.
     expect(regionHintText()).toContain("one rectangle only");
@@ -2137,10 +2202,11 @@ describe("U6 — Snap-vs-Record chooser", () => {
     await mountScene({ mode: "auto", quickCaptureAction: "ask" });
     await clickWindow(WIN, { metaKey: true });
     await clickWindow(WIN_B);
-    expect((altButton() as HTMLButtonElement).disabled).toBe(true);
+    expect(recordModeButton()?.getAttribute("aria-disabled")).toBe("true");
     await clickWindow(WIN_B); // remove
-    expect((altButton() as HTMLButtonElement).disabled).toBe(false);
+    expect(recordModeButton()?.getAttribute("aria-disabled")).toBe("false");
     await keyDown("r");
+    await keyDown("Enter");
     expect(submitRegion.mock.calls[0]?.[0].action).toBe("record");
   });
 
@@ -2151,9 +2217,9 @@ describe("U6 — Snap-vs-Record chooser", () => {
     await mountScene({ mode: "auto", intent: "video", quickCaptureAction: "record" });
     await drawRect();
     // The HUD here is the video selector's recording bar, not a
-    // chooser: no second action, and `data-chooser-bar` stays false
+    // chooser: no mode control, and `data-chooser-bar` stays false
     // however the policy is set.
-    expect(altButton()).toBeNull();
+    expect(recordModeButton()).toBeNull();
     expect(document.body.dataset.chooserBar).toBe("false");
     await keyDown("s");
     expect(submitRegion).not.toHaveBeenCalled();
@@ -2196,7 +2262,7 @@ describe("U6 — Snap-vs-Record chooser", () => {
     expect(hudChips()).toHaveLength(2);
     expect(primaryButton().dataset.action).toBe("snap");
     // ...and still no chooser: that is what the policy asked for.
-    expect(altButton()).toBeNull();
+    expect(recordModeButton()).toBeNull();
     expect(document.body.dataset.chooserBar).toBe("false");
   });
 
@@ -2224,25 +2290,25 @@ describe("U6 — Snap-vs-Record chooser", () => {
     // SCREENSHOT. The button's own handler has to win.
     await mountScene({ mode: "auto", quickCaptureAction: "ask" });
     await drawRect();
-    const alt = altButton() as HTMLButtonElement;
-    expect(alt.dataset.action).toBe("record");
+    const record = recordModeButton() as HTMLButtonElement;
     await act(async () => {
-      alt.focus();
+      record.focus();
     });
-    await keyDownOn(alt, "Enter");
+    await keyDownOn(record, "Enter");
     // The global handler stood down: no snap was committed behind the
     // button's back.
     expect(submitRegion).not.toHaveBeenCalled();
     // jsdom does not synthesize click-from-Enter, so drive the
     // activation the browser would have performed.
     await act(async () => {
-      alt.click();
+      record.click();
     });
-    expect(submitRegion.mock.calls[0]?.[0].action).toBe("record");
+    expect(primaryButton().dataset.action).toBe("record");
+    expect(submitRegion).not.toHaveBeenCalled();
     // Space is the other activation key, and `adjusting` claimed it for
     // space-to-move. It must not be swallowed here either.
     expect(document.body.dataset.spaceHeld ?? "false").toBe("false");
-    await keyDownOn(alt, " ");
+    await keyDownOn(record, " ");
     expect(document.body.dataset.spaceHeld ?? "false").toBe("false");
   });
 
@@ -2258,6 +2324,73 @@ describe("U6 — Snap-vs-Record chooser", () => {
     expect(hud()).toBeNull();
     await keyDown("Enter");
     expect(submitRegion.mock.calls[0]?.[0]).not.toHaveProperty("action");
+  });
+});
+
+describe("selector HUD style", () => {
+  test("the Shutter is the default: a round shutter, and Record mode brings the orbs", async () => {
+    await mountScene({
+      mode: "auto",
+      quickCaptureAction: "ask",
+      sources: { microphone: false, systemAudio: false }
+    });
+    await drawRect();
+    const bar = hud()!;
+    expect(bar.dataset.hudStyle).toBe("shutter");
+    expect(bar.dataset.mode).toBe("snap");
+    expect(hudButton("region-hud-capture").classList.contains("region-hud__shutter")).toBe(true);
+    expect(bar.querySelector(".region-hud__wing")).toBeNull();
+    // The "?" is inside the HUD once there is one, and only there.
+    expect(container!.querySelectorAll('[data-testid="region-hint-toggle"]')).toHaveLength(1);
+    expect(bar.querySelector('[data-testid="region-hint-toggle"]')).not.toBeNull();
+    await keyDown("r");
+    expect(bar.dataset.mode).toBe("record");
+    const orbs = bar.querySelectorAll(".region-hud__wing .ps-chip--orb");
+    // Cursor, microphone, system audio.
+    expect(Array.from(orbs, (orb) => (orb as HTMLElement).dataset.source)).toEqual([
+      "cursor",
+      "microphone",
+      "systemAudio"
+    ]);
+  });
+
+  test("the Clapperboard draws a slate in Record mode, under a clapper stripe", async () => {
+    await mountScene({
+      mode: "auto",
+      quickCaptureAction: "ask",
+      hudStyle: "clapperboard",
+      sources: { microphone: false, systemAudio: false }
+    });
+    await drawRect();
+    const bar = hud()!;
+    expect(bar.dataset.hudStyle).toBe("clapperboard");
+    expect(hudButton("region-hud-capture").classList.contains("region-hud__go")).toBe(true);
+    expect(hudButton("region-hud-capture").textContent).toContain("Capture");
+    expect(bar.querySelector(".region-hud__clap")).toBeNull();
+    expect(bar.querySelector(".region-hud__slate")).toBeNull();
+    await keyDown("r");
+    expect(hudButton("region-hud-capture").textContent).toContain("Record");
+    expect(bar.querySelector(".region-hud__clap")).not.toBeNull();
+    const cells = bar.querySelectorAll(".region-hud__slate .ps-chip--cell");
+    expect(Array.from(cells, (cell) => (cell as HTMLElement).dataset.source)).toEqual([
+      "microphone",
+      "systemAudio",
+      "cursor"
+    ]);
+    // Same keys, same commit, whichever bar draws them.
+    await keyDown("c");
+    await keyDown("Enter");
+    expect(submitRegion.mock.calls[0]?.[0].action).toBe("record");
+    expect(submitRegion.mock.calls[0]?.[0].captureCursor).toBe(false);
+  });
+
+  test("the style is re-read on every show of the pre-warmed window", async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "ask", hudStyle: "clapperboard" });
+    await drawRect();
+    expect(hud()!.dataset.hudStyle).toBe("clapperboard");
+    await emitMode({ mode: "auto", quickCaptureAction: "ask" });
+    await drawRect();
+    expect(hud()!.dataset.hudStyle).toBe("shutter");
   });
 });
 
@@ -2342,7 +2475,7 @@ describe("U7 — recording source chips", () => {
     // `action` on the video path — but a button labelled "Capture" in
     // a recording selector is a lie about the very next click.
     await mountScene({ mode: "auto", intent: "video", sources: BOTH_OFF });
-    expect(hudButton("region-hud-capture").textContent).toContain("Record");
+    expect(hudButton("region-hud-capture").getAttribute("aria-label")).toContain("Record");
   });
 
   test("no seed means no chips, and no claim on the wire", async () => {
@@ -2431,7 +2564,7 @@ describe("U7 — recording source chips", () => {
   });
 
   describe("on a Quick Capture", () => {
-    test("the chips appear only once a selection is latched", async () => {
+    test("the chips appear only in Record mode", async () => {
       await mountScene({
         mode: "auto",
         quickCaptureAction: "ask",
@@ -2440,39 +2573,77 @@ describe("U7 — recording source chips", () => {
       await mouseMove(400, 300);
       expect(micChip()).toBeNull();
       await drawRect();
+      // Snap mode: nothing to configure, so nothing drawn.
+      expect(micChip()).toBeNull();
+      await keyDown("r");
+      expect(micChip()).not.toBeNull();
+      await keyDown("s");
+      expect(micChip()).toBeNull();
+    });
+
+    test("Record mode raises the HUD even in live snap", async () => {
+      // The sources have to be reachable before ↵, and in live snap ↵ is
+      // the very next thing.
+      await mountScene({
+        mode: "auto",
+        quickCaptureAction: "ask",
+        sources: BOTH_OFF
+      });
+      await mouseMove(400, 300);
+      expect(hud()).toBeNull();
+      await keyDown("r");
+      expect(hud()).not.toBeNull();
       expect(micChip()).not.toBeNull();
     });
 
-    test("they do not open the microphone before the user asks", async () => {
-      // The rule the whole `sourcesTouched` latch exists for: someone
-      // about to take a silent screenshot must not get the macOS orange
-      // indicator, or a first-use TCC prompt, because a seeded chip
-      // said the microphone was on.
+    test("they do not open the microphone before the user chooses Record", async () => {
+      // Someone about to take a silent screenshot must not get the macOS
+      // orange indicator, or a first-use TCC prompt, because a seeded
+      // chip said the microphone was on.
       await mountScene({
         mode: "auto",
         quickCaptureAction: "ask",
         sources: { microphone: true, systemAudio: false }
       });
       await drawRect();
-      expect(micChip()).not.toBeNull();
-      expect(getUserMedia).not.toHaveBeenCalled();
-      // Armed, with no claim about signal — so no meter to misread.
-      expect(micChip()?.dataset.state).toBe("live");
-      expect(micChip()?.querySelector(".ps-meter")).toBeNull();
-    });
-
-    test("touching a chip is what earns the device", async () => {
-      await mountScene({
-        mode: "auto",
-        quickCaptureAction: "ask",
-        sources: BOTH_OFF
+      await act(async () => {
+        await Promise.resolve();
       });
-      await drawRect();
-      await keyDown("m");
+      expect(getUserMedia).not.toHaveBeenCalled();
+      await keyDown("r");
       await act(async () => {
         await Promise.resolve();
       });
       expect(getUserMedia).toHaveBeenCalled();
+      expect(micChip()?.dataset.state).not.toBe("off");
+    });
+
+    test("leaving Record mode closes the microphone again", async () => {
+      const stop = vi.fn();
+      getUserMedia.mockResolvedValue({
+        getTracks: () => [{ stop, getSettings: () => ({ deviceId: "default" }) }],
+        getAudioTracks: () => [{ stop, getSettings: () => ({ deviceId: "default" }) }]
+      });
+      await mountScene({
+        mode: "auto",
+        quickCaptureAction: "ask",
+        sources: { microphone: true, systemAudio: false }
+      });
+      await drawRect();
+      await keyDown("r");
+      for (let i = 0; i < 4; i += 1) {
+        await act(async () => {
+          await Promise.resolve();
+        });
+      }
+      expect(getUserMedia).toHaveBeenCalled();
+      await keyDown("s");
+      for (let i = 0; i < 4; i += 1) {
+        await act(async () => {
+          await Promise.resolve();
+        });
+      }
+      expect(stop).toHaveBeenCalled();
     });
 
     test("a record-primary policy opens it without being touched", async () => {
@@ -2510,6 +2681,7 @@ describe("U7 — recording source chips", () => {
       });
       await drawRect();
       await keyDown("r");
+      await keyDown("Enter");
       const payload = submitRegion.mock.calls[0]?.[0];
       expect(payload.action).toBe("record");
       expect(payload.sources).toEqual({ microphone: true, systemAudio: false });
@@ -2529,19 +2701,20 @@ describe("U7 — recording source chips", () => {
         sources: BOTH_OFF
       });
       await mouseMove(400, 300);
-      // Live snap: no HUD, so no chips, so no binding — and now no ad.
+      // Snap mode: no chips, so no binding — and no ad, for the cursor
+      // bake either: a still has nothing to bake it into.
       expect(micChip()).toBeNull();
       expect(regionHintText()).not.toContain("mic:");
       expect(regionHintText()).not.toContain("system audio:");
-      // `C` really is bound here (its guard carries no HUD term), so it
-      // stays advertised. That asymmetry is the point: the line is
-      // trustworthy per key, not all-or-nothing.
-      expect(regionHintText()).toContain("rec cursor:");
+      expect(regionHintText()).not.toContain("rec cursor:");
 
       await drawRect();
+      expect(regionHintText()).not.toContain("mic:");
+      await keyDown("r");
       expect(micChip()).not.toBeNull();
       expect(regionHintText()).toContain("mic:");
       expect(regionHintText()).toContain("system audio:");
+      expect(regionHintText()).toContain("rec cursor:");
     });
 
     test("the keys the legend withholds really are dead", async () => {
@@ -2561,8 +2734,10 @@ describe("U7 — recording source chips", () => {
         await Promise.resolve();
       });
       expect(getUserMedia).not.toHaveBeenCalled();
-      // Latch the selection and the seeded answer is untouched.
+      // Latch the selection, choose Record, and the seeded answer is
+      // untouched.
       await drawRect();
+      await keyDown("r");
       expect(micChip()?.dataset.state).toBe("off");
       expect(sysChip()?.dataset.state).toBe("off");
     });
@@ -2695,10 +2870,7 @@ describe("U7 — recording source chips", () => {
       expect(payload.sources).toEqual({ microphone: false, systemAudio: false });
     });
 
-    test("an unopened microphone on a Quick Capture asks the recorder for the saved one", async () => {
-      // The chip shows the saved name before anything is opened, so that
-      // is what the take is told to record; the recorder refuses rather
-      // than substitute a different microphone.
+    test("Record mode opens the saved microphone, and the take is handed it", async () => {
       await mountScene({
         mode: "auto",
         quickCaptureAction: "ask",
@@ -2708,24 +2880,66 @@ describe("U7 — recording source chips", () => {
       await mouseMove(400, 300);
       await drawRect();
       expect(getUserMedia).not.toHaveBeenCalled();
-      expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(shortDeviceLabel(GRANOLA.label));
       await keyDown("r");
-      // Record first checks the saved microphone is still attached.
       await settle();
-      expect(getUserMedia).not.toHaveBeenCalled();
+      expect(getUserMedia).toHaveBeenCalledWith({ audio: { deviceId: { exact: GRANOLA.deviceId } } });
+      expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(shortDeviceLabel(GRANOLA.label));
+      await keyDown("Enter");
+      await settle();
       expect(submitRegion.mock.calls[0]?.[0].sources).toEqual({
         ...MIC_ON,
         microphoneDevice: { label: GRANOLA.label }
       });
     });
 
+    test("a saved microphone that has gone records the default the chip names", async () => {
+      // Record mode opens the microphone, so by ↵ the chip names the
+      // device that is actually open — the default — and the picker says
+      // the saved one is not connected. That is the take's microphone.
+      const MUESLI = { deviceId: "id-muesli", label: "Muesli Mic" };
+      const opened = getUserMedia.getMockImplementation()!;
+      getUserMedia.mockImplementation(async (constraints: { audio: true | { deviceId: { exact: string } } }) => {
+        if (constraints.audio !== true && constraints.audio.deviceId.exact === MUESLI.deviceId) {
+          throw Object.assign(new Error("not attached"), { name: "OverconstrainedError" });
+        }
+        return opened(constraints);
+      });
+      await mountScene({
+        mode: "auto",
+        quickCaptureAction: "ask",
+        sources: MIC_ON,
+        devices: { microphone: MUESLI, camera: null }
+      });
+      await drawRect();
+      await keyDown("r");
+      await settle();
+      expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(shortDeviceLabel(OATMEAL.label));
+      await act(async () => {
+        micChip()!.querySelector<HTMLButtonElement>(".ps-chip__devices")!.click();
+      });
+      expect(
+        container!.querySelector('[data-testid="region-hud-mic-devices"]')!.textContent
+      ).toContain("“Muesli Mic” is not connected");
+      await keyDown("Escape");
+      await keyDown("Enter");
+      await settle();
+      expect(submitRegion.mock.calls[0]?.[0].sources).toEqual(MIC_ON);
+      // The fallback is for this take; the saved pick is not overwritten.
+      expect(window.pwrsnapApi!.dispatch).not.toHaveBeenCalledWith("settings:write", expect.anything());
+    });
+
+    // A ↵ that lands before the microphone has opened — the `record`
+    // policy's very first frame, or R and ↵ in quick succession — has only
+    // the saved name to go on, so it checks the device is still attached.
     describe("the check at Record", () => {
       const MUESLI = { deviceId: "id-muesli", label: "Muesli Mic" };
 
       async function quickCaptureWithSaved(saved: typeof MUESLI): Promise<void> {
+        // The open never answers, so the microphone stays unopened.
+        getUserMedia.mockImplementation(() => new Promise(() => undefined));
         await mountScene({
           mode: "auto",
-          quickCaptureAction: "ask",
+          quickCaptureAction: "record",
           sources: MIC_ON,
           devices: { microphone: saved, camera: null }
         });
@@ -2736,33 +2950,15 @@ describe("U7 — recording source chips", () => {
       test("a saved microphone that has gone stops the take and opens the picker", async () => {
         // The chip said "Muesli Mic". Recording something else would make
         // the chip a lie; failing the start would tell the user after the
-        // fact. Neither: the picker opens on the default, and says why.
-        const opened = getUserMedia.getMockImplementation()!;
-        getUserMedia.mockImplementation(async (constraints: { audio: true | { deviceId: { exact: string } } }) => {
-          if (constraints.audio !== true && constraints.audio.deviceId.exact === MUESLI.deviceId) {
-            throw Object.assign(new Error("not attached"), { name: "OverconstrainedError" });
-          }
-          return opened(constraints);
-        });
+        // fact. Neither: the take does not start, and the picker opens.
         await quickCaptureWithSaved(MUESLI);
-        expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(shortDeviceLabel(MUESLI.label));
-        await keyDown("r");
+        await keyDown("Enter");
         await settle();
         expect(submitRegion).not.toHaveBeenCalled();
-        const picker = container!.querySelector('[data-testid="region-hud-mic-devices"]');
-        expect(picker).not.toBeNull();
-        expect(picker!.textContent).toContain("“Muesli Mic” is not connected");
+        expect(container!.querySelector('[data-testid="region-hud-mic-devices"]')).not.toBeNull();
         expect(document.activeElement).toBe(
           container!.querySelector("[data-testid='region-hud-mic-default']")
         );
-        // The picker opened the default, and the chip now names it.
-        expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(shortDeviceLabel(OATMEAL.label));
-        // The next Record takes the default the chip shows.
-        await keyDown("r");
-        await settle();
-        expect(submitRegion).toHaveBeenCalledTimes(1);
-        expect(submitRegion.mock.calls[0]?.[0].sources).toEqual(MIC_ON);
-        // The fallback is for this take; the saved pick is not overwritten.
         expect(window.pwrsnapApi!.dispatch).not.toHaveBeenCalledWith("settings:write", expect.anything());
       });
 
@@ -2772,7 +2968,7 @@ describe("U7 — recording source chips", () => {
           { kind: "audioinput", deviceId: "id-x", label: "" }
         ]);
         await quickCaptureWithSaved(MUESLI);
-        await keyDown("r");
+        await keyDown("Enter");
         await settle();
         expect(submitRegion.mock.calls[0]?.[0].sources).toEqual({
           ...MIC_ON,
@@ -2782,15 +2978,16 @@ describe("U7 — recording source chips", () => {
 
       test("a check that answers after the selection was dropped does nothing", async () => {
         let answer: (devices: unknown[]) => void = () => undefined;
+        await quickCaptureWithSaved(GRANOLA);
+        enumerateDevices.mockReset();
         enumerateDevices.mockImplementation(
           () => new Promise((resolve) => {
             answer = resolve;
           })
         );
-        await quickCaptureWithSaved(GRANOLA);
-        await keyDown("r");
+        await keyDown("Enter");
         // A second press while the check is out does not start a second one.
-        await keyDown("r");
+        await keyDown("Enter");
         expect(enumerateDevices).toHaveBeenCalledTimes(1);
         await keyDown("Escape");
         await act(async () => answer([{ kind: "audioinput", ...GRANOLA }]));

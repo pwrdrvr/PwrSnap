@@ -93,6 +93,8 @@ import {
   isLocalAgentCapability,
   isQuickCaptureAction,
   QUICK_CAPTURE_ACTION_DEFAULT,
+  SELECTOR_HUD_STYLE_DEFAULT,
+  isSelectorHudStyle,
   RECORDING_MEDIA_DEFAULTS,
   findRoleForCapabilities,
   defaultLocalAgentRoleConstraints,
@@ -258,6 +260,7 @@ export function defaultSettings(
       // step — ↵ still snaps. Users who never want the affordance pick
       // "snap"; users who mostly record pick "record".
       quickCaptureAction: QUICK_CAPTURE_ACTION_DEFAULT,
+      selectorHud: SELECTOR_HUD_STYLE_DEFAULT,
       // Audio OFF, video cursor ON — from shared, because the capture
       // path needs the same three values when its settings read fails
       // and must not import this module to get them. Rationale for each
@@ -1059,6 +1062,10 @@ function parseV1(
         recording.quickCaptureAction,
         defaults.recording.quickCaptureAction
       ),
+      // Additive too: an older file takes the shutter.
+      selectorHud: isSelectorHudStyle(recording.selectorHud)
+        ? recording.selectorHud
+        : defaults.recording.selectorHud,
       includeSystemAudio: pickBoolean(recording.includeSystemAudio, defaults.recording.includeSystemAudio),
       includeMicrophone: pickBoolean(recording.includeMicrophone, defaults.recording.includeMicrophone),
       // `mp4Include*` landed with the MP4 export audio toggle; older files

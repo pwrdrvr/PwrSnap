@@ -3,15 +3,12 @@
  * One control carrying four facts at once: WHICH source, whether it is
  * ON, whether signal is actually ARRIVING, and what is BLOCKING it.
  *
- * The same element appears in three surfaces at three densities:
- *   - region selector  — a control (label + meter + device caret + key)
+ * The same element appears in three surfaces:
+ *   - region selector  — a Shutter orb (`--orb`) or a Clapperboard
+ *                        slate cell (`--cell`), per the selector HUD
+ *                        setting; `--tile` is the older two-line control
  *   - recording HUD    — a monitor  (`--dense`: glyph + meter only)
  *   - float-over toast — a receipt  (`--static`: no hover, no pointer)
- *
- * Geometry is deliberately copied from `.region-hud__toggle` in
- * region.css (30px tall, 8px radius, 1px border, mono <kbd>) so that in
- * the selector it reads as a PEER of the shipped "Rec cursor: on [C]"
- * toggle rather than as a new species of control.
  *
  * Every color is a token. The recording HUD it sits in is painted on a
  * near-opaque black scrim rather than a themed panel, so the few values
@@ -393,4 +390,331 @@
   .ps-meter i {
     transition: none;
   }
+}
+
+/* ---------------- selector HUD: orb (Shutter) ----------------
+   A 34px round toggle carrying its own signal, and one caption line under
+   it. The box is a fixed width, so a long device name is cut short in the
+   caption and carried whole in the fast tooltip; nothing on the bar moves
+   when the device, or the reason, changes. The group draws no chrome of
+   its own: the orb does. */
+.ps-chip.ps-chip--orb {
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 7px;
+  width: 92px;
+  height: auto;
+  padding: 4px 0 2px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-muted);
+}
+.ps-chip.ps-chip--orb[data-source="systemAudio"],
+.ps-chip.ps-chip--orb[data-source="cursor"] {
+  width: 56px;
+}
+/* Every state paints the orb, not the group. */
+.ps-chip.ps-chip--orb[data-state],
+.ps-chip.ps-chip--orb[data-state]:hover {
+  border-color: transparent;
+  background: transparent;
+}
+.ps-chip--orb > .ps-chip__body {
+  align-self: center;
+}
+.ps-orb {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-primary) 10%, transparent);
+  color: var(--text-muted);
+  transition: background 0.15s, box-shadow 0.15s, color 0.15s;
+}
+.ps-orb .ps-chip__ico {
+  width: 16px;
+  height: 16px;
+}
+.ps-chip--orb:hover .ps-orb {
+  background: color-mix(in srgb, var(--text-primary) 11%, transparent);
+  color: var(--text-secondary);
+}
+.ps-chip--orb[data-state="live"] .ps-orb,
+.ps-chip--orb[data-state="silent"] .ps-orb {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+  color: var(--accent);
+}
+.ps-chip--orb[data-state="ask"] .ps-orb,
+.ps-chip--orb[data-state="nodevice"] .ps-orb {
+  background: var(--warn-soft);
+  box-shadow: inset 0 0 0 1px var(--warn-border);
+  color: var(--warn);
+}
+.ps-chip--orb[data-state="denied"] .ps-orb {
+  background: var(--danger-soft);
+  box-shadow: inset 0 0 0 1px var(--danger-border);
+  color: var(--danger-text);
+}
+.ps-chip--orb[data-state="unsupported"] .ps-orb {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+  color: var(--text-subtle);
+}
+/* The microphone's level: a ring just outside the orb, filled clockwise.
+   One element, a conic gradient masked down to a 2.5px band. */
+.ps-orb__ring {
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--accent) var(--lvl, 0%),
+    color-mix(in srgb, var(--text-primary) 10%, transparent) 0
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), currentColor calc(100% - 2px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), currentColor calc(100% - 2px));
+  pointer-events: none;
+}
+/* Granted, armed, and nothing arriving: a warm empty ring, not a dark one. */
+.ps-orb__ring[data-tone="flat"] {
+  background: color-mix(in srgb, var(--warn) 40%, transparent);
+}
+.ps-chip--orb[data-clipping="true"] .ps-orb__ring {
+  background: conic-gradient(var(--danger) var(--lvl, 0%), color-mix(in srgb, var(--danger) 30%, transparent) 0);
+}
+/* The camera's picture fills the orb. */
+.ps-orb__media {
+  position: absolute;
+  inset: 2px;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--bg-app);
+}
+.ps-orb__media video,
+.ps-cell__media video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* A live preview reads as a mirror. The recording is not mirrored. */
+  transform: scaleX(-1);
+}
+/* The device caret: a badge on the orb's lower right. */
+.ps-chip--orb > .ps-chip__devices {
+  position: absolute;
+  top: 27px;
+  left: calc(50% + 6px);
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--bg-panel-elevated);
+  box-shadow:
+    0 0 0 2px var(--bg-panel),
+    inset 0 0 0 1px color-mix(in srgb, var(--text-primary) 18%, transparent);
+  color: var(--text-secondary);
+}
+.ps-chip--orb .ps-chip__caret {
+  width: auto;
+  height: auto;
+  margin: 0;
+  color: inherit;
+}
+.ps-chip--orb:hover .ps-chip__caret {
+  background: none;
+}
+.ps-chip--orb > .ps-chip__devices:hover {
+  color: var(--text-primary);
+  background: var(--bg-panel-hover);
+}
+.ps-chip--orb > .ps-chip__cap {
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 0 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 500 10px/12px var(--font-sans);
+  color: var(--text-muted);
+}
+.ps-chip--orb > .ps-chip__cap > .ps-chip__dev,
+.ps-chip--cell > .ps-chip__cap > .ps-chip__dev,
+.ps-chip--orb > .ps-chip__cap > .ps-chip__why,
+.ps-chip--cell > .ps-chip__cap > .ps-chip__why {
+  color: inherit;
+  font: inherit;
+  opacity: 1;
+}
+.ps-chip--orb[data-state="live"] > .ps-chip__cap,
+.ps-chip--orb[data-state="silent"] > .ps-chip__cap {
+  color: var(--text-secondary);
+}
+.ps-chip--orb[data-state="ask"] > .ps-chip__cap,
+.ps-chip--orb[data-state="nodevice"] > .ps-chip__cap {
+  color: var(--warn-text);
+}
+.ps-chip--orb[data-state="denied"] > .ps-chip__cap {
+  color: var(--danger-text);
+}
+.ps-chip--orb > .ps-chip__act {
+  margin: -2px 0 0;
+  padding: 1px 7px;
+  font-size: 10px;
+}
+.ps-chip--orb[data-state="ask"] > .ps-chip__act {
+  color: var(--warn-text);
+}
+.ps-chip--orb[data-state="denied"] > .ps-chip__act {
+  color: var(--danger-text);
+}
+
+/* ---------------- selector HUD: cell (Clapperboard) ----------------
+   A slate cell: an eyebrow and the signal on the top line, the device or
+   the reason on the bottom line, the caret beside it. Fixed widths, for
+   the same reason as the orb; the name line ellipsizes. */
+.ps-chip.ps-chip--cell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-rows: 12px 14px;
+  grid-template-areas:
+    "body body body"
+    "cap  act  caret";
+  align-items: center;
+  column-gap: 0;
+  row-gap: 8px;
+  height: auto;
+  padding: 11px 12px 12px;
+  border: 0;
+  border-radius: 0;
+  color: var(--text-muted);
+}
+.ps-chip.ps-chip--cell[data-source="microphone"] { width: 172px; }
+.ps-chip.ps-chip--cell[data-source="systemAudio"] { width: 96px; }
+.ps-chip.ps-chip--cell[data-source="camera"] { width: 188px; }
+.ps-chip.ps-chip--cell[data-source="cursor"] { width: 102px; }
+.ps-chip.ps-chip--cell[data-state],
+.ps-chip.ps-chip--cell[data-state]:hover {
+  border-color: transparent;
+  background: transparent;
+}
+.ps-chip.ps-chip--cell[data-state]:hover {
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+}
+/* `:hover` too, or the hover tint above outranks the fill and a
+   blocked source loses its colour under the pointer. */
+.ps-chip.ps-chip--cell[data-state="ask"],
+.ps-chip.ps-chip--cell[data-state="ask"]:hover,
+.ps-chip.ps-chip--cell[data-state="nodevice"],
+.ps-chip.ps-chip--cell[data-state="nodevice"]:hover {
+  background: var(--warn-soft);
+}
+.ps-chip.ps-chip--cell[data-state="denied"],
+.ps-chip.ps-chip--cell[data-state="denied"]:hover {
+  background: var(--danger-soft);
+}
+.ps-chip--cell > .ps-chip__body {
+  grid-area: body;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.ps-cell__eye {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: 600 9.5px/1 var(--font-mono);
+  letter-spacing: 0.14em;
+  color: var(--text-muted);
+}
+.ps-cell__eye .ps-chip__ico {
+  width: 11px;
+  height: 11px;
+}
+.ps-cell__vis {
+  display: flex;
+  align-items: center;
+  height: 12px;
+  color: var(--accent);
+}
+.ps-cell__off {
+  font: 600 9px/1 var(--font-mono);
+  letter-spacing: 0.12em;
+  color: var(--text-subtle);
+}
+.ps-cell__led {
+  display: block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+.ps-cell__media {
+  display: block;
+  width: 30px;
+  height: 18px;
+  margin: -3px 0;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--bg-app);
+  box-shadow: 0 0 0 1px var(--accent-border);
+}
+.ps-chip--cell > .ps-chip__cap {
+  grid-area: cap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 500 13px/14px var(--font-sans);
+  color: var(--text-muted);
+}
+.ps-chip--cell > .ps-chip__act {
+  grid-area: act;
+  margin: 0 0 0 6px;
+  padding: 1px 6px;
+}
+.ps-chip--cell > .ps-chip__devices {
+  grid-area: caret;
+  margin-left: 6px;
+}
+.ps-chip--cell .ps-chip__caret {
+  margin-right: 0;
+}
+.ps-chip--cell[data-state="live"] .ps-cell__eye,
+.ps-chip--cell[data-state="silent"] .ps-cell__eye {
+  color: var(--accent);
+}
+.ps-chip--cell[data-state="live"] > .ps-chip__cap,
+.ps-chip--cell[data-state="silent"] > .ps-chip__cap {
+  color: var(--text-primary);
+}
+.ps-chip--cell[data-state="live"] .ps-chip__caret,
+.ps-chip--cell[data-state="silent"] .ps-chip__caret {
+  color: var(--accent-bright);
+}
+.ps-chip--cell[data-state="ask"] .ps-cell__eye,
+.ps-chip--cell[data-state="nodevice"] .ps-cell__eye {
+  color: var(--warn);
+}
+.ps-chip--cell[data-state="ask"] > .ps-chip__cap,
+.ps-chip--cell[data-state="nodevice"] > .ps-chip__cap,
+.ps-chip--cell[data-state="ask"] > .ps-chip__act {
+  color: var(--warn-text);
+}
+.ps-chip--cell[data-state="denied"] .ps-cell__eye,
+.ps-chip--cell[data-state="denied"] > .ps-chip__cap,
+.ps-chip--cell[data-state="denied"] > .ps-chip__act {
+  color: var(--danger-text);
+}
+/* The orb's and the cell's focus ring is the group's (above), rounded to
+   the orb's box; the cell's is inset so the slate does not clip it. */
+.ps-chip--cell:has(> .ps-chip__body:focus-visible) {
+  outline-offset: -2px;
 }

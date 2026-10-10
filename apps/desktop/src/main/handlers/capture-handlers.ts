@@ -467,6 +467,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       latencyTrace: trace,
       cameraOffered: recordingSources.webcam,
       quickCaptureAction,
+      ...(settings !== null ? { hudStyle: settings.recording.selectorHud } : {}),
       // Seed the selector's `C` toggle from the persisted default. Only
       // consumed if the user chooses Record, but it has to be in the
       // mode signal BEFORE the selector shows — there is no second

@@ -40,7 +40,8 @@ import { useEffect, useRef, useState, type ReactElement } from "react";
 import {
   type AppearanceTheme,
   type LaunchAtLoginStatus,
-  type QuickCaptureAction
+  type QuickCaptureAction,
+  type SelectorHudStyle
 } from "@pwrsnap/shared";
 import { Card, Row, SegmentedControl, Switch, type SegmentOption } from "../components";
 import { dispatch } from "../../../lib/pwrsnap";
@@ -65,6 +66,11 @@ const QUICK_CAPTURE_ACTION_OPTIONS: readonly SegmentOption<QuickCaptureAction>[]
   { id: "record", label: "Record" }
 ];
 
+const SELECTOR_HUD_OPTIONS: readonly SegmentOption<SelectorHudStyle>[] = [
+  { id: "shutter", label: "Shutter" },
+  { id: "clapperboard", label: "Clapperboard" }
+];
+
 export function GeneralPage(): ReactElement {
   const { settings, patch } = useSettingsContext();
   const ready = settings !== null;
@@ -76,6 +82,7 @@ export function GeneralPage(): ReactElement {
   const showRecentCaptureSidebar = settings?.recording.showRecentCaptureSidebar ?? true;
   const quickCaptureAction: QuickCaptureAction =
     settings?.recording.quickCaptureAction ?? "ask";
+  const selectorHud: SelectorHudStyle = settings?.recording.selectorHud ?? "shutter";
   // Audio defaults for new recordings. Both ship OFF — recording either
   // source is privacy-relevant, so the user opts in explicitly.
   const includeSystemAudio = settings?.recording.includeSystemAudio ?? false;
@@ -238,8 +245,8 @@ export function GeneralPage(): ReactElement {
 
       <Card eyebrow="CAPTURE" title="After you select">
         <Row
-          label="What ↵ does once you have a selection"
-          sub="Ask offers both — ↵ snaps, R records the same selection. Snap hides the Record action entirely. Record makes ↵ start a recording and moves Snap to S. The Video Capture hotkey always records, whichever you pick."
+          label="Which mode the selector starts in"
+          sub="Ask offers both and starts on Snap: ↵ snaps, or press R to switch to Record and then ↵. Snap hides the Record action entirely. Record starts on Record, and S switches back to Snap. The Video Capture hotkey always records, whichever you pick."
           tag="action"
         >
           <SegmentedControl<QuickCaptureAction>
@@ -248,6 +255,20 @@ export function GeneralPage(): ReactElement {
             onChange={(next) => {
               if (!ready) return;
               void patch({ recording: { quickCaptureAction: next } });
+            }}
+          />
+        </Row>
+        <Row
+          label="Selector controls"
+          sub="Shutter is a Snap | Record switch beside one round shutter, with each source as a round button that names its device. Clapperboard puts every source in a fixed slate under the bar. Both work the same way."
+          tag="hud"
+        >
+          <SegmentedControl<SelectorHudStyle>
+            options={SELECTOR_HUD_OPTIONS}
+            value={selectorHud}
+            onChange={(next) => {
+              if (!ready) return;
+              void patch({ recording: { selectorHud: next } });
             }}
           />
         </Row>

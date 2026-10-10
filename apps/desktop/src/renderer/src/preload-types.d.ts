@@ -153,6 +153,9 @@ declare global {
           /** Snap-vs-Record policy for this show, from
            *  `settings.recording.quickCaptureAction`. `undefined` = "ask". */
           quickCaptureAction?: "ask" | "snap" | "record";
+          /** HUD style for this show, from `settings.recording.selectorHud`.
+           *  `undefined` = "shutter". */
+          hudStyle?: import("@pwrsnap/shared").SelectorHudStyle;
         }) => void
       ): () => void;
       requestTrayResize(payload: { width: number; height: number }): void;

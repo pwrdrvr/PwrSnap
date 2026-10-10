@@ -2769,6 +2769,30 @@ export const RECORDING_MEDIA_DEFAULTS: {
   videoCaptureCursor: true
 };
 
+/**
+ * How the region selector draws its HUD. Both carry the same controls and
+ * the same Snap / Record mode; only the shape differs.
+ *
+ *   - `shutter`      — a Snap | Record rocker beside one round shutter
+ *                      that ↵ fires. In Record mode the sources appear as
+ *                      round buttons with the device named underneath.
+ *   - `clapperboard` — a SNAP | REC switch and a Capture / Record button.
+ *                      In Record mode a striped clapper and a slate with
+ *                      one fixed cell per source appear.
+ */
+export type SelectorHudStyle = "shutter" | "clapperboard";
+
+export const SELECTOR_HUD_STYLES = [
+  "shutter",
+  "clapperboard"
+] as const satisfies readonly SelectorHudStyle[];
+
+export const SELECTOR_HUD_STYLE_DEFAULT: SelectorHudStyle = "shutter";
+
+export function isSelectorHudStyle(value: unknown): value is SelectorHudStyle {
+  return typeof value === "string" && (SELECTOR_HUD_STYLES as readonly string[]).includes(value);
+}
+
 export function isQuickCaptureAction(value: unknown): value is QuickCaptureAction {
   return (
     typeof value === "string" && (QUICK_CAPTURE_ACTIONS as readonly string[]).includes(value)
@@ -3022,6 +3046,8 @@ export type Settings = {
      *  cross-mode capture defaults (`imageCaptureCursor` is an image
      *  setting). See `QuickCaptureAction` for the per-value semantics. */
     quickCaptureAction: QuickCaptureAction;
+    /** How the region selector draws its HUD. See `SelectorHudStyle`. */
+    selectorHud: SelectorHudStyle;
     /** Whether a new recording captures system audio. The selector's
      *  source chips start from this; it decides what gets RECORDED, not
      *  what an export keeps (see `mp4IncludeSystemAudio`). */

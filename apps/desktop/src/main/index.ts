@@ -1150,6 +1150,7 @@ async function runInteractiveRecord(
     protectWindowIds,
     // Seed the selector's cursor toggle from the persisted default.
     cursorDefault: settings.recording.videoCaptureCursor,
+    hudStyle: settings.recording.selectorHud,
     // Seed the source chips the same way. This is the first path that
     // makes `recording.includeMicrophone` / `.includeSystemAudio`
     // reachable from a renderer at all — before the chips they were

@@ -32,6 +32,7 @@ import {
   isEditToolbarDock,
   isLibrarySidebarTab,
   isQuickCaptureAction,
+  isSelectorHudStyle,
   isRedactionStyle,
   isSettingsPage,
   isSettingsSub,
@@ -633,6 +634,15 @@ export function validateSettingsWrite(
         error: validationError(
           "invalid_recording_quickCaptureAction",
           'settings:write: recording.quickCaptureAction must be "ask", "snap", or "record"'
+        )
+      };
+    }
+    if (!isUndefined(recording.selectorHud) && !isSelectorHudStyle(recording.selectorHud)) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_recording_selectorHud",
+          'settings:write: recording.selectorHud must be "shutter" or "clapperboard"'
         )
       };
     }

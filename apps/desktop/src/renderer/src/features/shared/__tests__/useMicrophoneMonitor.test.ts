@@ -5,43 +5,67 @@ import { createRoot, type Root } from "react-dom/client";
 import type { RecordingDevicePreference } from "@pwrsnap/shared";
 import {
   describeMicError,
+  hasSignal,
   savedMicrophonePresence,
-  segmentsForRms,
+  segmentsForPeak,
   useMicrophoneMonitor,
   type MicrophoneMonitor
 } from "../useMicrophoneMonitor";
 
-describe("segmentsForRms", () => {
+// dBFS → amplitude, for readable fixtures.
+const amp = (db: number): number => 10 ** (db / 20);
+
+describe("segmentsForPeak", () => {
   test("silence lights nothing", () => {
-    expect(segmentsForRms(0)).toBe(0);
+    expect(segmentsForPeak(0)).toBe(0);
   });
 
-  // The reason the full-scale reference is 0.35 and not 1.0: speech at a
-  // normal distance is a small RMS, and mapping 1.0 to full scale would
-  // leave a perfectly good microphone showing a single segment — which
-  // reads as "barely working" for the most common case there is.
-  test("conversational speech lands mid-meter, not at one segment", () => {
-    expect(segmentsForRms(0.05)).toBeGreaterThanOrEqual(1);
-    expect(segmentsForRms(0.15)).toBeGreaterThanOrEqual(3);
-    expect(segmentsForRms(0.15)).toBeLessThanOrEqual(4);
+  // The chip and the picker read the SAME dBFS peak. The chip used to
+  // quantize RMS against its own scale, so the picker showed −33 dB and
+  // moved while the chip sat dark beside it.
+  test("a level the picker shows is a level the chip shows", () => {
+    expect(segmentsForPeak(amp(-33))).toBeGreaterThanOrEqual(2);
   });
 
-  test("loud input reaches the warm top segments", () => {
-    expect(segmentsForRms(0.32)).toBeGreaterThanOrEqual(6);
+  test("a quiet room lights a segment: the microphone is working", () => {
+    expect(segmentsForPeak(amp(-50))).toBe(1);
+  });
+
+  // The picker's advice: peaks between −18 and −6 dB are a good level.
+  test("a good speaking level lights the middle, short of the warm segments", () => {
+    expect(segmentsForPeak(amp(-18))).toBe(4);
+    expect(segmentsForPeak(amp(-9))).toBe(5);
+  });
+
+  test("hot input reaches the warm top segments", () => {
+    expect(segmentsForPeak(amp(-4))).toBe(6);
+    expect(segmentsForPeak(amp(0))).toBe(7);
   });
 
   test("clamps rather than overflowing the meter", () => {
-    expect(segmentsForRms(4)).toBe(7);
-    expect(segmentsForRms(-1)).toBe(0);
+    expect(segmentsForPeak(4)).toBe(7);
+    expect(segmentsForPeak(-1)).toBe(0);
   });
 
   test("is monotonic", () => {
     let previous = -1;
-    for (let rms = 0; rms <= 0.5; rms += 0.01) {
-      const next = segmentsForRms(rms);
+    for (let db = -90; db <= 6; db += 1) {
+      const next = segmentsForPeak(amp(db));
       expect(next).toBeGreaterThanOrEqual(previous);
       previous = next;
     }
+  });
+});
+
+describe("hasSignal", () => {
+  // "No signal" is a claim about the MICROPHONE. A quiet room is not one.
+  test("ambient noise in a quiet room is signal", () => {
+    expect(hasSignal(amp(-60))).toBe(true);
+  });
+
+  test("a muted or dead input, which delivers zeros, is not", () => {
+    expect(hasSignal(0)).toBe(false);
+    expect(hasSignal(amp(-90))).toBe(false);
   });
 });
 

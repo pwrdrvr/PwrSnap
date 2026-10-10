@@ -13,7 +13,14 @@ copyright: "Copyright © 2026 PwrDrvr LLC. All rights reserved."
 # exemptions, this is a sandboxed Quick Look provider).
 afterPack: "scripts/afterpack-sign-appex.mjs"
 
-electronVersion: 41.10.7
+electronVersion: 44.4.5
+
+# No @electron/rebuild pass while packaging. The only native module it finds
+# is better-sqlite3, whose N-API prebuilds already load in Electron (sharp
+# loads its @img prebuilt packages and is not touched). On 44.4.5 the pass
+# ran once per arch and compiled nothing, but its fallback is a node-gyp
+# source build that needs Python and a C++ toolchain. PwrGit sets the same.
+npmRebuild: false
 
 asar: true
 asarUnpack:
@@ -70,10 +77,6 @@ files:
   # Our own workspace package metadata is unused at runtime — vite inlines.
   - "!**/node_modules/@pwrsnap/*/AGENTS.md"
   - "!**/node_modules/@pwrsnap/*/src/**"
-  # better-sqlite3 ships a native test extension that is not loaded at
-  # runtime. If included, @electron/universal sees identical test binaries in
-  # both temp app trees and aborts the universal merge.
-  - "!**/node_modules/better-sqlite3/build/Release/test_extension.node"
   # App-owned prompt assets are intentionally readable Markdown in app.asar.
   - "out/main/prompts/**/*.md"
 
@@ -222,9 +225,12 @@ mac:
       to: "PlugIns/PwrSnapPreviewExtension.appex"
   # These files are intentionally identical in both temp app trees before
   # @electron/universal merges them. The Swift helper is prebuilt universal;
-  # Sharp and ffmpeg optional dependency directories are arch-named and each
-  # final app needs both Darwin CPU payloads available at runtime.
-  x64ArchFiles: "Contents/Resources/{PwrSnapWindowList,PwrSnapPasteboardWriter,PwrSnapFFmpeg,app.asar.unpacked/node_modules/@img/{sharp-darwin-*,sharp-libvips-darwin-*}/**/*}"
+  # Sharp and ffmpeg optional dependency directories are arch-named, and
+  # better-sqlite3's prebuilds/darwin-<arch>.node are thin per-arch files its
+  # loader picks by process.arch, so each final app needs both Darwin CPU
+  # payloads available at runtime. A thin Mach-O identical in both trees and
+  # missing from this glob aborts the merge.
+  x64ArchFiles: "Contents/Resources/{PwrSnapWindowList,PwrSnapPasteboardWriter,PwrSnapFFmpeg,app.asar.unpacked/node_modules/@img/{sharp-darwin-*,sharp-libvips-darwin-*}/**/*,app.asar.unpacked/node_modules/better-sqlite3/prebuilds/darwin-*.node}"
   helperBundleId: com.pwrdrvr.pwrsnap.helper
   helperRendererBundleId: com.pwrdrvr.pwrsnap.helper.Renderer
   helperGPUBundleId: com.pwrdrvr.pwrsnap.helper.GPU
@@ -336,12 +342,11 @@ dmg:
 
 # Windows (Phase 8 cross-platform port). x64 NSIS installer. The .ico is
 # derived by electron-builder from the 512+px build/icon.png (1024×1024 in
-# the repo) — no hand-authored .ico needed. Native modules: better-sqlite3
-# ships its Electron-native win32-x64 sidecar via rebuild-native-for-electron
-# (run with npm_config_arch=x64 before packaging), and sharp's win32-x64
-# optional dependency is pulled in by pnpm-workspace.yaml's
-# supportedArchitectures. asarUnpack `**/*.node` above keeps both binaries on
-# a real filesystem path.
+# the repo) — no hand-authored .ico needed. Native modules: better-sqlite3's
+# own N-API prebuild (prebuilds/win32-x64.node; package-win.mjs prunes the
+# other platforms' files from the stage), and sharp's win32-x64 optional
+# dependency, pulled in by pnpm-workspace.yaml's supportedArchitectures.
+# asarUnpack `**/*.node` above keeps both binaries on a real filesystem path.
 win:
   icon: build/icon.png
   requestedExecutionLevel: asInvoker

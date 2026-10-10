@@ -2324,13 +2324,16 @@ nothing in the process can verify the resize landed.** Owners:
   gets a window — which is the *other* reason the constructor frame has to fit
   the content.
 - **The float-over's Linux problem was never sizing — it was `setOpacity`.**
-  That call is `@platform win32,darwin` and measured inert on BOTH Linux
-  backends, so the toast's opacity park hid nothing and the once-only
+  Through Electron 41 that call was `@platform win32,darwin` and measured
+  inert on BOTH Linux backends, so the toast's opacity park hid nothing and the once-only
   `showInactive()` (burned by the selector's `show-idle`) meant the commit
   never showed. Linux now uses the real `hide()` / `showInactive()` cycle
   Windows already proves — `floatOverHideModelForPlatform`, where macOS is the
   exception that has to earn its way out rather than the rule everyone else
-  survives. Pinned by
+  survives. Electron 44 implements `setOpacity` on Linux, and on 44.4.5
+  under xvfb `getOpacity()` reads back what was set. That is not a reason to
+  move Linux back to the park: it is a readback, xvfb draws nothing, and
+  `hide()` needs no compositor. Pinned by
   [float-over-linux-visibility.test.ts](apps/desktop/src/main/__tests__/float-over-linux-visibility.test.ts).
 - **Linux E2E green proves nothing here.** xvfb is X11. Reproducing any of
   this needs a nested Wayland compositor — recipe in
@@ -2501,6 +2504,16 @@ and
   while the window is on screen, and every show and park resets it to
   taking clicks, so a report can never un-park a window. Linux has no
   move forwarding, so the strip keeps taking clicks there.
+- **On Windows the dock's window is 32px wide, and its edge is placed, not
+  its request.** Under Electron 44, Windows will not make any window
+  narrower than 32 DIP. Measured on the GitHub Windows runner at 100%: transparent or opaque,
+  resizable or not, through `setBounds` or `setContentSize`, every request
+  below 32 came back as 32. Electron 41 gave 18. The renderer pins the tab
+  to the window's edge, so `applyDockLayout` reads the width back and puts
+  THAT flush with the work area. Placed by the requested 18, the window ran
+  14px past the right edge and 4px of tab showed. The spare strip is
+  see-through, so it passes clicks like the rail's. The E2E specs
+  assert where the tab lands (`dockGeometry`), not the window's width.
 - **No native shadow on the dock.** macOS draws the shadow, with a light
   rim, around the window's whole shape, which outlined the gap between
   the tabs. `setWindowShape` turns it off for the dock and back on for
@@ -3194,7 +3207,10 @@ caught this at tag time, which is the worst moment to find it.
 
 ## Dependencies and tooling
 
-- Node version pinned in `.nvmrc` (currently `v24.14.1`).
+- Node version pinned in `.nvmrc` (currently `v24.21.0`, the Node inside
+  Electron 44). Every GitHub Actions job asks for `^24.21.0`, the same range,
+  so a runner uses the 24.x already in its tool cache. Move `.nvmrc` and the
+  workflow pins together.
 - Package manager: `pnpm@12.9.1` (set in root `package.json`'s
   `packageManager` field).
 - Electron + electron-vite versions pinned in `apps/desktop/package.json`,
@@ -3223,25 +3239,19 @@ corepack.cmd enable
 pnpm.cmd install
 ```
 
-The root `preinstall` script checks that `node` exactly matches `.nvmrc` and,
-on local POSIX machines with `~/.nvm`, that the active Node binary is coming
-from nvm. Do not bypass this check. Native modules are sensitive to the Node/Electron
-ABI they were built against; installing with the wrong Node can leave
-`better-sqlite3.node` built for the wrong `NODE_MODULE_VERSION` and Electron
-will fail at runtime with a message like:
+The root `preinstall` script ([check-node-version.mjs](scripts/check-node-version.mjs))
+checks that `node` satisfies `^<.nvmrc>`: the same major, and no older than
+the pin. `pnpm dev` applies the same rule. On local POSIX machines with
+`~/.nvm`, it also checks that the active Node binary comes from nvm. Do not
+bypass this check. It required an exact match until every native addon was
+N-API; do not tighten it back, or a runner's cached Node fails every install.
 
-```text
-was compiled against a different Node.js version using NODE_MODULE_VERSION ...
-```
-
-If that happens, switch to the pinned nvm Node and rebuild Electron native
-dependencies from the repo root:
-
-```bash
-source ~/.nvm/nvm.sh
-nvm use
-pnpm rebuild:electron-native
-```
+PwrSnap's native addons (better-sqlite3 and sharp) are N-API, so one prebuilt
+binary loads in system Node and in Electron alike, and there is no
+`NODE_MODULE_VERSION` to rebuild for. `pnpm rebuild:electron-native` now only
+builds the platform helpers (`build-native.mjs`, the same as `build:native`).
+The name is kept because tooling outside this repo, including the PwrSuiteLab
+PwrSnap workload, runs it.
 
 ## Linux sandbox setup
 
@@ -3262,45 +3272,56 @@ package node_modules can resolve workspace imports into the donor checkout,
 and installs/native staging then mutate shared dependencies. A symlink to the
 same repaired helper inherits its permissions but is not a complete setup fix.
 
-## better-sqlite3 + Electron native binding repair
+## better-sqlite3 loads its own N-API prebuild — nothing is rebuilt for Electron
 
-PwrSnap uses `better-sqlite3`, which ships a native `.node` binary. The
-system Node ABI and Electron ABI can diverge, especially after switching
-worktrees, updating Electron, or running `pnpm install` under a different Node
-version. The usual symptom during `pnpm --filter @pwrsnap/desktop dev` is:
+**better-sqlite3 13 is N-API and ships a prebuild for every platform it
+supports inside the one npm package, as `prebuilds/<platform>-<arch>.node`.
+Its loader picks the file for `process.platform` / `process.arch` at runtime,
+so unit tests under system Node and the app under Electron load the same
+binary. Do not reintroduce a `nativeBinding` override, an Electron-only
+rebuild, or a second binding beside the first.** Pinned by
+[better-sqlite3-prebuilds.test.mjs](apps/desktop/scripts/better-sqlite3-prebuilds.test.mjs).
 
-```text
-better_sqlite3.node was compiled against a different Node.js version
-NODE_MODULE_VERSION <old>. This version of Node.js requires NODE_MODULE_VERSION <new>.
-```
+Until 13, better-sqlite3 was written against V8's own API: one prebuild per
+Electron ABI, and none for Electron 44 (ABI 149). Every install and every
+packaging stage compiled an Electron copy into an `electron-native/` sidecar
+beside the system-Node one, `native-binding.ts` chose between them by a
+metadata file, and the compile needed a C++ toolchain plus a GCC 12 workaround
+for V8 15's headers. All of that is gone, and an old note that tells you to
+"repair the native sidecar" is describing it.
 
-Do not chase this as a database bug. Repair the native sidecar from the repo
-root:
+Things that bite:
 
-```bash
-source ~/.nvm/nvm.sh
-nvm use
-pnpm install
-pnpm rebuild:electron-native
-```
-
-The script keeps two binaries on purpose:
-
-- `better-sqlite3/build/Release/better_sqlite3.node` stays compiled for system
-  Node so unit tests and scripts can `require("better-sqlite3")`.
-- `better-sqlite3/electron-native/better_sqlite3.node` is compiled/downloaded
-  for Electron and is what the app loads at runtime.
-
-For release/package work, the Electron sidecar must be built for the target
-architecture, not necessarily the host architecture. The script honors
-`npm_config_arch` / `npm_config_target_arch` before falling back to
-`process.arch`, and `apps/desktop/src/main/persistence/native-binding.ts`
-ignores the sidecar unless its metadata matches the running Electron version,
-`better-sqlite3` version, and `process.arch`.
-
-Do not "fix" the ABI mismatch by copying the Electron binary over
-`build/Release`, because that breaks Node-based tests with the inverse
-`NODE_MODULE_VERSION` mismatch.
+- **`allowBuilds: better-sqlite3: false` in `pnpm-workspace.yaml` is a
+  guard.** pnpm 10 ignored the package's `gypfile: false` and ran an
+  implicit `node-gyp rebuild` because a `binding.gyp` is present. With a
+  prebuild for the host, every target in that file is `type: none`, so the
+  run compiled nothing, yet it still needed Python and make (Visual Studio
+  on Windows) just to configure. pnpm 12.9.1 honors `gypfile: false`:
+  measured, it builds nothing even with the entry set to `true`. `false`
+  keeps a future pnpm from bringing the build back. The cost: a host with no
+  prebuild fails to load at runtime instead of compiling. Every target
+  PwrSnap ships or tests on has one, and the test above checks the installed
+  package for each.
+- **`npmRebuild: false` in `electron-builder.yml` is on purpose too.** With
+  it on, electron-builder runs `@electron/rebuild` over better-sqlite3 once
+  per arch. On 44.4.5 that compiled nothing, but its fallback is a node-gyp
+  source build. PwrGit sets the same.
+- **Packaging keeps only the target's prebuilds.** `release.mjs` and
+  `package-win.mjs` call `pruneBetterSqlite3Prebuilds` on the stage, the same
+  way sharp's foreign `@img` packages are pruned. The universal Mac keeps
+  `darwin-arm64.node` + `darwin-x64.node`, the arm64-only Mac keeps
+  `darwin-arm64.node`, and Windows keeps `win32-x64.node`. The other six are
+  ~2 MB each. `verify-asar-contents.mjs` fails on a missing target prebuild
+  and on a foreign one.
+- **The darwin pair are thin Mach-Os, identical in both per-arch app trees,
+  so they are in `mac.x64ArchFiles`.** `@electron/universal` aborts the merge
+  on an identical thin Mach-O that glob does not cover. The old sidecar never
+  hit this because it was already fat, and the merge skips fat files.
+  `verifyPackagedArchitecture` expects each one thin, at its own arch.
+- **The Linux prebuild needs glibc 2.34 and `GLIBCXX_3.4.29`**: Ubuntu 22.04
+  or later, or Debian bookworm, which is the Docker E2E image. A musl host
+  gets the `linuxmusl-*` file.
 
 ## sharp in Electron on Linux runs its WebAssembly build
 

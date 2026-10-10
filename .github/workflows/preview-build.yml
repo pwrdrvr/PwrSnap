@@ -28,7 +28,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:
-          node-version: "24.14.1"
+          node-version: "^24.21.0"
 
       - name: Compute preview version
         id: version
@@ -182,7 +182,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:
-          node-version: "24.14.1"
+          node-version: "^24.21.0"
 
       # Pull-request code receives no build-repo or signing secrets. Instead,
       # extract the exact FFmpeg binary already shipped inside the public,
@@ -291,9 +291,9 @@ jobs:
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
 
-      # Materializes a flat node_modules stage via `pnpm deploy`, rebuilds
-      # better-sqlite3's Electron-native win32-x64 sidecar, injects sharp's
-      # win32-x64 slice, then runs `electron-builder --win nsis --x64`.
+      # Materializes a flat node_modules stage via `pnpm deploy`, injects
+      # sharp's win32-x64 slice, keeps only better-sqlite3's win32-x64
+      # prebuild, then runs `electron-builder --win nsis --x64`.
       # Unsigned for now (Authenticode signing is a later task). See
       # apps/desktop/scripts/package-win.mjs.
       - name: Build preview installer (unsigned)

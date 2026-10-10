@@ -2,7 +2,7 @@
 // list / byId / delete; Phase 1.9 adds export.
 
 import { listCaptureFamilies, listFamilyMembers } from "../persistence/capture-families-repo";
-import { BrowserWindow, clipboard } from "electron";
+import { BrowserWindow } from "electron";
 import {
   ok,
   err,
@@ -17,6 +17,7 @@ import {
   validateLibrarySearch
 } from "./sizzle-validators";
 import { z } from "zod";
+import { writeClipboardText } from "../clipboard/system-clipboard";
 import { bus } from "../command-bus";
 import {
   countCaptures,
@@ -551,7 +552,7 @@ export function registerLibraryWindowHandlers(): void {
     // copy, AI-derived text) route here instead of calling
     // `navigator.clipboard.writeText` directly so a future redaction
     // policy or audit hook only plugs in once.
-    clipboard.writeText(parsed.data.text);
+    await writeClipboardText(parsed.data.text);
     return ok(undefined);
   });
 

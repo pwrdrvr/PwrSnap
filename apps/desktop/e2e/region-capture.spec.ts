@@ -87,20 +87,25 @@ test.describe("region capture (macOS opt-in + Windows)", () => {
         const record: CaptureRecord = result.value;
 
         // Sample the captured PNG and compare to the painted color. The
-        // captured rect is coincident with the uniformly-colored target
-        // window, so any interior pixel is that color. Fresh v2 captures
-        // materialize their source at getCacheSourcePath(id) =
-        // <dataRoot>/render-cache/<id>/source.png — legacy_src_path is null
-        // since the v2-only migration, so sample the cache source instead.
+        // captured rect is coincident with the target window, which is the
+        // painted color everywhere but its centered white label. So sample a
+        // quarter of the way down, not the center: on Electron 44 / Windows
+        // the center pixel lands on a ClearType edge of that label and reads
+        // rgb(255, 127, 165).
+        //
+        // Fresh v2 captures materialize their source at
+        // getCacheSourcePath(id) = <dataRoot>/render-cache/<id>/source.png —
+        // legacy_src_path is null since the v2-only migration, so sample the
+        // cache source instead.
         const samplePath = path.join(app.homeRoot, "render-cache", record.id, "source.png");
         const cx = Math.floor(record.width_px / 2);
-        const cy = Math.floor(record.height_px / 2);
+        const cy = Math.floor(record.height_px / 4);
         const sampled = await samplePixel(samplePath, cx, cy);
         const expected = hexToRgb(target.color);
 
         expect(
           colorsClose(sampled, expected, 12),
-          `expected ${formatRgb(expected)} at center; got ${formatRgb(sampled)} (${path.basename(
+          `expected ${formatRgb(expected)} at (${cx}, ${cy}); got ${formatRgb(sampled)} (${path.basename(
             samplePath
           )})`
         ).toBe(true);

@@ -14,8 +14,8 @@
 // The native-image happy path (`capture:pasteFromClipboard persists current
 // clipboard image`) stays in E2E because it depends on real macOS
 // NSPasteboard semantics + the full persistence + render pipeline. The File
-// menu wiring test also stays there; this unit only pins its synchronous,
-// filesystem-free availability probe.
+// menu wiring test also stays there; this unit only pins its filesystem-free
+// availability probe (async since Electron 44 made every clipboard read so).
 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,7 +29,7 @@ const mocks = vi.hoisted(() => ({
   getSize: vi.fn(() => ({ width: 1, height: 1 })),
   availableFormats: vi.fn((): string[] => []),
   readBookmark: vi.fn(() => ({ title: "", url: "" })),
-  readBuffer: vi.fn(() => Buffer.alloc(0)),
+  readBuffer: vi.fn((_format: string) => Buffer.alloc(0)),
   readText: vi.fn(() => ""),
   readWindowsClipboardImageFile: vi.fn(),
   windowsClipboardFormatsMayContainFiles: vi.fn((_formats: readonly string[]) => false),
@@ -78,23 +78,34 @@ const captureStorageMocks = vi.hoisted(() => {
 });
 
 vi.mock("electron", () => ({
-  clipboard: {
-    readImage: () => ({
-      isEmpty: mocks.isEmpty,
-      getSize: mocks.getSize,
-      toPNG: mocks.toPNG
-    }),
-    availableFormats: mocks.availableFormats,
-    readBookmark: mocks.readBookmark,
-    readBuffer: mocks.readBuffer,
-    readText: mocks.readText,
-    writeText: () => undefined
-  },
   screen: {
     getAllDisplays: () => []
   },
   BrowserWindow: {
     getAllWindows: () => []
+  }
+}));
+
+// One `readClipboard()` snapshot over the per-test mock state. An empty
+// bookmark means "no bookmark", as it did from the pre-44 readBookmark().
+vi.mock("../../clipboard/system-clipboard", () => ({
+  readClipboard: async () => {
+    const formats = mocks.availableFormats();
+    return {
+      formats,
+      has: (format: string) => formats.includes(format),
+      readBuffer: async (format: string) => mocks.readBuffer(format),
+      readImage: async () => ({
+        isEmpty: mocks.isEmpty,
+        getSize: mocks.getSize,
+        toPNG: mocks.toPNG
+      }),
+      readBookmark: async () => {
+        const bookmark = mocks.readBookmark();
+        return bookmark.url === "" ? null : bookmark;
+      },
+      readText: async () => mocks.readText()
+    };
   }
 }));
 
@@ -419,20 +430,20 @@ describe("capture:pasteFromClipboard", () => {
     expect(mocks.readSafePastedFile).not.toHaveBeenCalled();
   });
 
-  test("keeps the synchronous menu probe filesystem-free for file URLs", () => {
+  test("keeps the menu probe filesystem-free for file URLs", async () => {
     const safeUrl = pathToFileURL(join(tmpdir(), "menu probe.png")).href;
     mocks.readBookmark.mockReturnValue({ title: "menu probe.png", url: safeUrl });
 
-    expect(clipboardHasPasteableImage()).toBe(true);
+    expect(await clipboardHasPasteableImage()).toBe(true);
     expect(mocks.readSafePastedFile).not.toHaveBeenCalled();
     expect(mocks.ingestImageBufferToTempPng).not.toHaveBeenCalled();
   });
 
-  test("keeps the synchronous menu probe filesystem-free for native file formats", () => {
+  test("keeps the menu probe filesystem-free for native file formats", async () => {
     mocks.windowsClipboardFormatsMayContainFiles.mockReturnValue(true);
     mocks.availableFormats.mockReturnValue(["text/uri-list"]);
 
-    expect(clipboardHasPasteableImage()).toBe(true);
+    expect(await clipboardHasPasteableImage()).toBe(true);
     expect(mocks.readWindowsClipboardImageFile).not.toHaveBeenCalled();
     expect(mocks.readSafePastedFile).not.toHaveBeenCalled();
   });

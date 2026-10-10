@@ -2,7 +2,7 @@
 
 A harness for poking at e2e flakes locally without waiting on
 GHA. Builds a Linux container that mirrors the `Desktop E2E`
-job: bookworm-based Node 24.14.1 image + xvfb + Electron runtime
+job: bookworm-based Node 24.21 image + xvfb + Electron runtime
 libs, executed via `xvfb-run --auto-servernum pnpm run
 test:desktop-e2e`.
 
@@ -85,7 +85,7 @@ and let `-LogPath` perform the tee instead of adding an outer pipeline.
 
 ## Layout
 
-- `Dockerfile.e2e` — Linux image. Bookworm base, Node 24.14.1
+- `Dockerfile.e2e` — Linux image. Bookworm base, Node 24.21
   pinned, xvfb + Electron runtime libs (matches what GHA's
   ubuntu-latest pulls in via the bundled Chrome).
 - `run-docker.sh` — wrapper. Handles the bind-mount + named-volume
@@ -126,8 +126,9 @@ for every workspace's `node_modules`:
 ```
 
 Without these, the bind would expose the host's macOS-arm64
-prebuilt `.node` binaries (`better-sqlite3.node`, `sharp/*.node`)
-to the Linux container, which crash on load. The anonymous
+node_modules to the Linux container, whose platform-specific
+packages (Electron itself, sharp's native slice) do not run there.
+The anonymous
 volumes are empty on first start; `pnpm install` (which the
 wrapper always runs) populates them with Linux-native binaries
 that stay invisible to the host.

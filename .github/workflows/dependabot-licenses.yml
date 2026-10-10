@@ -367,7 +367,7 @@ jobs:
         if: steps.race.outputs.skip != 'true'
         uses: actions/setup-node@v6
         with:
-          node-version-file: .nvmrc
+          node-version: "^24.21.0"
 
       # Deliberate divergence from pwrdrvr/configure-nodejs, which the rest of
       # CI uses: it always runs a full `pnpm install` and exposes no way to pass

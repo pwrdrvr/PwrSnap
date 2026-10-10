@@ -24,6 +24,9 @@ const mocks = vi.hoisted(() => {
   const windows: Array<ReturnType<typeof createWindow>> = [];
   const ipcHandlers = new Map<string, (event: { sender: unknown }, payload?: unknown) => void>();
   const cursor = { x: 1400, y: 400 };
+  // The narrowest window the fake window server will make. Windows under
+  // Electron 44 will not go below 32 DIP; everything else takes any width.
+  const minWindowWidth = { value: 0 };
 
   function createWindow(id: number) {
     let destroyed = false;
@@ -55,7 +58,7 @@ const mocks = vi.hoisted(() => {
       }),
       setAlwaysOnTop: vi.fn(),
       setBounds: vi.fn((next: typeof bounds) => {
-        bounds = { ...next };
+        bounds = { ...next, width: Math.max(next.width, minWindowWidth.value) };
       }),
       setContentProtection: vi.fn(),
       setHasShadow: vi.fn(),
@@ -89,6 +92,7 @@ const mocks = vi.hoisted(() => {
       })
     },
     menuTemplates: [] as unknown[],
+    minWindowWidth,
     placementIsOurs: { value: true },
     windows
   };
@@ -227,6 +231,7 @@ describe("float-over dock", () => {
     mocks.windows.length = 0;
     mocks.menuTemplates.length = 0;
     mocks.placementIsOurs.value = true;
+    mocks.minWindowWidth.value = 0;
     mocks.cursor.x = 1400;
     mocks.cursor.y = 400;
   });
@@ -281,6 +286,21 @@ describe("float-over dock", () => {
       { x: 1422, y: 288, width: 18, height: 174 },
       false
     );
+    expect(onScreen(window)).toBe(true);
+  });
+
+  it("sits flush with the edge at the width the window server gave it", () => {
+    // Electron 44 on Windows will not make a window narrower than 32 DIP.
+    // The renderer pins the tab to the window's edge, so the window's edge
+    // has to be the screen's, whatever width it ended up with.
+    mocks.minWindowWidth.value = 32;
+    const window = showDock();
+    expect(window.getBounds()).toEqual({
+      x: WORK_AREA.x + WORK_AREA.width - 32,
+      y: 288,
+      width: 32,
+      height: 174
+    });
     expect(onScreen(window)).toBe(true);
   });
 

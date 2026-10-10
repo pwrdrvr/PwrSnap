@@ -1,6 +1,7 @@
 import { BrowserWindow, app, screen } from "electron";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { linuxSquareCorners } from "../linux-window-corners";
 import { cameraPreviewBounds } from "./camera-preview-placement";
 
 /** Sandboxed recorder/processor. Only the recorder can opt into a native,
@@ -12,6 +13,7 @@ export class CameraWorker {
     this.previewTitle = null;
   };
   readonly window = new BrowserWindow({
+    ...linuxSquareCorners(),
     width: 640,
     height: 360,
     show: false,

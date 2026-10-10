@@ -256,9 +256,11 @@ function parkOffScreen(window: BrowserWindow): void {
     // composites through — a setOpacity(0)→setOpacity(1) round-trip leaves
     // the toast BLANK (visible + opaque per the API, but nothing painted).
     //
-    // Linux, because `setOpacity` is `@platform win32,darwin` and does
-    // NOTHING there. Measured on Electron 41.10.7 under both a headless
-    // weston and xvfb: `getOpacity()` still reports 1 after `setOpacity(0)`.
+    // Linux, because `setOpacity` did NOTHING there through Electron 41.
+    // Measured on 41.10.7 under both a headless weston and xvfb:
+    // `getOpacity()` still reported 1 after `setOpacity(0)`. Electron 44
+    // implements it, but only the readback is measured (see
+    // linux-window-placement.ts), and `hide()` needs no compositor.
     // So on Linux the opacity half of the park never hid anything, and the
     // position half only worked under X11 — leaving the toast permanently on
     // screen under Wayland, where `setPosition` is inert too. Both halves of
@@ -628,8 +630,18 @@ export function floatOverDockBounds(
  */
 function applyDockLayout(window: BrowserWindow, widthDip: number, heightDip: number): void {
   if (!windowPlacementIsOurs()) return;
-  const bounds = floatOverDockBounds(dockDisplay().workArea, dock, widthDip, Math.max(1, heightDip));
+  const workArea = dockDisplay().workArea;
+  const bounds = floatOverDockBounds(workArea, dock, widthDip, Math.max(1, heightDip));
   window.setBounds(bounds, false);
+  // Under Electron 44, Windows will not make a window narrower than 32 DIP,
+  // so the 18px sliver comes back wider than asked. The renderer pins the
+  // tab to the window's edge, so it is the window's real width that has to
+  // sit flush with the screen's edge; placed by the requested width, the
+  // window hung 14px off the right of the work area with 4px of tab showing.
+  const placed = window.getBounds();
+  if (placed.width !== bounds.width || placed.height !== bounds.height) {
+    window.setBounds(floatOverDockBounds(workArea, dock, placed.width, placed.height), false);
+  }
   setWindowShape(window, "dock");
   if (layoutPending === "dock" && !dockParked()) {
     layoutPending = null;

@@ -44,6 +44,8 @@
   background: var(--bg-panel-elevated);
   color: var(--danger-text);
   font: 500 11px/1.35 var(--font-sans);
+  /* See .camera-pop: inherited nowrap from the HUD would stop this wrapping. */
+  white-space: normal;
 }
 
 /* Right-aligned to the chip: it is the last chip in the HUD, and the HUD
@@ -66,6 +68,11 @@
   box-shadow: var(--shadow-lg);
   color: var(--text-primary);
   font-family: var(--font-sans);
+  /* Pinned, not inherited. The popover is a DOM descendant of the
+     selector HUD, which is `white-space: nowrap` so no control on the
+     bar wraps; inherited here, the advice and notes ran off the right
+     edge instead of wrapping. Rows that must not wrap say so themselves. */
+  white-space: normal;
 }
 .camera-pop__hd {
   padding: 6px 8px 5px;

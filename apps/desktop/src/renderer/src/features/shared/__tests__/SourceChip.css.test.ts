@@ -175,5 +175,21 @@ describe("SourceChip.css", () => {
     }
     expect(ruleFor(regionCss, ".region-hud .mic-chip").body).toMatch(/position\s*:\s*static/);
   });
+
+  // The HUD is `white-space: nowrap`, and the popovers are its DOM
+  // descendants, so they inherit it unless they say otherwise. The
+  // microphone picker's advice once ran off its right edge that way.
+  test("the popovers inside the HUD wrap their own text", () => {
+    expect(ruleFor(regionCss, ".region-hud").body).toMatch(/white-space\s*:\s*nowrap/);
+    const micCss = read("../../region/microphone-chip.css");
+    const cameraCss = read("../../camera/camera.css");
+    for (const [css, selector] of [
+      [micCss, ".mic-pop"],
+      [cameraCss, ".camera-pop"],
+      [cameraCss, ".camera-chip__err"]
+    ] as const) {
+      expect(ruleFor(css, selector).body, selector).toMatch(/white-space\s*:\s*normal/);
+    }
+  });
 });
 

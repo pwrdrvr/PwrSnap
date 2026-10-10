@@ -64,7 +64,7 @@ vi.mock("../../command-bus", () => ({
         busMock.attempted = true;
         return { ok: true, value: {} };
       }
-      if (name === "settings:open") {
+      if (name === "permissions:showGuide") {
         return { ok: true, value: undefined };
       }
       return { ok: false, error: { kind: "validation", code: "unknown_command", message: "x" } };
@@ -101,7 +101,7 @@ describe("guardScreenCapture", () => {
     expect(result).toBeNull();
     expect(electronMock.getSourcesCalls).toBe(0);
     expect(dispatchedNames()).not.toContain("settings:write");
-    expect(dispatchedNames()).not.toContain("settings:open");
+    expect(dispatchedNames()).not.toContain("permissions:showGuide");
   });
 
   test("non-darwin → always proceeds without touching the OS or bus", async () => {
@@ -122,7 +122,7 @@ describe("guardScreenCapture", () => {
     expect(electronMock.getSourcesCalls).toBe(1);
     expect(dispatchedNames()).toContain("settings:write");
     // We do NOT open our own Settings on top of the OS dialog.
-    expect(dispatchedNames()).not.toContain("settings:open");
+    expect(dispatchedNames()).not.toContain("permissions:showGuide");
     expect(result).not.toBeNull();
     if (result === null) throw new Error("expected blocked");
     expect(result.ok).toBe(false);
@@ -142,16 +142,16 @@ describe("guardScreenCapture", () => {
     expect(result).toBeNull(); // proceeded straight into the capture
   });
 
-  test("not granted + already asked → re-probes, THEN routes to Settings", async () => {
+  test("not granted + already asked → re-probes, THEN shows the permission guide", async () => {
     electronMock.screenStatus = "denied";
     busMock.attempted = true;
     const { guardScreenCapture } = await import("../screen-permission-gate");
     const result = await guardScreenCapture();
     // CARDINAL RULE: always re-attempt the real probe — this is what
     // re-registers PwrSnap after a tccutil reset our flag can't see. Only
-    // after the probe still fails do we route to Settings.
+    // after the probe still fails do we open the guide.
     expect(electronMock.getSourcesCalls).toBe(1);
-    expect(dispatchedNames()).toContain("settings:open");
+    expect(dispatchedNames()).toContain("permissions:showGuide");
     if (result === null) throw new Error("expected blocked");
     if (result.ok) throw new Error("expected error");
     expect(result.error.code).toBe("screen_not_granted");
@@ -165,7 +165,7 @@ describe("guardScreenCapture", () => {
     const result = await guardScreenCapture();
     expect(electronMock.getSourcesCalls).toBe(1);
     expect(result).toBeNull();
-    expect(dispatchedNames()).not.toContain("settings:open");
+    expect(dispatchedNames()).not.toContain("permissions:showGuide");
   });
 
   test("settings read failure defaults to never-asked (fires prompt, doesn't dead-end)", async () => {
@@ -189,7 +189,7 @@ describe("guardScreenCapture", () => {
     // Still re-probes (registers/grants if possible)…
     expect(electronMock.getSourcesCalls).toBe(1);
     // …but no window popped at the programmatic caller…
-    expect(dispatchedNames()).not.toContain("settings:open");
+    expect(dispatchedNames()).not.toContain("permissions:showGuide");
     // …and it short-circuits with the denied error.
     if (result === null) throw new Error("expected blocked");
     if (result.ok) throw new Error("expected error");

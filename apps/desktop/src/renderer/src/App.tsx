@@ -12,6 +12,7 @@ import { HotCpuProfileBanner } from "./features/library/HotCpuProfileBanner";
 import { FloatOverHost } from "./features/float-over/FloatOverHost";
 import { RecordingController } from "./features/recording/RecordingController";
 import { RecordingFrame } from "./features/recording/RecordingFrame";
+import { PermissionGuide } from "./features/permission-guide/PermissionGuide";
 import { RegionSelector } from "./features/region/RegionSelector";
 import { SettingsApp } from "./features/settings/SettingsApp";
 import { SizzleApp } from "./features/sizzle/SizzleApp";
@@ -40,7 +41,8 @@ type Stage =
   | "document"
   | "local-agent-consent"
   | "recording-controller"
-  | "recording-frame";
+  | "recording-frame"
+  | "permission-guide";
 
 function readStage(): Stage {
   const hash = window.location.hash.replace(/^#/, "");
@@ -56,7 +58,8 @@ function readStage(): Stage {
     v === "document" ||
     v === "local-agent-consent" ||
     v === "recording-controller" ||
-    v === "recording-frame"
+    v === "recording-frame" ||
+    v === "permission-guide"
   ) {
     return v;
   }
@@ -104,6 +107,7 @@ const TITLE_BY_STAGE: Record<Stage, string> = {
   "local-agent-consent": "Authorize Local Agent - PwrSnap",
   "recording-controller": "PwrSnap Recording",
   "recording-frame": "PwrSnap Recording Frame",
+  "permission-guide": "PwrSnap Permission Guide",
   document: `PwrSnap ${APP_DOCUMENT_TITLES[DOCUMENT_KIND ?? "changelog"]}`
 };
 document.title = TITLE_BY_STAGE[STAGE] ?? "PwrSnap";
@@ -160,6 +164,9 @@ export function App() {
     }
     if (STAGE === "recording-frame") {
       return <RecordingFrame />;
+    }
+    if (STAGE === "permission-guide") {
+      return <PermissionGuide />;
     }
     if (STAGE === "local-agent-consent") {
       return (

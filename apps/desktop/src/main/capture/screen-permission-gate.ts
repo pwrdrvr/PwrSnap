@@ -17,7 +17,8 @@
 //     without a relaunch. Then re-read status:
 //       – granted now            → proceed ("continue if possible").
 //       – first time we've asked → stop quietly; the OS dialog is the UI.
-//       – asked before, still no → route to Settings (grant + relaunch).
+//       – asked before, still no → System Settings + the permission
+//         guide (capture/permission-guide.ts): drag in, then relaunch.
 //
 // The cardinal rule (learned the hard way): NEVER let the persisted
 // `screenCapturePrompted` flag pre-decide "denied" and skip the real
@@ -105,9 +106,10 @@ function screenPermissionError(code: string, message: string): PwrSnapError {
  * `Result<Res, PwrSnapError>` because the error arm carries no value.
  *
  * `opts.routeToSettings` (default true): on the "asked before, still not
- * granted" branch, whether to open Settings → System Permissions. The
- * headless `capture:region` path passes `false` — an agent/programmatic
- * caller shouldn't have a window popped at it; it just gets the error.
+ * granted" branch, whether to open System Settings with the permission
+ * guide beside it. The headless `capture:region` path passes `false` — an
+ * agent/programmatic caller shouldn't have a window popped at it; it just
+ * gets the error.
  */
 export async function guardScreenCapture(
   opts: { routeToSettings?: boolean } = {}
@@ -160,14 +162,16 @@ export async function guardScreenCapture(
 
   // We've asked before AND a fresh real attempt still didn't grant —
   // either a standing denial, or a grant that needs a relaunch to take
-  // effect. Route to the Privacy pane (unless the caller is headless).
-  log.info("guardScreenCapture: re-probe still not granted — routing to Settings", {
+  // effect. Open the Privacy pane with the permission guide beside it
+  // (unless the caller is headless): the guide hands the user this exact
+  // bundle to drag into the list, and its last step is the relaunch.
+  log.info("guardScreenCapture: re-probe still not granted — showing the permission guide", {
     routeToSettings
   });
   if (routeToSettings) {
     void bus.dispatch(
-      "settings:open",
-      { page: "system-permissions" },
+      "permissions:showGuide",
+      { permission: "screen" },
       { principal: "ipc" }
     );
   }

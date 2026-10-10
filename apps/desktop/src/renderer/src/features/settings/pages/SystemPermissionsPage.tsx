@@ -86,7 +86,7 @@ function darwinStatusHint(
     return "PwrSnap will ask macOS for this the first time you capture. Click Request access to do it now — macOS shows its own approval dialog.";
   }
   if (status === "denied") {
-    return "Turn on Screen Recording for PwrSnap in System Settings → Privacy & Security → Screen & System Audio Recording. If it's already on, relaunch PwrSnap so the change takes effect.";
+    return "Show me how opens System Settings → Privacy & Security → Screen & System Audio Recording and puts PwrSnap beside the list, ready to drag in. If it's already on, relaunch PwrSnap so the change takes effect.";
   }
   if (status === "unavailable") {
     return "Requires macOS 13 or newer. System audio shares the Screen Recording grant.";
@@ -250,7 +250,7 @@ export function SystemPermissionsPage(): ReactElement {
           return;
         }
         // Screen / system audio: ALWAYS try a real screen-capture probe
-        // FIRST — even on the "Open System Settings" (denied) button. The
+        // FIRST — even on the "Show me how" (denied) button. The
         // probe re-registers PwrSnap + shows the OS dialog when macOS has
         // no decision on file (fresh install, or after a `tccutil reset` /
         // a new unsigned dev build that gets a different TCC identity), and
@@ -264,12 +264,14 @@ export function SystemPermissionsPage(): ReactElement {
         await refresh();
         // If the probe didn't grant AND macOS had already recorded a
         // decision (effective status was "denied", not the synthesized
-        // "not-determined" first-ask), open System Settings as the
-        // fallback — macOS won't re-prompt for an already-decided app, so
-        // the Privacy pane is the only recovery. On the first ask the OS
-        // dialog is the UI; don't stack a Settings window on top of it.
+        // "not-determined" first-ask), open System Settings with the
+        // permission guide beside it — macOS won't re-prompt for an
+        // already-decided app, so the Privacy pane is the only recovery,
+        // and the guide hands over this exact bundle to drag into its list.
+        // On the first ask the OS dialog is the UI; don't stack a Settings
+        // window on top of it.
         if (res.value.status !== "granted" && status === "denied") {
-          const opened = await dispatch("permissions:openSystemSettings", { permission });
+          const opened = await dispatch("permissions:showGuide", { permission });
           if (!opened.ok) {
             setLastError(opened.error.message);
           }
@@ -438,7 +440,7 @@ export function SystemPermissionsPage(): ReactElement {
                         ? "Ask now"
                         : status === "not-determined"
                         ? "Request access"
-                        : "Open System Settings"}
+                        : "Show me how"}
                     </button>
                   )}
                 </div>

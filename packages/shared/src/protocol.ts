@@ -657,6 +657,38 @@ export type PermissionReadinessReport = RecordingReadiness & {
 };
 
 /**
+ * What the macOS permission guide shows. The guide is a small PwrSnap panel
+ * placed beside System Settings → Screen & System Audio Recording that holds
+ * the running app bundle as a file drag, so the user drops THIS copy into the
+ * list instead of hunting for it.
+ *
+ * - `waiting`: open, Screen Recording not granted yet.
+ * - `granted`: the preflight now reads granted; the panel closes itself.
+ * - `settings-closed`: System Settings was seen and then went away first.
+ */
+export type PermissionGuidePhase = "waiting" | "granted" | "settings-closed";
+
+export type PermissionGuideState = {
+  phase: PermissionGuidePhase;
+  /** Display name of the bundle the handle drags. */
+  appName: string;
+  /** Path of the running bundle, home directory abbreviated to `~`. */
+  appPath: string;
+  /** PNG data URL of the bundle's icon, or null when none could be read. */
+  appIconDataUrl: string | null;
+  /** Other bundles with this app's bundle ID (Spotlight), `~`-abbreviated. */
+  otherCopies: string[];
+  /** False for `pnpm dev`, where macOS checks the launching terminal's grant. */
+  packaged: boolean;
+  /**
+   * Which edge of the panel points at the System Settings window, and where
+   * along it (CSS px from the panel's top). Null when Settings could not be
+   * found or the panel could not sit beside it.
+   */
+  notch: { side: "left" | "right"; y: number } | null;
+};
+
+/**
  * Quality tier for a video export. Mirrors the image `RenderPreset`
  * shape (low / med / high) so the renderer's preset cards feel like
  * siblings of the image L/M/H row. Each (format, preset) maps to a
@@ -5285,6 +5317,28 @@ export type Commands = {
     req: Record<string, never>;
     res: void;
   };
+  /**
+   * macOS only: open System Settings at Screen & System Audio Recording and
+   * show the permission guide beside it (see {@link PermissionGuideState}).
+   * Screen and system audio share the grant, so both open the same guide.
+   * Microphone, and every other platform, returns
+   * `permission_guide_unsupported`: those lists accept no drops.
+   */
+  "permissions:showGuide": {
+    req: { permission: RecordingPermission };
+    res: void;
+  };
+  /** The guide's current state, or null when it is closed. The guide
+   *  renderer subscribes to `EVENT_CHANNELS.permissionGuideState` first and
+   *  then asks, so a state sent before it mounted is not lost. */
+  "permissions:guideState": { req: Record<string, never>; res: PermissionGuideState | null };
+  /** The guide renderer's measured content height, in CSS px. */
+  "permissions:guideResize": { req: { height: number }; res: void };
+  /** Re-open System Settings at the Screen Recording list. */
+  "permissions:guideReopenSettings": { req: Record<string, never>; res: void };
+  /** Quit and relaunch PwrSnap, for a user who chose Later on macOS's sheet. */
+  "permissions:guideRelaunch": { req: Record<string, never>; res: void };
+  "permissions:guideClose": { req: Record<string, never>; res: void };
   /**
    * Begin a recording session against the given subject (fixed rect or
    * full display) with the requested audio capabilities. Returns the

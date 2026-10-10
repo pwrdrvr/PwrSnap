@@ -65,7 +65,11 @@ function snapshotStartOptions(opts: StartOptions): StartOptions {
       opts.subject.kind === "display"
         ? { ...opts.subject }
         : { ...opts.subject, rect: { ...opts.subject.rect } },
-    capabilities: { ...opts.capabilities, ...(opts.capabilities.camera ? { camera: { ...opts.capabilities.camera } } : {}) },
+    capabilities: {
+      ...opts.capabilities,
+      ...(opts.capabilities.camera ? { camera: { ...opts.capabilities.camera } } : {}),
+      ...(opts.capabilities.microphoneDevice ? { microphoneDevice: { ...opts.capabilities.microphoneDevice } } : {})
+    },
     countdownSeconds: opts.countdownSeconds,
     captureCursor: opts.captureCursor
   };
@@ -467,6 +471,14 @@ class NativeRecorderService implements RecordingService {
           outputPath,
           systemAudio: options.capabilities.systemAudio,
           microphone: options.capabilities.microphone,
+          // The input's name, or omitted for the system default. The
+          // recorder matches it against AVFoundation's device names and
+          // refuses the take when none matches: recording a different
+          // microphone than the one the selector showed is the failure
+          // the device picker exists to prevent.
+          ...(options.capabilities.microphone && options.capabilities.microphoneDevice !== undefined
+            ? { microphoneDevice: options.capabilities.microphoneDevice.label }
+            : {}),
           // Omitted when undefined (JSON.stringify drops it), so the
           // recorder falls back to its `showsCursor ?? true` default.
           showsCursor: options.captureCursor,

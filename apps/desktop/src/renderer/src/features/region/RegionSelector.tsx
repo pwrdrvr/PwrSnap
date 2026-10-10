@@ -1,4 +1,5 @@
 import { CameraChip } from "../camera/CameraChip";
+import { MicrophoneChip } from "./MicrophoneChip";
 // Region-selector renderer.
 //
 // State machine (post-feedback redesign):
@@ -49,6 +50,7 @@ import { acceleratorToDisplayKeys, MAX_SELECTOR_EXTENTS } from "@pwrsnap/shared"
 import type {
   QuickCaptureAction,
   RecordingCapabilities,
+  RecordingDevicePreference,
   SelectorTerminalAction
 } from "@pwrsnap/shared";
 import type {
@@ -78,7 +80,7 @@ import {
   microphoneChipState,
   microphoneChipWhy
 } from "../shared/source-chip-state";
-import { useMicrophoneMonitor } from "../shared/useMicrophoneMonitor";
+import { savedMicrophonePresence, useMicrophoneMonitor } from "../shared/useMicrophoneMonitor";
 
 const HASH_PARAM_DISPLAY_ID = "displayId";
 const NUDGE_PX = 1;
@@ -315,6 +317,30 @@ export function RegionSelector() {
   const [cameraReady, setCameraReady] = useState(true);
   const cameraReadyRef = useRef(true);
   const [sources, setSources] = useState<RecordingCapabilities | null>(null);
+  // The saved microphone and camera, seeded per show from
+  // `settings.recording.microphoneDevice` / `.cameraDevice`. Unlike the
+  // on/off seeds above, a pick here IS written back: "which microphone" is
+  // a property of the desk, not of one take, and asking it again on every
+  // recording is the friction the picker exists to remove. Turning a source
+  // on or off still never writes.
+  const [micPreference, setMicPreference] = useState<RecordingDevicePreference | null>(null);
+  const [cameraPreference, setCameraPreference] = useState<RecordingDevicePreference | null>(null);
+  // The microphone name the commit hands the recorder, or null for the
+  // system default. A ref for the same reason as `sourcesRef`: `commit()`
+  // is captured once at mount.
+  const micDeviceRef = useRef<string | null>(null);
+  // Whether that name came from a device that is open (and so is known to
+  // be attached), and the saved pick it came from otherwise. Refs for the
+  // same reason: Record reads them from `commit()`.
+  const micOpenRef = useRef(false);
+  const micPreferenceRef = useRef<RecordingDevicePreference | null>(null);
+  // The check at Record (see `commit`). The generation is bumped by every
+  // reset, so a check that resolves after the selector moved on is dropped.
+  const micCheckGenRef = useRef(0);
+  const micCheckInFlightRef = useRef(false);
+  // Bumped to open the microphone picker from outside it: the check at
+  // Record found the saved microphone gone.
+  const [micPickerRequest, setMicPickerRequest] = useState(0);
   // Whether the microphone stream may be opened for this show.
   //
   // Opening it lights the macOS orange indicator and, on first use,
@@ -364,6 +390,12 @@ export function RegionSelector() {
   //   'rectangle' — the whole box, opaque. What a rect capture has
   //                 always produced.
   const [outputMode, setOutputMode] = useState<OutputMode>("windows");
+  // The keyboard legend, folded behind a "?" until asked for. It was a
+  // full-width line above the HUD on every show, mostly restating keys
+  // the HUD's own buttons already name. Not reset per show: someone who
+  // opened it wants it on the next capture too. It is NOT persisted
+  // across launches; that would be a setting.
+  const [hintOpen, setHintOpen] = useState(false);
 
   // Refs mirror state so global event handlers (registered once on
   // mount) read the freshest values without closure-capture stale-data.
@@ -671,8 +703,27 @@ export function RegionSelector() {
   const sourcesArmed =
     sourcesOffered && (intent === "video" || primary === "record" || sourcesTouched);
   const mic = useMicrophoneMonitor({
-    enabled: sourcesArmed && sources?.microphone === true
+    enabled: sourcesArmed && sources?.microphone === true,
+    preference: micPreference
   });
+  // Which microphone the recorder is asked for. Opened: the device the
+  // meter is on, unless that is the default (no pick, or a saved pick that
+  // is not attached — the picker says so). Not opened (a Quick Capture that
+  // only offers Record, or an open that failed): the saved pick, which the
+  // chip is showing, and which the recorder refuses the take over rather
+  // than record a different microphone in its place.
+  micDeviceRef.current =
+    sourcesArmed && mic.activeLabel !== null
+      ? mic.followsDefault
+        ? null
+        : mic.activeLabel
+      : micPreference !== null && micPreference.label !== ""
+        ? micPreference.label
+        : null;
+  micOpenRef.current = sourcesArmed && mic.activeLabel !== null;
+  micPreferenceRef.current = micPreference;
+  const soundSettingsOffered =
+    window.pwrsnapApi?.platform === "darwin" || window.pwrsnapApi?.platform === "win32";
   const micState = microphoneChipState({
     on: sources?.microphone === true,
     armed: sourcesArmed,
@@ -804,6 +855,12 @@ export function RegionSelector() {
       audioOfferedRef.current = payload.sources !== undefined;
       setAudioOffered(payload.sources !== undefined);
       const nextSources = payload.sources ?? (payload.cameraOffered ? { microphone: false, systemAudio: false } : null);
+      setMicPreference(payload.devices?.microphone ?? null);
+      micPreferenceRef.current = payload.devices?.microphone ?? null;
+      micCheckGenRef.current += 1;
+      micCheckInFlightRef.current = false;
+      setMicPickerRequest(0);
+      setCameraPreference(payload.devices?.camera ?? null);
       sourcesRef.current = nextSources;
       setSources(nextSources);
       // A new show has not been touched yet, so the microphone stays
@@ -1125,6 +1182,27 @@ export function RegionSelector() {
     setSources((prev) => (prev === null ? prev : { ...prev, [kind]: !prev[kind] }));
   }
 
+  /** The sources a commit ships, with the microphone named when it is on. */
+  function committedSources(base: RecordingCapabilities): RecordingCapabilities {
+    const { microphoneDevice: _stale, ...rest } = base;
+    const label = micDeviceRef.current;
+    return rest.microphone && label !== null ? { ...rest, microphoneDevice: { label } } : rest;
+  }
+
+  /**
+   * Save a device pick. The in-show state moves first so the chip follows
+   * at once; a write that fails costs only the memory of the pick, never
+   * this take, which already uses it.
+   */
+  function saveDevice(
+    key: "microphoneDevice" | "cameraDevice",
+    preference: RecordingDevicePreference | null
+  ): void {
+    const recording =
+      key === "microphoneDevice" ? { microphoneDevice: preference } : { cameraDevice: preference };
+    void dispatch("settings:write", { recording }).catch(() => undefined);
+  }
+
   /**
    * Drop the pick set WITHOUT touching the rect.
    *
@@ -1241,7 +1319,7 @@ export function RegionSelector() {
    * a missing `action` as "snap" — so every pre-chooser call site and
    * every fixed-`snap` show keep exactly their old wire shape.
    */
-  function commit(action: SelectorTerminalAction = primaryAction()): void {
+  function commit(action: SelectorTerminalAction = primaryAction(), micChecked = false): void {
     if (submittedRef.current) return;
     // A recording is one rectangular stream, so Record is dead against a
     // 2+-pick set (see recordAvailable). The HUD button is disabled and
@@ -1255,6 +1333,37 @@ export function RegionSelector() {
     // the chooser's Record.
     const isRecording = intentRef.current === "video" || action === "record";
     if (isRecording && !cameraReadyRef.current) return;
+    // The check at Record. When the microphone was never opened (a Quick
+    // Capture that only offers Record), the chip is showing the saved
+    // name and the recorder would be asked for it. If that device has
+    // gone, say so here and do not start: the picker opens, which opens
+    // the default with the "not connected" note, and the next Record
+    // takes the default the chip now names. The recorder still refuses a
+    // device that goes between here and the start.
+    const savedMic = micPreferenceRef.current;
+    if (
+      isRecording &&
+      !micChecked &&
+      sourcesRef.current?.microphone === true &&
+      micDeviceRef.current !== null &&
+      !micOpenRef.current &&
+      savedMic !== null
+    ) {
+      if (micCheckInFlightRef.current) return;
+      micCheckInFlightRef.current = true;
+      const generation = micCheckGenRef.current;
+      void savedMicrophonePresence(savedMic).then((presence) => {
+        if (generation !== micCheckGenRef.current || submittedRef.current) return;
+        micCheckInFlightRef.current = false;
+        if (presence !== "missing") {
+          commit(action, true);
+          return;
+        }
+        setSourcesTouched(true);
+        setMicPickerRequest((n) => n + 1);
+      });
+      return;
+    }
     // The renderer's rects are in CSS pixels. Main + screencapture
     // expect display-logical pixels. Scale back via the inverse of the
     // snapshot's css-to-logical factor. On standard displays this is
@@ -1325,7 +1434,7 @@ export function RegionSelector() {
           ...(action === "record" ? { action } : {}),
           ...(isRecording ? { captureCursor: captureCursorRef.current } : {}),
           ...(isRecording && sourcesRef.current !== null
-            ? { sources: sourcesRef.current }
+            ? { sources: committedSources(sourcesRef.current) }
             : {}),
           // No `extents`. A one-window mask covers its own union box
           // edge to edge, so it can only ever produce the same pixels
@@ -1412,7 +1521,7 @@ export function RegionSelector() {
       // read, same reason. Omitted when main never seeded them, which
       // leaves main on the persisted defaults rather than letting a
       // renderer that was never asked answer for the user.
-      ...(isRecording && sourcesRef.current !== null ? { sources: sourcesRef.current } : {})
+      ...(isRecording && sourcesRef.current !== null ? { sources: committedSources(sourcesRef.current) } : {})
     });
     // Full reset, same as the pick path above. Hand-rolling a partial
     // one here left `shiftHeld` / `spaceHeld` latched: the ⇧ keyup is
@@ -1434,6 +1543,8 @@ export function RegionSelector() {
   }
 
   function resetToSnap(): void {
+    micCheckGenRef.current += 1;
+    micCheckInFlightRef.current = false;
     if (submittedRef.current) {
       setCameraOffered(false);
       cameraOfferedRef.current = false;
@@ -1604,6 +1715,12 @@ export function RegionSelector() {
       // modifiers — ⌘R is Reload in a dev build and ⌃R is a shell
       // history search the user may have muscle-memory for; neither must
       // start a screen recording.
+      // `?` shows or hides the keyboard legend, like the "?" button.
+      if (event.key === "?" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        event.preventDefault();
+        setHintOpen((open) => !open);
+        return;
+      }
       if (
         (event.key === "r" || event.key === "R") &&
         !event.metaKey &&
@@ -1849,7 +1966,7 @@ export function RegionSelector() {
       // focus and its onClick fires normally; treating a HUD press as
       // a canvas gesture would toggle a pick under the bar.
       if (
-        event.target instanceof HTMLElement &&
+        event.target instanceof Element &&
         event.target.closest("[data-region-hud]") !== null
       ) {
         return;
@@ -2017,7 +2134,7 @@ export function RegionSelector() {
       // not re-snap the selection out from under the click. Free when
       // no HUD is rendered — nothing can match the selector then.
       if (
-        event.target instanceof HTMLElement &&
+        event.target instanceof Element &&
         event.target.closest("[data-region-hud]") !== null
       ) {
         return;
@@ -2166,7 +2283,7 @@ export function RegionSelector() {
       // HUD button toggled a pick for the window under the ORIGINAL
       // press while the button the user released on got no click.
       if (
-        event.target instanceof HTMLElement &&
+        event.target instanceof Element &&
         event.target.closest("[data-region-hud]") !== null
       ) {
         pendingPickRef.current = null;
@@ -2901,7 +3018,7 @@ export function RegionSelector() {
             // `e.target` is the DEEPEST node — a chip's <span>, or the
             // Capture button's <kbd> — and blur() on a non-focusable
             // node is a no-op, so the <button> kept focus.
-            if (e.target instanceof HTMLElement) e.target.closest("button")?.blur();
+            if (e.target instanceof Element) e.target.closest("button")?.blur();
           }}
         >
           {/* Output shape. Hidden at one pick, where the union box is
@@ -3026,31 +3143,34 @@ export function RegionSelector() {
           )}
           {sourcesOffered && audioOffered && (
             <>
-              <SourceChip
-                source="microphone"
+              <MicrophoneChip
                 state={micState}
-                level={mic.segments / 7}
-                // Armed but unopened: the chip knows the user's choice
-                // and nothing about the signal, so it must not draw a
-                // meter that would read as silence.
-                noMeter={!sourcesArmed}
-                {...(micWhy !== undefined ? { why: micWhy } : {})}
-                {...(micState === "ask"
-                  ? { act: "Allow", onAct: () => void mic.request() }
-                  : {})}
-                {...(micState === "denied"
-                  ? {
-                      act: "Settings",
-                      onAct: () => {
-                        void dispatch("permissions:openSystemSettings", {
-                          permission: "microphone"
-                        });
-                      }
-                    }
-                  : {})}
-                kbd="M"
+                why={micWhy}
+                armed={sourcesArmed}
+                monitor={mic}
+                preference={micPreference}
+                openRequest={micPickerRequest}
                 onToggle={() => toggleSource("microphone")}
-                testId="region-hud-mic"
+                // Opening the picker is a direct request to see this
+                // microphone, so it earns the stream the way a flip does.
+                onArm={() => setSourcesTouched(true)}
+                onPick={(preference) => {
+                  setMicPreference(preference);
+                  saveDevice("microphoneDevice", preference);
+                }}
+                onOpenSettings={() => {
+                  void dispatch("permissions:openSystemSettings", {
+                    permission: "microphone"
+                  });
+                }}
+                // Main knows a sound-settings page on macOS and Windows only.
+                onOpenSoundSettings={
+                  soundSettingsOffered
+                    ? () => {
+                        void dispatch("permissions:openSoundSettings", {});
+                      }
+                    : undefined
+                }
               />
               <SourceChip
                 source="systemAudio"
@@ -3076,6 +3196,11 @@ export function RegionSelector() {
                 setCameraOn(next);
               }}
               value={sources?.camera}
+              preferred={cameraPreference}
+              onPick={(preference) => {
+                setCameraPreference(preference);
+                saveDevice("cameraDevice", preference);
+              }}
               onReady={(ready) => {
                 cameraReadyRef.current = ready;
                 setCameraReady(ready);
@@ -3091,7 +3216,29 @@ export function RegionSelector() {
         </div>
       )}
 
-        <div className="region-hint">
+        {/* `data-region-hud`: a press on the "?" is the row's, not a
+            canvas gesture (see the guard in onMouseDown). */}
+        <div className="region-hint-row" data-region-hud>
+        <button
+          type="button"
+          className="region-hint-toggle"
+          aria-label="Keyboard shortcuts"
+          aria-expanded={hintOpen}
+          aria-controls="region-hint"
+          aria-keyshortcuts="?"
+          data-tip={hintOpen ? "Hide keyboard shortcuts" : "Keyboard shortcuts"}
+          data-tip-keys="?"
+          data-testid="region-hint-toggle"
+          onClick={(event) => {
+            setHintOpen((open) => !open);
+            // Same reason as the HUD: a focused button would take the ↵
+            // that is meant to capture.
+            event.currentTarget.blur();
+          }}
+        >
+          ?
+        </button>
+        <div className="region-hint" id="region-hint" hidden={!hintOpen}>
         {intent === "video" && (
           <>
             <span>
@@ -3183,6 +3330,7 @@ export function RegionSelector() {
           <kbd>esc</kbd>
           {interaction.kind === "snap" && !hasPicks ? "cancel" : "back"}
         </span>
+        </div>
         </div>
       </div>
       <style>{`@keyframes ps-rec-pulse {

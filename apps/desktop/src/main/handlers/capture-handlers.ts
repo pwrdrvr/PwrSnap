@@ -472,6 +472,16 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       // mode signal BEFORE the selector shows — there is no second
       // chance to send it once the chooser is on screen.
       ...(settings !== null ? { cursorDefault: settings.recording.videoCaptureCursor } : {}),
+      // The saved devices. A read failure omits them, which the chips
+      // read as "no choice": the default microphone, the first camera.
+      ...(settings !== null
+        ? {
+            devicesDefault: {
+              microphone: settings.recording.microphoneDevice,
+              camera: settings.recording.cameraDevice
+            }
+          }
+        : {}),
       // Same timing constraint as `cursorDefault`, and the same
       // fail-closed reasoning: a settings read failure omits the seed,
       // which hides the chips rather than guessing. The recording entry

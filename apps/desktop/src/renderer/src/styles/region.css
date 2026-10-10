@@ -278,10 +278,51 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
   pointer-events: none;
 }
 
-.region-hint {
-  /* Above the HUD, while staying SECOND in the DOM so the HUD keeps
-     the first tab stop. */
+/* The legend's row: the "?" that folds it, then the legend itself.
+   Above the HUD, while staying SECOND in the DOM so the HUD keeps the
+   first tab stop. */
+.region-hint-row {
   order: -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  max-width: 100%;
+}
+.region-hint-toggle {
+  appearance: none;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border-default);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--bg-panel-hover) 92%, transparent);
+  color: var(--text-secondary);
+  font: 600 12px/1 var(--font-sans);
+  /* The column is pointer-events:none; this one control opts back in. */
+  pointer-events: auto;
+  cursor: pointer;
+}
+.region-hint-toggle:hover {
+  border-color: var(--accent-border);
+  color: var(--text-primary);
+}
+.region-hint-toggle[aria-expanded="true"] {
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+.region-hint-toggle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.region-hint {
+  /* Shrinks within the row, beside the "?", and wraps its own items. */
+  flex: 0 1 auto;
+  min-width: 0;
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
@@ -306,6 +347,10 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
   color: var(--text-primary);
   font: 600 10px/1 var(--font-mono);
   margin-right: 4px;
+}
+/* `display: flex` above would otherwise beat the UA's [hidden] rule. */
+.region-hint[hidden] {
+  display: none;
 }
 .region-hint-sep {
   color: var(--text-muted);

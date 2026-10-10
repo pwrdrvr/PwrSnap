@@ -487,6 +487,56 @@ describe("RecordingService.start excludePids", () => {
   });
 });
 
+describe("RecordingService.start microphoneDevice", () => {
+  // The selector's microphone pick has to reach the recorder, which used
+  // to open the system default no matter what the chip showed.
+  async function startCommand(capabilities: typeof CAPS & {
+    microphoneDevice?: { label: string };
+  }): Promise<Record<string, unknown>> {
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+    const startPromise = service
+      .start({ subject: SUBJECT, capabilities, countdownSeconds: 0 })
+      .catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(0);
+    const child = mocks.spawnedChildren[0]!;
+    const startCmd = JSON.parse(child.stdin.write.mock.calls[0]![0].trim()) as Record<string, unknown>;
+    const cancelDone = service.cancel();
+    await vi.advanceTimersByTimeAsync(600);
+    await cancelDone;
+    await vi.advanceTimersByTimeAsync(16_000);
+    await startPromise;
+    return startCmd;
+  }
+
+  test("a named input reaches the recorder by its label", async () => {
+    const startCmd = await startCommand({
+      ...CAPS,
+      microphone: true,
+      microphoneDevice: { label: "Granola Interface (USB)" }
+    });
+    expect(startCmd.microphone).toBe(true);
+    expect(startCmd.microphoneDevice).toBe("Granola Interface (USB)");
+  });
+
+  test("no named input sends no name, so the recorder opens the default", async () => {
+    const startCmd = await startCommand({ ...CAPS, microphone: true });
+    expect("microphoneDevice" in startCmd).toBe(false);
+  });
+
+  test("a name with the microphone off is not sent", async () => {
+    const startCmd = await startCommand({
+      ...CAPS,
+      microphone: false,
+      microphoneDevice: { label: "Granola Interface (USB)" }
+    });
+    expect("microphoneDevice" in startCmd).toBe(false);
+  });
+});
+
 describe("RecordingService.start showsCursor (cursor capture)", () => {
   test("captureCursor:false writes showsCursor:false to the recorder", async () => {
     const { __setRecordingServiceForTests, getRecordingService } = await import(

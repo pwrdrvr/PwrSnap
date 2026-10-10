@@ -115,19 +115,95 @@
   color: inherit;
 }
 
+/* ---------------- the selector's tile (control density) ----------------
+   Two lines in a fixed box. The top line is the source, its meter and
+   its controls; the bottom line is the reason, when there is one, then
+   the device. Using height rather than width keeps the HUD narrow: one
+   row of single-line chips carrying the device and the reason needed
+   ~400px for the microphone alone, and resized itself, moving every
+   control on the centred bar, each time the reason or the device
+   changed. A tile is the same box in every state.
+
+   Areas, not flow: the act and caret siblings are each optional, and
+   the sub line must sit under all of them. No key badge: the selector's
+   shortcut legend lists M / A / K, and a badge on each tile cost the bar
+   ~75px. */
+.ps-chip--tile {
+  display: inline-grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "body caret"
+    "sub  sub";
+  align-content: center;
+  align-items: center;
+  column-gap: 6px;
+  row-gap: 3px;
+  height: 40px;
+}
+/* The grant action ("Allow") rides on the bottom line, beside the reason
+   that asks for it, so the top line keeps its width. */
+.ps-chip--tile.ps-chip--act {
+  grid-template-areas:
+    "body caret"
+    "sub  act";
+}
+/* Microphone and camera name a device, so they get a fixed box, sized
+   so the top line never cuts the source word: the microphone's carries a
+   meter and a caret. The system-audio tile has neither a device
+   nor a meter, and keeps its natural width (at the same height). */
+.ps-chip--tile[data-source="microphone"] {
+  /* Also fits "MacBook Pro Microphone" whole on the second line. */
+  width: 176px;
+}
+.ps-chip--tile[data-source="camera"] {
+  width: 148px;
+}
+.ps-chip--tile > .ps-chip__body {
+  grid-area: body;
+  min-width: 0;
+  /* `gap: inherit` would take the tile's 3px row gap as well. */
+  gap: 8px;
+}
+.ps-chip--tile > .ps-chip__devices { grid-area: caret; }
+.ps-chip--tile > .ps-chip__act {
+  grid-area: act;
+  justify-self: end;
+  margin-right: 0;
+  padding: 1px 6px;
+}
+.ps-chip--tile .ps-chip__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The meter sits at the end of the top line, against the caret. */
+.ps-chip--tile .ps-meter {
+  margin-left: auto;
+}
+/* Indented under the source word: glyph (14px) + the body's 8px gap. */
+.ps-chip__sub {
+  grid-area: sub;
+  min-width: 0;
+  padding-left: 22px;
+  overflow: hidden;
+  font: 500 11px/1.2 var(--font-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ps-chip__dev {
+  color: var(--text-muted);
+}
+
+.ps-chip__why {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ps-chip__why {
   color: currentColor;
   font: 500 11px/1 var(--font-sans);
   opacity: 0.9;
-}
-
-.ps-chip__kbd {
-  padding: 1px 5px;
-  border: 1px solid var(--border-default);
-  border-radius: 3px;
-  background: color-mix(in srgb, var(--text-primary) 5%, transparent);
-  color: var(--text-secondary);
-  font: 600 10px/1 var(--font-mono);
 }
 
 /* The caret opens the device picker. Rendered only when there is more
@@ -297,6 +373,9 @@
 .ps-meter i[data-on="true"] { background: var(--accent); }
 .ps-meter i[data-on="true"]:nth-child(6) { background: var(--warn); }
 .ps-meter i[data-on="true"]:nth-child(7) { background: var(--danger); }
+/* Clipping latches the top segment red whatever the level is now: the
+   shout that clipped is usually over before anyone looks. */
+.ps-chip[data-clipping="true"] .ps-meter i:nth-child(7) { background: var(--danger); }
 
 /* Flat: granted and on, but no samples. Distinct from "off" (grey) and
    from "live at zero" — the segments are tinted, not dark. */

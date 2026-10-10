@@ -22,8 +22,8 @@
 // Styling notes live in SourceChip.css — in particular why the geometry
 // copies `.region-hud__toggle`, and why `--onScrim` exists.
 
-import type { ReactElement } from "react";
-import type { RecordingSourceKind } from "@pwrsnap/shared";
+import { useId, type ReactElement } from "react";
+import { shortDeviceLabel, type RecordingSourceKind } from "@pwrsnap/shared";
 import "./SourceChip.css";
 
 /**
@@ -59,6 +59,14 @@ export type SourceChipProps = {
   readonly level?: number;
   /** Overrides the default source name. */
   readonly label?: string;
+  /**
+   * The device this source will record from, shown beside the name at
+   * control density. Answers "WHICH microphone?" before the take rather
+   * than in playback. Dense and static densities have no room for it.
+   */
+  readonly device?: string | undefined;
+  /** A clipped sample arrived recently. Lights the meter's top segment. */
+  readonly clipping?: boolean;
   /** Short reason shown in place of a meter — "needs access", "macOS only". */
   readonly why?: string;
   /**
@@ -70,7 +78,8 @@ export type SourceChipProps = {
   /** Inline action label — "Allow", "Settings". Implies `onAct`. */
   readonly act?: string;
   readonly onAct?: () => void;
-  /** Hotkey glyph. Omitted in dense/static densities. */
+  /** The key that toggles this source. Announced at control density
+   *  (`aria-keyshortcuts`), never drawn: the selector's legend lists it. */
   readonly kbd?: string;
   /** Draw the device caret. Only meaningful with `onOpenDevices`. */
   readonly hasDevices?: boolean;
@@ -240,6 +249,8 @@ export function SourceChip({
   state,
   level,
   label,
+  device,
+  clipping = false,
   why,
   detail,
   act,
@@ -255,6 +266,7 @@ export function SourceChip({
   testId
 }: SourceChipProps): ReactElement {
   const name = label ?? SOURCE_LABEL[source];
+  const subId = useId();
   const on = ON_STATES.has(state);
   const inert = INERT_STATES.has(state);
   const isAudio = source === "microphone" || source === "systemAudio";
@@ -287,6 +299,8 @@ export function SourceChip({
     "ps-chip",
     density === "dense" ? "ps-chip--dense" : null,
     density === "static" ? "ps-chip--static" : null,
+    density === "control" ? "ps-chip--tile" : null,
+    density === "control" && act !== undefined && !INERT_STATES.has(state) ? "ps-chip--act" : null,
     onScrim ? "ps-chip--onScrim" : null
   ]
     .filter((part): part is string => part !== null)
@@ -325,9 +339,10 @@ export function SourceChip({
   const hasAct = act !== undefined && !inert;
   const hasCaret = hasDevices === true && !inert;
   const grouped = hasAct || hasCaret;
-  // Only the selector's control density both draws the badge and has a
-  // key handler behind it.
-  const showKbd = kbd !== undefined && density === "control";
+  // Only the selector's control density has a key handler behind it. The
+  // key is announced, not drawn: the selector's shortcut legend (behind its
+  // "?") lists M / A / K, and a badge on every tile cost the bar ~75px.
+  const keyBound = kbd !== undefined && density === "control";
 
   // The chip is a GROUP, not a button.
   //
@@ -354,6 +369,13 @@ export function SourceChip({
   // window sized to its own pill, which an in-page tooltip could not leave
   // and would cover the HUD's buttons inside. So it keeps the native
   // `title`, which the OS draws in a window of its own.
+  // The selector draws a two-line tile: the source and its meter on top,
+  // and below it the reason, when there is one, then the device. A row
+  // of single-line chips carrying both had to be ~400px wide for one
+  // microphone, and resized itself whenever a reason came or went.
+  const tile = density === "control";
+  const shownDevice = tile && device !== undefined ? shortDeviceLabel(device) : "";
+  const subline = tile && (why !== undefined || shownDevice !== "");
   const hudTitle =
     density === "dense" ? (why === undefined ? name : `${name} — ${why}`) : undefined;
   return (
@@ -361,6 +383,7 @@ export function SourceChip({
       className={className}
       data-state={state}
       data-source={source}
+      {...(clipping ? { "data-clipping": "true" } : {})}
       title={hudTitle}
       {...(grouped ? { role: "group", "aria-label": name } : {})}
       {...(testId !== undefined ? { "data-testid": testId } : {})}
@@ -377,16 +400,17 @@ export function SourceChip({
         {...(density === "dense" ? { "aria-label": name } : {})}
         // The real home for "press M". It rode in as a trailing "M" on
         // the button's name before, which said nothing about what it
-        // was. Gated on `showKbd`, not on `kbd` alone: announcing a
-        // shortcut the surface neither draws nor binds is the same
+        // was. Gated on `keyBound`, not on `kbd` alone: announcing a
+        // shortcut the surface does not bind is the same
         // two-predicates-that-must-agree bug as the hint legend's.
-        {...(showKbd ? { "aria-keyshortcuts": kbd } : {})}
+        {...(keyBound ? { "aria-keyshortcuts": kbd } : {})}
+        {...(subline ? { "aria-describedby": subId } : {})}
         onClick={onToggle}
       >
         <SourceGlyph source={source} />
         {density === "dense" ? null : <span className="ps-chip__name">{name}</span>}
         {showMeter ? <SourceMeter level={level} tone={tone} /> : null}
-        {why !== undefined ? <span className="ps-chip__why">{why}</span> : null}
+        {!tile && why !== undefined ? <span className="ps-chip__why">{why}</span> : null}
       </button>
       {hasAct ? (
         // No stopPropagation any more: there is no enclosing button left
@@ -409,11 +433,15 @@ export function SourceChip({
           <Caret />
         </button>
       ) : null}
-      {showKbd ? (
-        // Decorative now that `aria-keyshortcuts` carries the fact.
-        <kbd className="ps-chip__kbd" aria-hidden="true">
-          {kbd}
-        </kbd>
+      {subline ? (
+        // Outside the toggle, so it is not part of the button's name, but
+        // the toggle's ::after overlay still covers it: a click here
+        // toggles like anywhere else on the tile.
+        <span className="ps-chip__sub" id={subId}>
+          {why !== undefined ? <span className="ps-chip__why">{why}</span> : null}
+          {why !== undefined && shownDevice !== "" ? <span aria-hidden="true"> · </span> : null}
+          {shownDevice !== "" ? <span className="ps-chip__dev">{shownDevice}</span> : null}
+        </span>
       ) : null}
     </span>
   );

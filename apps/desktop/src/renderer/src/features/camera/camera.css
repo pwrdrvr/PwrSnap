@@ -56,6 +56,9 @@
   width: 280px;
   padding: 5px;
   display: grid;
+  /* Not the implicit `auto` column, whose floor is the longest camera
+     name: see `.mic-pop` in microphone-chip.css. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 2px;
   border-radius: 12px;
   border: 1px solid var(--border-strong);
@@ -73,12 +76,14 @@
 }
 .camera-pop__list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 1px;
 }
 .camera-pop__row {
   appearance: none;
   display: flex;
   align-items: center;
+  min-width: 0;
   gap: 8px;
   height: 28px;
   padding: 0 8px;
@@ -97,7 +102,14 @@
 .camera-pop__row[aria-checked="true"] {
   color: var(--text-primary);
 }
+.camera-pop__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .camera-pop__dot {
+  flex: 0 0 auto;
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -137,6 +149,9 @@
   margin: 4px 8px 6px;
   font: 400 11px/1.4 var(--font-sans);
   color: var(--text-muted);
+}
+.camera-pop__note--warn {
+  color: var(--warn-text);
 }
 .camera-pop__err {
   margin: 0 8px 6px;

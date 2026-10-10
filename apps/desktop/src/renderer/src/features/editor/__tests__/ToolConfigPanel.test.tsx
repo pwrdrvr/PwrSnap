@@ -118,6 +118,8 @@ function makeSettings(): Settings {
       videoCaptureCursor: true,
       showRegionFrame: true,
       showRecentCaptureSidebar: true,
+      microphoneDevice: null,
+      cameraDevice: null,
       imageCaptureCursor: true,
       lastRoutedPermissionFingerprint: "",
       screenCapturePrompted: false

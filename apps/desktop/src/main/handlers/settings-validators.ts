@@ -47,6 +47,7 @@ import {
   canonicalAcceleratorForPlatform,
   shortcutPlatformDisplayName,
   shortcutPlatformFromString,
+  RecordingDevicePreferenceSchema,
   REDACTION_STYLES,
   TOOL_BAG_SIZE
 } from "@pwrsnap/shared";
@@ -634,6 +635,22 @@ export function validateSettingsWrite(
           'settings:write: recording.quickCaptureAction must be "ask", "snap", or "record"'
         )
       };
+    }
+    // A device choice is `null` (system default) or one full
+    // preference. A half-filled one would save a device the chips can
+    // neither open by id nor find by name.
+    for (const key of ["microphoneDevice", "cameraDevice"] as const) {
+      const v = recording[key];
+      if (isUndefined(v) || v === null) continue;
+      if (!RecordingDevicePreferenceSchema.safeParse(v).success) {
+        return {
+          ok: false,
+          error: validationError(
+            `invalid_recording_${key}`,
+            `settings:write: recording.${key} must be null or { deviceId, label }`
+          )
+        };
+      }
     }
     if (
       !isUndefined(recording.lastRoutedPermissionFingerprint) &&

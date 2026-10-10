@@ -14,7 +14,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 
-import { MAX_SELECTOR_EXTENTS } from "@pwrsnap/shared";
+import { MAX_SELECTOR_EXTENTS, shortDeviceLabel } from "@pwrsnap/shared";
 
 import type {
   SelectorRawSnapshotDescriptor,
@@ -34,6 +34,10 @@ type ModePayload = {
   intent?: "snap" | "video";
   cursor?: boolean;
   sources?: { microphone: boolean; systemAudio: boolean };
+  devices?: {
+    microphone: { deviceId: string; label: string } | null;
+    camera: { deviceId: string; label: string } | null;
+  };
   quickCaptureAction?: "ask" | "snap" | "record";
   invocationId?: string;
   generation?: number;
@@ -528,6 +532,41 @@ async function pickWindowSnap(): Promise<void> {
   await mouseUp(cx, cy);
 }
 
+// The keyboard legend was a full-width line above the HUD on every show.
+// It is folded behind a "?" now, and stays in the DOM so its copy is still
+// one source of truth.
+describe("the keyboard legend is behind a ?", () => {
+  const toggle = (): HTMLButtonElement =>
+    container!.querySelector<HTMLButtonElement>('[data-testid="region-hint-toggle"]')!;
+  const legend = (): HTMLElement => container!.querySelector<HTMLElement>(".region-hint")!;
+
+  test("folded by default, opened and closed by the button", async () => {
+    await mount();
+    expect(legend().hidden).toBe(true);
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    // A press on the "?" is the row's, not a canvas gesture.
+    expect(toggle().closest("[data-region-hud]")).not.toBeNull();
+    await act(async () => toggle().click());
+    expect(legend().hidden).toBe(false);
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+    // The button gives focus back, so the next ↵ still captures.
+    expect(document.activeElement).not.toBe(toggle());
+    await act(async () => toggle().click());
+    expect(legend().hidden).toBe(true);
+  });
+
+  test("the ? key does the same", async () => {
+    await mount();
+    await keyDown("?", { shiftKey: true });
+    expect(legend().hidden).toBe(false);
+    await keyDown("?", { shiftKey: true });
+    expect(legend().hidden).toBe(true);
+    // ⌘? is not ours.
+    await keyDown("?", { shiftKey: true, metaKey: true });
+    expect(legend().hidden).toBe(true);
+  });
+});
+
 describe("U1 — crosshair guide-lines", () => {
   test("mounts in snap mode and seeds the crosshair to viewport center", async () => {
     await mount();
@@ -978,6 +1017,30 @@ describe("U5 — multi-window pick set", () => {
     // Back to live snap under the cursor — which is still over WIN.
     expect(document.body.dataset.interaction).toBe("snap");
     expect(document.body.dataset.snap).toBe("window");
+  });
+
+  // The chips' glyphs and the device chevron are SVG, and an SVGElement is
+  // not an HTMLElement. The HUD guard tested `instanceof HTMLElement`, so a
+  // press on the drawn chevron fell through to the canvas and toggled the
+  // window under the bar: with one pick, the HUD vanished instead of the
+  // picker opening.
+  test("a press on an SVG inside the HUD is the HUD's, not the window's under it", async () => {
+    await mountScene();
+    await clickWindow(WIN);
+    expect(pickBoxes()).toHaveLength(1);
+    const glyph = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    hud()!.appendChild(glyph);
+    const c = centerOf(WIN);
+    // Two acts: the press's state must land before the release reads it.
+    await act(async () => {
+      glyph.dispatchEvent(new MouseEvent("mousedown", { clientX: c.x, clientY: c.y, button: 0, bubbles: true }));
+    });
+    await act(async () => {
+      glyph.dispatchEvent(new MouseEvent("mouseup", { clientX: c.x, clientY: c.y, button: 0, bubbles: true }));
+    });
+    glyph.remove();
+    expect(pickBoxes()).toHaveLength(1);
+    expect(hud()).not.toBeNull();
   });
 
   test("clicking the desktop with a set live keeps it, and settles in snap", async () => {
@@ -2518,6 +2581,222 @@ describe("U7 — recording source chips", () => {
       expect(micChip()).toBeNull();
       const payload = await commitAndRead();
       expect(payload).not.toHaveProperty("sources");
+    });
+  });
+
+  // Which microphone, not just whether. Contrived devices.
+  describe("the microphone picker", () => {
+    const OATMEAL = { deviceId: "id-oatmeal", label: "Oatmeal Desk Mic (USB)" };
+    const GRANOLA = { deviceId: "id-granola", label: "Granola Interface" };
+    const MIC_ON = { microphone: true, systemAudio: false };
+
+    function labelled(deviceId: string, label: string): MediaStream {
+      const track = { stop: vi.fn(), label, getSettings: () => ({ deviceId }) };
+      return { getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream;
+    }
+
+    beforeEach(() => {
+      enumerateDevices.mockResolvedValue([
+        { kind: "audioinput", deviceId: "default", label: `Default - ${OATMEAL.label}` },
+        { kind: "audioinput", ...OATMEAL },
+        { kind: "audioinput", ...GRANOLA }
+      ]);
+      getUserMedia.mockImplementation(async (constraints: { audio: true | { deviceId: { exact: string } } }) =>
+        constraints.audio === true
+          ? labelled("default", `Default - ${OATMEAL.label}`)
+          : constraints.audio.deviceId.exact === GRANOLA.deviceId
+            ? labelled(GRANOLA.deviceId, GRANOLA.label)
+            : labelled(OATMEAL.deviceId, OATMEAL.label)
+      );
+    });
+
+    async function settle(): Promise<void> {
+      for (let i = 0; i < 6; i += 1) {
+        await act(async () => {
+          await Promise.resolve();
+        });
+      }
+    }
+
+    test("the chip names the default, and the commit leaves the choice to the recorder", async () => {
+      await mountScene({ mode: "auto", intent: "video", sources: MIC_ON });
+      await settle();
+      expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(shortDeviceLabel(OATMEAL.label));
+      await drawRect();
+      const payload = await commitAndRead();
+      expect(payload.sources).toEqual(MIC_ON);
+    });
+
+    test("the saved microphone is opened, named, and handed to the recorder", async () => {
+      await mountScene({
+        mode: "auto",
+        intent: "video",
+        sources: MIC_ON,
+        devices: { microphone: GRANOLA, camera: null }
+      });
+      await settle();
+      expect(getUserMedia).toHaveBeenCalledWith({ audio: { deviceId: { exact: GRANOLA.deviceId } } });
+      expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(shortDeviceLabel(GRANOLA.label));
+      await drawRect();
+      const payload = await commitAndRead();
+      expect(payload.sources).toEqual({ ...MIC_ON, microphoneDevice: { label: GRANOLA.label } });
+    });
+
+    test("a pick is saved through settings and used by this take", async () => {
+      await mountScene({ mode: "auto", intent: "video", sources: MIC_ON });
+      await settle();
+      await act(async () => {
+        micChip()!.querySelector<HTMLButtonElement>(".ps-chip__devices")!.click();
+      });
+      const row = Array.from(container!.querySelectorAll<HTMLButtonElement>(".mic-pop__row")).find(
+        (candidate) => candidate.textContent === GRANOLA.label
+      )!;
+      await act(async () => row.click());
+      await settle();
+      expect(window.pwrsnapApi!.dispatch).toHaveBeenCalledWith("settings:write", {
+        recording: { microphoneDevice: GRANOLA }
+      });
+      expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(shortDeviceLabel(GRANOLA.label));
+      // Back to "System default" is saved as null, not as the default's id.
+      await act(async () => {
+        container!.querySelector<HTMLButtonElement>("[data-testid='region-hud-mic-default']")!.click();
+      });
+      await settle();
+      expect(window.pwrsnapApi!.dispatch).toHaveBeenLastCalledWith("settings:write", {
+        recording: { microphoneDevice: null }
+      });
+      await act(async () => {
+        container!.querySelector<HTMLButtonElement>(".mic-pop__row:nth-child(3)")!.click();
+      });
+      await settle();
+      await keyDown("Escape");
+      await drawRect();
+      const payload = await commitAndRead();
+      expect(payload.sources).toEqual({ ...MIC_ON, microphoneDevice: { label: GRANOLA.label } });
+    });
+
+    test("turning the microphone on or off never writes settings", async () => {
+      await mountScene({ mode: "auto", intent: "video", sources: MIC_ON, devices: { microphone: GRANOLA, camera: null } });
+      await keyDown("m");
+      await keyDown("m");
+      await settle();
+      expect(window.pwrsnapApi!.dispatch).not.toHaveBeenCalledWith("settings:write", expect.anything());
+    });
+
+    test("a microphone switched off sends no name", async () => {
+      await mountScene({
+        mode: "auto",
+        intent: "video",
+        sources: { microphone: false, systemAudio: false },
+        devices: { microphone: GRANOLA, camera: null }
+      });
+      await drawRect();
+      const payload = await commitAndRead();
+      expect(payload.sources).toEqual({ microphone: false, systemAudio: false });
+    });
+
+    test("an unopened microphone on a Quick Capture asks the recorder for the saved one", async () => {
+      // The chip shows the saved name before anything is opened, so that
+      // is what the take is told to record; the recorder refuses rather
+      // than substitute a different microphone.
+      await mountScene({
+        mode: "auto",
+        quickCaptureAction: "ask",
+        sources: MIC_ON,
+        devices: { microphone: GRANOLA, camera: null }
+      });
+      await mouseMove(400, 300);
+      await drawRect();
+      expect(getUserMedia).not.toHaveBeenCalled();
+      expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(shortDeviceLabel(GRANOLA.label));
+      await keyDown("r");
+      // Record first checks the saved microphone is still attached.
+      await settle();
+      expect(getUserMedia).not.toHaveBeenCalled();
+      expect(submitRegion.mock.calls[0]?.[0].sources).toEqual({
+        ...MIC_ON,
+        microphoneDevice: { label: GRANOLA.label }
+      });
+    });
+
+    describe("the check at Record", () => {
+      const MUESLI = { deviceId: "id-muesli", label: "Muesli Mic" };
+
+      async function quickCaptureWithSaved(saved: typeof MUESLI): Promise<void> {
+        await mountScene({
+          mode: "auto",
+          quickCaptureAction: "ask",
+          sources: MIC_ON,
+          devices: { microphone: saved, camera: null }
+        });
+        await mouseMove(400, 300);
+        await drawRect();
+      }
+
+      test("a saved microphone that has gone stops the take and opens the picker", async () => {
+        // The chip said "Muesli Mic". Recording something else would make
+        // the chip a lie; failing the start would tell the user after the
+        // fact. Neither: the picker opens on the default, and says why.
+        const opened = getUserMedia.getMockImplementation()!;
+        getUserMedia.mockImplementation(async (constraints: { audio: true | { deviceId: { exact: string } } }) => {
+          if (constraints.audio !== true && constraints.audio.deviceId.exact === MUESLI.deviceId) {
+            throw Object.assign(new Error("not attached"), { name: "OverconstrainedError" });
+          }
+          return opened(constraints);
+        });
+        await quickCaptureWithSaved(MUESLI);
+        expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(shortDeviceLabel(MUESLI.label));
+        await keyDown("r");
+        await settle();
+        expect(submitRegion).not.toHaveBeenCalled();
+        const picker = container!.querySelector('[data-testid="region-hud-mic-devices"]');
+        expect(picker).not.toBeNull();
+        expect(picker!.textContent).toContain("“Muesli Mic” is not connected");
+        expect(document.activeElement).toBe(
+          container!.querySelector("[data-testid='region-hud-mic-default']")
+        );
+        // The picker opened the default, and the chip now names it.
+        expect(micChip()?.querySelector(".ps-chip__dev")?.textContent).toBe(shortDeviceLabel(OATMEAL.label));
+        // The next Record takes the default the chip shows.
+        await keyDown("r");
+        await settle();
+        expect(submitRegion).toHaveBeenCalledTimes(1);
+        expect(submitRegion.mock.calls[0]?.[0].sources).toEqual(MIC_ON);
+        // The fallback is for this take; the saved pick is not overwritten.
+        expect(window.pwrsnapApi!.dispatch).not.toHaveBeenCalledWith("settings:write", expect.anything());
+      });
+
+      test("hidden device names leave the decision to the recorder", async () => {
+        enumerateDevices.mockResolvedValue([
+          { kind: "audioinput", deviceId: "default", label: "" },
+          { kind: "audioinput", deviceId: "id-x", label: "" }
+        ]);
+        await quickCaptureWithSaved(MUESLI);
+        await keyDown("r");
+        await settle();
+        expect(submitRegion.mock.calls[0]?.[0].sources).toEqual({
+          ...MIC_ON,
+          microphoneDevice: { label: MUESLI.label }
+        });
+      });
+
+      test("a check that answers after the selection was dropped does nothing", async () => {
+        let answer: (devices: unknown[]) => void = () => undefined;
+        enumerateDevices.mockImplementation(
+          () => new Promise((resolve) => {
+            answer = resolve;
+          })
+        );
+        await quickCaptureWithSaved(GRANOLA);
+        await keyDown("r");
+        // A second press while the check is out does not start a second one.
+        await keyDown("r");
+        expect(enumerateDevices).toHaveBeenCalledTimes(1);
+        await keyDown("Escape");
+        await act(async () => answer([{ kind: "audioinput", ...GRANOLA }]));
+        await settle();
+        expect(submitRegion).not.toHaveBeenCalled();
+      });
     });
   });
 });

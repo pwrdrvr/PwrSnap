@@ -10,6 +10,7 @@ import { parseCustomAi } from "@pwrsnap/shared";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type {
+  ChatgptPlanSettings,
   AcpAgentPreference,
   AcpSettings,
   AiSurfaceDefault,
@@ -194,6 +195,7 @@ export function defaultSettings(
       // no schemaVersion bump).
       customConnections: [],
       customModels: [],
+      chatgptPlan: defaultChatgptPlan(),
       acp: { enabledAgentIds: [], agents: {} }
     },
     // Single source of truth shared with the renderer's "Reset to
@@ -959,6 +961,9 @@ function parseV1(
       // first cut's flat one-entry-per-model shape is regrouped into
       // connections (see parseCustomAi).
       ...parseCustomAi(ai.customConnections, ai.customModels),
+      // Sign in with ChatGPT's public projection is additive; tokens are
+      // never here (see DesktopSecretStore `chatgptPlanRegistration`).
+      chatgptPlan: parseChatgptPlan(ai.chatgptPlan),
       acp: parseAcpSettings(ai.acp)
     },
     // Missing fields use the current platform defaults. The managed-default
@@ -2072,7 +2077,22 @@ function mergeAi(current: Settings["ai"], patch: SettingsPatch["ai"]): Settings[
     defaults: mergeAiSurfaceDefaults(current.defaults, patch.defaults),
     customConnections: patch.customConnections ?? current.customConnections ?? [],
     customModels: patch.customModels ?? current.customModels ?? [],
+    chatgptPlan: { ...(current.chatgptPlan ?? defaultChatgptPlan()), ...patch.chatgptPlan },
     acp: mergeAcp(current.acp, patch.acp)
+  };
+}
+
+function defaultChatgptPlan(): ChatgptPlanSettings {
+  return { accountLabel: "", planGranted: false, backgroundConsent: false, welcomeSeen: false };
+}
+
+function parseChatgptPlan(raw: unknown): ChatgptPlanSettings {
+  const plan = raw !== null && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  return {
+    accountLabel: pickString(plan.accountLabel, "").slice(0, 200),
+    planGranted: pickBoolean(plan.planGranted, false),
+    backgroundConsent: pickBoolean(plan.backgroundConsent, false),
+    welcomeSeen: pickBoolean(plan.welcomeSeen, false)
   };
 }
 

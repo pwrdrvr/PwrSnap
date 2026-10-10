@@ -146,6 +146,8 @@ Sizzle reel. It runs through whichever you choose:
 
 - an agent CLI you already have and are signed in to — the Codex CLI, or an
   ACP agent such as Gemini CLI, Qwen Code, or Kimi Code CLI; or
+- **Sign in with ChatGPT**, which calls OpenAI’s Responses API from PwrSnap
+  using your eligible ChatGPT plan, with no Codex install or API key; or
 - a direct API connection you configure yourself: OpenAI Responses, any
   Chat Completions-compatible endpoint (including a server on your own
   machine), or Anthropic Messages.
@@ -154,6 +156,12 @@ Background enrichment runs with no tools, no file access, and no network of
 its own; the image goes in as image input and one JSON object comes back.
 Keys you enter are stored encrypted by the operating system and never shown
 again. Sizzle narration uses a text-to-speech key you add separately.
+
+PwrSnap is free; **Use your ChatGPT plan** requires no paid PwrSnap upgrade.
+Automatic post-capture use requires separate consent. ChatGPT OAuth tokens
+stay in the local encrypted secret store under your control.
+[Learn more](https://help.openai.com/en/articles/20001542-using-your-chatgpt-plan-in-other-apps-and-sites)
+and see [connection details and operator steps](docs/sign-in-with-chatgpt.md).
 
 ## Privacy
 

@@ -5,6 +5,7 @@ import { bus, type CommandContext } from "../command-bus";
 import { broadcastSettingsChanged, getDesktopSettingsServices } from "./settings-handlers";
 import { CustomCredentials } from "../ai/direct-api/credentials";
 import { CustomModelService } from "../ai/direct-api/service";
+import { invalidatePlanSession, planAccessToken, publicStatus, signOut } from "../ai/chatgpt-plan/session";
 import { DirectApiError } from "../ai/direct-api/transport";
 
 let singleton: CustomModelService | undefined;
@@ -15,6 +16,11 @@ export function getCustomModelService(): CustomModelService {
       // URL is generated from validated, explicitly saved OAuth metadata only.
       // Never relax the generic external URL/navigation allowlist for it.
       await shell.openExternal(url);
+    }, {
+      accessToken: planAccessToken,
+      signedIn: async () => (await publicStatus()).signedIn,
+      signOut,
+      invalidate: invalidatePlanSession
     }), () => broadcastSettingsChanged(service, secrets), secrets);
   }
   return singleton;

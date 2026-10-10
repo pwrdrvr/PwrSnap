@@ -232,6 +232,11 @@ export function validateSettingsWrite(
     if (ai.customModels !== undefined || ai.customConnections !== undefined) {
       return { ok: false, error: validationError("custom_models_main_owned", "Use Settings → AI Providers to change Direct API connections.") };
     }
+    // Main-owned: the chatgptPlan:* verbs keep this projection in step with
+    // the stored SIWC tokens, and background consent is theirs to grant.
+    if (ai.chatgptPlan !== undefined) {
+      return { ok: false, error: validationError("chatgpt_plan_main_owned", "Use Settings → AI Providers → ChatGPT.") };
+    }
     if (!isUndefined(ai.enabled) && !isBoolean(ai.enabled)) {
       return {
         ok: false,
@@ -1602,7 +1607,7 @@ export function validateClearSecret(
 function isKnownSecretName(value: unknown): value is DesktopSettingsSecretName {
   return (
     typeof value === "string" &&
-    (KNOWN_SECRET_NAMES as readonly string[]).includes(value)
+    value !== "chatgptPlanRegistration" && (KNOWN_SECRET_NAMES as readonly string[]).includes(value)
   );
 }
 

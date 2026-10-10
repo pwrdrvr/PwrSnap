@@ -17,6 +17,7 @@ import {
   type CustomConnection,
   type CustomModel,
   type CustomProtocol,
+  type ChatgptPlanSettings,
   type DesktopSettingsSecretName,
   type SecretStatus,
   type Settings
@@ -44,7 +45,7 @@ export const PROTOCOL_LABELS: Readonly<Record<CustomProtocol, string>> = {
 };
 
 export function authLabel(auth: CustomAuth["type"]): string {
-  return auth === "none" ? "no auth" : auth === "api-key" ? "API key" : "OAuth";
+  return auth === "none" ? "no auth" : auth === "api-key" ? "API key" : auth === "chatgpt" ? "ChatGPT plan" : "OAuth";
 }
 
 export function plural(n: number, word: string): string {
@@ -88,8 +89,10 @@ export function connectionSecret(
 export function describeConnection(
   connection: CustomConnection,
   models: readonly CustomModel[],
-  secret: SecretStatus | null
+  secret: SecretStatus | null,
+  plan?: ChatgptPlanSettings
 ): ConnectionStatus {
+  if (connection.auth.type === "chatgpt") return describeChatgpt(connection, models, plan);
   const base = {
     sub: connectionSettingsSub(connection.id),
     connection,
@@ -110,6 +113,28 @@ export function describeConnection(
   return { ...base, credentialReady, tone: "ok", badge: "Ready" };
 }
 
+/** Sign in with ChatGPT keeps its session outside the per-connection
+ *  secrets, so its status reads the `ai.chatgptPlan` projection. The badge
+ *  uses OpenAI's own words, "Using ChatGPT plan". */
+function describeChatgpt(
+  connection: CustomConnection,
+  models: readonly CustomModel[],
+  plan: ChatgptPlanSettings | undefined
+): ConnectionStatus {
+  const signedIn = plan !== undefined && plan.accountLabel !== "";
+  const base = {
+    sub: connectionSettingsSub(connection.id),
+    connection,
+    models,
+    label: connection.name,
+    meta: `${PROTOCOL_LABELS[connection.protocol]} · ${signedIn ? plan.accountLabel : "not signed in"} · ${plural(models.length, "model")}`
+  };
+  if (!signedIn) return { ...base, credentialReady: false, tone: "warn", chip: "sign in", badge: "Sign in" };
+  if (!plan.planGranted) return { ...base, credentialReady: false, tone: "warn", chip: "permission", badge: "Needs permission" };
+  if (models.length === 0) return { ...base, credentialReady: true, tone: "warn", chip: "no models", badge: "Add models" };
+  return { ...base, credentialReady: true, tone: "ok", badge: "Using ChatGPT plan" };
+}
+
 /** Every saved connection, in the order they were added. */
 export function describeConnections(
   settings: Settings | null,
@@ -118,7 +143,7 @@ export function describeConnections(
   const connections = settings?.ai.customConnections ?? [];
   const models = settings?.ai.customModels ?? [];
   return connections.map((c) =>
-    describeConnection(c, models.filter((m) => m.connectionId === c.id), connectionSecret(secrets, c.id))
+    describeConnection(c, models.filter((m) => m.connectionId === c.id), connectionSecret(secrets, c.id), settings?.ai.chatgptPlan)
   );
 }
 

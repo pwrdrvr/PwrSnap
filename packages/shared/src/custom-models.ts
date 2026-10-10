@@ -26,8 +26,24 @@ export const customEnrichmentReasoningSchema = z.enum(["off", "low", "medium"]);
 export const customAuthSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("none") }).strict(),
   z.object({ type: z.literal("api-key") }).strict(),
-  z.object({ type: z.literal("oauth"), oauth: customOAuthSchema }).strict()
+  z.object({ type: z.literal("oauth"), oauth: customOAuthSchema }).strict(),
+  /** Sign in with ChatGPT: the user's ChatGPT plan pays. The credential is
+   *  the app's one SIWC registration (`chatgptPlanRegistration`), never a
+   *  per-connection secret, and it is only ever sent to CHATGPT_PLAN_BASE_URL. */
+  z.object({ type: z.literal("chatgpt") }).strict()
 ]);
+
+/** The only endpoint a `chatgpt` connection may call. Main pins it on save
+ *  and refuses to attach the plan token to any other address. */
+export const CHATGPT_PLAN_BASE_URL = "https://api.openai.com/v1";
+/** Where OpenAI's UI guidelines send every "Manage usage" link. */
+export const CHATGPT_USAGE_URL = "https://chatgpt.com/settings/usage";
+/** OpenAI's help article on using a ChatGPT plan in other apps ("Learn more"). */
+export const CHATGPT_PLAN_HELP_URL = "https://help.openai.com/en/articles/20001542-using-your-chatgpt-plan-in-other-apps-and-sites";
+/** User-facing text of a plan usage-limit failure. The renderer offers
+ *  Manage usage when an error carries it, so main and renderer share it
+ *  rather than putting the protocol code in front of the user. */
+export const CHATGPT_USAGE_LIMIT_MESSAGE = "You've reached your ChatGPT plan's usage limit for PwrSnap. Manage usage in your ChatGPT settings.";
 
 export const customConnectionSchema = z.object({
   id: customModelIdSchema,
@@ -80,6 +96,9 @@ export type ResolvedCustomModel = CustomModel & Pick<CustomConnection, "baseUrl"
 export type CustomModelDiscovery = { models: { id: string; displayName?: string; vision: boolean | null;
   reasoning?: { disableThinking: boolean; effort: boolean } }[] };
 
+export function isChatgptConnection(connection: Pick<CustomConnection, "auth">): boolean {
+  return connection.auth.type === "chatgpt";
+}
 export function customProviderId(id: string): string { return `custom:${id}`; }
 export function isCustomProvider(provider: string | undefined | null): boolean {
   return typeof provider === "string" && provider.startsWith("custom:");

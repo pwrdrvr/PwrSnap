@@ -1473,6 +1473,7 @@ export type LocalAgentAuditEntry = {
  *  write-only inputs are immediately persisted by main. Reads return status only. */
 export type DesktopSettingsSecretName =
   | "openaiApiKey"
+  | "chatgptPlanRegistration"
   | `localAgentToken:${string}`
   | `customModelCredential:${string}`;
 
@@ -2852,6 +2853,10 @@ export type Settings = {
      *  each; absent in older settings files. Main-owned. */
     customConnections?: CustomConnection[];
     customModels?: CustomModel[];
+    /** Public projection of the Sign in with ChatGPT session. Main-owned:
+     *  tokens stay in DesktopSecretStore (`chatgptPlanRegistration`), and only
+     *  the `chatgptPlan:*` verbs write this. Absent in older settings files. */
+    chatgptPlan?: ChatgptPlanSettings;
   };
   /** Global capture hotkeys. Each field is an Electron accelerator
    *  string (`CommandOrControl+Shift+C`-style) OR the empty string,
@@ -3867,6 +3872,8 @@ export type SettingsPatch = {
      *  also own the credential each connection holds. */
     customConnections?: CustomConnection[];
     customModels?: CustomModel[];
+    /** Main-owned; written only by the `chatgptPlan:*` verbs. */
+    chatgptPlan?: Partial<ChatgptPlanSettings>;
   };
   hotkeys?: Partial<Settings["hotkeys"]>;
   general?: Partial<Settings["general"]>;
@@ -4975,6 +4982,16 @@ export type Commands = {
     req: Record<string, never>;
     res: Record<DesktopSettingsSecretName, SecretStatus>;
   };
+  "chatgptPlan:status": { req: Record<string, never>; res: ChatgptPlanStatus };
+  /** Signs in (browser OAuth), then makes sure the ChatGPT Direct API
+   *  connection exists, so the status names it. */
+  "chatgptPlan:login": { req: Record<string, never>; res: ChatgptPlanStatus };
+  "chatgptPlan:logout": { req: Record<string, never>; res: { revocationConfirmed: boolean } };
+  "chatgptPlan:configure": { req: { backgroundConsent?: boolean; welcomeSeen?: boolean }; res: ChatgptPlanStatus };
+  /** Main-to-main bridge only; every renderer/RPC/MCP request is denied.
+   *  The agent process owns refresh, so a split-mode Library asks it. */
+  "chatgptPlan:runtime": { req: Record<string, never>; res: { accessToken: string } };
+  "chatgptPlan:invalidate": { req: Record<string, never>; res: undefined };
   "customModels:saveConnection": { req: { connection: CustomConnectionInput }; res: CustomConnection };
   "customModels:removeConnection": { req: { connectionId: string }; res: undefined };
   "customModels:setKey": { req: { connectionId: string; value: string }; res: undefined };
@@ -5980,3 +5997,23 @@ export type FloatOverOverflowChoice =
   | { kind: "open"; captureId: string }
   | { kind: "clear-finished" }
   | null;
+
+/** `ai.chatgptPlan`: what Settings may show about the SIWC session. */
+export type ChatgptPlanSettings = {
+  /** Email or name from the validated ID token; "" when signed out. */
+  accountLabel: string;
+  /** The token carries the plan-usage scope. Signing in alone does not. */
+  planGranted: boolean;
+  /** Automatic post-capture enrichment may use the plan. Off by default;
+   *  a clicked action never needs it. */
+  backgroundConsent: boolean;
+  /** The one-time "You're using your ChatGPT plan" welcome was dismissed. */
+  welcomeSeen: boolean;
+};
+
+/** Public projection: no token, client id, host id, or authorization URL. */
+export type ChatgptPlanStatus = ChatgptPlanSettings & {
+  signedIn: boolean;
+  /** The ChatGPT Direct API connection, once one exists. */
+  connectionId: string | null;
+};

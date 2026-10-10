@@ -6,10 +6,10 @@ import { tmpdir } from "node:os";
 import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
-import type { CodexModelOption, EnrichmentResult, Settings } from "@pwrsnap/shared";
+import type { CodexModelOption, EnrichmentResult, ResolvedCustomModel, Settings } from "@pwrsnap/shared";
 import { CustomModelService } from "../ai/direct-api/service";
 import type { CustomCredentials } from "../ai/direct-api/credentials";
-import { body, json, model, server } from "../ai/direct-api/__tests__/fixtures";
+import { body, json, model, server, stream } from "../ai/direct-api/__tests__/fixtures";
 import { ENRICHMENT_QUEUE_MAX_AGE_MS } from "../ai/direct-api/enrichment-queue";
 
 let testDb: Database.Database;
@@ -460,6 +460,57 @@ describe("Codex handlers", () => {
       }
     }
   );
+
+  test("automatic enrichment on the ChatGPT plan waits for its own consent; a clicked action does not", async () => {
+    let requests = 0;
+    const http = await server(async (req, res) => {
+      requests++; await body(req);
+      stream(res, [{ type: "response.output_text.delta", delta: JSON.stringify({
+        title: "Plan fixture", description: "Synthetic plan caption", ocrText: "", filenameStem: "fixture", textAnchors: [], tags: []
+      }) }, { type: "response.completed", response: {} }]);
+    });
+    // The loopback address stands in for api.openai.com; the credential seam
+    // that pins the real address is replaced here.
+    const entry: ResolvedCustomModel = { ...model(`${http.url}/v1`, "openai-responses"), auth: { type: "chatgpt" } };
+    const settings = testSettings();
+    settings.ai.enabled = true;
+    settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+    settings.ai.defaults.enrichment = { provider: `custom:${entry.id}`, model: entry.modelId };
+    settings.ai.customConnections = [{ id: entry.connectionId, name: "ChatGPT",
+      baseUrl: entry.baseUrl, protocol: entry.protocol, auth: entry.auth }];
+    settings.ai.customModels = [entry];
+    settings.ai.chatgptPlan = { accountLabel: "Fixture", planGranted: true, backgroundConsent: false, welcomeSeen: true };
+    const service = new CustomModelService({ read: async () => settings,
+      write: async () => { throw new Error("Unexpected settings write"); } },
+    { headers: async () => ({}), noteFailure: async () => undefined } as unknown as CustomCredentials, async () => undefined);
+    const serviceSpy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
+    const clientFactory = vi.fn(() => { throw new Error("Custom selection reached Codex"); });
+    try {
+      registerCodexHandlers({ clientFactory, settingsReader: async () => settings });
+      const refused = await bus.dispatch("codex:enrich", { captureId: "cap_1", triggerSource: "auto-enrichment" }, { principal: "ipc" });
+      expect(refused).toMatchObject({ ok: false, error: { code: "chatgpt_background_consent_required" } });
+      expect(requests).toBe(0);
+
+      const clicked = await bus.dispatch("codex:enrich", { captureId: "cap_1", triggerSource: "library-regenerate" }, { principal: "ipc" });
+      expect(clicked.ok).toBe(true);
+      if (!clicked.ok) return;
+      await waitFor(() => getAiRun(clicked.value.runId)?.status === "completed");
+      expect(requests).toBe(1);
+
+      settings.ai.chatgptPlan.backgroundConsent = true;
+      const allowed = await bus.dispatch("codex:enrich", { captureId: "cap_1", triggerSource: "auto-enrichment" }, { principal: "ipc" });
+      expect(allowed.ok).toBe(true);
+      if (!allowed.ok) return;
+      // Dispatch only schedules enrichment; keep its service and HTTP fixture
+      // alive until completion, before afterEach closes the database.
+      await waitFor(() => getAiRun(allowed.value.runId)?.status === "completed");
+      expect(requests).toBe(2);
+      expect(clientFactory).not.toHaveBeenCalled();
+    } finally {
+      serviceSpy.mockRestore();
+      await http.close();
+    }
+  });
 
   test("eight direct enrichments share the connection queue; queued and active cancellation never dispatch again", async () => {
     const received: Array<{ model: string; reply: () => void }> = [];

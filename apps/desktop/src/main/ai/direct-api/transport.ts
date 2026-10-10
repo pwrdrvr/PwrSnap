@@ -1,3 +1,4 @@
+import { planErrorMessage } from "../chatgpt-plan/errors";
 import { customProtocolPath, isLoopbackApiUrl, type AiUsageTokenBreakdown, type CustomConnection, type CustomEnrichmentReasoning, type CustomModelDiscovery, type ResolvedCustomModel } from "@pwrsnap/shared";
 
 export type ApiMessage = { role: "user" | "assistant"; text: string; images?: string[] };
@@ -5,7 +6,10 @@ export type ApiResult = { text: string; tokens: AiUsageTokenBreakdown | null };
 export class DirectApiError extends Error {
   /** The endpoint's HTTP status, when it answered with one. 401/403 mean the
    *  credential was turned down — the one failure the operator fixes in Sign in. */
-  constructor(message: string, readonly status?: number) { super(message); this.name = "DirectApiError"; }
+  constructor(message: string, readonly status?: number,
+    /** A short machine code from the endpoint's error (`error.code`), kept
+     *  as data. Never shown; known Sign in with ChatGPT codes pick the message. */
+    readonly code?: string) { super(message); this.name = "DirectApiError"; }
 }
 export const record = (v: unknown): Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -18,12 +22,26 @@ export function apiEndpoint(endpoint: Pick<CustomConnection, "baseUrl">, path: s
   return `${endpoint.baseUrl.replace(/\/+$/, "")}/${path}`;
 }
 
+/** `error.code` from an error body, if it is a plain identifier. The rest of
+ *  the body is server-controlled text and never leaves this function. */
+async function errorCode(response: Response): Promise<string | undefined> {
+  try {
+    let text = "";
+    for await (const chunk of chunks(response)) {
+      text += chunk;
+      if (text.length > 64 * 1024) return undefined;
+    }
+    const code = record(record(JSON.parse(text)).error).code;
+    return typeof code === "string" && /^[a-z0-9_.]{1,100}$/.test(code) ? code : undefined;
+  } catch { return undefined; }
+}
 export async function safeFetch(url: string, init: RequestInit): Promise<Response> {
   try {
     const response = await fetch(url, { ...init, redirect: "error" });
     if (!response.ok) {
-      await response.body?.cancel();
-      throw new DirectApiError(`Model endpoint returned HTTP ${response.status}. Check the endpoint, model and authentication.`, response.status);
+      const code = await errorCode(response);
+      throw new DirectApiError(planErrorMessage(code)
+        ?? `Model endpoint returned HTTP ${response.status}. Check the endpoint, model and authentication.`, response.status, code);
     }
     return response;
   } catch (e) {
@@ -86,10 +104,16 @@ function imageParts(message: ApiMessage, model: ResolvedCustomModel): unknown[] 
     return { type: "image_url", image_url: { url } };
   });
 }
+/** Sign in with ChatGPT requires `stream: true` and `store: false`, and
+ *  rejects `max_output_tokens` (preview limitations). */
+function streams(model: ResolvedCustomModel): boolean {
+  return model.auth.type === "chatgpt" || model.capabilities.streaming;
+}
 function requestBody(model: ResolvedCustomModel, system: string, messages: ApiMessage[], reasoningMode?: CustomEnrichmentReasoning): unknown {
-  const common = { model: model.modelId, stream: model.capabilities.streaming };
+  const common = { model: model.modelId, stream: streams(model) };
   if (model.protocol === "openai-responses") return {
-    ...common, store: false, instructions: system, max_output_tokens: model.maxOutputTokens,
+    ...common, store: false, instructions: system,
+    ...(model.auth.type === "chatgpt" ? {} : { max_output_tokens: model.maxOutputTokens }),
     input: messages.map((m) => ({ role: m.role, content: [
       { type: m.role === "assistant" ? "output_text" : "input_text", text: m.text }, ...imageParts(m, model)
     ] }))
@@ -138,7 +162,7 @@ export async function invokeApi(input: {
     let text = "";
     let tokens: AiUsageTokenBreakdown | null = null;
     const append = (delta: string): void => { text += delta; if (delta) input.onDelta?.(delta); };
-    if (!model.capabilities.streaming) {
+    if (!streams(model)) {
       const body = await boundedJson(response);
       if (body.error || body.status === "failed" || body.status === "incomplete") throw new DirectApiError("Model did not complete the response.");
       tokens = usage(body.usage, null);
@@ -148,7 +172,11 @@ export async function invokeApi(input: {
     } else {
       let terminal = false;
       for await (const e of events(response)) {
-        if (e.error || ["error", "response.failed", "response.incomplete"].includes(string(e.type))) throw new DirectApiError("Model stream reported an error. Check server status and configuration.");
+        if (e.error || ["error", "response.failed", "response.incomplete"].includes(string(e.type))) {
+          const raw = record(record(e.response).error).code ?? record(e.error).code ?? e.code;
+          const code = typeof raw === "string" && /^[a-z0-9_.]{1,100}$/.test(raw) ? raw : undefined;
+          throw new DirectApiError(planErrorMessage(code) ?? "Model stream reported an error. Check server status and configuration.", undefined, code);
+        }
         if (model.protocol === "openai-responses") {
           if (e.type === "response.output_text.delta") append(string(e.delta));
           if (e.type === "response.completed") { tokens = usage(record(e.response).usage, tokens); terminal = true; }
@@ -181,6 +209,23 @@ export async function discoverApi(endpoint: Pick<CustomConnection, "baseUrl" | "
   const body = await boundedJson(await safeFetch(apiEndpoint(endpoint, listing), init));
   const seen = new Set<string>();
   const models: CustomModelDiscovery["models"] = [];
+  // The account catalog Sign in with ChatGPT serves: `models[]` of
+  // `{ slug, display_name, visibility, input_modalities }`, offered in server
+  // order and only where `visibility` is "list".
+  if (Array.isArray(body.models)) {
+    for (const row of body.models.map(record)) {
+      const id = string(row.slug);
+      if (row.visibility !== "list" || id.length === 0 || id.length > 200 || /[\x00-\x1f\x7f]/.test(id) || seen.has(id)) continue;
+      seen.add(id);
+      const displayName = string(row.display_name).trim();
+      const modalities = Array.isArray(row.input_modalities) ? row.input_modalities : null;
+      const named = displayName.length > 0 && displayName.length <= 120 && !/[\x00-\x1f\x7f]/.test(displayName);
+      models.push({ id, ...(named ? { displayName } : {}),
+        vision: modalities === null ? null : modalities.includes("image") });
+      if (models.length >= 1000) break;
+    }
+    return { models };
+  }
   for (const row of array(body.data).map(record)) {
     const id = string(row.id);
     if (id.length === 0 || id.length > 200 || /[\x00-\x1f\x7f]/.test(id) || seen.has(id)) continue;

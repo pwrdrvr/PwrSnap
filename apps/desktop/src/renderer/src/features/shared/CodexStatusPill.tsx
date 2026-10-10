@@ -1,5 +1,6 @@
 import type { CSSProperties, ReactElement, ReactNode } from "react";
 import { type AiRunStatus, type CustomModel, type CustomConnection } from "@pwrsnap/shared";
+import { ChatgptUsageAction, isChatgptUsageLimit } from "./chat/ChatgptUsageAction";
 
 // CodexStatusPill — single source of truth for "what is Codex doing"
 // across both the float-over toast and the Library Detail rail.
@@ -280,7 +281,7 @@ export function CodexStatusPill({
           <span className="ps-codex-pill__meta">{meta}</span>
         ) : null}
       </span>
-      {action !== undefined ? <span className="ps-codex-pill__action">{action}</span> : null}
+      {isChatgptUsageLimit(error ?? "") ? <span className="ps-codex-pill__action"><ChatgptUsageAction /></span> : action !== undefined ? <span className="ps-codex-pill__action">{action}</span> : null}
       {footer !== undefined && footer !== null ? <div className="ps-codex-pill__footer">{footer}</div> : null}
     </div>
   );

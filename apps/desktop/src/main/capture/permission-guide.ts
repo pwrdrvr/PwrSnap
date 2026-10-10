@@ -15,7 +15,13 @@
 //             panel beside it; read the preflight status.
 //   • first show waits for the renderer's first height report (bounded),
 //             so the panel never paints at its constructor size and jumps.
-//   • granted → tell the renderer, close after GRANTED_CLOSE_MS.
+//   • granted → tell the renderer, and stay open with Relaunch as the main
+//             button. The grant only applies to a NEW process, so closing on
+//             its own would leave a user who tries to capture right away
+//             facing the same denial. Relaunch is `app.relaunch()`, which
+//             re-execs this exact executable; macOS's own "Quit & Reopen"
+//             goes through LaunchServices by bundle id and, with two copies
+//             on disk, can reopen the other one.
 //   • Settings closed after being seen → `settings-closed`, panel stays put.
 //
 // Dev runs never need this: `pnpm dev` launches Electron from a terminal and
@@ -59,7 +65,6 @@ const SETTINGS_CLOSED_POLL_MS = 2_000;
  *  one empty snapshot is usually a Space switch or a helper hiccup. */
 const SETTINGS_MISSING_POLLS = 3;
 const FIRST_MEASURE_WAIT_MS = 1_200;
-const GRANTED_CLOSE_MS = 2_500;
 
 let guideWindow: BrowserWindow | null = null;
 let state: PermissionGuideState | null = null;
@@ -70,7 +75,6 @@ let settingsRect: GuideRect | null = null;
 let settingsSeen = false;
 let settingsMissing = 0;
 let pollTimer: NodeJS.Timeout | null = null;
-let closeTimer: NodeJS.Timeout | null = null;
 let measureTimer: NodeJS.Timeout | null = null;
 /** The show in progress. Two overlapping calls (a double click, two denied
  *  captures back to back) must not both get past the awaits and build two
@@ -138,7 +142,6 @@ async function showOrRefresh(): Promise<void> {
   const existing = liveWindow();
   if (existing !== null && state !== null) {
     // Asked again while open: re-arm, and treat Settings as freshly opened.
-    clearCloseTimer();
     settingsSeen = false;
     settingsMissing = 0;
     update({ phase: "waiting" });
@@ -278,13 +281,6 @@ function checkGranted(): void {
   if (readScreenStatus() !== "granted") return;
   log.info("Screen Recording granted while the guide was open");
   update({ phase: "granted" });
-  clearCloseTimer();
-  closeTimer = setTimeout(closePermissionGuide, GRANTED_CLOSE_MS);
-}
-
-function clearCloseTimer(): void {
-  if (closeTimer !== null) clearTimeout(closeTimer);
-  closeTimer = null;
 }
 
 export function resizePermissionGuide(height: number): void {
@@ -320,7 +316,6 @@ function teardown(): void {
   pollTimer = null;
   if (measureTimer !== null) clearTimeout(measureTimer);
   measureTimer = null;
-  clearCloseTimer();
   guideWindow = null;
   state = null;
   dragIcon = null;

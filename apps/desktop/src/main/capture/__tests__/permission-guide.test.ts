@@ -1,6 +1,6 @@
 // The permission guide controller: one window however often it is asked for,
-// the drag only for that window, close-on-grant, and nothing left running
-// once it is gone.
+// the drag only for that window, a grant that waits for a relaunch, and
+// nothing left running once it is gone.
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -52,14 +52,18 @@ const h = vi.hoisted(() => ({
   screen: "denied" as string,
   settingsOpen: true,
   listCalls: 0,
-  openCalls: 0
+  openCalls: 0,
+  relaunch: vi.fn(),
+  quit: vi.fn()
 }));
 
 vi.mock("electron", () => ({
   app: {
     isPackaged: false,
     getPath: () => "/Applications/PwrSnap.app/Contents/MacOS/PwrSnap",
-    getFileIcon: async () => ({ isEmpty: () => true })
+    getFileIcon: async () => ({ isEmpty: () => true }),
+    relaunch: () => h.relaunch(),
+    quit: () => h.quit()
   },
   nativeImage: {
     createThumbnailFromPath: async () => ({
@@ -116,6 +120,8 @@ beforeEach(() => {
   Object.defineProperty(process, "platform", { value: "darwin" });
   h.windows = [];
   h.screen = "denied";
+  h.relaunch.mockClear();
+  h.quit.mockClear();
   h.settingsOpen = true;
   h.listCalls = 0;
   h.openCalls = 0;
@@ -160,16 +166,23 @@ describe("permission guide", () => {
     guide.closePermissionGuide();
   });
 
-  test("granted → state says so, then the window closes itself", async () => {
+  test("granted → state says so, and the panel stays until the user relaunches", async () => {
+    // The grant applies to the NEXT process, so a panel that closed itself
+    // would leave the user capturing straight into the same denial.
     const guide = await load();
     await guide.showPermissionGuide();
     await vi.advanceTimersByTimeAsync(10);
     h.screen = "granted";
     await vi.advanceTimersByTimeAsync(600);
     expect(guide.getPermissionGuideState()?.phase).toBe("granted");
-    await vi.advanceTimersByTimeAsync(2_600);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(h.windows[0]!.isDestroyed()).toBe(false);
+    expect(guide.getPermissionGuideState()?.phase).toBe("granted");
+
+    guide.relaunchFromPermissionGuide();
     expect(h.windows[0]!.isDestroyed()).toBe(true);
-    expect(guide.getPermissionGuideState()).toBeNull();
+    expect(h.relaunch).toHaveBeenCalledTimes(1);
+    expect(h.quit).toHaveBeenCalledTimes(1);
   });
 
   test("Settings closing after being seen → settings-closed, and the poll slows", async () => {

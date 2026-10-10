@@ -27,7 +27,7 @@ function steps(appName: string): Step[] {
   return [
     { key: "drag", body: <>Drag <b>{appName}</b> into the list on the left.</> },
     { key: "confirm", body: <>Confirm with Touch ID or your password. Make sure its switch is on.</> },
-    { key: "relaunch", body: <>Choose <b>Quit &amp; Reopen</b> when macOS asks.</> }
+    { key: "relaunch", body: <>Relaunch {appName} from this panel.</> }
   ];
 }
 
@@ -88,7 +88,7 @@ export function PermissionGuide(): ReactElement | null {
   const { phase, notch } = state;
   const lede =
     phase === "granted"
-      ? "Screen recording is on."
+      ? "Allowed. Relaunch to start capturing."
       : phase === "settings-closed"
       ? "System Settings closed before PwrSnap was added."
       : lifted
@@ -148,7 +148,8 @@ export function PermissionGuide(): ReactElement | null {
               <code key={p} title={p}>{p}</code>
             ))}
             The list names every copy “{state.appName}”. Drag this one in. If one is already listed and
-            capture still fails, select it, remove it with −, then drag again.
+            capture still fails, select it, remove it with −, then drag again. Relaunch from here
+            rather than macOS's Quit &amp; Reopen, which can open the other copy.
           </div>
         ) : null}
 
@@ -161,17 +162,21 @@ export function PermissionGuide(): ReactElement | null {
 
         {phase === "granted" ? (
           <div className="pgd__note is-ok">
-            <b>You're set.</b> This panel closes on its own. Capture again whenever you're ready.
+            <b>Screen Recording is on.</b> macOS applies it the next time {state.appName} starts, so
+            relaunch before you capture.
           </div>
         ) : (
-          <ol className="pgd__steps">
-            {steps(state.appName).map((s, i) => (
-              <li key={s.key} className={i === 0 ? "is-now" : undefined}>
-                <i>{i + 1}</i>
-                <span>{s.body}</span>
-              </li>
-            ))}
-          </ol>
+          <>
+            <ol className="pgd__steps">
+              {steps(state.appName).map((s, i) => (
+                <li key={s.key} className={i === 0 ? "is-now" : undefined}>
+                  <i>{i + 1}</i>
+                  <span>{s.body}</span>
+                </li>
+              ))}
+            </ol>
+            <p className="pgd__fine">{state.appName} only records the screen when you start a capture.</p>
+          </>
         )}
 
         <div className="pgd__ft">
@@ -180,7 +185,7 @@ export function PermissionGuide(): ReactElement | null {
           ) : phase === "settings-closed" ? (
             <span className="pgd__st">Not added yet</span>
           ) : (
-            <span className="pgd__st"><span className="pgd__dot" />Waiting for macOS</span>
+            <span className="pgd__st"><span className="pgd__dot" />Waiting for the switch…</span>
           )}
           {phase === "settings-closed" ? (
             <button
@@ -191,20 +196,15 @@ export function PermissionGuide(): ReactElement | null {
               Open System Settings
             </button>
           ) : null}
-          {phase === "waiting" ? (
+          {phase === "settings-closed" ? null : (
             <button
               type="button"
-              className="pgd__btn is-ghost"
+              className={"pgd__btn " + (phase === "granted" ? "is-pri" : "is-ghost")}
               onClick={() => void dispatch("permissions:guideRelaunch", {})}
             >
-              Quit &amp; Reopen
+              Relaunch {state.appName}
             </button>
-          ) : null}
-          {phase === "granted" ? (
-            <button type="button" className="pgd__btn" onClick={() => void dispatch("permissions:guideClose", {})}>
-              Done
-            </button>
-          ) : null}
+          )}
         </div>
       </div>
     </div>

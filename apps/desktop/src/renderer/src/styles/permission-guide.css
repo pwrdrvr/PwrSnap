@@ -228,6 +228,12 @@ body[data-stage="permission-guide"] {
   color: var(--button-text-on-accent);
 }
 
+.pgd__fine {
+  margin: -4px 0 0;
+  font: 400 11px/1.4 var(--font-sans);
+  color: var(--text-muted);
+}
+
 .pgd__ft {
   display: flex;
   align-items: center;

@@ -1893,6 +1893,9 @@ export function createPermissionGuideWindow(size: { width: number; height: numbe
   window.setMinimumSize(0, 0);
   window.excludedFromShownWindowsMenu = true;
   window.setAlwaysOnTop(true, "floating");
+  // System Settings can be on another Space, or full screen; the panel has
+  // to be wherever it is, or the user is left looking at Settings alone.
+  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   window.setMenuBarVisibility(false);
   window.setContentProtection(true);
   loadRenderer(window, rendererTarget("permission-guide"));

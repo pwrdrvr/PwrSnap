@@ -36,6 +36,11 @@ export const IPC_VIDEO_DRAG_START = "video:drag-start" as const;
  *  `(captureIds, preset, suggestedName?)` to zip-and-drag. */
 export const IPC_CART_ZIP_DRAG_START = "cart:zip-drag-start" as const;
 
+/** Permission guide → main: start dragging the running app bundle. No
+ *  payload; main drags the path it resolved itself, and only for the guide
+ *  window's own WebContents. */
+export const IPC_PERMISSION_GUIDE_DRAG_START = "permissions:guide-drag-start" as const;
+
 export const EVENT_CHANNELS = {
   /** Main → local renderers: one formatted current-session log line. */
   logEntry: "events:logs:entry",
@@ -179,6 +184,9 @@ export const EVENT_CHANNELS = {
    * Payload type: `FloatOverEvent` (see protocol.ts).
    */
   floatOverState: "events:float-over:state",
+  /** Main → the permission guide window only. Payload:
+   *  `PermissionGuideState` (see protocol.ts). */
+  permissionGuideState: "events:permission-guide:state",
   /**
    * Main → float-over renderer: a native/global copy shortcut fired
    * while the toast was visible. The renderer uses this to play the

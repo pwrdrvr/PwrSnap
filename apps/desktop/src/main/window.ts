@@ -286,6 +286,7 @@ type RendererStage =
   | "sizzle"
   | "recording-controller"
   | "recording-frame"
+  | "permission-guide"
   | "local-agent-consent";
 type RendererTarget = { kind: "url"; url: string } | { kind: "file"; path: string; hash?: string };
 
@@ -1851,6 +1852,53 @@ export function createRecordingControllerWindow(): BrowserWindow {
   //     from our own filter no matter how clever it was.
   window.setContentProtection(true);
   loadRenderer(window, rendererTarget("recording-controller"));
+  window.webContents.setVisualZoomLevelLimits(1, 1);
+  return window;
+}
+
+/**
+ * The macOS permission guide: a small panel beside System Settings holding
+ * the running app bundle as a file drag (see `capture/permission-guide.ts`).
+ *
+ * Same posture as the recording HUD, for a related reason: System Settings
+ * must stay the active app while the user drags into it, so the panel is
+ * non-activating (`focusable: false`, shown inactive) and floats above
+ * another app's window. Transparent, because the card draws a notch that
+ * points at the list; the native shadow follows the painted shape. Content
+ * protected, so a capture taken while it is up never contains it.
+ */
+export function createPermissionGuideWindow(size: { width: number; height: number }): BrowserWindow {
+  const window = new BrowserWindow({
+    type: "panel",
+    width: size.width,
+    height: size.height,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    focusable: false,
+    hasShadow: true,
+    roundedCorners: false,
+    webPreferences: themedWebPreferences()
+  });
+  // The renderer reports its height and main resizes to it — lift the
+  // implicit constructor minimum or that resize is silently clamped (see
+  // AGENTS.md "BrowserWindow sizing").
+  window.setMinimumSize(0, 0);
+  window.excludedFromShownWindowsMenu = true;
+  window.setAlwaysOnTop(true, "floating");
+  // System Settings can be on another Space, or full screen; the panel has
+  // to be wherever it is, or the user is left looking at Settings alone.
+  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  window.setMenuBarVisibility(false);
+  window.setContentProtection(true);
+  loadRenderer(window, rendererTarget("permission-guide"));
   window.webContents.setVisualZoomLevelLimits(1, 1);
   return window;
 }

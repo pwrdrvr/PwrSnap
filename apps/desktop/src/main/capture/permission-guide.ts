@@ -52,6 +52,9 @@ const INITIAL_HEIGHT_PX = 380;
 const MIN_HEIGHT_PX = 120;
 const MAX_HEIGHT_PX = 720;
 const POLL_MS = 500;
+/** Once Settings has gone away the panel stops moving, so only a reopened
+ *  Settings window and the grant are left to notice — no need for 2 Hz. */
+const SETTINGS_CLOSED_POLL_MS = 2_000;
 /** Settings must be missing this many polls in a row to count as closed —
  *  one empty snapshot is usually a Space switch or a helper hiccup. */
 const SETTINGS_MISSING_POLLS = 3;
@@ -68,6 +71,11 @@ let settingsSeen = false;
 let settingsMissing = 0;
 let pollTimer: NodeJS.Timeout | null = null;
 let closeTimer: NodeJS.Timeout | null = null;
+let measureTimer: NodeJS.Timeout | null = null;
+/** The show in progress. Two overlapping calls (a double click, two denied
+ *  captures back to back) must not both get past the awaits and build two
+ *  windows. */
+let showInFlight: Promise<void> | null = null;
 let shown = false;
 let measured = false;
 let polledOnce = false;
@@ -112,10 +120,19 @@ async function readIcon(path: string): Promise<NativeImage | null> {
 }
 
 /** Open System Settings at the list and show (or refresh) the guide. */
-export async function showPermissionGuide(): Promise<void> {
+export function showPermissionGuide(): Promise<void> {
   if (!isPermissionGuideSupported()) {
-    throw new Error("The permission guide is macOS-only.");
+    return Promise.reject(new Error("The permission guide is macOS-only."));
   }
+  if (showInFlight === null) {
+    showInFlight = showOrRefresh().finally(() => {
+      showInFlight = null;
+    });
+  }
+  return showInFlight;
+}
+
+async function showOrRefresh(): Promise<void> {
   await openSystemSettingsFor("screen");
 
   const existing = liveWindow();
@@ -157,7 +174,14 @@ export async function showPermissionGuide(): Promise<void> {
   win.on("closed", () => {
     if (guideWindow === win) teardown();
   });
-  setTimeout(() => {
+  // A crashed renderer leaves a transparent window with nothing painted to
+  // click, still taking clicks over its rect. Close it rather than poll on.
+  win.webContents.on("render-process-gone", (_event, details) => {
+    log.warn("permission guide renderer gone", { reason: details.reason });
+    if (guideWindow === win) closePermissionGuide();
+  });
+  measureTimer = setTimeout(() => {
+    measureTimer = null;
     measured = true;
     maybeShow();
   }, FIRST_MEASURE_WAIT_MS);
@@ -186,7 +210,8 @@ function schedulePoll(delay: number): void {
   pollTimer = setTimeout(() => {
     pollTimer = null;
     void tick().finally(() => {
-      if (liveWindow() !== null) schedulePoll(POLL_MS);
+      if (liveWindow() === null) return;
+      schedulePoll(state?.phase === "settings-closed" ? SETTINGS_CLOSED_POLL_MS : POLL_MS);
     });
   }, delay);
 }
@@ -293,6 +318,8 @@ export function closePermissionGuide(): void {
 function teardown(): void {
   if (pollTimer !== null) clearTimeout(pollTimer);
   pollTimer = null;
+  if (measureTimer !== null) clearTimeout(measureTimer);
+  measureTimer = null;
   clearCloseTimer();
   guideWindow = null;
   state = null;
@@ -307,7 +334,7 @@ function teardown(): void {
  */
 export function startPermissionGuideDrag(sender: WebContents): void {
   const win = liveWindow();
-  if (win === null || sender !== win.webContents || bundlePath === null) {
+  if (win === null || sender.id !== win.webContents.id || bundlePath === null) {
     log.warn("permission guide drag refused: not the guide window");
     return;
   }

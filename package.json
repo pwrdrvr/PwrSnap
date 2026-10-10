@@ -33,7 +33,10 @@
     "fix:linux-sandbox": "node ./scripts/linux-sandbox.mjs --fix",
     "check:linux-sandbox": "node ./scripts/linux-sandbox.mjs --warn",
     "lint:syntax": "oxlint --config .oxlintrc.json apps packages scripts vitest.workspace.ts .pnpmfile.cjs .pnpmfile-global.cjs",
-    "lint:typed": "node ./scripts/lint-typed.mjs"
+    "lint:typed": "node ./scripts/lint-typed.mjs",
+    "typecheck:legacy": "pnpm -r --if-present typecheck:legacy",
+    "check:benchmark": "node ./scripts/benchmark-dev-checks.mjs",
+    "check:changed": "node ./scripts/check-changed.mjs"
   },
   "devDependencies": {
     "@types/node": "24.12.4",
@@ -42,6 +45,7 @@
     "oxlint": "1.86.0",
     "oxlint-tsgolint": "7.0.2003",
     "typescript": "^6.0.2",
+    "typescript-native": "npm:typescript@7.0.2",
     "vitest": "^4.1.11"
   }
 }

@@ -1655,12 +1655,18 @@ warnings fail the process and clean runs pass.
 - **TypeScript strict.** `tsconfig.base.json` has `strict`,
   `verbatimModuleSyntax`, `isolatedModules`, (per the deepening plan)
   `exactOptionalPropertyTypes`, and `noUnusedLocals` + `noUnusedParameters`.
-- **Dead imports and locals fail `pnpm typecheck`, and `tsc` is what catches
+- **Dead imports and locals fail `pnpm typecheck`, and TypeScript is what catches
   them.** (Not `pnpm build` — electron-vite transpiles with esbuild and type-
   checks nothing, so a green build proves nothing here.) There is no ESLint in this repo — no config, no dev dependency, and
   `pnpm lint` has no ESLint step. `noUnusedLocals` + `noUnusedParameters` ride
   `pnpm typecheck`, which `pnpm lint` already runs on every PR, so the check
-  costs no new dependency and no new CI step.
+  uses the native TypeScript 7 compiler. TypeScript 6 remains installed for
+  JavaScript API consumers and `pnpm typecheck:legacy`; do not let the two
+  packages' identically named `tsc` bins choose the compiler by accident.
+  Package scripts select the compiler explicitly. `pnpm check:benchmark`
+  compares repository file inventories and injected errors before timing
+  repeated sequential pairs on one machine. It measures CLI checks, not LSP
+  memory or editor responsiveness. Keep both unused-binding flags enabled.
   - This closes a real gap. A refactor in
     [#585](https://github.com/pwrdrvr/PwrSnap/pull/585) extracted a hook and
     left two imports behind in `VideoStage.tsx`, and `recording-audio.ts` kept

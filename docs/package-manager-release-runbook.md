@@ -1,5 +1,23 @@
 # Package-manager release follow-up
 
+## Automatic Homebrew publication and CI byte acquisition
+
+PwrSnap's Homebrew publisher runs in `pwrdrvr/homebrew-tap` through
+`bump.yml` and the shared `sync.yml`. It validates both native Mac profiles and
+commits the cask directly to `main`; routine updates do not open bump PRs or
+require a merge. The tap polls every 15 minutes. Product synchronization can
+dispatch immediately with `HOMEBREW_TAP_DISPATCH_TOKEN` (tap-only Actions write),
+or await the schedule when that optional credential is absent. Homebrew does
+not depend on Winget submission credentials or upstream review.
+
+CI acquires installers/checksums from retained successful release-build Actions
+artifacts for the exact stable tag commit, verifies SHA-256 and size against
+release metadata, and never falls back to published release downloads. Signed
+platform artifacts retain for 90 days. Missing/expired artifacts, corrupt bytes
+or moved tags are explicit blockers; restore the original build artifacts.
+Already published tap versions skip native validation and byte acquisition.
+PwrDrvr release-asset URLs remain end-user URLs, not CI acquisition sources.
+
 Every desktop release checks these channels before release metadata changes and
 again after GitHub publication. This runbook also applies when the operator
 returns after manually promoting a release. It complements the
@@ -276,84 +294,36 @@ and merge links, observed version and next retry time; diagnose index delay
 before creating a duplicate submission. An unavailable Windows environment is a
 validation blocker, not a passed check.
 
-### Homebrew: reuse the tap automation
+### Homebrew: automatic tap publication
 
 The tap's [`bump.yml`](https://github.com/pwrdrvr/homebrew-tap/blob/main/.github/workflows/bump.yml)
-checks every six hours, rehashes the universal DMG, runs style/online audit, and
-opens `bump/pwrsnap-<version>`. Its
-[`scripts/bump-cask.sh`](https://github.com/pwrdrvr/homebrew-tap/blob/main/scripts/bump-cask.sh)
-is the existing manual helper; no new PwrSnap submission workflow is needed.
-Inspect existing PRs first and reuse a matching one. With authorization to
-advance the tap, request an immediate check after manual promotion:
+checks Stable Latest every 15 minutes, verifies the universal DMG from its
+original successful release-build Actions artifact, validates on both native
+Mac profiles, and commits directly to tap `main`. No per-release bump PR or
+merge is required. PwrSnap's `homebrew.yml` synchronizes on stable promotion
+and can be dispatched explicitly when promotion used `GITHUB_TOKEN`.
 
 ```bash
+gh workflow run homebrew.yml --repo pwrdrvr/PwrSnap --ref main
 gh workflow run bump.yml --repo pwrdrvr/homebrew-tap --ref main
 gh run list --repo pwrdrvr/homebrew-tap --workflow bump.yml --limit 5
-gh run watch <bump-run-id> --repo pwrdrvr/homebrew-tap
-gh pr list --repo pwrdrvr/homebrew-tap --state open
-gh pr view <bump-pr> --repo pwrdrvr/homebrew-tap
-gh pr diff <bump-pr> --repo pwrdrvr/homebrew-tap
-gh pr checks <bump-pr> --repo pwrdrvr/homebrew-tap
+gh run watch <bump-run-id> --repo pwrdrvr/homebrew-tap --exit-status
 ```
 
-Default dispatch resolves GitHub Latest and holds against downgrades. If a
-newer promoted stable train is the chosen target while Latest is an older
-maintenance patch, use `-f version=<eligible-version>` only after verifying
-eligibility and version ordering. If automation fails, inspect `bump-failure`
-issues and `gh run view <run-id> --log-failed`, name the failure and owner, and
-prepare a manual update using the helper in an **assigned tap workspace**.
-Do not edit `$(brew --repository)/Library/Taps/...` or another thread's checkout.
-The target is this tap, not `Homebrew/homebrew-cask`; do not open a duplicate
-official-cask submission.
+An explicit version must equal Stable Latest; stale targets and downgrades fail.
+Missing original build artifacts, corrupt bytes or changed release metadata stop
+publication and file a tracking issue with the failed run. Repair that blocker
+and dispatch again; never substitute release downloads or rebuild published
+installers. Do not edit an operator's installed tap or another thread's checkout.
 
-Check the PR diff's version and universal DMG hash against the payload above.
-Require actual tap `CI` results for the exact PR head: style, online audit,
-installation, Developer ID signature and Gatekeeper checks. **No checks
-reported is not a pass.** The bump currently uses `GITHUB_TOKEN` with
-`create-pull-request`. Current GitHub documentation says token-created
-`opened`/`synchronize`/`reopened` PR events can create approval-required runs;
-check the PR banner for **Approve workflows to run** and the Actions run state
-first. A maintainer with write access owns approving a reviewed head. If there
-is no approvable run, arrange a reviewed push/reopen with human/App credentials
-or fix the tap automation credentials, then verify the run's head SHA. Do not
-infer the cause of missing checks solely from bot authorship or token type, and
-do not infer installation success
-from the bump job's style/audit results. Once validated and authorized, the tap
-maintainer merges the bump PR; the release operator owns tracking to publication.
-
-Re-read `main`'s remote cask to prove the version and hash landed. This third-party
-tap publishes through Git; there is no official Homebrew cask API index to wait
-for. On a supported isolated macOS test host, refresh and verify the client:
-
-```bash
-brew tap pwrdrvr/tap
-# On Homebrew versions that support tap trust, trust just this cask.
-if brew trust --help >/dev/null 2>&1; then
-  brew trust --cask pwrdrvr/tap/pwrsnap
-fi
-brew update
-brew info --cask --json=v2 pwrdrvr/tap/pwrsnap
-brew livecheck --cask pwrdrvr/tap/pwrsnap
-brew audit --cask --online pwrdrvr/tap/pwrsnap
-# Fresh test host:
-brew install --cask pwrdrvr/tap/pwrsnap
-# Separate prior-version install; explicit greedy covers auto_updates true:
-brew upgrade --cask --greedy pwrdrvr/tap/pwrsnap
-/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
-  /Applications/PwrSnap.app/Contents/Info.plist
-codesign --verify --deep --strict /Applications/PwrSnap.app
-codesign -dv --verbose=2 /Applications/PwrSnap.app
-spctl -a -vv /Applications/PwrSnap.app
-```
-
-Inspect `brew info`'s available and installed versions separately. Test Intel
-and native Apple Silicon where available; the cask installs universal on both.
-CI's current hosted install proves only its runner architecture and is not an
-upgrade/launch test. Use the macOS lab skill for headed launch/capture checks.
-Record preserved settings/captures and actual installed version. Do not use
-`--zap`, wipe application support, or install/upgrade the operator's live app to
-validate documentation. A merged cask with an older local view is a refresh/cache
-delay; an in-app updated binary alone does not prove Homebrew publication.
+Require successful native install/upgrade/signature/notarization checks and
+verified publication on tap main. Then use `brew update` and
+`brew info --cask pwrdrvr/tap/pwrsnap` on a refreshed client. End-user installer
+URLs remain the immutable release URLs. CI uses verified build bytes, and its
+curl guard blocks release-asset requests. Online audit excludes only the binary
+URL reachability probe; metadata verifies the expected published URL instead.
+Record repository publication separately from client discovery and isolated
+installation verification. Do not replace the operator's running app.
 
 ## Completion record and follow-up ownership
 

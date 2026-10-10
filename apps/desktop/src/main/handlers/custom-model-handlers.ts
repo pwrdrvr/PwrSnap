@@ -43,6 +43,7 @@ export function registerCustomModelHandlers(): void {
   });
   register("customModels:setModels", connectionRequest.extend({ models: z.array(customModelInputSchema).max(100) }),
     (req, _ctx, service) => service.setModels(req.connectionId, req.models));
+  // oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
   register("customModels:setKey", connectionRequest.extend({ value: z.string().min(1).max(16384).regex(/^[^\r\n\x00]+$/) }), async (req, _ctx, service) => {
     await service.setKey(req.connectionId, req.value);
     return undefined;

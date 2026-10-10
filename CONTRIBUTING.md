@@ -79,7 +79,12 @@ Useful checks (all run from the repo root):
 - `pnpm test:desktop-e2e` — Playwright + Electron end-to-end suite
 - `pnpm test:desktop-e2e:docker` — the Linux/xvfb E2E subset on Docker, used
   to reproduce GitHub Actions failures locally
-- `pnpm lint` — `typecheck` + `licenses:check`
+- `pnpm lint` — TypeScript, dependency/metadata/fuse/license/settings/color
+  policy gates and native correctness/receiver checks
+- `pnpm lint:syntax` — Oxlint correctness rules across TypeScript and JavaScript,
+  including scripts and unit/E2E tests
+- `pnpm lint:typed` — production TypeScript receiver checks; inline suppression
+  is rejected, and callback contracts may declare `this: void`
 - `pnpm licenses:check` — verifies `THIRD_PARTY_LICENSES` matches a
   deterministic regeneration; run `pnpm licenses:generate` after dependency
   changes

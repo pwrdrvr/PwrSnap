@@ -601,7 +601,7 @@ describe("EditToolbar (Library Focus, v2 refresh)", () => {
         name === "settings:write" &&
         (req as { editor?: { toolBag?: unknown } }).editor?.toolBag !== undefined
     );
-    const slots = (bagWrite?.[1] as { editor: { toolBag: { slots: unknown[] } } }).editor
+    const slots = (bagWrite![1] as { editor: { toolBag: { slots: unknown[] } } }).editor
       .toolBag.slots;
     expect(slots).toHaveLength(9);
     expect(slots[0]).toMatchObject({ tool: "arrow", style: { color: "blue" } });

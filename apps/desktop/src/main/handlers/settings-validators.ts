@@ -1067,6 +1067,7 @@ function validateAiSurfaceDefault(surface: string, raw: unknown): PwrSnapError |
     // The model id is an opaque, possibly-ACP token (e.g. Qwen's
     // `qwen3.6-plus(openai)`), so use the tolerant model-token shape — NOT the
     // Codex-narrow alphabet, which would reject valid agent model ids.
+    // oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
     if (v.length > 0 && !(typeof raw.provider === "string" && raw.provider.startsWith("custom:") && v.length <= 200 && /^[^\x00-\x1f\x7f]+$/.test(v)) && !isAiModelTokenShape(v)) {
       return validationError(
         `invalid_ai_defaults_${surface}_${key}`,

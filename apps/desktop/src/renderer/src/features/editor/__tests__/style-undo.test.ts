@@ -360,7 +360,7 @@ describe("Draw stroke style edits", () => {
   test("color and weight ride the generic field path, with the color resolved to hex", () => {
     const color = layerStyleUpdate(strokeRow("pen"), "color", "green", dims);
     expect(color?.patch.kind).toBe("stroke");
-    expect((color?.patch as { color?: string }).color).toMatch(/^#[0-9a-f]{6}$/i);
+    expect((color!.patch as { color?: string }).color).toMatch(/^#[0-9a-f]{6}$/i);
     expect(layerStyleUpdate(strokeRow("pen"), "thickness", "x-large", dims)?.patch).toEqual({
       kind: "stroke",
       thickness: "x-large"

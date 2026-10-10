@@ -107,7 +107,7 @@ function button(label: string): HTMLButtonElement {
 
 function lastCriteria(): EnrichmentRepairCriteria {
   const last = calls.filter((c) => c.name === "codex:repair:preview").at(-1);
-  return (last?.req as { criteria: EnrichmentRepairCriteria }).criteria;
+  return (last!.req as { criteria: EnrichmentRepairCriteria }).criteria;
 }
 
 describe("EnrichmentRepairDialog", () => {
@@ -162,7 +162,7 @@ describe("EnrichmentRepairDialog", () => {
     await mount();
     await act(async () => button("Re-run 12 snaps").click());
     const start = calls.find((c) => c.name === "codex:repair:start");
-    const sent = (start?.req as { criteria: EnrichmentRepairCriteria }).criteria;
+    const sent = (start!.req as { criteria: EnrichmentRepairCriteria }).criteria;
     const shown = lastCriteria();
     expect({ ...sent, since: null }).toEqual({ ...shown, since: null });
     // The 30-day window is re-anchored to the moment Start is pressed.
@@ -178,6 +178,6 @@ describe("EnrichmentRepairDialog", () => {
     expect(container.textContent).toContain("4 at a time");
     await act(async () => button("Re-run 12 snaps").click());
     const start = calls.find((c) => c.name === "codex:repair:start");
-    expect((start?.req as { concurrency: number }).concurrency).toBe(4);
+    expect((start!.req as { concurrency: number }).concurrency).toBe(4);
   });
 });

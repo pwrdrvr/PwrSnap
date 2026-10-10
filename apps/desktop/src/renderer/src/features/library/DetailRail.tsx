@@ -1542,7 +1542,7 @@ function DetailTab({
   // "accepted" with that value; otherwise it falls back to the
   // suggested italic preview. Mid-typing manual text is lost on
   // failure, but a Use-button dispatch failure is a rare edge case.
-  const useTitleDraft = useCallback(async () => {
+  const acceptTitleDraft = useCallback(async () => {
     if (suggestedTitle.trim().length === 0) return;
     commitTitle(suggestedTitle, "accepted");
     const result = await dispatch("codex:acceptTitle", {
@@ -1556,7 +1556,7 @@ function DetailTab({
     }
   }, [acceptedTitle, commitTitle, onEnrichmentUpdate, record.id, suggestedTitle]);
 
-  const useDescriptionDraft = useCallback(async () => {
+  const acceptDescriptionDraft = useCallback(async () => {
     if (suggestedDescription.trim().length === 0) return;
     commitDescription(suggestedDescription, "accepted");
     const result = await dispatch("codex:acceptDescription", {
@@ -1599,7 +1599,7 @@ function DetailTab({
   // user override, so the bulk action deliberately leaves filename
   // alone. Tags stay user-driven (their own +/× chip controls) to
   // avoid surprise-accepts.
-  const useAllTextDrafts = useCallback(async () => {
+  const acceptAllTextDrafts = useCallback(async () => {
     const wantTitle = titleDraftDiverged;
     const wantDescription = descriptionDraftDiverged;
     if (!wantTitle && !wantDescription) return;
@@ -1713,7 +1713,7 @@ function DetailTab({
                   <button
                     type="button"
                     className="psl__chip-btn psl__chip-btn--accent"
-                    onClick={() => void useAllTextDrafts()}
+                    onClick={() => void acceptAllTextDrafts()}
                   >
                     Use draft
                   </button>
@@ -1770,7 +1770,7 @@ function DetailTab({
                 <button
                   type="button"
                   className="psl__field-use"
-                  onClick={() => void useTitleDraft()}
+                  onClick={() => void acceptTitleDraft()}
                   data-tip="Save this draft as your title"
                 >
                   Use
@@ -1791,7 +1791,7 @@ function DetailTab({
             <DraftPreview
               label="AI draft"
               text={suggestedTitle}
-              onUse={() => void useTitleDraft()}
+              onUse={() => void acceptTitleDraft()}
             />
           ) : null}
         </label>
@@ -1805,7 +1805,7 @@ function DetailTab({
                 <button
                   type="button"
                   className="psl__field-use"
-                  onClick={() => void useDescriptionDraft()}
+                  onClick={() => void acceptDescriptionDraft()}
                   data-tip="Save this draft as your description"
                 >
                   Use
@@ -1828,7 +1828,7 @@ function DetailTab({
             <DraftPreview
               label="AI draft"
               text={suggestedDescription}
-              onUse={() => void useDescriptionDraft()}
+              onUse={() => void acceptDescriptionDraft()}
             />
           ) : null}
         </label>

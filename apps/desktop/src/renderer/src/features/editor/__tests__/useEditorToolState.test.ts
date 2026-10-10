@@ -505,7 +505,7 @@ describe("useEditorToolState", () => {
     });
     expect(api!.bag.slots[8]).toEqual(saved);
     const write = dispatchMock.mock.calls.find((c) => c[0] === "settings:write");
-    const slots = (write?.[1] as { editor: { toolBag: { slots: unknown[] } } }).editor.toolBag
+    const slots = (write![1] as { editor: { toolBag: { slots: unknown[] } } }).editor.toolBag
       .slots;
     expect(slots).toHaveLength(9);
     expect(slots[8]).toEqual(saved);
@@ -585,7 +585,7 @@ describe("useEditorToolState", () => {
         (c[1] as { editor?: { toolStyles?: unknown } }).editor?.toolStyles !== undefined
     );
     expect(
-      (write?.[1] as { editor: { toolStyles: { arrow: unknown } } }).editor.toolStyles.arrow
+      (write![1] as { editor: { toolStyles: { arrow: unknown } } }).editor.toolStyles.arrow
     ).toMatchObject({ color: "green", endStyle: "filled-triangle" });
   });
 

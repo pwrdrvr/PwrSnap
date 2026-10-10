@@ -23,7 +23,7 @@
     "licenses:generate": "node ./scripts/generate-third-party-licenses.mjs",
     "lint:colors": "node ./scripts/lint-renderer-colors.mjs",
     "settings-store:check": "node ./scripts/check-settings-store-boundary.mjs",
-    "lint": "pnpm deps:check && pnpm metadata:check && pnpm fuses:check && pnpm typecheck && pnpm licenses:check && pnpm settings-store:check && pnpm lint:colors",
+    "lint": "pnpm deps:check && pnpm metadata:check && pnpm fuses:check && pnpm typecheck && pnpm licenses:check && pnpm settings-store:check && pnpm lint:colors && pnpm lint:syntax && pnpm lint:typed",
     "test": "vitest run --config vitest.workspace.ts",
     "test:watch": "vitest --config vitest.workspace.ts",
     "test:desktop-e2e": "pnpm --filter @pwrsnap/desktop build && pnpm --filter @pwrsnap/desktop test:e2e",
@@ -32,6 +32,8 @@
     "release:check": "node ./scripts/check-desktop-release-metadata.mjs",
     "fix:linux-sandbox": "node ./scripts/linux-sandbox.mjs --fix",
     "check:linux-sandbox": "node ./scripts/linux-sandbox.mjs --warn",
+    "lint:syntax": "oxlint --config .oxlintrc.json apps packages scripts vitest.workspace.ts .pnpmfile.cjs .pnpmfile-global.cjs",
+    "lint:typed": "node ./scripts/lint-typed.mjs",
     "typecheck:legacy": "pnpm -r --if-present typecheck:legacy",
     "check:benchmark": "node ./scripts/benchmark-dev-checks.mjs",
     "check:changed": "node ./scripts/check-changed.mjs"
@@ -39,6 +41,9 @@
   "devDependencies": {
     "@types/node": "24.12.4",
     "jsdom": "^29.0.2",
+    "oxc-parser": "0.107.0",
+    "oxlint": "1.86.0",
+    "oxlint-tsgolint": "7.0.2003",
     "typescript": "^6.0.2",
     "typescript-native": "npm:typescript@7.0.2",
     "vitest": "^4.1.11"

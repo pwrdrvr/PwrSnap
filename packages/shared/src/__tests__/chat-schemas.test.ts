@@ -45,6 +45,7 @@ describe("chat approval schemas", () => {
       CHAT_APPROVAL_DETAIL_MAX_LINES
     );
     expect(`${parsed!.summary}${parsed!.detail ?? ""}`).not.toMatch(
+      // oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
       /[\u0000\u0007\u000b\u202e\u2066\u202c]/u
     );
   });

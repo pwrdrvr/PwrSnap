@@ -537,6 +537,7 @@ describe("makeChatBroadcast", () => {
       CHAT_APPROVAL_DETAIL_MAX_LINES
     );
     expect(`${request.summary}${request.detail ?? ""}`).not.toMatch(
+      // oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
       /[\u0000\u0007\u202e\u2066]/u
     );
     expect(request).not.toHaveProperty("params");

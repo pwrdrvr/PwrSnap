@@ -94,7 +94,7 @@ describe("installSharpWasmSteer", () => {
       wasmBinding: "/x/@img/sharp-wasm32/lib/sharp-wasm32.node.js"
     });
     expect(d.register).toHaveBeenCalledTimes(1);
-    const hook = (d.register.mock.calls[0]?.[0] as { resolve: ResolveHook }).resolve;
+    const hook = (d.register.mock.calls[0]![0] as { resolve: ResolveHook }).resolve;
     const context = { conditions: [], importAttributes: {}, parentURL: undefined };
     const next = vi.fn(() => ({ url: "file:///resolved" }));
 

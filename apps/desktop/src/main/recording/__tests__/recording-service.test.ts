@@ -205,7 +205,7 @@ vi.mock("../../persistence/captures-repo", () => {
     const safeFormatCharacters = value.replace(
       /\p{Default_Ignorable_Code_Point}/gu,
       (character) =>
-        /[\u200c\u200d\ufe00-\ufe0f]/u.test(character) ? character : ""
+        /(?:\u200c|\u200d|[\ufe00-\ufe0f])/u.test(character) ? character : ""
     );
     const normalized = safeFormatCharacters
       .replace(/[\p{White_Space}\p{Cc}]+/gu, " ")

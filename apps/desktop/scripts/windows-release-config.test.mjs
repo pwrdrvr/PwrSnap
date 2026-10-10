@@ -260,7 +260,7 @@ describe("Windows release configuration", () => {
     expect(workflow).not.toContain("FFMPEG_BUILDS_PAT");
   });
 
-  test("pull-request previews use hash-pinned public FFmpeg release payloads without secrets", () => {
+  test("pull-request previews use hash-pinned FFmpeg release build artifacts without secrets", () => {
     const preview = read(".github/workflows/preview-build.yml");
 
     // PR-authored workflow code must never receive the private build-repo App
@@ -271,23 +271,28 @@ describe("Windows release configuration", () => {
     expect(preview).not.toContain("FFMPEG_BUILDS_APP_PRIVATE_KEY");
     expect(preview).not.toContain("pwrsnap-ffmpeg-builds");
     expect(preview).not.toContain("gh run download");
+    expect(preview).not.toContain("curl --fail");
+    expect(preview).not.toContain("Invoke-WebRequest");
+    expect(preview.match(/python3? scripts\/preview-build-assets\.py/g) ?? []).toHaveLength(2);
+    expect(preview).toContain("actions: read");
+    expect(preview.match(/GH_TOKEN: \$\{\{ github.token \}\}/g) ?? []).toHaveLength(2);
     expect(preview).not.toMatch(/\$\{\{\s*(?:secrets|vars)\./);
 
     expect(
       preview.match(
-        /FFMPEG_RELEASE_BASE_URL:\s*https:\/\/github\.com\/pwrdrvr\/PwrSnap\/releases\/download\/v1\.1\.0-alpha\.4/g,
+        /FFMPEG_RELEASE_BASE_URL:\s*https:\/\/github\.com\/pwrdrvr\/PwrSnap\/releases\/download\/v1\.1\.19/g,
       ) ?? [],
     ).toHaveLength(2);
-    expect(preview).toContain("PwrSnap-1.1.0-alpha.4-universal-mac.zip");
+    expect(preview).toContain("PwrSnap-1.1.19-universal-mac.zip");
     expect(preview).toContain(
-      "607c1ac88e2740d805780e5c3d69d5a31c675ee12f1ca5b9bc0f7ad85f5b9d15",
+      "0bf4690e07456acd5bb309c3a74f6ca45538eb1f3ff47f7f56d7f9720b32e0c5",
     );
     expect(preview).toContain(
-      "e058fa321d48b686e586bc337b1e9876f3b9cbfc34ad6ac623a6938de4e9a868",
+      "8b1a77b5990eaa20770259e28bb415ec7dddd3db4f9137676722a64c3f441daa",
     );
-    expect(preview).toContain("PwrSnap-1.1.0-alpha.4-windows-x64-setup.exe");
+    expect(preview).toContain("PwrSnap-1.1.19-windows-x64-setup.exe");
     expect(preview).toContain(
-      "88b821460701a3012a72f63225f4ed788024995f51c5b8017c89fe46f5962246",
+      "7eed072111f2a1666800b5337ed9814104e05b8c6bacc84155e8a0abc65e821f",
     );
     expect(preview.match(/FFMPEG_RELEASE_PAYLOAD_SHA256:\s*[0-9a-f]{64}/g) ?? []).toHaveLength(2);
     expect(preview).toContain("shasum -a 256");
@@ -297,9 +302,9 @@ describe("Windows release configuration", () => {
     // must therefore happen between prepare and the actual ad-hoc package,
     // never before a one-shot package:dryrun invocation that would delete it.
     expect(preview.indexOf("Prepare preview package stage")).toBeLessThan(
-      preview.indexOf("Stage controlled macOS FFmpeg from public release"),
+      preview.indexOf("Stage controlled macOS FFmpeg from release build artifacts"),
     );
-    expect(preview.indexOf("Stage controlled macOS FFmpeg from public release")).toBeLessThan(
+    expect(preview.indexOf("Stage controlled macOS FFmpeg from release build artifacts")).toBeLessThan(
       preview.indexOf("Build preview package (unsigned)"),
     );
     expect(preview).toContain("release.mjs --prepare-only");
@@ -310,7 +315,7 @@ describe("Windows release configuration", () => {
     // the extracted Windows binary still performs production-args encodes.
     expect(preview).toContain("Build preview installer (unsigned)");
     expect(preview).toContain("windows-ffmpeg-export-smoke.test.ts");
-    expect(preview.indexOf("Stage controlled Windows FFmpeg from public release")).toBeLessThan(
+    expect(preview.indexOf("Stage controlled Windows FFmpeg from release build artifacts")).toBeLessThan(
       preview.indexOf("windows-ffmpeg-export-smoke.test.ts"),
     );
     expect(preview.indexOf("windows-ffmpeg-export-smoke.test.ts")).toBeLessThan(
@@ -691,7 +696,7 @@ describe("Windows release configuration", () => {
     expect(preview).toContain('PWRSNAP_WINDOWS_FFMPEG_SMOKE: "1"');
     expect(preview).toContain("windows-ffmpeg-export-smoke.test.ts");
     expect(preview.indexOf("windows-ffmpeg-export-smoke.test.ts")).toBeGreaterThan(
-      preview.indexOf("Stage controlled Windows FFmpeg from public release"),
+      preview.indexOf("Stage controlled Windows FFmpeg from release build artifacts"),
     );
     expect(preview.indexOf("windows-ffmpeg-export-smoke.test.ts")).toBeLessThan(
       preview.indexOf("Build preview installer (unsigned)"),

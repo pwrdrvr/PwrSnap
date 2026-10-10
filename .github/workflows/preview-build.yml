@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   preview:
@@ -34,7 +35,7 @@ jobs:
         id: version
         run: |
           raw=$(node -p "require('./apps/desktop/package.json').version")
-          base=$(echo "$raw" | sed 's/-.*//')
+          base="${raw%%-*}"
           preview="${base}-pr.${{ github.event.pull_request.number }}"
           echo "version=${preview}" >> "$GITHUB_OUTPUT"
           echo "Preview version: ${preview}"
@@ -51,21 +52,23 @@ jobs:
 
       # release.mjs deliberately removes FFmpeg from a newly prepared stage so
       # a stale workspace binary can never slip into a package. Prepare first,
-      # then inject the public, hash-pinned release payload below.
+      # then inject the hash-pinned release build artifact below.
       - name: Prepare preview package stage
         run: node apps/desktop/scripts/release.mjs --prepare-only
 
       # Pull-request workflows must not enter signing environments or receive
-      # the private build-repo GitHub App credentials. v1.1.0-alpha.4 publicly
-      # shipped the exact vetted FFmpeg 8.1.1 build; pinning both the release ZIP
-      # and its extracted signed helper makes asset replacement fail closed.
-      - name: Stage controlled macOS FFmpeg from public release
+      # the private build-repo GitHub App credentials. v1.1.19 shipped the same
+      # vetted FFmpeg 8.1.1 build. Restore its pinned bytes from Actions artifacts,
+      # never release downloads. Expired artifacts fail closed; refresh these pins
+      # to a retained vetted release rather than falling back to release URLs.
+      - name: Stage controlled macOS FFmpeg from release build artifacts
         shell: bash
         env:
-          FFMPEG_RELEASE_BASE_URL: https://github.com/pwrdrvr/PwrSnap/releases/download/v1.1.0-alpha.4
-          FFMPEG_RELEASE_PAYLOAD: PwrSnap-1.1.0-alpha.4-universal-mac.zip
-          FFMPEG_RELEASE_PAYLOAD_SHA256: 607c1ac88e2740d805780e5c3d69d5a31c675ee12f1ca5b9bc0f7ad85f5b9d15
-          FFMPEG_SIGNED_BINARY_SHA256: e058fa321d48b686e586bc337b1e9876f3b9cbfc34ad6ac623a6938de4e9a868
+          GH_TOKEN: ${{ github.token }}
+          FFMPEG_RELEASE_BASE_URL: https://github.com/pwrdrvr/PwrSnap/releases/download/v1.1.19
+          FFMPEG_RELEASE_PAYLOAD: PwrSnap-1.1.19-universal-mac.zip
+          FFMPEG_RELEASE_PAYLOAD_SHA256: 0bf4690e07456acd5bb309c3a74f6ca45538eb1f3ff47f7f56d7f9720b32e0c5
+          FFMPEG_SIGNED_BINARY_SHA256: 8b1a77b5990eaa20770259e28bb415ec7dddd3db4f9137676722a64c3f441daa
           FFMPEG_MANIFEST_ASSET: ffmpeg-8.1.1-macos-universal-manifest.json
           FFMPEG_MANIFEST_ASSET_SHA256: fd7fe3f07c9c66b344d293f9a8fd3a48b9b30cf5bc5e441d59eb0f967e4db18d
           FFMPEG_SOURCE_ASSET: ffmpeg-8.1.1.tar.xz
@@ -78,6 +81,8 @@ jobs:
           FFMPEG_LGPL_NOTICE_ASSET_SHA256: 9f0c03003dfcce4ecf42a33053f551adef029986dd7315914e0f1d70143ccc29
         run: |
           set -euo pipefail
+          python3 -m unittest discover -s scripts -p 'test_*artifact*.py' -v
+          python3 -m unittest discover -s scripts -p test_preview_build_assets.py -v
           dir="$RUNNER_TEMP/pwrsnap-ffmpeg-public-release"
           stage="apps/desktop/release-stage"
           mkdir -p "$dir" "$stage/build/ffmpeg" "$stage/build/ffmpeg-source"
@@ -86,8 +91,8 @@ jobs:
             local name="$1"
             local expected="$2"
             local target="$dir/$name"
-            curl --fail --location --retry 3 --retry-all-errors \
-              --output "$target" "$FFMPEG_RELEASE_BASE_URL/$name"
+            python3 scripts/preview-build-assets.py \
+              --url "$FFMPEG_RELEASE_BASE_URL/$name" --sha256 "$expected" --output "$target"
             local actual
             actual="$(shasum -a 256 "$target" | awk '{print $1}')"
             if [ "$actual" != "$expected" ]; then
@@ -186,27 +191,30 @@ jobs:
 
       # Pull-request code receives no build-repo or signing secrets. Instead,
       # extract the exact FFmpeg binary already shipped inside the public,
-      # signed v1.1.0-alpha.4 installer and pin the whole installer by SHA-256.
-      - name: Stage controlled Windows FFmpeg from public release
+      # signed v1.1.19 installer and pin the whole installer by SHA-256.
+      - name: Stage controlled Windows FFmpeg from release build artifacts
         shell: pwsh
         env:
-          FFMPEG_RELEASE_BASE_URL: https://github.com/pwrdrvr/PwrSnap/releases/download/v1.1.0-alpha.4
-          FFMPEG_RELEASE_PAYLOAD: PwrSnap-1.1.0-alpha.4-windows-x64-setup.exe
-          FFMPEG_RELEASE_PAYLOAD_SHA256: 88b821460701a3012a72f63225f4ed788024995f51c5b8017c89fe46f5962246
+          GH_TOKEN: ${{ github.token }}
+          FFMPEG_RELEASE_BASE_URL: https://github.com/pwrdrvr/PwrSnap/releases/download/v1.1.19
+          FFMPEG_RELEASE_PAYLOAD: PwrSnap-1.1.19-windows-x64-setup.exe
+          FFMPEG_RELEASE_PAYLOAD_SHA256: 7eed072111f2a1666800b5337ed9814104e05b8c6bacc84155e8a0abc65e821f
           FFMPEG_MANIFEST_ASSET: ffmpeg-8.1.1-macos-universal-manifest.json
           FFMPEG_MANIFEST_ASSET_SHA256: fd7fe3f07c9c66b344d293f9a8fd3a48b9b30cf5bc5e441d59eb0f967e4db18d
         run: |
           $ErrorActionPreference = "Stop"
           $ProgressPreference = "SilentlyContinue"
+          python -m unittest discover -s scripts -p test_preview_build_assets.py -v
+          if ($LASTEXITCODE -ne 0) { throw "Preview artifact tests failed." }
           $dir = Join-Path $env:RUNNER_TEMP "pwrsnap-windows-ffmpeg-preview"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
 
           function Get-VerifiedReleaseAsset([string]$Name, [string]$ExpectedSha256) {
             $target = Join-Path $dir $Name
-            Invoke-WebRequest `
-              -Uri "$env:FFMPEG_RELEASE_BASE_URL/$Name" `
-              -OutFile $target `
-              -MaximumRetryCount 3
+            python scripts/preview-build-assets.py `
+              --url "$env:FFMPEG_RELEASE_BASE_URL/$Name" `
+              --sha256 $ExpectedSha256 --output $target | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw "Failed to restore $Name from release build artifacts." }
             $actual = (Get-FileHash -Algorithm SHA256 $target).Hash.ToLowerInvariant()
             if ($actual -ne $ExpectedSha256.ToLowerInvariant()) {
               throw "$Name SHA-256 mismatch: expected $ExpectedSha256, got $actual"
@@ -275,7 +283,7 @@ jobs:
         shell: bash
         run: |
           raw=$(node -p "require('./apps/desktop/package.json').version")
-          base=$(echo "$raw" | sed 's/-.*//')
+          base="${raw%%-*}"
           preview="${base}-pr.${{ github.event.pull_request.number }}"
           echo "version=${preview}" >> "$GITHUB_OUTPUT"
           echo "Preview version: ${preview}"

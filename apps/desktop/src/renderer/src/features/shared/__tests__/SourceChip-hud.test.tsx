@@ -56,11 +56,21 @@ describe.each(["orb", "cell"] as const)("SourceChip at %s density", (density) =>
     expect(el.querySelector("[title]")).toBeNull();
   });
 
-  test("a reason takes the caption's place, and says it in the tooltip too", async () => {
+  test("a reason the source cannot record past takes the caption's place", async () => {
+    const el = await mount(
+      <SourceChip density={density} source="microphone" state="nodevice" device={LONG} why="no microphone" />
+    );
+    expect(el.querySelector(".ps-chip__cap")?.textContent).toBe("No microphone");
+    expect(el.querySelector<HTMLElement>(".ps-chip__body")!.dataset.tipDetail).toBe("No microphone");
+  });
+
+  test("silence keeps the device's name: a quiet room is not a fault", async () => {
+    // "No signal" in place of the name until the user made a noise hid the
+    // one thing the caption is for. The reason rides the tooltip instead.
     const el = await mount(
       <SourceChip density={density} source="microphone" state="silent" device={LONG} why="no signal" />
     );
-    expect(el.querySelector(".ps-chip__cap")?.textContent).toBe("No signal");
+    expect(el.querySelector(".ps-chip__cap .ps-chip__dev")?.textContent).toBe("Granola Interface Pro Studio Edition");
     expect(el.querySelector<HTMLElement>(".ps-chip__body")!.dataset.tipDetail).toBe("No signal");
   });
 

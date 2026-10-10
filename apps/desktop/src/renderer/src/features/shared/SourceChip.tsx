@@ -632,12 +632,19 @@ function HudSourceChip({
   const hasCaret = hasDevices === true && !inert;
   const trouble = TROUBLE_STATES.has(state);
   const shownDevice = device !== undefined ? shortDeviceLabel(device) : "";
-  // The caption says one thing: what is wrong when something is, else the
-  // device. The full device name is in the tooltip, which is what lets the
-  // caption be cut short without losing anything.
+  // The caption says one thing: what is wrong when the source cannot
+  // record, else the device. A reason on a source that WILL record —
+  // `silent` ("no signal"), a camera still starting — stays out of it:
+  // silence is the normal state of a microphone in a quiet room, and
+  // swapping the device's name for "No signal" until the user made a
+  // noise hid the one thing the caption is for. The ring (or meter) says
+  // there is no level, and the tooltip carries the reason. The full device
+  // name is in the tooltip too, which is what lets the caption be cut
+  // short without losing anything.
+  const captionWhy = why !== undefined && (trouble || inert) ? why : undefined;
   const caption =
-    why !== undefined ? (
-      <span className="ps-chip__why">{sentenceCase(why)}</span>
+    captionWhy !== undefined ? (
+      <span className="ps-chip__why">{sentenceCase(captionWhy)}</span>
     ) : shownDevice !== "" ? (
       <span className="ps-chip__dev">{shownDevice}</span>
     ) : density === "orb" ? (

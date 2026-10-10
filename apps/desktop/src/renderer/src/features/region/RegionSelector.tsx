@@ -3204,7 +3204,16 @@ export function RegionSelector() {
             </div>
           )}
           {hasPicks && (
-            <div className="region-hud__chips">
+            // Two picks fit with their names. From three the chips drop to
+            // their numbers — the same numbers the badges on the windows
+            // carry — so the bar stays one width-bounded row however many
+            // windows are picked. The app name is in each chip's tooltip
+            // and accessible name. A count rule, not a measured fit, so
+            // the bar never flips between the two shapes as a name changes.
+            <div
+              className="region-hud__chips"
+              data-compact={picks.length > COMPACT_PICK_CHIPS_FROM - 1}
+            >
               {picks.map((p, idx) => (
                 <button
                   key={p.windowId}
@@ -3421,6 +3430,9 @@ export function RegionSelector() {
     </div>
   );
 }
+
+/** From this many picks the HUD's window chips show only their numbers. */
+const COMPACT_PICK_CHIPS_FROM = 3;
 
 /** The HUD's own icons: the mode rocker and the output shape. */
 function HudGlyph({ kind }: { readonly kind: "still" | "rec" | "windows" | "rectangle" }): ReactNode {

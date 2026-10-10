@@ -160,12 +160,36 @@ describe("SourceChip", () => {
     expect(chip.hasAttribute("data-tip")).toBe(false);
   });
 
-  // Only the receipt trades the meter away. The selector and the HUD draw a
-  // reason (when they have one) beside whatever meter the state allows.
-  test("interactive densities keep the meter beside a reason", () => {
-    const el = mount(<SourceChip source="microphone" state="silent" why="quiet" />);
+  // The recording HUD draws a reason beside whatever meter the state allows.
+  test("the dense HUD keeps the meter beside a reason", () => {
+    const el = mount(<SourceChip source="microphone" state="silent" why="quiet" density="dense" />);
     expect(el.querySelector(".ps-meter")?.getAttribute("data-tone")).toBe("flat");
     expect(el.querySelector(".ps-chip__why")?.textContent).toBe("quiet");
+  });
+
+  // The selector draws a two-line tile: the source and its meter on top,
+  // the reason and then the device below. One line carrying all of that
+  // made the microphone chip ~400px wide.
+  test("the selector's tile puts the reason and the device on the second line", () => {
+    const el = mount(
+      <SourceChip source="microphone" state="silent" why="no signal" device="Granola Interface (USB)" />
+    );
+    const body = el.querySelector(".ps-chip__body")!;
+    expect(body.querySelector(".ps-meter")?.getAttribute("data-tone")).toBe("flat");
+    expect(body.querySelector(".ps-chip__why")).toBeNull();
+    const sub = el.querySelector(".ps-chip__sub")!;
+    expect(sub.querySelector(".ps-chip__why")?.textContent).toBe("no signal");
+    // The chip's copy drops Chromium's tag; the picker shows the whole name.
+    expect(sub.querySelector(".ps-chip__dev")?.textContent).toBe("Granola Interface");
+    // The toggle's name stays the source; the line describes it.
+    expect(body.textContent).toBe("Microphone");
+    expect(body.getAttribute("aria-describedby")).toBe(sub.id);
+  });
+
+  test("a tile with nothing to say below draws one line", () => {
+    const el = mount(<SourceChip source="systemAudio" state="live" noMeter />);
+    expect(el.querySelector(".ps-chip__sub")).toBeNull();
+    expect(el.querySelector(".ps-chip__body")?.hasAttribute("aria-describedby")).toBe(false);
   });
 
   test("a landed receipt still fills", () => {
@@ -300,22 +324,23 @@ describe("SourceChip", () => {
 
   // The hotkey rode in as a trailing "M" on the button's accessible name,
   // which said nothing about what it was. `aria-keyshortcuts` is the
-  // attribute for exactly this, so the visible badge is decorative.
-  test("the hotkey is announced as a shortcut, not as part of the name", () => {
+  // attribute for exactly this. Nothing draws it on the chip: the
+  // selector's shortcut legend lists it.
+  test("the hotkey is announced as a shortcut, not drawn and not part of the name", () => {
     const el = mount(<SourceChip source="microphone" state="off" kbd="M" testId="chip" />);
     expect(toggle(el).getAttribute("aria-keyshortcuts")).toBe("M");
-    expect(el.querySelector(".ps-chip__kbd")!.getAttribute("aria-hidden")).toBe("true");
+    expect(el.querySelector("kbd")).toBeNull();
+    expect(toggle(el).textContent).toBe("Microphone");
   });
 
-  // One predicate for the badge and the announcement. Only the control
-  // density draws the badge AND has a key handler behind it — announcing
-  // a shortcut the surface neither draws nor binds is the same
+  // Only the control density has a key handler behind it — announcing a
+  // shortcut the surface does not bind is the same
   // two-predicates-that-must-agree bug as the hint legend's.
   test("a density that draws no badge announces no shortcut", () => {
     const el = mount(
       <SourceChip source="microphone" state="live" density="dense" kbd="M" testId="chip" />
     );
-    expect(el.querySelector(".ps-chip__kbd")).toBeNull();
+    expect(el.querySelector("kbd")).toBeNull();
     expect(toggle(el).getAttribute("aria-keyshortcuts")).toBeNull();
   });
 

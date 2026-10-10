@@ -62,12 +62,29 @@ package is distributed.
 
 Useful checks (all run from the repo root):
 
-- `pnpm typecheck` — workspace-wide TypeScript check
+- `pnpm typecheck` — workspace-wide native TypeScript 7 check
+- `pnpm typecheck:legacy` — the same projects with TypeScript 6
+- `pnpm check:changed` — full lint plus tests related to committed and working
+  changes since the `origin/main` merge base, including untracked files. Tests
+  importing the filesystem also run, since source-reading contract tests have
+  no discoverable import edge to the files they guard. Tooling
+  changes and deletions run the full unit suite. Only one such check can run
+  across this repository's local worktrees at a time. Run expensive checks
+  sequentially; direct `lint`/`test` invocations do not acquire this lock.
+- `pnpm check:benchmark` — compare compiler file inventories, probe type and
+  unused-binding errors, then measure three sequential pairs on this machine;
+  results are written to `.local/check-performance/paired.json`. Set
+  `CHECK_BENCH_ITERATIONS` (1–20) or `CHECK_BENCH_OUTPUT` to customize a run.
 - `pnpm test` — Vitest unit + integration suite
 - `pnpm test:desktop-e2e` — Playwright + Electron end-to-end suite
 - `pnpm test:desktop-e2e:docker` — the Linux/xvfb E2E subset on Docker, used
   to reproduce GitHub Actions failures locally
-- `pnpm lint` — `typecheck` + `licenses:check`
+- `pnpm lint` — TypeScript, dependency/metadata/fuse/license/settings/color
+  policy gates and native correctness/receiver checks
+- `pnpm lint:syntax` — Oxlint correctness rules across TypeScript and JavaScript,
+  including scripts and unit/E2E tests
+- `pnpm lint:typed` — production TypeScript receiver checks; inline suppression
+  is rejected, and callback contracts may declare `this: void`
 - `pnpm licenses:check` — verifies `THIRD_PARTY_LICENSES` matches a
   deterministic regeneration; run `pnpm licenses:generate` after dependency
   changes

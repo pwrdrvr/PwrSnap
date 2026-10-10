@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.1.19 - 2026-10-08
+
+This release adds presenter camera recording and batch AI re-runs, with more
+control over enrichment and cleaner system shutdown.
+
+- Camera Recording - Added an optional presenter camera alongside screen
+  recordings. Adjust its position, size, framing, mirror, background cut-out,
+  and sync after recording, with separate presenter settings for each reel scene.
+- AI Re-runs - Added batch re-enrichment for failed or never-run captures,
+  filtered by date and app, with adjustable parallelism, progress, and cancellation.
+- AI Enrichment - Added live run durations and a configurable rate limit,
+  making slow runs easier to understand and backlogs easier to clear while
+  retaining cost-safety limits.
+- System Shutdown - Improved cleanup during macOS and Linux shutdown,
+  using the normal quit path and honoring cancelled shutdowns on macOS.
+
 ## v1.1.18 - 2026-10-07
 
 This patch makes diagnostics copying more dependable immediately after startup.

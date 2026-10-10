@@ -1655,12 +1655,17 @@ warnings fail the process and clean runs pass.
 - **TypeScript strict.** `tsconfig.base.json` has `strict`,
   `verbatimModuleSyntax`, `isolatedModules`, (per the deepening plan)
   `exactOptionalPropertyTypes`, and `noUnusedLocals` + `noUnusedParameters`.
-- **Dead imports and locals fail `pnpm typecheck`, and `tsc` is what catches
+- **Dead imports and locals fail `pnpm typecheck`, and TypeScript is what catches
   them.** (Not `pnpm build` — electron-vite transpiles with esbuild and type-
-  checks nothing, so a green build proves nothing here.) There is no ESLint in this repo — no config, no dev dependency, and
-  `pnpm lint` has no ESLint step. `noUnusedLocals` + `noUnusedParameters` ride
+  checks nothing, so a green build proves nothing here.) `noUnusedLocals` + `noUnusedParameters` ride
   `pnpm typecheck`, which `pnpm lint` already runs on every PR, so the check
-  costs no new dependency and no new CI step.
+  uses the native TypeScript 7 compiler. TypeScript 6 remains installed for
+  JavaScript API consumers and `pnpm typecheck:legacy`; do not let the two
+  packages' identically named `tsc` bins choose the compiler by accident.
+  Package scripts select the compiler explicitly. `pnpm check:benchmark`
+  compares repository file inventories and injected errors before timing
+  repeated sequential pairs on one machine. It measures CLI checks, not LSP
+  memory or editor responsiveness. Keep both unused-binding flags enabled.
   - This closes a real gap. A refactor in
     [#585](https://github.com/pwrdrvr/PwrSnap/pull/585) extracted a hook and
     left two imports behind in `VideoStage.tsx`, and `recording-audio.ts` kept
@@ -1679,10 +1684,29 @@ warnings fail the process and clean runs pass.
   - The flags are all-or-nothing and cannot be scoped per directory, so
     `e2e/**` and `__tests__/**` are gated too. That is deliberate — an unused
     import in a test is the same stale-refactor signal as one in `src/main`.
-    What is NOT gated: the root `scripts/*.mjs` policy gates and
-    `apps/desktop/scripts/*.mjs` are plain JS in no tsconfig, so `tsc` never
-    sees them. `apps/desktop/tsconfig.json` does list `scripts/**/*.ts`, but
+    The root `scripts/*.mjs` policy gates and
+    `apps/desktop/scripts/*.mjs` are plain JS in no tsconfig, so TypeScript never
+    sees them; Oxlint now checks those scripts, including unused bindings.
+    `apps/desktop/tsconfig.json` does list `scripts/**/*.ts`, but
     that glob currently matches zero files.
+- **Oxlint adds correctness coverage; it does not replace policy checks or
+  TypeScript.** `pnpm lint:syntax` checks `apps`, `packages`, `scripts`, root
+  Vitest config and pnpm hooks, including unit/E2E files. `.oxlintrc.json`
+  pins an explicit rule list and the classic Rules of Hooks check; React
+  Compiler rules and exhaustive-deps are not enabled by this adoption. Keep
+  `design/**` untouched as a preserved handoff. TypeScript owns unused TS
+  bindings; the JS rule permits unused `_` parameters, not `_` locals/imports.
+  Intentional control-character validation and verification-cleanup throws
+  have narrow, explained syntax exceptions.
+- **Typed lint preserves receivers.** `pnpm lint:typed` checks production
+  main, preload, renderer and shared TypeScript with `unbound-method`. Keep
+  `oxlint.typed.json` at the root so relative overrides work. Callback methods
+  implemented by React hooks/props may declare `this: void`; actual methods
+  need a receiver-preserving call or bind. `scripts/lint-typed.mjs` rejects
+  inline suppression of this rule, including blanket disables, using parsed
+  comments. Its guard and native CLI file inventories must match; a test pins
+  that equality and real lost-receiver probes. Do not disable the rule to
+  accommodate an extraction. The typed pass deliberately excludes tests.
 - **Renderers stay sandboxed.** Every `BrowserWindow` is created with
   `contextIsolation: true, sandbox: true, nodeIntegration: false`. The Phase 6
   sizzle-composer preview player runs in a sandboxed renderer; render

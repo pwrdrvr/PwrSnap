@@ -1,4 +1,5 @@
 import { CameraChip } from "../camera/CameraChip";
+import { MicrophoneChip } from "./MicrophoneChip";
 // Region-selector renderer.
 //
 // State machine (post-feedback redesign):
@@ -45,10 +46,12 @@ import { CameraChip } from "../camera/CameraChip";
 // global virtual coords + display id before screencapture.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { acceleratorToDisplayKeys, MAX_SELECTOR_EXTENTS } from "@pwrsnap/shared";
+import { acceleratorToDisplayKeys, MAX_SELECTOR_EXTENTS, SELECTOR_HUD_STYLE_DEFAULT } from "@pwrsnap/shared";
 import type {
   QuickCaptureAction,
   RecordingCapabilities,
+  RecordingDevicePreference,
+  SelectorHudStyle,
   SelectorTerminalAction
 } from "@pwrsnap/shared";
 import type {
@@ -73,12 +76,12 @@ import {
   type Point,
   type Rect
 } from "./region-math";
-import { SourceChip } from "../shared/SourceChip";
+import { CursorChip, SourceChip } from "../shared/SourceChip";
 import {
   microphoneChipState,
   microphoneChipWhy
 } from "../shared/source-chip-state";
-import { useMicrophoneMonitor } from "../shared/useMicrophoneMonitor";
+import { savedMicrophonePresence, useMicrophoneMonitor } from "../shared/useMicrophoneMonitor";
 
 const HASH_PARAM_DISPLAY_ID = "displayId";
 const NUDGE_PX = 1;
@@ -315,21 +318,46 @@ export function RegionSelector() {
   const [cameraReady, setCameraReady] = useState(true);
   const cameraReadyRef = useRef(true);
   const [sources, setSources] = useState<RecordingCapabilities | null>(null);
-  // Whether the microphone stream may be opened for this show.
+  // The saved microphone and camera, seeded per show from
+  // `settings.recording.microphoneDevice` / `.cameraDevice`. Unlike the
+  // on/off seeds above, a pick here IS written back: "which microphone" is
+  // a property of the desk, not of one take, and asking it again on every
+  // recording is the friction the picker exists to remove. Turning a source
+  // on or off still never writes.
+  const [micPreference, setMicPreference] = useState<RecordingDevicePreference | null>(null);
+  const [cameraPreference, setCameraPreference] = useState<RecordingDevicePreference | null>(null);
+  // The microphone name the commit hands the recorder, or null for the
+  // system default. A ref for the same reason as `sourcesRef`: `commit()`
+  // is captured once at mount.
+  const micDeviceRef = useRef<string | null>(null);
+  // Whether that name came from a device that is open (and so is known to
+  // be attached), and the saved pick it came from otherwise. Refs for the
+  // same reason: Record reads them from `commit()`.
+  const micOpenRef = useRef(false);
+  const micPreferenceRef = useRef<RecordingDevicePreference | null>(null);
+  // The check at Record (see `commit`). The generation is bumped by every
+  // reset, so a check that resolves after the selector moved on is dropped.
+  const micCheckGenRef = useRef(0);
+  const micCheckInFlightRef = useRef(false);
+  // Bumped to open the microphone picker from outside it: the check at
+  // Record found the saved microphone gone.
+  const [micPickerRequest, setMicPickerRequest] = useState(0);
+  // The action ↵ commits in a chooser show: Snap or Record. One terminal
+  // mode per show, flipped by the HUD's mode control or by R / S, and
+  // re-seeded from the policy on every show (`record` starts on Record).
   //
-  // Opening it lights the macOS orange indicator and, on first use,
-  // fires a TCC prompt. Neither is acceptable for someone who is about
-  // to take a silent screenshot, so the meter stays dark until this
-  // show is unambiguously staging a recording (`intent === "video"`, or
-  // a policy that makes Record the primary action) or the user has
-  // touched a source chip — which is an explicit act.
-  const [sourcesTouched, setSourcesTouched] = useState(false);
+  // The sources, the cursor bake and their keys exist only in Record
+  // mode. That is also what keeps the microphone closed: opening it
+  // lights the macOS orange indicator and, on first use, fires a TCC
+  // prompt, and neither is acceptable for someone about to take a
+  // silent screenshot. Choosing Record is the explicit act that earns it.
+  const [terminal, setTerminal] = useState<SelectorTerminalAction>("snap");
   // Snap-vs-Record policy for THIS show, from
   // `settings.recording.quickCaptureAction` via the mode signal.
-  //   - "ask"    — offer both: ↵ snaps, R records the same selection.
+  //   - "ask"    — offer both, starting on Snap: R switches to Record.
   //   - "snap"   — no Record affordance at all, R unbound. What the
   //                selector did before the chooser existed.
-  //   - "record" — Record is primary (↵), Snap moves to S.
+  //   - "record" — offer both, starting on Record: S switches to Snap.
   // Ignored entirely when `intent === "video"`: the dedicated Video
   // Capture entry point already knows what it is doing.
   //
@@ -339,6 +367,8 @@ export function RegionSelector() {
   // existed. Defaulting to "ask" made that comment a lie and put a live
   // `R` in front of a caller that never opted in.
   const [quickAction, setQuickAction] = useState<QuickCaptureAction>("snap");
+  // Which bar draws the controls (`settings.recording.selectorHud`).
+  const [hudStyle, setHudStyle] = useState<SelectorHudStyle>(SELECTOR_HUD_STYLE_DEFAULT);
   // ⇧ in snap mode opts into full-window capture: the rect expands
   // from the visible-region bounding box (`entry.rect`) to the
   // window's full bounds (`entry.rawRect`), and the commit payload
@@ -364,6 +394,12 @@ export function RegionSelector() {
   //   'rectangle' — the whole box, opaque. What a rect capture has
   //                 always produced.
   const [outputMode, setOutputMode] = useState<OutputMode>("windows");
+  // The keyboard legend, folded behind a "?" until asked for. It was a
+  // full-width line above the HUD on every show, mostly restating keys
+  // the HUD's own buttons already name. Not reset per show: someone who
+  // opened it wants it on the next capture too. It is NOT persisted
+  // across launches; that would be a setting.
+  const [hintOpen, setHintOpen] = useState(false);
 
   // Refs mirror state so global event handlers (registered once on
   // mount) read the freshest values without closure-capture stale-data.
@@ -409,6 +445,7 @@ export function RegionSelector() {
   const captureCursorRef = useRef(true);
   const sourcesRef = useRef<RecordingCapabilities | null>(null);
   const quickActionRef = useRef<QuickCaptureAction>("snap");
+  const terminalRef = useRef<SelectorTerminalAction>("snap");
   /** Whether the HUD — and so the source chips — is on screen this render. */
   const hudShownRef = useRef(false);
   // Cursor-tracking crosshair guide-lines (auto/region modes). Rendered
@@ -638,6 +675,7 @@ export function RegionSelector() {
   sourcesRef.current = sources;
   audioOfferedRef.current = audioOffered;
   quickActionRef.current = quickAction;
+  terminalRef.current = terminal;
   picksRef.current = picks;
   outputModeRef.current = outputMode;
 
@@ -648,7 +686,7 @@ export function RegionSelector() {
   const recordOffered = intent !== "video" && quickAction !== "snap";
   const recordUsable = recordOffered && picks.length <= 1;
   const primary: SelectorTerminalAction =
-    quickAction === "record" && recordUsable ? "record" : "snap";
+    terminal === "record" && recordUsable ? "record" : "snap";
   // What ↵ actually PRODUCES, which is not the same question as which
   // action the chooser picked. In the dedicated video selector there is
   // no choice — `commit()` reads `intent` and ships the recording-only
@@ -657,22 +695,39 @@ export function RegionSelector() {
   // to read "Record" or it lies about what the click does.
   const commitsRecording = intent === "video" || primary === "record";
   // Recording controls — the cursor bake and the source chips — belong
-  // wherever this commit can become a recording: the dedicated video
-  // selector, and a chooser show where Record is reachable against one
-  // rectangle.
-  const recordingControls = intent === "video" || recordUsable;
+  // exactly where ↵ makes a recording: the dedicated video selector, and
+  // a chooser show in Record mode. In Snap mode there is nothing for them
+  // to configure, so they are not drawn and their keys are not bound.
+  const recordingControls = commitsRecording;
   // The chips additionally need main's per-show seed; without one there
   // is no answer to render and none to commit.
   const sourcesOffered = recordingControls && sources !== null;
-  // See `sourcesTouched`: the microphone is only opened once this show
-  // is unambiguously a recording, or the user has said so by touching a
-  // chip. `primary === "record"` covers the `record` policy, where ↵
-  // itself starts a recording.
-  const sourcesArmed =
-    sourcesOffered && (intent === "video" || primary === "record" || sourcesTouched);
+  // The microphone opens with the chips: Record mode is the explicit act
+  // that earns the stream (see `terminal`), and `resetToSnap` leaving it
+  // is what closes it again on a pre-warmed window.
+  const sourcesArmed = sourcesOffered;
   const mic = useMicrophoneMonitor({
-    enabled: sourcesArmed && sources?.microphone === true
+    enabled: sourcesArmed && sources?.microphone === true,
+    preference: micPreference
   });
+  // Which microphone the recorder is asked for. Opened: the device the
+  // meter is on, unless that is the default (no pick, or a saved pick that
+  // is not attached — the picker says so). Not opened (a Quick Capture that
+  // only offers Record, or an open that failed): the saved pick, which the
+  // chip is showing, and which the recorder refuses the take over rather
+  // than record a different microphone in its place.
+  micDeviceRef.current =
+    sourcesArmed && mic.activeLabel !== null
+      ? mic.followsDefault
+        ? null
+        : mic.activeLabel
+      : micPreference !== null && micPreference.label !== ""
+        ? micPreference.label
+        : null;
+  micOpenRef.current = sourcesArmed && mic.activeLabel !== null;
+  micPreferenceRef.current = micPreference;
+  const soundSettingsOffered =
+    window.pwrsnapApi?.platform === "darwin" || window.pwrsnapApi?.platform === "win32";
   const micState = microphoneChipState({
     on: sources?.microphone === true,
     armed: sourcesArmed,
@@ -708,7 +763,10 @@ export function RegionSelector() {
   //
   // The snap path keeps its old rule: no bar during live snap, where
   // reaching for one moves the selection out from under the cursor.
-  const sourceBar = intent === "video";
+  //
+  // Record mode is the same: its sources have to be reachable before ↵,
+  // so choosing Record raises the HUD even in live snap.
+  const sourceBar = commitsRecording;
   const showHud = picks.length > 0 || chooserBar || sourceBar;
   // Synced here rather than with the refs above because `showHud` is not
   // known until this point — and before the return, so the hint legend's
@@ -804,11 +862,14 @@ export function RegionSelector() {
       audioOfferedRef.current = payload.sources !== undefined;
       setAudioOffered(payload.sources !== undefined);
       const nextSources = payload.sources ?? (payload.cameraOffered ? { microphone: false, systemAudio: false } : null);
+      setMicPreference(payload.devices?.microphone ?? null);
+      micPreferenceRef.current = payload.devices?.microphone ?? null;
+      micCheckGenRef.current += 1;
+      micCheckInFlightRef.current = false;
+      setMicPickerRequest(0);
+      setCameraPreference(payload.devices?.camera ?? null);
       sourcesRef.current = nextSources;
       setSources(nextSources);
-      // A new show has not been touched yet, so the microphone stays
-      // closed until this show earns it (see `sourcesTouched`).
-      setSourcesTouched(false);
       // Re-read the chooser policy on every show. Like `cursor`, this is
       // per-show state on a pre-warmed window: a selector opened under
       // "record" must not stay record-primary for the next capture after
@@ -821,6 +882,13 @@ export function RegionSelector() {
       const nextQuickAction = payload.quickCaptureAction ?? "snap";
       quickActionRef.current = nextQuickAction;
       setQuickAction(nextQuickAction);
+      // Every show starts in the mode the policy names: Record under
+      // `record`, Snap otherwise. A pre-warmed window must not carry the
+      // last show's R into the next capture.
+      const nextTerminal: SelectorTerminalAction = nextQuickAction === "record" ? "record" : "snap";
+      terminalRef.current = nextTerminal;
+      setTerminal(nextTerminal);
+      setHudStyle(payload.hudStyle ?? SELECTOR_HUD_STYLE_DEFAULT);
       // Drop the pick set on EVERY show. This handler is the only
       // per-show reset the renderer gets, and main can end a session
       // without one: `pickRegion` resolves an in-flight resolver with
@@ -1048,19 +1116,36 @@ export function RegionSelector() {
     return recordOfferedByPolicy() && picksRef.current.length <= 1;
   }
 
-  /** Which action a bare ↵ (or the primary HUD button) commits. */
+  /** Which action a bare ↵ (or the shutter) commits. */
   function primaryAction(): SelectorTerminalAction {
-    return quickActionRef.current === "record" && recordAvailable() ? "record" : "snap";
+    return terminalRef.current === "record" && recordAvailable() ? "record" : "snap";
+  }
+
+  /** True when ↵ makes a recording: the video selector, or Record mode. */
+  function commitsRecordingNow(): boolean {
+    return intentRef.current === "video" || primaryAction() === "record";
   }
 
   /**
-   * True when `S` is bound — only where Record has taken over ↵.
+   * Switch this show between Snap and Record. Record is refused where it
+   * cannot run (a 2+-pick set, or a policy that does not offer it), so the
+   * mode can never claim a recording that ↵ would not make. The ref moves
+   * with the state for the once-registered key handler.
+   */
+  function chooseTerminal(next: SelectorTerminalAction): void {
+    if (next === "record" && !recordAvailable()) return;
+    if (next === "snap" && !recordOfferedByPolicy()) return;
+    terminalRef.current = next;
+    setTerminal(next);
+  }
+
+  /**
+   * True when `S` is bound — only in Record mode, where it switches back.
    *
    * Defined in terms of `primaryAction()` rather than re-deriving the
-   * policy, so the binding and the hint legend cannot disagree: the
-   * legend branches on the same answer. Spelling it out separately
-   * dropped the pick-count term, which left `S` live (and unadvertised)
-   * at two or more picks, where Record is refused and ↵ already snaps.
+   * mode, so the binding and the hint legend cannot disagree: the legend
+   * branches on the same answer. At two or more picks Record is refused
+   * and ↵ already snaps, so `S` has nothing to do there.
    */
   function snapKeyBound(): boolean {
     return primaryAction() === "record";
@@ -1090,17 +1175,13 @@ export function RegionSelector() {
    */
   /** `K` arms the camera wherever its chip is on screen. */
   function cameraKeyBound(): boolean {
-    return (
-      cameraOfferedRef.current &&
-      (intentRef.current === "video" || recordAvailable()) &&
-      hudShownRef.current
-    );
+    return cameraOfferedRef.current && commitsRecordingNow() && hudShownRef.current;
   }
 
   function sourceKeysBound(): boolean {
     return (
       sourcesRef.current !== null && audioOfferedRef.current &&
-      (intentRef.current === "video" || recordAvailable()) &&
+      commitsRecordingNow() &&
       // The chips only render inside the HUD, and the HUD is not always up:
       // in live snap with no pick set and nothing latched, `showHud` is
       // false while the two terms above are both true. Without this the
@@ -1112,17 +1193,30 @@ export function RegionSelector() {
     );
   }
 
-  /**
-   * Flip one audio source for this take.
-   *
-   * `sourcesTouched` latches on the way through: it is what permits the
-   * microphone stream to open on a Quick Capture, where the chips are
-   * offered but the user may still be about to take a screenshot. A
-   * flip is the explicit act that earns the orange indicator.
-   */
+  /** Flip one audio source for this take. */
   function toggleSource(kind: "microphone" | "systemAudio"): void {
-    setSourcesTouched(true);
     setSources((prev) => (prev === null ? prev : { ...prev, [kind]: !prev[kind] }));
+  }
+
+  /** The sources a commit ships, with the microphone named when it is on. */
+  function committedSources(base: RecordingCapabilities): RecordingCapabilities {
+    const { microphoneDevice: _stale, ...rest } = base;
+    const label = micDeviceRef.current;
+    return rest.microphone && label !== null ? { ...rest, microphoneDevice: { label } } : rest;
+  }
+
+  /**
+   * Save a device pick. The in-show state moves first so the chip follows
+   * at once; a write that fails costs only the memory of the pick, never
+   * this take, which already uses it.
+   */
+  function saveDevice(
+    key: "microphoneDevice" | "cameraDevice",
+    preference: RecordingDevicePreference | null
+  ): void {
+    const recording =
+      key === "microphoneDevice" ? { microphoneDevice: preference } : { cameraDevice: preference };
+    void dispatch("settings:write", { recording }).catch(() => undefined);
   }
 
   /**
@@ -1241,7 +1335,7 @@ export function RegionSelector() {
    * a missing `action` as "snap" — so every pre-chooser call site and
    * every fixed-`snap` show keep exactly their old wire shape.
    */
-  function commit(action: SelectorTerminalAction = primaryAction()): void {
+  function commit(action: SelectorTerminalAction = primaryAction(), micChecked = false): void {
     if (submittedRef.current) return;
     // A recording is one rectangular stream, so Record is dead against a
     // 2+-pick set (see recordAvailable). The HUD button is disabled and
@@ -1255,6 +1349,38 @@ export function RegionSelector() {
     // the chooser's Record.
     const isRecording = intentRef.current === "video" || action === "record";
     if (isRecording && !cameraReadyRef.current) return;
+    // The check at Record. When the microphone was never opened (a Quick
+    // Capture that only offers Record), the chip is showing the saved
+    // name and the recorder would be asked for it. If that device has
+    // gone, say so here and do not start: the picker opens, which opens
+    // the default with the "not connected" note, and the next Record
+    // takes the default the chip now names. The recorder still refuses a
+    // device that goes between here and the start.
+    const savedMic = micPreferenceRef.current;
+    if (
+      isRecording &&
+      !micChecked &&
+      sourcesRef.current?.microphone === true &&
+      micDeviceRef.current !== null &&
+      !micOpenRef.current &&
+      savedMic !== null
+    ) {
+      if (micCheckInFlightRef.current) return;
+      micCheckInFlightRef.current = true;
+      const generation = micCheckGenRef.current;
+      void savedMicrophonePresence(savedMic).then((presence) => {
+        if (generation !== micCheckGenRef.current || submittedRef.current) return;
+        micCheckInFlightRef.current = false;
+        if (presence !== "missing") {
+          commit(action, true);
+          return;
+        }
+        // The picker opens on the chip, which only Record mode draws.
+        chooseTerminal("record");
+        setMicPickerRequest((n) => n + 1);
+      });
+      return;
+    }
     // The renderer's rects are in CSS pixels. Main + screencapture
     // expect display-logical pixels. Scale back via the inverse of the
     // snapshot's css-to-logical factor. On standard displays this is
@@ -1325,7 +1451,7 @@ export function RegionSelector() {
           ...(action === "record" ? { action } : {}),
           ...(isRecording ? { captureCursor: captureCursorRef.current } : {}),
           ...(isRecording && sourcesRef.current !== null
-            ? { sources: sourcesRef.current }
+            ? { sources: committedSources(sourcesRef.current) }
             : {}),
           // No `extents`. A one-window mask covers its own union box
           // edge to edge, so it can only ever produce the same pixels
@@ -1412,7 +1538,7 @@ export function RegionSelector() {
       // read, same reason. Omitted when main never seeded them, which
       // leaves main on the persisted defaults rather than letting a
       // renderer that was never asked answer for the user.
-      ...(isRecording && sourcesRef.current !== null ? { sources: sourcesRef.current } : {})
+      ...(isRecording && sourcesRef.current !== null ? { sources: committedSources(sourcesRef.current) } : {})
     });
     // Full reset, same as the pick path above. Hand-rolling a partial
     // one here left `shiftHeld` / `spaceHeld` latched: the ⇧ keyup is
@@ -1434,10 +1560,25 @@ export function RegionSelector() {
   }
 
   function resetToSnap(): void {
+    micCheckGenRef.current += 1;
+    micCheckInFlightRef.current = false;
     if (submittedRef.current) {
       setCameraOffered(false);
       cameraOfferedRef.current = false;
       setCameraOn(false);
+      // Release the microphone. Its stream follows Record mode, so leaving
+      // the mode set kept the `getUserMedia` stream — and the macOS orange
+      // indicator — alive after the selector was dismissed: `hideSelector()`
+      // only blurs and hides this pre-warmed window, so the React tree and
+      // its effects survive and the monitor's cleanup never runs. The next
+      // show re-seeds the mode from its policy.
+      //
+      // Only on the way out. Escape stepping back from a selection lands
+      // here too, and the show goes on: a Record mode the user chose, or
+      // the `record` policy's, must survive redrawing the rectangle, or the
+      // next ↵ takes a still nobody asked for.
+      terminalRef.current = "snap";
+      setTerminal("snap");
     }
     setInteraction({ kind: "snap" });
     setSnapTarget({ kind: "display" });
@@ -1457,13 +1598,6 @@ export function RegionSelector() {
     // drop the dim + flag so they don't survive into the next gesture or
     // the next show of this pre-warmed window.
     clearDiscardPending();
-    // Release the microphone. `enabled` is derived from `sourcesTouched`
-    // (and from `sources`, which the next mode signal re-seeds), so leaving
-    // it latched kept the `getUserMedia` stream — and the macOS orange
-    // indicator — alive after the selector was dismissed: `hideSelector()`
-    // only blurs and hides this pre-warmed window, so the React tree and its
-    // effects survive and the monitor's cleanup never runs.
-    setSourcesTouched(false);
   }
 
   function cancel(): void {
@@ -1598,12 +1732,19 @@ export function RegionSelector() {
         commit();
         return;
       }
-      // Snap-vs-Record chooser. `R` records the selection the user is
-      // looking at; `S` takes the snap when the policy has handed ↵ to
-      // Record. Both are bare-key bindings, so they are guarded against
-      // modifiers — ⌘R is Reload in a dev build and ⌃R is a shell
-      // history search the user may have muscle-memory for; neither must
-      // start a screen recording.
+      // Snap-vs-Record chooser. `R` switches to Record mode and `S` back
+      // to Snap; ↵ then commits whichever is chosen. Neither commits on
+      // its own: the sources show up in Record mode, and the user has to
+      // be able to look at them before the take starts. Both are bare-key
+      // bindings, so they are guarded against modifiers — ⌘R is Reload in
+      // a dev build and ⌃R is a shell history search the user may have
+      // muscle-memory for.
+      // `?` shows or hides the keyboard legend, like the "?" button.
+      if (event.key === "?" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        event.preventDefault();
+        setHintOpen((open) => !open);
+        return;
+      }
       if (
         (event.key === "r" || event.key === "R") &&
         !event.metaKey &&
@@ -1612,7 +1753,7 @@ export function RegionSelector() {
         recordAvailable()
       ) {
         event.preventDefault();
-        commit("record");
+        chooseTerminal("record");
         return;
       }
       if (
@@ -1623,7 +1764,7 @@ export function RegionSelector() {
         snapKeyBound()
       ) {
         event.preventDefault();
-        commit("snap");
+        chooseTerminal("snap");
         return;
       }
       if ((event.key === "t" || event.key === "T") && picksRef.current.length > 1) {
@@ -1640,18 +1781,16 @@ export function RegionSelector() {
         !event.metaKey &&
         !event.ctrlKey &&
         !event.altKey &&
-        (intentRef.current === "video" || recordAvailable())
+        commitsRecordingNow()
       ) {
         // Recording-only: toggle whether the recording bakes in the
-        // mouse cursor. The hint bar reflects the current state; the
-        // value rides the commit payload to `recording:start`. Bound
-        // wherever a recording is reachable — the dedicated video
-        // selector, and any show where the chooser offers Record.
+        // mouse cursor. The HUD reflects the current state; the value
+        // rides the commit payload to `recording:start`. Bound wherever
+        // ↵ makes a recording — the dedicated video selector, and Record
+        // mode.
         //
-        // Modifier-guarded now that it is live on the SNAP path too:
-        // ⌘C is muscle memory everywhere, and before the chooser it did
-        // nothing during a Quick Capture. It must not silently flip a
-        // recording default there.
+        // Modifier-guarded: ⌘C is muscle memory everywhere, and must not
+        // silently flip a recording default.
         event.preventDefault();
         setCaptureCursor((prev) => !prev);
         return;
@@ -1695,7 +1834,6 @@ export function RegionSelector() {
       ) {
         // Recording-only: arm / disarm the camera track for this take.
         event.preventDefault();
-        setSourcesTouched(true);
         setCameraOn((prev) => !prev);
         return;
       }
@@ -1849,7 +1987,7 @@ export function RegionSelector() {
       // focus and its onClick fires normally; treating a HUD press as
       // a canvas gesture would toggle a pick under the bar.
       if (
-        event.target instanceof HTMLElement &&
+        event.target instanceof Element &&
         event.target.closest("[data-region-hud]") !== null
       ) {
         return;
@@ -2017,7 +2155,7 @@ export function RegionSelector() {
       // not re-snap the selection out from under the click. Free when
       // no HUD is rendered — nothing can match the selector then.
       if (
-        event.target instanceof HTMLElement &&
+        event.target instanceof Element &&
         event.target.closest("[data-region-hud]") !== null
       ) {
         return;
@@ -2166,7 +2304,7 @@ export function RegionSelector() {
       // HUD button toggled a pick for the window under the ORIGINAL
       // press while the button the user released on got no click.
       if (
-        event.target instanceof HTMLElement &&
+        event.target instanceof Element &&
         event.target.closest("[data-region-hud]") !== null
       ) {
         pendingPickRef.current = null;
@@ -2375,6 +2513,124 @@ export function RegionSelector() {
   // "capture" would be telling the user the wrong thing about the one
   // key they are most likely to press.
   const commitVerb = primary === "record" ? "record" : null;
+
+  // The keyboard legend's "?". It sits at the end of the HUD when there is
+  // one, and above where the HUD would be when there is not; the legend it
+  // opens is the same either way.
+  const hintToggle = (extraClass: string | null): ReactNode => (
+    <button
+      type="button"
+      className={extraClass === null ? "region-hint-toggle" : `region-hint-toggle ${extraClass}`}
+      aria-label="Keyboard shortcuts"
+      aria-expanded={hintOpen}
+      aria-controls="region-hint"
+      aria-keyshortcuts="?"
+      data-tip={hintOpen ? "Hide keyboard shortcuts" : "Keyboard shortcuts"}
+      data-tip-keys="?"
+      data-testid="region-hint-toggle"
+      onClick={(event) => {
+        setHintOpen((open) => !open);
+        // Same reason as the HUD: a focused button would take the ↵
+        // that is meant to capture.
+        event.currentTarget.blur();
+      }}
+    >
+      ?
+    </button>
+  );
+
+  // Record mode's controls: the cursor bake and the sources, as Shutter
+  // orbs or Clapperboard cells. Every one is a fixed-width box, so a long
+  // device name is cut short in place and never moves the bar.
+  const recordingSources = (density: "orb" | "cell"): ReactNode => {
+    const cursorChip = (
+      <CursorChip
+        key="cursor"
+        density={density}
+        on={captureCursor}
+        onToggle={() => setCaptureCursor((prev) => !prev)}
+        testId="region-hud-cursor"
+      />
+    );
+    const audioChips =
+      sourcesOffered && audioOffered
+        ? [
+            <MicrophoneChip
+              key="mic"
+              variant={density}
+              state={micState}
+              why={micWhy}
+              armed={sourcesArmed}
+              monitor={mic}
+              preference={micPreference}
+              openRequest={micPickerRequest}
+              onToggle={() => toggleSource("microphone")}
+              onPick={(preference) => {
+                setMicPreference(preference);
+                saveDevice("microphoneDevice", preference);
+              }}
+              onOpenSettings={() => {
+                void dispatch("permissions:openSystemSettings", {
+                  permission: "microphone"
+                });
+              }}
+              // Main knows a sound-settings page on macOS and Windows only.
+              onOpenSoundSettings={
+                soundSettingsOffered
+                  ? () => {
+                      void dispatch("permissions:openSoundSettings", {});
+                    }
+                  : undefined
+              }
+            />,
+            <SourceChip
+              key="system"
+              density={density}
+              source="systemAudio"
+              state={sources.systemAudio ? "live" : "off"}
+              // There is no renderer-reachable system-audio tap on
+              // macOS — ScreenCaptureKit owns it, inside the recorder —
+              // so this chip can say whether the source is armed and
+              // nothing more. Drawing an idle meter next to it would be
+              // a claim we cannot back.
+              noMeter
+              kbd="A"
+              onToggle={() => toggleSource("systemAudio")}
+              testId="region-hud-system-audio"
+            />
+          ]
+        : [];
+    const cameraChip = cameraOffered ? (
+      <CameraChip
+        key={`camera-${cameraSession}`}
+        variant={density}
+        enabled={cameraOn}
+        onToggle={setCameraOn}
+        value={sources?.camera}
+        preferred={cameraPreference}
+        onPick={(preference) => {
+          setCameraPreference(preference);
+          saveDevice("cameraDevice", preference);
+        }}
+        onReady={(ready) => {
+          cameraReadyRef.current = ready;
+          setCameraReady(ready);
+        }}
+        onChange={(camera) => {
+          setSources((previous) => {
+            const { camera: _old, ...rest } = previous ?? { microphone: false, systemAudio: false };
+            return camera ? { ...rest, camera } : rest;
+          });
+        }}
+      />
+    ) : null;
+    // The Shutter leads with the cursor, the narrowest orb, beside the
+    // shutter; the Clapperboard's slate reads like a call sheet, sources
+    // first.
+    return density === "orb"
+      ? [cursorChip, ...audioChips, cameraChip]
+      : [...audioChips, cameraChip, cursorChip];
+  };
 
   // Hint copy varies by mode + snap target so the user always knows
   // what action is bound to click / drag / arrows.
@@ -2886,8 +3142,12 @@ export function RegionSelector() {
         {showHud && (
         <div
           className={
-            hasPicks ? "region-hud" : "region-hud region-hud--chooser-only"
+            hasPicks
+              ? `region-hud region-hud--${hudStyle}`
+              : `region-hud region-hud--${hudStyle} region-hud--chooser-only`
           }
+          data-hud-style={hudStyle}
+          data-mode={commitsRecording ? "record" : "snap"}
           data-region-hud
           data-testid="region-hud"
           // A HUD press deliberately skips preventDefault so the button
@@ -2895,203 +3155,179 @@ export function RegionSelector() {
           // is then activated by Space, and the window-level Space
           // handler only preventDefaults while `adjusting` — a pick set
           // parks the interaction in `snap`. Left alone, Space on the
-          // focused Capture button submits the capture, which is bound
-          // nowhere in the hint bar. Drop focus once the click is done.
+          // focused shutter submits the capture, which is bound nowhere
+          // in the hint bar. Drop focus once the click is done.
           onClick={(e) => {
-            // `e.target` is the DEEPEST node — a chip's <span>, or the
-            // Capture button's <kbd> — and blur() on a non-focusable
-            // node is a no-op, so the <button> kept focus.
-            if (e.target instanceof HTMLElement) e.target.closest("button")?.blur();
+            // `e.target` is the DEEPEST node — an orb's <span>, or the
+            // shutter's <i> — and blur() on a non-focusable node is a
+            // no-op, so the <button> kept focus.
+            if (e.target instanceof Element) e.target.closest("button")?.blur();
           }}
         >
+          {/* The Clapperboard's slate stripe: Record mode, at a glance. */}
+          {hudStyle === "clapperboard" && commitsRecording && (
+            <div className="region-hud__clap" aria-hidden="true" />
+          )}
+          <div className="region-hud__bar">
           {/* Output shape. Hidden at one pick, where the union box is
               the extent and both modes produce identical pixels. */}
           {picks.length > 1 && (
-            <>
-              <div className="region-hud__seg" role="group" aria-label="Output shape">
-                <button
-                  type="button"
-                  className="region-hud__seg-btn"
-                  data-active={outputMode === "windows"}
-                  data-testid="region-hud-mode-windows"
-                  onClick={() => setOutputMode("windows")}
-                  title="Keep only the picked windows; the gaps between them become transparent"
-                >
-                  Windows
-                </button>
-                <button
-                  type="button"
-                  className="region-hud__seg-btn"
-                  data-active={outputMode === "rectangle"}
-                  data-testid="region-hud-mode-rectangle"
-                  onClick={() => setOutputMode("rectangle")}
-                  title="Keep the whole bounding box, including what is between the windows"
-                >
-                  Rectangle
-                </button>
-              </div>
-              <span className="region-hud__sep" />
-            </>
+            <div className="region-hud__seg" role="group" aria-label="Output shape">
+              <button
+                type="button"
+                className="region-hud__seg-btn"
+                data-active={outputMode === "windows"}
+                data-testid="region-hud-mode-windows"
+                aria-pressed={outputMode === "windows"}
+                aria-label="Windows"
+                data-tip="Windows only"
+                data-tip-detail="The gaps between the picked windows become transparent"
+                data-tip-keys="T"
+                onClick={() => setOutputMode("windows")}
+              >
+                <HudGlyph kind="windows" />
+              </button>
+              <button
+                type="button"
+                className="region-hud__seg-btn"
+                data-active={outputMode === "rectangle"}
+                data-testid="region-hud-mode-rectangle"
+                aria-pressed={outputMode === "rectangle"}
+                aria-label="Rectangle"
+                data-tip="Bounding box"
+                data-tip-detail="Keep everything between the windows too"
+                data-tip-keys="T"
+                onClick={() => setOutputMode("rectangle")}
+              >
+                <HudGlyph kind="rectangle" />
+              </button>
+            </div>
           )}
-          {/* Gated, like the separator it carries: `.region-hud` is a
-              flex row with a 10px gap, so an empty chips container still
-              contributed a full gap of chrome that belonged to no
-              control — dead space immediately left of "Capture" on the
-              chooser-only bar. */}
           {hasPicks && (
-            <>
-              <div className="region-hud__chips">
-                {picks.map((p, idx) => (
-                  <button
-                    key={p.windowId}
-                    type="button"
-                    className="region-hud__chip"
-                    data-testid="region-hud-chip"
-                    onClick={() => togglePick(p)}
-                    title={`Remove ${p.appName ?? "window"}`}
-                  >
-                    <span className="region-hud__chip-n">{idx + 1}</span>
-                    <span className="region-hud__chip-name">{p.appName ?? "Window"}</span>
-                    <span className="region-hud__chip-x" aria-hidden>
-                      ×
-                    </span>
-                  </button>
-                ))}
-              </div>
-              <span className="region-hud__sep" />
-            </>
+            // Two picks fit with their names. From three the chips drop to
+            // their numbers — the same numbers the badges on the windows
+            // carry — so the bar stays one width-bounded row however many
+            // windows are picked. The app name is in each chip's tooltip
+            // and accessible name. A count rule, not a measured fit, so
+            // the bar never flips between the two shapes as a name changes.
+            <div
+              className="region-hud__chips"
+              data-compact={picks.length > COMPACT_PICK_CHIPS_FROM - 1}
+            >
+              {picks.map((p, idx) => (
+                <button
+                  key={p.windowId}
+                  type="button"
+                  className="region-hud__chip"
+                  data-testid="region-hud-chip"
+                  aria-label={`Remove ${p.appName ?? "window"}`}
+                  data-tip={`Remove ${p.appName ?? "window"}`}
+                  onClick={() => togglePick(p)}
+                >
+                  <span className="region-hud__chip-n">{idx + 1}</span>
+                  <span className="region-hud__chip-name">{p.appName ?? "Window"}</span>
+                  <span className="region-hud__chip-x" aria-hidden>
+                    ×
+                  </span>
+                </button>
+              ))}
+            </div>
           )}
-          {/* Terminal actions. The primary is whatever ↵ commits, so the
-              pre-chooser bar (`primary === "snap"`, no Record offered)
-              renders the identical "Capture ↵" button it always has. */}
+          {/* Snap or Record. Choosing is not committing: ↵ (or the
+              shutter) commits whichever is chosen, and Record mode is
+              what brings the sources out. Record stays in the control at
+              2+ picks, refused, rather than vanishing: the user just saw
+              it offered, and a control that disappears explains nothing. */}
+          {recordOffered && (
+            <div
+              className="region-hud__mode"
+              role="group"
+              aria-label="Snap or record"
+              data-mode={primary}
+            >
+              <button
+                type="button"
+                className="region-hud__mode-btn"
+                data-testid="region-hud-mode-snap"
+                aria-pressed={primary === "snap"}
+                aria-label="Snap"
+                data-tip="Snap"
+                data-tip-keys="S"
+                onClick={() => chooseTerminal("snap")}
+              >
+                {hudStyle === "shutter" ? <HudGlyph kind="still" /> : "SNAP"}
+              </button>
+              <button
+                type="button"
+                className="region-hud__mode-btn region-hud__mode-btn--rec"
+                data-testid="region-hud-mode-record"
+                aria-pressed={primary === "record"}
+                aria-disabled={!recordUsable}
+                aria-label={recordUsable ? "Record" : "Record unavailable"}
+                data-tip={recordUsable ? "Record" : "Record unavailable"}
+                {...(recordUsable
+                  ? { "data-tip-keys": "R" }
+                  : {
+                      "data-tip-detail":
+                        "A recording is one rectangle. Remove picks or drag a region."
+                    })}
+                onClick={() => chooseTerminal("record")}
+              >
+                {hudStyle === "shutter" ? (
+                  <HudGlyph kind="rec" />
+                ) : (
+                  <>
+                    <i aria-hidden="true" />
+                    REC
+                  </>
+                )}
+              </button>
+            </div>
+          )}
+          {hudStyle === "clapperboard" && <span className="region-hud__fill" />}
+          {/* The commit. Whatever ↵ commits, so the pre-chooser bar
+              (`primary === "snap"`, no Record offered) still captures. */}
           <button
             type="button"
-            className="region-hud__go"
+            className={hudStyle === "shutter" ? "region-hud__shutter" : "region-hud__go"}
             data-testid="region-hud-capture"
             data-action={primary}
             disabled={commitsRecording && !cameraReady}
             aria-label={commitsRecording ? "Record (Return)" : "Capture (Return)"}
+            {...(hudStyle === "shutter"
+              ? { "data-tip": commitsRecording ? "Record" : "Capture", "data-tip-keys": "↵" }
+              : {})}
             onClick={() => commit(primary)}
           >
-            {commitsRecording ? "Record" : "Capture"}
-            <kbd>↵</kbd>
+            {hudStyle === "shutter" ? (
+              <i aria-hidden="true" />
+            ) : (
+              <>
+                {commitsRecording ? "Record" : "Capture"}
+                <kbd>↵</kbd>
+              </>
+            )}
           </button>
-          {recordOffered && (
-            // The other action. Disabled rather than hidden at 2+ picks:
-            // the user just saw Record offered, and a control that
-            // vanishes explains nothing. The title says why.
-            <button
-              type="button"
-              className="region-hud__alt"
-              data-testid="region-hud-alt"
-              data-action={primary === "record" ? "snap" : "record"}
-              disabled={!recordUsable || (primary !== "record" && !cameraReady)}
-              aria-label={
-                primary === "record"
-                  ? "Snap (S)"
-                  : recordUsable
-                    ? "Record (R)"
-                    : "Record unavailable — a recording is one rectangle"
-              }
-              title={
-                primary === "record"
-                  ? "Take a still of this selection instead"
-                  : recordUsable
-                    ? "Record this selection as a video"
-                    : "A recording is one rectangle — remove picks or drag a region"
-              }
-              onClick={() => commit(primary === "record" ? "snap" : "record")}
-            >
-              {primary === "record" ? "Snap" : "Record"}
-              <kbd>{primary === "record" ? "S" : "R"}</kbd>
-            </button>
+          {hudStyle === "shutter" && recordingControls && (
+            <div className="region-hud__wing" role="group" aria-label="Recording sources">
+              {recordingSources("orb")}
+            </div>
           )}
-          {recordingControls && (
-            // Cursor bake, on the same `C` the hint bar advertises.
-            // Shown wherever a recording is reachable — which now
-            // includes the dedicated video selector, where this toggle
-            // previously existed only as a keystroke.
-            <button
-              type="button"
-              className="region-hud__toggle"
-              data-testid="region-hud-cursor"
-              aria-pressed={captureCursor}
-              aria-label={`Record cursor: ${captureCursor ? "on" : "off"} (C)`}
-              title="Bake the mouse pointer into the recording"
-              onClick={() => setCaptureCursor((prev) => !prev)}
-            >
-              Rec cursor: {captureCursor ? "on" : "off"}
-              <kbd>C</kbd>
-            </button>
-          )}
-          {sourcesOffered && audioOffered && (
-            <>
-              <SourceChip
-                source="microphone"
-                state={micState}
-                level={mic.segments / 7}
-                // Armed but unopened: the chip knows the user's choice
-                // and nothing about the signal, so it must not draw a
-                // meter that would read as silence.
-                noMeter={!sourcesArmed}
-                {...(micWhy !== undefined ? { why: micWhy } : {})}
-                {...(micState === "ask"
-                  ? { act: "Allow", onAct: () => void mic.request() }
-                  : {})}
-                {...(micState === "denied"
-                  ? {
-                      act: "Settings",
-                      onAct: () => {
-                        void dispatch("permissions:openSystemSettings", {
-                          permission: "microphone"
-                        });
-                      }
-                    }
-                  : {})}
-                kbd="M"
-                onToggle={() => toggleSource("microphone")}
-                testId="region-hud-mic"
-              />
-              <SourceChip
-                source="systemAudio"
-                state={sources.systemAudio ? "live" : "off"}
-                // There is no renderer-reachable system-audio tap on
-                // macOS — ScreenCaptureKit owns it, inside the
-                // recorder — so this chip can say whether the source is
-                // armed and nothing more. Drawing an idle meter next to
-                // it would be a claim we cannot back.
-                noMeter
-                kbd="A"
-                onToggle={() => toggleSource("systemAudio")}
-                testId="region-hud-system-audio"
-              />
-            </>
-          )}
-          {cameraOffered && recordingControls && (
-            <CameraChip
-              key={cameraSession}
-              enabled={cameraOn}
-              onToggle={(next) => {
-                setSourcesTouched(true);
-                setCameraOn(next);
-              }}
-              value={sources?.camera}
-              onReady={(ready) => {
-                cameraReadyRef.current = ready;
-                setCameraReady(ready);
-              }}
-              onChange={(camera) => {
-                setSources((previous) => {
-                  const { camera: _old, ...rest } = previous ?? { microphone: false, systemAudio: false };
-                  return camera ? { ...rest, camera } : rest;
-                });
-              }}
-            />
+          {hintToggle("region-hud__help")}
+          </div>
+          {hudStyle === "clapperboard" && recordingControls && (
+            <div className="region-hud__slate" role="group" aria-label="Recording sources">
+              {recordingSources("cell")}
+            </div>
           )}
         </div>
       )}
 
-        <div className="region-hint">
+        {/* `data-region-hud`: a press on the "?" is the row's, not a
+            canvas gesture (see the guard in onMouseDown). */}
+        <div className="region-hint-row" data-region-hud>
+        {!showHud && hintToggle(null)}
+        <div className="region-hint" id="region-hint" hidden={!hintOpen}>
         {intent === "video" && (
           <>
             <span>
@@ -3128,22 +3364,22 @@ export function RegionSelector() {
         {/* Chooser keys. Live from the first frame — including in live
             snap, where the mouse cannot be used to choose (reaching for
             a button moves the selection) and the keyboard is the whole
-            affordance. `R` goes dead at 2+ picks; the legend says so
-            rather than disappearing. */}
+            affordance. R and S switch modes; ↵ commits. `R` goes dead at
+            2+ picks; the legend says so rather than disappearing. */}
         {recordOffered && (
           <>
             <span className="region-hint-sep">·</span>
             {primary === "record" ? (
               <span>
-                <kbd>S</kbd>snap
+                <kbd>S</kbd>switch to snap
               </span>
             ) : (
               <span data-testid="region-hint-record" data-available={recordUsable}>
                 <kbd>R</kbd>
-                {recordUsable ? "record" : "record (one rectangle only)"}
+                {recordUsable ? "switch to record" : "record (one rectangle only)"}
               </span>
             )}
-            {recordUsable && (
+            {primary === "record" && (
               <>
                 <span className="region-hint-sep">·</span>
                 <span>
@@ -3184,6 +3420,7 @@ export function RegionSelector() {
           {interaction.kind === "snap" && !hasPicks ? "cancel" : "back"}
         </span>
         </div>
+        </div>
       </div>
       <style>{`@keyframes ps-rec-pulse {
         0% { opacity: 1; }
@@ -3192,4 +3429,53 @@ export function RegionSelector() {
       }`}</style>
     </div>
   );
+}
+
+/** From this many picks the HUD's window chips show only their numbers. */
+const COMPACT_PICK_CHIPS_FROM = 3;
+
+/** The HUD's own icons: the mode rocker and the output shape. */
+function HudGlyph({ kind }: { readonly kind: "still" | "rec" | "windows" | "rectangle" }): ReactNode {
+  const common = {
+    width: 15,
+    height: 15,
+    viewBox: "0 0 16 16",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.5,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    "aria-hidden": true
+  };
+  switch (kind) {
+    case "still":
+      return (
+        <svg {...common}>
+          <path d="M2.2 5.4a1.4 1.4 0 0 1 1.4-1.4h1.6l1.2-1.6h3.2L10.8 4h1.6a1.4 1.4 0 0 1 1.4 1.4v6.2a1.4 1.4 0 0 1-1.4 1.4H3.6a1.4 1.4 0 0 1-1.4-1.4z" />
+          <circle cx="8" cy="8.4" r="2.4" />
+        </svg>
+      );
+    case "rec":
+      return (
+        <svg {...common}>
+          <rect x="1.4" y="4" width="9.2" height="8" rx="2" />
+          <path d="M10.6 7.6l4-2.2v5.2l-4-2.2z" />
+        </svg>
+      );
+    case "windows":
+      return (
+        <svg {...common}>
+          <rect x="1.6" y="2.6" width="7" height="5.6" rx="1.2" />
+          <rect x="7.4" y="7.8" width="7" height="5.6" rx="1.2" />
+        </svg>
+      );
+    case "rectangle":
+      return (
+        <svg {...common}>
+          <rect x="1.6" y="2.6" width="12.8" height="10.8" rx="1.4" strokeDasharray="2.2 1.8" />
+          <rect x="3.6" y="4.6" width="4.4" height="3.4" rx="0.8" />
+          <rect x="8" y="8" width="4.4" height="3.4" rx="0.8" />
+        </svg>
+      );
+  }
 }

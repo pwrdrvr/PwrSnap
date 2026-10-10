@@ -64,6 +64,7 @@ export const baseSettings: Settings = {
   storage: { filenameTimestampZone: "local", capturesLocation: "documents" },
   recording: {
     quickCaptureAction: "ask",
+    selectorHud: "shutter",
     includeSystemAudio: false,
     includeMicrophone: false,
     mp4IncludeMicrophone: true,
@@ -71,6 +72,8 @@ export const baseSettings: Settings = {
     videoCaptureCursor: true,
     showRegionFrame: true,
     showRecentCaptureSidebar: true,
+    microphoneDevice: null,
+    cameraDevice: null,
     imageCaptureCursor: true,
     lastRoutedPermissionFingerprint: "",
     screenCapturePrompted: false

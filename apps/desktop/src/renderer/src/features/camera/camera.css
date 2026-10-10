@@ -44,6 +44,8 @@
   background: var(--bg-panel-elevated);
   color: var(--danger-text);
   font: 500 11px/1.35 var(--font-sans);
+  /* See .camera-pop: inherited nowrap from the HUD would stop this wrapping. */
+  white-space: normal;
 }
 
 /* Right-aligned to the chip: it is the last chip in the HUD, and the HUD
@@ -56,6 +58,9 @@
   width: 280px;
   padding: 5px;
   display: grid;
+  /* Not the implicit `auto` column, whose floor is the longest camera
+     name: see `.mic-pop` in microphone-chip.css. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 2px;
   border-radius: 12px;
   border: 1px solid var(--border-strong);
@@ -63,6 +68,11 @@
   box-shadow: var(--shadow-lg);
   color: var(--text-primary);
   font-family: var(--font-sans);
+  /* Pinned, not inherited. The popover is a DOM descendant of the
+     selector HUD, which is `white-space: nowrap` so no control on the
+     bar wraps; inherited here, the advice and notes ran off the right
+     edge instead of wrapping. Rows that must not wrap say so themselves. */
+  white-space: normal;
 }
 .camera-pop__hd {
   padding: 6px 8px 5px;
@@ -73,12 +83,14 @@
 }
 .camera-pop__list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 1px;
 }
 .camera-pop__row {
   appearance: none;
   display: flex;
   align-items: center;
+  min-width: 0;
   gap: 8px;
   height: 28px;
   padding: 0 8px;
@@ -97,7 +109,14 @@
 .camera-pop__row[aria-checked="true"] {
   color: var(--text-primary);
 }
+.camera-pop__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .camera-pop__dot {
+  flex: 0 0 auto;
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -137,6 +156,9 @@
   margin: 4px 8px 6px;
   font: 400 11px/1.4 var(--font-sans);
   color: var(--text-muted);
+}
+.camera-pop__note--warn {
+  color: var(--warn-text);
 }
 .camera-pop__err {
   margin: 0 8px 6px;

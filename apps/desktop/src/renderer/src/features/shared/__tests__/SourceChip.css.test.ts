@@ -131,4 +131,65 @@ describe("SourceChip.css", () => {
       expect(ruleFor(chipCss, selector).body).toMatch(/position\s*:\s*relative/);
     }
   });
+
+  // The selector HUD's chips are fixed-width boxes. A device name is the
+  // one thing in them whose length nobody controls, and a box that grew
+  // with it moved every control on the bar each time a device changed.
+  // jsdom lays nothing out, so the widths and the ellipsis are pinned on
+  // the stylesheet itself.
+  test("every orb and slate cell has a fixed width, and its caption ellipsizes", () => {
+    const widths: [string, string][] = [
+      [".ps-chip.ps-chip--orb", "92px"],
+      ['.ps-chip.ps-chip--orb[data-source="systemAudio"]', "56px"],
+      ['.ps-chip.ps-chip--orb[data-source="cursor"]', "56px"],
+      ['.ps-chip.ps-chip--cell[data-source="microphone"]', "172px"],
+      ['.ps-chip.ps-chip--cell[data-source="systemAudio"]', "96px"],
+      ['.ps-chip.ps-chip--cell[data-source="camera"]', "188px"],
+      ['.ps-chip.ps-chip--cell[data-source="cursor"]', "102px"]
+    ];
+    for (const [selector, width] of widths) {
+      expect(ruleFor(chipCss, selector).body, selector).toMatch(new RegExp(`(?:^|[;\\s])width\\s*:\\s*${width}`));
+    }
+    for (const selector of [".ps-chip--orb > .ps-chip__cap", ".ps-chip--cell > .ps-chip__cap"]) {
+      const body = ruleFor(chipCss, selector).body;
+      expect(body, selector).toMatch(/overflow\s*:\s*hidden/);
+      expect(body, selector).toMatch(/text-overflow\s*:\s*ellipsis/);
+      expect(body, selector).toMatch(/white-space\s*:\s*nowrap/);
+    }
+    // A grid column's floor is its content's min-content unless it says
+    // otherwise, and the cell's name column must be able to shrink.
+    expect(ruleFor(chipCss, ".ps-chip.ps-chip--cell").body).toMatch(
+      /grid-template-columns\s*:\s*minmax\(0,\s*1fr\)/
+    );
+    expect(ruleFor(chipCss, ".ps-chip--cell > .ps-chip__cap").body).toMatch(/min-width\s*:\s*0/);
+  });
+
+  // The device popovers (and the camera's error line) anchor to the HUD
+  // and open ABOVE it. A clipping HUD swallowed them whole: the
+  // Clapperboard first shipped with `overflow: hidden` for its rounded
+  // stripe, and its microphone picker opened invisibly.
+  test("the HUD the popovers anchor to does not clip them", () => {
+    expect(ruleFor(regionCss, ".region-hud").body).toMatch(/position\s*:\s*relative/);
+    for (const selector of [".region-hud", ".region-hud--shutter", ".region-hud--clapperboard"]) {
+      expect(ruleFor(regionCss, selector).body, selector).not.toMatch(/overflow\s*:/);
+    }
+    expect(ruleFor(regionCss, ".region-hud .mic-chip").body).toMatch(/position\s*:\s*static/);
+  });
+
+  // The HUD is `white-space: nowrap`, and the popovers are its DOM
+  // descendants, so they inherit it unless they say otherwise. The
+  // microphone picker's advice once ran off its right edge that way.
+  test("the popovers inside the HUD wrap their own text", () => {
+    expect(ruleFor(regionCss, ".region-hud").body).toMatch(/white-space\s*:\s*nowrap/);
+    const micCss = read("../../region/microphone-chip.css");
+    const cameraCss = read("../../camera/camera.css");
+    for (const [css, selector] of [
+      [micCss, ".mic-pop"],
+      [cameraCss, ".camera-pop"],
+      [cameraCss, ".camera-chip__err"]
+    ] as const) {
+      expect(ruleFor(css, selector).body, selector).toMatch(/white-space\s*:\s*normal/);
+    }
+  });
 });
+

@@ -259,7 +259,7 @@ describe("opening the popover from the menu row", () => {
 
   test("waits for the renderer's first measurement before showing", async () => {
     const row = popoverRow("linux");
-    (row?.click as () => void)();
+    (row!.click as () => void)();
     // Window exists, renderer has not measured — nothing on screen yet, or the
     // user would watch it jump from the constructor frame to its real height.
     expect(mocks.windows.at(-1)?.showInactive).not.toHaveBeenCalled();
@@ -271,7 +271,7 @@ describe("opening the popover from the menu row", () => {
 
   test("applies a compact renderer width as well as its measured height", async () => {
     const row = popoverRow("linux");
-    (row?.click as () => void)();
+    (row!.click as () => void)();
     postRendererMeasurement(620, 360);
     expect(mocks.windows.at(-1)?.setContentSize).toHaveBeenLastCalledWith(360, 620, false);
   });
@@ -280,7 +280,7 @@ describe("opening the popover from the menu row", () => {
     vi.useFakeTimers();
     try {
       const row = popoverRow("linux");
-      (row?.click as () => void)();
+      (row!.click as () => void)();
       expect(mocks.windows.at(-1)?.showInactive).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(LINUX_TRAY_FIRST_MEASURE_WAIT_MS + 1);
       // A renderer that never posts must not cost the user the popover — it
@@ -296,7 +296,7 @@ describe("opening the popover from the menu row", () => {
     await openPopoverFromMenu();
     mocks.calls.length = 0;
     const row = popoverRow("linux");
-    (row?.click as () => void)();
+    (row!.click as () => void)();
     // On Wayland the popover may never take focus (a client cannot activate
     // itself), so blur-dismiss and Escape can both be unavailable. Re-picking
     // the row needs neither.
@@ -306,7 +306,7 @@ describe("opening the popover from the menu row", () => {
   test("hides through hideTrayWindowNow — no bare hide(), no opacity on Linux", async () => {
     await openPopoverFromMenu();
     mocks.calls.length = 0;
-    (popoverRow("linux")?.click as () => void)();
+    (popoverRow("linux")!.click as () => void)();
     // `setOpacity` is the macOS alpha-0 park and is inert on Linux; the
     // pairing invariant in tray-instant-hide.test.ts owns the general rule.
     expect(mocks.calls.filter((c) => c.startsWith("setOpacity"))).toEqual([]);
@@ -388,8 +388,8 @@ describe("the open-time anchor, and a parked open", () => {
   test("a second pick while the first is parked cancels it instead of opening", async () => {
     vi.useFakeTimers();
     try {
-      (popoverRow("linux")?.click as () => void)();
-      (popoverRow("linux")?.click as () => void)();
+      (popoverRow("linux")!.click as () => void)();
+      (popoverRow("linux")!.click as () => void)();
       await vi.advanceTimersByTimeAsync(LINUX_TRAY_FIRST_MEASURE_WAIT_MS + 1);
       expect(mocks.windows.at(-1)?.showInactive).not.toHaveBeenCalled();
     } finally {
@@ -398,7 +398,7 @@ describe("the open-time anchor, and a parked open", () => {
   });
 
   test("a capture's dismiss cancels a parked open, so it cannot show mid-capture", async () => {
-    (popoverRow("linux")?.click as () => void)();
+    (popoverRow("linux")!.click as () => void)();
     hideTrayPopoverIfVisible();
     postRendererMeasurement(620);
     await new Promise((resolve) => setTimeout(resolve, 0));

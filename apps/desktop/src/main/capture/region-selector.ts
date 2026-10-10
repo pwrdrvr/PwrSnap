@@ -1,4 +1,4 @@
-import { RecordingCameraSchema } from "@pwrsnap/shared";
+import { RecordingCameraSchema, RecordingMicrophoneSchema } from "@pwrsnap/shared";
 // Pre-warmed per-display region-selector windows. Cold BrowserWindow
 // creation is 150–400ms; the ⌘⇧P → first-paint budget is 120ms. So
 // we create one window per display at boot (`show: false`), rebuild
@@ -26,7 +26,12 @@ import {
   type IpcMainInvokeEvent
 } from "electron";
 import { join } from "node:path";
-import type { QuickCaptureAction, RecordingCapabilities } from "@pwrsnap/shared";
+import type {
+  QuickCaptureAction,
+  RecordingCapabilities,
+  RecordingDeviceDefaults,
+  SelectorHudStyle
+} from "@pwrsnap/shared";
 import { linuxSquareCorners } from "../linux-window-corners";
 import { getMainLogger } from "../log";
 import { getPreloadPath } from "../window";
@@ -824,6 +829,11 @@ export async function pickRegion(
      *  path too whenever the chooser can reach one, for the same reason
      *  `cursorDefault` is passed there. */
     sourcesDefault?: RecordingCapabilities;
+    /** The saved microphone and camera, from `settings.recording.
+     *  microphoneDevice` / `.cameraDevice`. Forwarded in the mode signal so
+     *  the chips open the saved device and name it before the first frame.
+     *  Omitted means "no saved choice", the same as two nulls. */
+    devicesDefault?: RecordingDeviceDefaults;
     cameraOffered?: boolean;
     /** Selector-based image-capture diagnostics. Omitted by video flows. */
     latencyTrace?: CaptureLatencyTrace;
@@ -838,6 +848,9 @@ export async function pickRegion(
      *  otherwise render a Record button, bind `R`, and then quietly
      *  take a still. Ignored when `intent === "video"`. */
     quickCaptureAction?: QuickCaptureAction;
+    /** How the HUD is drawn, from `settings.recording.selectorHud`.
+     *  Omitted means the default (shutter). */
+    hudStyle?: SelectorHudStyle;
   } = {}
 ): Promise<SelectorResult> {
   const mode: SelectorMode = opts.mode ?? "auto";
@@ -846,8 +859,10 @@ export async function pickRegion(
   const intent = opts.intent ?? "snap";
   const cursorDefault = opts.cursorDefault;
   const sourcesDefault = opts.sourcesDefault;
+  const devicesDefault = opts.devicesDefault;
   const latencyTrace = opts.latencyTrace;
   const quickCaptureAction = opts.quickCaptureAction;
+  const hudStyle = opts.hudStyle;
   const requestStartedAt = Date.now();
   const elapsedFromRequest = (): number => Date.now() - requestStartedAt;
   log.info("capture selector requested", {
@@ -1162,8 +1177,10 @@ export async function pickRegion(
             intent,
             cursor: cursorDefault,
             ...(sourcesDefault !== undefined ? { sources: sourcesDefault } : {}),
+            ...(devicesDefault !== undefined ? { devices: devicesDefault } : {}),
             cameraOffered: opts.cameraOffered === true,
             quickCaptureAction,
+            ...(hudStyle !== undefined ? { hudStyle } : {}),
             ...(latencyTrace !== undefined && presentationGeneration !== undefined
               ? {
                   invocationId: latencyTrace.invocation.id,
@@ -2295,6 +2312,12 @@ function isSelectorPayload(value: unknown): value is {
     if (typeof sources.microphone !== "boolean") return false;
     if (typeof sources.systemAudio !== "boolean") return false;
     if (sources.camera !== undefined && !RecordingCameraSchema.safeParse(sources.camera).success) return false;
+    if (
+      sources.microphoneDevice !== undefined &&
+      (sources.microphone !== true || !RecordingMicrophoneSchema.safeParse(sources.microphoneDevice).success)
+    ) {
+      return false;
+    }
   }
   if (v.action !== undefined && v.action !== "snap" && v.action !== "record") {
     return false;

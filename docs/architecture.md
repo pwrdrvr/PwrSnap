@@ -155,7 +155,7 @@ the screen never moves the presenter. The delivered video is
 opaque, and the original camera remains editable.
 
 **Recorded audio remains editable.** On macOS, the capture selector
-offers independent system-audio and default-microphone choices, both
+offers independent system-audio and microphone choices, both
 opt-in, with a live level meter on the microphone. The original MP4
 **retains separate tracks** — that is the invariant; everything else is
 a rendering of it. Muting or replacing audio in a reel never changes the
@@ -163,6 +163,34 @@ original recording. The current Windows recorder is video-only, and main
 gates the audio chips on the backend's own capability table — it simply
 withholds the source set the selector would render — so a source that
 cannot be recorded is absent from the UI, never present-but-doomed.
+
+**Sources are chosen by device, before the take.** The microphone and
+camera chips name the device the take will record from, and their device
+pickers save the choice as `recording.microphoneDevice` / `.cameraDevice`
+(`null` follows the system default). Turning a source on or off is still a
+per-take decision that is never written back. A saved device carries
+Chromium's `deviceId`, which the selector and the camera recorder open it by,
+and its name. The name is the fallback when the per-profile salt changes the
+id, and it is the only key the native microphone recorder can use:
+AVFoundation knows nothing of Chromium ids, so `recording:start` carries
+`microphoneDevice: { label }` and the recorder matches it against the
+attached inputs. Chromium's label is not always the CoreAudio name, so the
+match is a ladder: the device name, ignoring the trailing "(Built-in)" /
+"(USB)" tag Chromium adds; then the input's data source name, which Chromium
+uses for some virtual devices; then the one Bluetooth input whose name
+contains the label as whole words, because Chromium shows a headset's product
+name ("AirPods") where macOS shows the owner's name for it. Two such headsets
+are not guessed between. A name that matches nothing fails the start rather than
+recording a different microphone than the chip showed. That failure is the
+backstop, not the path a user meets: when the chip never opened the microphone
+(a Quick Capture that only offers Record), Record first lists the inputs, and a
+saved device that has gone opens the picker on the system default, with a note
+saying so, instead of starting. A chip that did open the microphone already fell
+back to the default and names it. The microphone picker's
+gain check (a dBFS peak meter with a peak hold and a clip latch, and a short
+record-and-play-back test) runs on the selector's own preview stream and keeps
+the test in renderer memory. It never reaches the take or the disk, and it
+does not exist once a take is live.
 
 Because a two-track MP4 plays only its first track in ordinary players,
 every path that hands audio to something outside PwrSnap mixes the

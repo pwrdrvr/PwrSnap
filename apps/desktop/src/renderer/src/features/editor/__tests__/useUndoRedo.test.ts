@@ -522,7 +522,7 @@ describe("useUndoRedo", () => {
       (c) => (c[0] as { kind: string }).kind === "upsert"
     );
     expect(upsertCalls.length).toBe(1);
-    expect((upsertCalls[0]?.[0] as { node: { id: string } }).node.id).toBe(
+    expect((upsertCalls[0]![0] as { node: { id: string } }).node.id).toBe(
       "layer_B"
     );
   });

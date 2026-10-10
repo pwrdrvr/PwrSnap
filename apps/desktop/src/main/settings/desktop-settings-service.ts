@@ -1,4 +1,4 @@
-import { parseCustomAi } from "@pwrsnap/shared";
+import { parseCustomAi, RecordingDevicePreferenceSchema, type RecordingDevicePreference } from "@pwrsnap/shared";
 // Internal settings persistence adapter. DesktopSettingsStore is the sole
 // production owner. The first read hydrates an immutable snapshot from disk;
 // subsequent reads stay in memory for the process lifetime. Reads
@@ -93,6 +93,8 @@ import {
   isLocalAgentCapability,
   isQuickCaptureAction,
   QUICK_CAPTURE_ACTION_DEFAULT,
+  SELECTOR_HUD_STYLE_DEFAULT,
+  isSelectorHudStyle,
   RECORDING_MEDIA_DEFAULTS,
   findRoleForCapabilities,
   defaultLocalAgentRoleConstraints,
@@ -258,6 +260,7 @@ export function defaultSettings(
       // step — ↵ still snaps. Users who never want the affordance pick
       // "snap"; users who mostly record pick "record".
       quickCaptureAction: QUICK_CAPTURE_ACTION_DEFAULT,
+      selectorHud: SELECTOR_HUD_STYLE_DEFAULT,
       // Audio OFF, video cursor ON — from shared, because the capture
       // path needs the same three values when its settings read fails
       // and must not import this module to get them. Rationale for each
@@ -279,6 +282,10 @@ export function defaultSettings(
       // any platform. Off is a taste preference, not a safety valve.
       showRegionFrame: true,
       showRecentCaptureSidebar: true,
+      // No device chosen: the system default microphone, and the first
+      // camera Chromium offers. The selector's chips write a choice.
+      microphoneDevice: null,
+      cameraDevice: null,
       lastRoutedPermissionFingerprint: "",
       // Fresh install has never triggered the macOS Screen Recording
       // prompt, so the System Permissions page + the capture gate show
@@ -393,6 +400,11 @@ function pickStringOrNull(value: unknown, fallback: string | null): string | nul
   if (value === null) return null;
   if (typeof value === "string") return value;
   return fallback;
+}
+
+function pickDevicePreference(value: unknown): RecordingDevicePreference | null {
+  const parsed = RecordingDevicePreferenceSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
 }
 
 function pickMode(value: unknown): "auto" | "pinned" {
@@ -1050,6 +1062,10 @@ function parseV1(
         recording.quickCaptureAction,
         defaults.recording.quickCaptureAction
       ),
+      // Additive too: an older file takes the shutter.
+      selectorHud: isSelectorHudStyle(recording.selectorHud)
+        ? recording.selectorHud
+        : defaults.recording.selectorHud,
       includeSystemAudio: pickBoolean(recording.includeSystemAudio, defaults.recording.includeSystemAudio),
       includeMicrophone: pickBoolean(recording.includeMicrophone, defaults.recording.includeMicrophone),
       // `mp4Include*` landed with the MP4 export audio toggle; older files
@@ -1080,6 +1096,11 @@ function parseV1(
         recording.showRecentCaptureSidebar,
         defaults.recording.showRecentCaptureSidebar
       ),
+      // The device choices landed with the selector's device pickers;
+      // older files have none, and a malformed one reads as "no choice"
+      // rather than failing the whole file.
+      microphoneDevice: pickDevicePreference(recording.microphoneDevice),
+      cameraDevice: pickDevicePreference(recording.cameraDevice),
       lastRoutedPermissionFingerprint: pickString(
         recording.lastRoutedPermissionFingerprint,
         defaults.recording.lastRoutedPermissionFingerprint

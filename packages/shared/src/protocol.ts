@@ -1,4 +1,5 @@
 import type { AvatarStyle, CameraTrackMetadata, PresenterSpan, RecordingCamera } from "./camera";
+import type { RecordingDevicePreference, RecordingMicrophone } from "./recording-devices";
 import type { CustomConnection, CustomConnectionInput, CustomModel, CustomModelDiscovery, CustomModelInput } from "./custom-models";
 // Typed `Commands` registry. Single source of truth across main /
 // preload / renderer / external transports (HTTP RPC in Phase 7, MCP
@@ -460,7 +461,9 @@ export type RecordingFailureCode =
 export function recordingFailureSummary(code: RecordingFailureCode): string {
   switch (code) {
     case "microphone_unavailable":
-      return "PwrSnap couldn't start your microphone. Check microphone access and the default input in macOS Sound settings, then retry.";
+      // Covers a named input that is gone as well as the default, so it
+      // points at the selector's choice, not only at the default input.
+      return "PwrSnap couldn't open the microphone. Check that the input chosen in the capture selector is connected and that PwrSnap has microphone access, then retry.";
     case "recorder_unavailable":
       return "PwrSnap couldn't find the video recorder.";
     case "recorder_start_failed":
@@ -492,6 +495,10 @@ export type RecordingCapabilities = {
   camera?: RecordingCamera;
   systemAudio: boolean;
   microphone: boolean;
+  /** The input to record from when `microphone` is on. Omitted means the
+   *  system default input. Matched by name in the native recorder, which
+   *  refuses the take rather than record a different microphone. */
+  microphoneDevice?: RecordingMicrophone;
 };
 
 /**
@@ -2762,6 +2769,30 @@ export const RECORDING_MEDIA_DEFAULTS: {
   videoCaptureCursor: true
 };
 
+/**
+ * How the region selector draws its HUD. Both carry the same controls and
+ * the same Snap / Record mode; only the shape differs.
+ *
+ *   - `shutter`      — a Snap | Record rocker beside one round shutter
+ *                      that ↵ fires. In Record mode the sources appear as
+ *                      round buttons with the device named underneath.
+ *   - `clapperboard` — a SNAP | REC switch and a Capture / Record button.
+ *                      In Record mode a striped clapper and a slate with
+ *                      one fixed cell per source appear.
+ */
+export type SelectorHudStyle = "shutter" | "clapperboard";
+
+export const SELECTOR_HUD_STYLES = [
+  "shutter",
+  "clapperboard"
+] as const satisfies readonly SelectorHudStyle[];
+
+export const SELECTOR_HUD_STYLE_DEFAULT: SelectorHudStyle = "shutter";
+
+export function isSelectorHudStyle(value: unknown): value is SelectorHudStyle {
+  return typeof value === "string" && (SELECTOR_HUD_STYLES as readonly string[]).includes(value);
+}
+
 export function isQuickCaptureAction(value: unknown): value is QuickCaptureAction {
   return (
     typeof value === "string" && (QUICK_CAPTURE_ACTIONS as readonly string[]).includes(value)
@@ -3015,6 +3046,8 @@ export type Settings = {
      *  cross-mode capture defaults (`imageCaptureCursor` is an image
      *  setting). See `QuickCaptureAction` for the per-value semantics. */
     quickCaptureAction: QuickCaptureAction;
+    /** How the region selector draws its HUD. See `SelectorHudStyle`. */
+    selectorHud: SelectorHudStyle;
     /** Whether a new recording captures system audio. The selector's
      *  source chips start from this; it decides what gets RECORDED, not
      *  what an export keeps (see `mp4IncludeSystemAudio`). */
@@ -3058,6 +3091,16 @@ export type Settings = {
      *  recording does, so turning it back on shows the same tabs. Main
      *  reads it live (`setFloatOverRecentSidebarVisible`). */
     showRecentCaptureSidebar: boolean;
+    /** The microphone a new recording uses, chosen from the selector's
+     *  microphone chip. `null` follows the system default input. It names
+     *  the device, never whether to record it: `includeMicrophone` still
+     *  seeds that. See `RecordingDevicePreference` for why it carries
+     *  both an id and a label. */
+    microphoneDevice: RecordingDevicePreference | null;
+    /** The camera a new recording uses, chosen from the selector's camera
+     *  chip. `null` opens whichever camera Chromium offers first. Like the
+     *  microphone, the chip still starts OFF on every show. */
+    cameraDevice: RecordingDevicePreference | null;
     /** Whether IMAGE captures include the mouse cursor. Defaults ON.
      *  Reserved for the Phase 3 image-cursor work — the field is
      *  persisted now so adding it later needs no schema change, but
@@ -5230,6 +5273,16 @@ export type Commands = {
    */
   "permissions:openSystemSettings": {
     req: { permission: RecordingPermission };
+    res: void;
+  };
+  /**
+   * Open the platform's sound settings (macOS: Sound, at Input; Windows:
+   * Settings › Sound), where the input device and its level are set. The
+   * selector's microphone picker links here. The URI is chosen in main.
+   * Unsupported platforms return `permission_settings_unsupported`.
+   */
+  "permissions:openSoundSettings": {
+    req: Record<string, never>;
     res: void;
   };
   /**

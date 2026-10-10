@@ -13,17 +13,25 @@
 // The chip collapses that into one object rendered at three densities:
 //
 //   region selector   control   label + meter + device caret + hotkey
+//                     `orb`     Shutter HUD: a round button + caption
+//                     `cell`    Clapperboard HUD: a slate cell
 //   recording HUD     monitor   `dense`  — glyph + meter
 //   float-over toast  receipt   `static` — glyph + label, no interaction
+//
+// `orb` and `cell` are fixed-width boxes. A device name is the one thing
+// in them whose length nobody controls ("Granola Interface (USB Audio
+// Class 2.0)"), so it is ellipsized inside the box and carried whole in
+// the tooltip: a selector bar that resizes when a device changes moves
+// every control on it.
 //
 // The meter is the load-bearing part. An accent border only says
 // "requested"; a moving meter says "and it is arriving".
 //
-// Styling notes live in SourceChip.css — in particular why the geometry
-// copies `.region-hud__toggle`, and why `--onScrim` exists.
+// Styling notes live in SourceChip.css — in particular why the selector's
+// orb and cell are fixed-width, and why `--onScrim` exists.
 
-import type { ReactElement } from "react";
-import type { RecordingSourceKind } from "@pwrsnap/shared";
+import { useId, type CSSProperties, type ReactElement, type ReactNode } from "react";
+import { shortDeviceLabel, type RecordingSourceKind } from "@pwrsnap/shared";
 import "./SourceChip.css";
 
 /**
@@ -59,6 +67,14 @@ export type SourceChipProps = {
   readonly level?: number;
   /** Overrides the default source name. */
   readonly label?: string;
+  /**
+   * The device this source will record from, shown beside the name at
+   * control density. Answers "WHICH microphone?" before the take rather
+   * than in playback. Dense and static densities have no room for it.
+   */
+  readonly device?: string | undefined;
+  /** A clipped sample arrived recently. Lights the meter's top segment. */
+  readonly clipping?: boolean;
   /** Short reason shown in place of a meter — "needs access", "macOS only". */
   readonly why?: string;
   /**
@@ -70,13 +86,19 @@ export type SourceChipProps = {
   /** Inline action label — "Allow", "Settings". Implies `onAct`. */
   readonly act?: string;
   readonly onAct?: () => void;
-  /** Hotkey glyph. Omitted in dense/static densities. */
+  /** The key that toggles this source. Announced at control density
+   *  (`aria-keyshortcuts`), never drawn: the selector's legend lists it. */
   readonly kbd?: string;
   /** Draw the device caret. Only meaningful with `onOpenDevices`. */
   readonly hasDevices?: boolean;
   readonly onOpenDevices?: () => void;
   readonly onToggle?: () => void;
-  readonly density?: "control" | "dense" | "static";
+  readonly density?: "control" | "dense" | "static" | "orb" | "cell";
+  /**
+   * Live media drawn in place of the glyph at `orb` density, and as the
+   * signal at `cell` density: the camera's own preview.
+   */
+  readonly media?: ReactNode;
   /** Pin legible values for the recording HUD's black scrim. */
   readonly onScrim?: boolean;
   /**
@@ -99,12 +121,47 @@ export type SourceChipProps = {
   readonly testId?: string;
 };
 
+/** Which selector HUD a device chip (microphone, camera) is drawn in. */
+export type SourceChipVariant = "tile" | "orb" | "cell";
+
+/** The chip density each selector HUD draws its sources at. */
+export function chipDensity(variant: SourceChipVariant): "control" | "orb" | "cell" {
+  return variant === "tile" ? "control" : variant;
+}
+
 const SOURCE_LABEL: Record<RecordingSourceKind, string> = {
   screen: "Screen",
   systemAudio: "System audio",
   microphone: "Microphone",
   camera: "Camera"
 };
+
+/** The `cell` density's eyebrow. */
+const SOURCE_EYEBROW: Record<RecordingSourceKind, string> = {
+  screen: "SCREEN",
+  systemAudio: "SYSTEM",
+  microphone: "MIC",
+  camera: "CAMERA"
+};
+
+/** The `orb` density's caption when there is no device to name. */
+const SOURCE_SHORT: Record<RecordingSourceKind, string> = {
+  screen: "Screen",
+  systemAudio: "System",
+  microphone: "Mic",
+  camera: "Camera"
+};
+
+/** States drawn amber or red: the source is armed and something is wrong. */
+const TROUBLE_STATES: ReadonlySet<SourceChipState> = new Set<SourceChipState>([
+  "ask",
+  "denied",
+  "nodevice"
+]);
+
+function sentenceCase(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
 
 /**
  * States in which the source is switched on for this take.
@@ -190,6 +247,23 @@ const METER_SEGMENTS = 7;
  * `live` lights `level`, `flat` lights none over a warm tint (granted
  * but silent), `recorded` lights all as a static receipt.
  */
+/**
+ * The `orb` density's level: a ring around the orb, filled clockwise to
+ * the level. One element; the fill is a conic gradient masked to a ring.
+ */
+function OrbRing({ level, flat }: { readonly level: number | undefined; readonly flat: boolean }): ReactElement {
+  const lit = flat ? 0 : Math.round(Math.max(0, Math.min(1, level ?? 0)) * 100);
+  return (
+    <span
+      className="ps-orb__ring"
+      data-tone={flat ? "flat" : "live"}
+      data-level={lit}
+      style={{ "--lvl": `${lit}%` } as CSSProperties}
+      aria-hidden="true"
+    />
+  );
+}
+
 export function SourceMeter({
   level,
   tone
@@ -213,6 +287,28 @@ export function SourceMeter({
         <i key={i} data-on={i < lit} />
       ))}
     </span>
+  );
+}
+
+/** Drawn in place of the source's glyph when it is armed and in trouble. */
+function WarnGlyph(): ReactElement {
+  return (
+    <svg
+      className="ps-chip__ico ps-chip__ico--warn"
+      width="13"
+      height="13"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M8 2.2l6.2 11H1.8z" />
+      <path d="M8 6.6v3" />
+      <path d="M8 11.6v.1" />
+    </svg>
   );
 }
 
@@ -240,6 +336,8 @@ export function SourceChip({
   state,
   level,
   label,
+  device,
+  clipping = false,
   why,
   detail,
   act,
@@ -252,9 +350,11 @@ export function SourceChip({
   onScrim = false,
   meterTone,
   noMeter = false,
+  media,
   testId
 }: SourceChipProps): ReactElement {
   const name = label ?? SOURCE_LABEL[source];
+  const subId = useId();
   const on = ON_STATES.has(state);
   const inert = INERT_STATES.has(state);
   const isAudio = source === "microphone" || source === "systemAudio";
@@ -287,6 +387,10 @@ export function SourceChip({
     "ps-chip",
     density === "dense" ? "ps-chip--dense" : null,
     density === "static" ? "ps-chip--static" : null,
+    density === "control" ? "ps-chip--tile" : null,
+    density === "orb" ? "ps-chip--orb" : null,
+    density === "cell" ? "ps-chip--cell" : null,
+    density === "control" && act !== undefined && !INERT_STATES.has(state) ? "ps-chip--act" : null,
     onScrim ? "ps-chip--onScrim" : null
   ]
     .filter((part): part is string => part !== null)
@@ -313,6 +417,34 @@ export function SourceChip({
     );
   }
 
+  if (density === "orb" || density === "cell") {
+    return (
+      <HudSourceChip
+        density={density}
+        className={className}
+        source={source}
+        state={state}
+        name={name}
+        on={on}
+        inert={inert}
+        level={level}
+        device={device}
+        clipping={clipping}
+        why={why}
+        act={act}
+        onAct={onAct}
+        kbd={kbd}
+        hasDevices={hasDevices}
+        onOpenDevices={onOpenDevices}
+        onToggle={onToggle}
+        meter={measurable && isAudio && !noMeter}
+        flat={state === "silent"}
+        media={media}
+        testId={testId}
+      />
+    );
+  }
+
   // Anything that is NOT the toggle. The chip is a plain wrapper until
   // one of these exists; only then is it a group of controls that a
   // screen reader should be told about, and only then does announcing
@@ -325,9 +457,10 @@ export function SourceChip({
   const hasAct = act !== undefined && !inert;
   const hasCaret = hasDevices === true && !inert;
   const grouped = hasAct || hasCaret;
-  // Only the selector's control density both draws the badge and has a
-  // key handler behind it.
-  const showKbd = kbd !== undefined && density === "control";
+  // Only the selector's control density has a key handler behind it. The
+  // key is announced, not drawn: the selector's shortcut legend (behind its
+  // "?") lists M / A / K, and a badge on every tile cost the bar ~75px.
+  const keyBound = kbd !== undefined && density === "control";
 
   // The chip is a GROUP, not a button.
   //
@@ -354,6 +487,13 @@ export function SourceChip({
   // window sized to its own pill, which an in-page tooltip could not leave
   // and would cover the HUD's buttons inside. So it keeps the native
   // `title`, which the OS draws in a window of its own.
+  // The selector draws a two-line tile: the source and its meter on top,
+  // and below it the reason, when there is one, then the device. A row
+  // of single-line chips carrying both had to be ~400px wide for one
+  // microphone, and resized itself whenever a reason came or went.
+  const tile = density === "control";
+  const shownDevice = tile && device !== undefined ? shortDeviceLabel(device) : "";
+  const subline = tile && (why !== undefined || shownDevice !== "");
   const hudTitle =
     density === "dense" ? (why === undefined ? name : `${name} — ${why}`) : undefined;
   return (
@@ -361,6 +501,7 @@ export function SourceChip({
       className={className}
       data-state={state}
       data-source={source}
+      {...(clipping ? { "data-clipping": "true" } : {})}
       title={hudTitle}
       {...(grouped ? { role: "group", "aria-label": name } : {})}
       {...(testId !== undefined ? { "data-testid": testId } : {})}
@@ -377,16 +518,17 @@ export function SourceChip({
         {...(density === "dense" ? { "aria-label": name } : {})}
         // The real home for "press M". It rode in as a trailing "M" on
         // the button's name before, which said nothing about what it
-        // was. Gated on `showKbd`, not on `kbd` alone: announcing a
-        // shortcut the surface neither draws nor binds is the same
+        // was. Gated on `keyBound`, not on `kbd` alone: announcing a
+        // shortcut the surface does not bind is the same
         // two-predicates-that-must-agree bug as the hint legend's.
-        {...(showKbd ? { "aria-keyshortcuts": kbd } : {})}
+        {...(keyBound ? { "aria-keyshortcuts": kbd } : {})}
+        {...(subline ? { "aria-describedby": subId } : {})}
         onClick={onToggle}
       >
         <SourceGlyph source={source} />
         {density === "dense" ? null : <span className="ps-chip__name">{name}</span>}
         {showMeter ? <SourceMeter level={level} tone={tone} /> : null}
-        {why !== undefined ? <span className="ps-chip__why">{why}</span> : null}
+        {!tile && why !== undefined ? <span className="ps-chip__why">{why}</span> : null}
       </button>
       {hasAct ? (
         // No stopPropagation any more: there is no enclosing button left
@@ -409,12 +551,256 @@ export function SourceChip({
           <Caret />
         </button>
       ) : null}
-      {showKbd ? (
-        // Decorative now that `aria-keyshortcuts` carries the fact.
-        <kbd className="ps-chip__kbd" aria-hidden="true">
-          {kbd}
-        </kbd>
+      {subline ? (
+        // Outside the toggle, so it is not part of the button's name, but
+        // the toggle's ::after overlay still covers it: a click here
+        // toggles like anywhere else on the tile.
+        <span className="ps-chip__sub" id={subId}>
+          {why !== undefined ? <span className="ps-chip__why">{why}</span> : null}
+          {why !== undefined && shownDevice !== "" ? <span aria-hidden="true"> · </span> : null}
+          {shownDevice !== "" ? <span className="ps-chip__dev">{shownDevice}</span> : null}
+        </span>
       ) : null}
+    </span>
+  );
+}
+
+/**
+ * The selector HUD's two fixed-width shapes.
+ *
+ *   orb   a 34px round toggle with the signal on it (the microphone's
+ *         level as a ring, the camera's own picture), and one caption
+ *         line under it: the device, or what is wrong.
+ *   cell  a slate cell: an eyebrow and the signal on the top line, the
+ *         device (or what is wrong) on the bottom line, caret beside it.
+ *
+ * The structure is the control density's — a group holding the toggle,
+ * the grant action and the device caret as sibling buttons — so the
+ * `[data-state]` cascade and the accessibility contract are the same.
+ * What differs is that the box never changes width: the caption is
+ * ellipsized, and the whole name rides the fast tooltip.
+ */
+function HudSourceChip({
+  density,
+  className,
+  source,
+  state,
+  name,
+  on,
+  inert,
+  level,
+  device,
+  clipping,
+  why,
+  act,
+  onAct,
+  kbd,
+  hasDevices,
+  onOpenDevices,
+  onToggle,
+  meter,
+  flat,
+  media,
+  testId
+}: {
+  readonly density: "orb" | "cell";
+  readonly className: string;
+  readonly source: RecordingSourceKind;
+  readonly state: SourceChipState;
+  readonly name: string;
+  readonly on: boolean;
+  readonly inert: boolean;
+  readonly level: number | undefined;
+  readonly device: string | undefined;
+  readonly clipping: boolean;
+  readonly why: string | undefined;
+  readonly act: string | undefined;
+  readonly onAct: (() => void) | undefined;
+  readonly kbd: string | undefined;
+  readonly hasDevices: boolean | undefined;
+  readonly onOpenDevices: (() => void) | undefined;
+  readonly onToggle: (() => void) | undefined;
+  readonly meter: boolean;
+  readonly flat: boolean;
+  readonly media: ReactNode;
+  readonly testId: string | undefined;
+}): ReactElement {
+  const captionId = useId();
+  const hasAct = act !== undefined && !inert;
+  // The orb's grant action takes the caption's line.
+  const captionShown = !(hasAct && density === "orb");
+  const hasCaret = hasDevices === true && !inert;
+  const trouble = TROUBLE_STATES.has(state);
+  const shownDevice = device !== undefined ? shortDeviceLabel(device) : "";
+  // The caption says one thing: what is wrong when the source cannot
+  // record, else the device. A reason on a source that WILL record —
+  // `silent` ("no signal"), a camera still starting — stays out of it:
+  // silence is the normal state of a microphone in a quiet room, and
+  // swapping the device's name for "No signal" until the user made a
+  // noise hid the one thing the caption is for. The ring (or meter) says
+  // there is no level, and the tooltip carries the reason. The full device
+  // name is in the tooltip too, which is what lets the caption be cut
+  // short without losing anything.
+  const captionWhy = why !== undefined && (trouble || inert) ? why : undefined;
+  const caption =
+    captionWhy !== undefined ? (
+      <span className="ps-chip__why">{sentenceCase(captionWhy)}</span>
+    ) : shownDevice !== "" ? (
+      <span className="ps-chip__dev">{shownDevice}</span>
+    ) : density === "orb" ? (
+      SOURCE_SHORT[source]
+    ) : on ? (
+      "On"
+    ) : (
+      "Off"
+    );
+  const tip = device !== undefined && device !== "" ? `${name} · ${device}` : name;
+  const tipDetail = why !== undefined ? sentenceCase(why) : undefined;
+  const signal =
+    density === "orb" ? (
+      <span className="ps-orb">
+        {meter ? <OrbRing level={level} flat={flat} /> : null}
+        {media !== undefined && media !== null ? (
+          <span className="ps-orb__media">{media}</span>
+        ) : (
+          trouble ? <WarnGlyph /> : <SourceGlyph source={source} />
+        )}
+      </span>
+    ) : (
+      <>
+        <span className="ps-cell__eye">
+          {trouble ? <WarnGlyph /> : null}
+          {SOURCE_EYEBROW[source]}
+        </span>
+        <span className="ps-cell__vis">
+          {!on ? (
+            <span className="ps-cell__off">OFF</span>
+          ) : trouble ? null : media !== undefined && media !== null ? (
+            <span className="ps-cell__media">{media}</span>
+          ) : meter ? (
+            <SourceMeter level={level} tone={flat ? "flat" : "live"} />
+          ) : (
+            <span className="ps-cell__led" />
+          )}
+        </span>
+      </>
+    );
+  return (
+    <span
+      className={className}
+      data-state={state}
+      data-source={source}
+      {...(clipping ? { "data-clipping": "true" } : {})}
+      {...(hasAct || hasCaret ? { role: "group", "aria-label": name } : {})}
+      {...(testId !== undefined ? { "data-testid": testId } : {})}
+    >
+      <button
+        type="button"
+        className="ps-chip__body"
+        aria-pressed={on}
+        aria-label={name}
+        {...(captionShown ? { "aria-describedby": captionId } : {})}
+        disabled={inert}
+        data-tip={tip}
+        {...(kbd !== undefined ? { "data-tip-keys": kbd, "aria-keyshortcuts": kbd } : {})}
+        {...(tipDetail !== undefined ? { "data-tip-detail": tipDetail } : {})}
+        onClick={onToggle}
+      >
+        {signal}
+      </button>
+      {!captionShown ? (
+        // The grant action takes the caption's line: the orb is already
+        // amber, and the tooltip carries the reason.
+        <button type="button" className="ps-chip__act" onClick={() => onAct?.()}>
+          {act}
+        </button>
+      ) : (
+        <span className="ps-chip__cap" id={captionId}>
+          {caption}
+        </span>
+      )}
+      {hasAct && density === "cell" ? (
+        <button type="button" className="ps-chip__act" onClick={() => onAct?.()}>
+          {act}
+        </button>
+      ) : null}
+      {hasCaret ? (
+        <button
+          type="button"
+          className="ps-chip__devices"
+          aria-label={`Choose ${name.toLowerCase()} device`}
+          onClick={() => onOpenDevices?.()}
+        >
+          <Caret />
+        </button>
+      ) : null}
+    </span>
+  );
+}
+
+/**
+ * The cursor bake, drawn as a peer of the source orbs and cells. It is not
+ * a recording source (nothing is captured from it), so it has no state
+ * beyond on and off, no meter and no device.
+ */
+export function CursorChip({
+  density,
+  on,
+  onToggle,
+  testId
+}: {
+  readonly density: "orb" | "cell";
+  readonly on: boolean;
+  readonly onToggle: () => void;
+  readonly testId?: string;
+}): ReactElement {
+  const captionId = useId();
+  const glyph = (
+    <svg
+      className="ps-chip__ico"
+      width="13"
+      height="13"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3.4 2.2l9.2 5.6-4.1 1.1-1.9 3.9z" />
+    </svg>
+  );
+  return (
+    <span
+      className={`ps-chip ps-chip--${density}`}
+      data-state={on ? "live" : "off"}
+      data-source="cursor"
+      {...(testId !== undefined ? { "data-testid": `${testId}-chip` } : {})}
+    >
+      <button
+        type="button"
+        className="ps-chip__body"
+        aria-pressed={on}
+        aria-label={`Record cursor: ${on ? "on" : "off"}`}
+        aria-describedby={captionId}
+        aria-keyshortcuts="C"
+        data-tip="Bake the pointer into the recording"
+        data-tip-keys="C"
+        {...(testId !== undefined ? { "data-testid": testId } : {})}
+        onClick={onToggle}
+      >
+        {density === "orb" ? (
+          <span className="ps-orb">{glyph}</span>
+        ) : (
+          <>
+            <span className="ps-cell__eye">CURSOR</span>
+            <span className="ps-cell__vis">{on ? glyph : <span className="ps-cell__off">OFF</span>}</span>
+          </>
+        )}
+      </button>
+      <span className="ps-chip__cap" id={captionId}>
+        {density === "orb" ? "Cursor" : on ? "Shown" : "Hidden"}
+      </span>
     </span>
   );
 }

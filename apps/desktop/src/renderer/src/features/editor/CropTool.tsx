@@ -81,9 +81,9 @@ export interface CropToolProps {
    *  component renders nothing until non-null. */
   canvasRect: DOMRect | null;
   /** Commit (↵). Caller dispatches the overlays:upsert. */
-  onCommit(rect: { x: number; y: number; w: number; h: number }): void;
+  onCommit(this: void, rect: { x: number; y: number; w: number; h: number }): void;
   /** Cancel (Esc, or click outside the canvas + not on a handle). */
-  onCancel(): void;
+  onCancel(this: void): void;
   shortcutPlatform?: ShortcutPlatform;
 }
 

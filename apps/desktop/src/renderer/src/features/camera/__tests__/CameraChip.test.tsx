@@ -108,7 +108,11 @@ test("permission denial blocks recording until the camera is disarmed", async ()
 
 test("a disconnected camera blocks recording instead of silently dropping the track", async () => {
   await act(async () => chip().click());
-  act(() => track.onended?.());
+  // The chip reopens a camera; with none attached, the take stays blocked.
+  const gone = Object.assign(new Error("Requested device not found"), { name: "NotFoundError" });
+  getUserMedia.mockRejectedValue(gone);
+  await act(async () => track.onended?.());
+  for (let i = 0; i < 4; i += 1) await act(async () => Promise.resolve());
   expect(ready).toHaveBeenLastCalledWith(false);
   expect(change).toHaveBeenLastCalledWith(undefined);
   expect(host.querySelector('[role="alert"]')?.textContent).toContain("disconnected");

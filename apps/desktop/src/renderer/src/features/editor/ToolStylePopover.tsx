@@ -108,10 +108,10 @@ export interface ToolStylePopoverProps {
   style: ToolStylePopoverStyle;
   /** Called on click-outside, Escape, or any caller-driven dismiss
    *  reason. Parent toolbar hides the popover. */
-  onClose(): void;
+  onClose(this: void): void;
   /** Style change callback. The parent wires this through to
    *  `setStyleField(tool, field, value)` on `useEditorToolState`. */
-  onStyleFieldChange<F extends string, V>(field: F, value: V): void;
+  onStyleFieldChange<F extends string, V>(this: void, field: F, value: V): void;
   /** Stable id for the selected layer being styled. This lets controls with
    *  local draft state reset when the inspector moves to another layer whose
    *  persisted value happens to be the same. Omitted for new-tool defaults. */
@@ -1470,7 +1470,7 @@ interface SegmentedProps<T extends string> {
   testid: string;
   options: ReadonlyArray<{ id: T; label: string }>;
   value: T | number;
-  onChange(value: T): void;
+  onChange(this: void, value: T): void;
 }
 
 function Segmented<T extends string>({
@@ -1556,7 +1556,7 @@ interface OutlineRowProps {
   value: OverlayOutlineMode;
   /** Text hides the stripe option (illegible at glyph stroke widths). */
   allowStripe: boolean;
-  onChange(mode: OverlayOutlineMode): void;
+  onChange(this: void, mode: OverlayOutlineMode): void;
 }
 
 /** Border (contrast outline) picker — Off / Auto plus the White /
@@ -1605,7 +1605,7 @@ function OutlineRow({ value, allowStripe, onChange }: OutlineRowProps): ReactEle
 
 interface ColorRowProps {
   value: ToolColor;
-  onChange(color: ToolColor): void;
+  onChange(this: void, color: ToolColor): void;
 }
 
 function ColorRow({ value, onChange }: ColorRowProps): ReactElement {

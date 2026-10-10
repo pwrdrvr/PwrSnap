@@ -32,6 +32,7 @@ import {
   isEditToolbarDock,
   isLibrarySidebarTab,
   isQuickCaptureAction,
+  isSelectorHudStyle,
   isRedactionStyle,
   isSettingsPage,
   isSettingsSub,
@@ -47,6 +48,7 @@ import {
   canonicalAcceleratorForPlatform,
   shortcutPlatformDisplayName,
   shortcutPlatformFromString,
+  RecordingDevicePreferenceSchema,
   REDACTION_STYLES,
   TOOL_BAG_SIZE
 } from "@pwrsnap/shared";
@@ -635,6 +637,31 @@ export function validateSettingsWrite(
         )
       };
     }
+    if (!isUndefined(recording.selectorHud) && !isSelectorHudStyle(recording.selectorHud)) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_recording_selectorHud",
+          'settings:write: recording.selectorHud must be "shutter" or "clapperboard"'
+        )
+      };
+    }
+    // A device choice is `null` (system default) or one full
+    // preference. A half-filled one would save a device the chips can
+    // neither open by id nor find by name.
+    for (const key of ["microphoneDevice", "cameraDevice"] as const) {
+      const v = recording[key];
+      if (isUndefined(v) || v === null) continue;
+      if (!RecordingDevicePreferenceSchema.safeParse(v).success) {
+        return {
+          ok: false,
+          error: validationError(
+            `invalid_recording_${key}`,
+            `settings:write: recording.${key} must be null or { deviceId, label }`
+          )
+        };
+      }
+    }
     if (
       !isUndefined(recording.lastRoutedPermissionFingerprint) &&
       !isString(recording.lastRoutedPermissionFingerprint)
@@ -1067,6 +1094,7 @@ function validateAiSurfaceDefault(surface: string, raw: unknown): PwrSnapError |
     // The model id is an opaque, possibly-ACP token (e.g. Qwen's
     // `qwen3.6-plus(openai)`), so use the tolerant model-token shape — NOT the
     // Codex-narrow alphabet, which would reject valid agent model ids.
+    // oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
     if (v.length > 0 && !(typeof raw.provider === "string" && raw.provider.startsWith("custom:") && v.length <= 200 && /^[^\x00-\x1f\x7f]+$/.test(v)) && !isAiModelTokenShape(v)) {
       return validationError(
         `invalid_ai_defaults_${surface}_${key}`,

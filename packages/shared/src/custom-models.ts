@@ -39,6 +39,7 @@ export const customConnectionSchema = z.object({
   enrichmentConcurrency: z.number().int().min(1).max(16).optional()
 }).strict();
 
+// oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
 const modelIdTextSchema = z.string().trim().min(1).max(200).regex(/^[^\x00-\x1f\x7f]+$/);
 export const customModelSchema = z.object({
   id: customModelIdSchema,

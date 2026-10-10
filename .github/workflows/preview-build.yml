@@ -156,6 +156,10 @@ jobs:
       - name: Build preview package (unsigned)
         env:
           DEVELOPER_DIR: ${{ steps.xcode.outputs.developer-dir }}
+          # --dryrun forces identity=- and disables notarization. The builder's
+          # PR guard otherwise skips even ad-hoc signing after modifying fuses,
+          # leaving an invalid Electron signature. This step has no signing secrets.
+          CSC_FOR_PULL_REQUEST: "true"
         run: node apps/desktop/scripts/release.mjs --sign-stage-only --dryrun
 
       - name: Upload DMG artifact

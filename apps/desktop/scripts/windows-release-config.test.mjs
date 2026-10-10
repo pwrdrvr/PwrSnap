@@ -309,6 +309,10 @@ describe("Windows release configuration", () => {
     );
     expect(preview).toContain("release.mjs --prepare-only");
     expect(preview).toContain("release.mjs --sign-stage-only --dryrun");
+    expect(preview).toContain('CSC_FOR_PULL_REQUEST: "true"');
+    expect(read("apps/desktop/scripts/release.mjs")).toContain(
+      'builderArgs.push("--config.mac.identity=-", "--config.mac.notarize=false")',
+    );
     expect(preview).not.toContain("package:dryrun");
 
     // Keep both expensive product checks: real installers are still built and

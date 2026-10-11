@@ -5,7 +5,40 @@ export type ApiResult = { text: string; tokens: AiUsageTokenBreakdown | null };
 export class DirectApiError extends Error {
   /** The endpoint's HTTP status, when it answered with one. 401/403 mean the
    *  credential was turned down — the one failure the operator fixes in Sign in. */
-  constructor(message: string, readonly status?: number) { super(message); this.name = "DirectApiError"; }
+  constructor(
+    message: string,
+    readonly status?: number,
+    /** The request never reached a server: refused, reset or no route. What a
+     *  stopped local model server looks like, and what enrichment falls back on. */
+    readonly unreachable = false
+  ) { super(message); this.name = "DirectApiError"; }
+}
+
+/** Socket-level codes that mean nothing is listening (or reachable) at the
+ *  endpoint. TLS and certificate failures are deliberately absent: those are a
+ *  server that answered with the wrong identity, which is a configuration error. */
+const UNREACHABLE_CODES = new Set([
+  "ECONNREFUSED", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH", "EHOSTDOWN",
+  "ENOTFOUND", "EAI_AGAIN", "EPIPE", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET"
+]);
+
+/** True when a `fetch` rejection was caused by a connect-time socket failure.
+ *  undici wraps the system error as `TypeError("fetch failed", { cause })`,
+ *  sometimes nested (AggregateError for happy-eyeballs). Exported for testing. */
+export function isConnectFailure(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  const queue: unknown[] = [error];
+  while (queue.length > 0) {
+    const e = queue.shift();
+    if (typeof e !== "object" || e === null || seen.has(e)) continue;
+    seen.add(e);
+    const code = (e as { code?: unknown }).code;
+    if (typeof code === "string" && UNREACHABLE_CODES.has(code)) return true;
+    queue.push((e as { cause?: unknown }).cause);
+    const errors = (e as { errors?: unknown }).errors;
+    if (Array.isArray(errors)) queue.push(...errors);
+  }
+  return false;
 }
 export const record = (v: unknown): Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -30,7 +63,7 @@ export async function safeFetch(url: string, init: RequestInit): Promise<Respons
     if (e instanceof DirectApiError) throw e;
     if (init.signal?.aborted) throw new DirectApiError("Model request cancelled or timed out.");
     // Never expose URLs, headers, transport causes or a server-controlled error body.
-    throw new DirectApiError("Could not reach the configured endpoint. Check its address and TLS configuration.");
+    throw new DirectApiError("Could not reach the configured endpoint. Check its address and TLS configuration.", undefined, isConnectFailure(e));
   }
 }
 

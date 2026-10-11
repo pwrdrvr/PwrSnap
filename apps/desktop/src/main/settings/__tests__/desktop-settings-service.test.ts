@@ -254,6 +254,37 @@ describe("DesktopSettingsService.write", () => {
     expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentRateLimit).toBeNull();
   });
 
+  test("the enrichment fallback is off by default, turns on from {}, merges, and turns off with null", async () => {
+    const filePath = join(workDir, "settings.json");
+    const svc = new DesktopSettingsService({ filePath });
+    expect((await svc.read()).ai.enrichmentFallback).toBeNull();
+    // Turning it on with no leaves is Codex on its managed default.
+    await svc.write({ ai: { enrichmentFallback: {} } });
+    expect(JSON.parse(readFileSync(filePath, "utf8")).ai.enrichmentFallback).toEqual({});
+    await svc.write({ ai: { enrichmentFallback: { reasoning: "low" } } });
+    await svc.write({ ai: { enrichmentFallback: { provider: "acp:kimi" } } });
+    expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentFallback).toEqual({
+      provider: "acp:kimi",
+      reasoning: "low"
+    });
+    // "" clears a leaf, as on a surface default.
+    await svc.write({ ai: { enrichmentFallback: { provider: "" } } });
+    expect((await svc.read()).ai.enrichmentFallback).toEqual({ reasoning: "low" });
+    await svc.write({ ai: { enabled: true } });
+    expect((await svc.read()).ai.enrichmentFallback).toEqual({ reasoning: "low" });
+    await svc.write({ ai: { enrichmentFallback: null } });
+    expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentFallback).toBeNull();
+
+    // A malformed value on disk reads as off, and junk leaves are dropped.
+    const raw = defaultSettings() as unknown as { ai: Record<string, unknown> };
+    raw.ai.enrichmentFallback = "codex";
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+    expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentFallback).toBeNull();
+    raw.ai.enrichmentFallback = { provider: "acp:not-an-agent", reasoning: 7 };
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+    expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentFallback).toEqual({});
+  });
+
   test("write + read round-trips", async () => {
     const svc = makeService();
     const merged = await svc.write({

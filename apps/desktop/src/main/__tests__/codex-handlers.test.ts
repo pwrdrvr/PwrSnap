@@ -282,6 +282,7 @@ describe("Codex handlers", () => {
     testDb.exec(migration("0019_chat_threads.sql"));
     testDb.exec(migration("0022_ai_usage_accounting.sql"));
     testDb.exec(migration("0023_ai_thread_usage.sql"));
+    testDb.exec(migration("0039_ai_run_fallback.sql"));
     await seedCapture();
   });
 
@@ -457,6 +458,72 @@ describe("Codex handlers", () => {
       } finally {
         serviceSpy.mockRestore();
         await http.close();
+      }
+    }
+  );
+
+  // A stopped local server is what `ai.enrichmentFallback` exists for. The
+  // primary's failure decides: nothing answered → the SAME run moves to the
+  // fallback once; an answer of any other kind fails the run as before.
+  test.each([
+    { scenario: "refused", fallback: {}, expected: "fallback" },
+    { scenario: "http-503", fallback: {}, expected: "fallback" },
+    { scenario: "http-404", fallback: {}, expected: "fallback" },
+    { scenario: "http-401", fallback: {}, expected: "failed" },
+    { scenario: "refused", fallback: null, expected: "failed" }
+  ] as const)(
+    "direct primary $scenario with fallback $fallback → $expected",
+    async ({ scenario, fallback, expected }) => {
+      const http = await server((_req, res) => {
+        res.writeHead(scenario === "http-401" ? 401 : scenario === "http-404" ? 404 : 503).end();
+      });
+      const entry = model(`${http.url}/v1`);
+      entry.capabilities.streaming = false;
+      // Nothing listens on a port whose server was closed: ECONNREFUSED.
+      if (scenario === "refused") await http.close();
+      const settings = testSettings();
+      settings.ai.enabled = true;
+      settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+      settings.ai.defaults.enrichment = { provider: `custom:${entry.id}` };
+      settings.ai.enrichmentFallback = fallback;
+      settings.ai.customConnections = [{ id: entry.connectionId, name: "Local fixture",
+        baseUrl: entry.baseUrl, protocol: entry.protocol, auth: entry.auth }];
+      settings.ai.customModels = [entry];
+      const service = new CustomModelService({ read: async () => settings,
+        write: async () => { throw new Error("Unexpected settings write"); } },
+      { headers: async () => ({}) } as unknown as CustomCredentials, async () => undefined);
+      const serviceSpy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
+      const codex = new FakeCodexClient();
+      const clientFactory = vi.fn(() => codex as never);
+      try {
+        registerCodexHandlers({ clientFactory, settingsReader: async () => settings });
+        const result = await bus.dispatch("codex:enrich", { captureId: "cap_1" }, { principal: "ipc" });
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        await waitFor(() => ["completed", "failed"].includes(getAiRun(result.value.runId)?.status ?? ""));
+        const run = getAiRun(result.value.runId);
+        if (expected === "failed") {
+          expect(run?.status).toBe("failed");
+          expect(run?.fallbackFrom).toBeNull();
+          expect(clientFactory).not.toHaveBeenCalled();
+          return;
+        }
+        expect(run).toMatchObject({ status: "completed", fallbackFrom: `custom:${entry.id}` });
+        expect(clientFactory).toHaveBeenCalledTimes(1);
+        // `{}` is Codex on its managed default: the run record names that
+        // model, and the turn carries enrichment's low effort.
+        expect(run?.selectedModel).toBe(codex.lastRequest?.model);
+        expect(codex.lastRequest?.effort).toBe("low");
+        expect(getCaptureEnrichment("cap_1")).toMatchObject({
+          status: "completed",
+          fallbackFrom: `custom:${entry.id}`
+        });
+        const usage = await bus.dispatch("codex:usageRunDetail", { runId: result.value.runId }, { principal: "ipc" });
+        expect(usage).toMatchObject({ ok: true, value: { modelProvider: "openai" } });
+        expect(testDb.prepare("SELECT count(*) AS n FROM ai_runs").get()).toEqual({ n: 1 });
+      } finally {
+        serviceSpy.mockRestore();
+        if (scenario !== "refused") await http.close();
       }
     }
   );

@@ -37,6 +37,9 @@ export const CaptureEnrichmentSchema = z.object({
   captureId: z.string().min(1),
   latestRunId: z.string().nullable(),
   status: AiRunStatusSchema.nullable(),
+  /** The latest run's primary provider id when `ai.enrichmentFallback`
+   *  answered in its place (the primary could not be reached). */
+  fallbackFrom: z.string().max(200).nullish(),
   error: z.preprocess(
     (v) => (v === null || v === undefined ? v : clampString(v, 2_000)),
     z.string().max(2_000).nullable().default(null)

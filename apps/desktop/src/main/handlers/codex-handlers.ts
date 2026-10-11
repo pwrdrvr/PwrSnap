@@ -38,11 +38,18 @@ import type {
 } from "@pwrsnap/shared";
 import {
   CaptureEnrichmentClient,
+  type CaptureEnrichmentResponse,
   type EnrichmentBackend
 } from "../ai/capture-enrichment-client";
 import { broadcastRendererEventToLocalWindows } from "../events";
 import { relayRendererEventToPeer } from "../process-split/event-relay";
 import { AcpCaptureEnrichmentClient } from "../ai/acp-enrichment-client";
+import {
+  AcpAgentUnavailableError,
+  enrichmentFallbackFor,
+  isEnrichmentBackendUnavailable,
+  settingsWithEnrichmentDefault
+} from "../ai/enrichment-fallback";
 import { resolveEnabledAcpAgent } from "../ai/acp-agent-pool";
 import { findAcpModelLabel } from "../ai/acp-model-cache";
 import { findCodexModelLabel, saveCodexModelLabels } from "../ai/codex-model-cache";
@@ -70,6 +77,7 @@ import {
   createAiRun,
   failAiRun,
   getAiRun,
+  markAiRunFallback,
   markAiRunRunning
 } from "../persistence/ai-runs-repo";
 import {
@@ -431,6 +439,60 @@ function enrichmentAcpAgentId(settings: Settings): string | undefined {
   return settings.ai.acp.enabledAgentIds.includes(agentId) ? agentId : undefined;
 }
 
+/** Everything a run needs to reach ONE enrichment backend, resolved from a
+ *  settings snapshot at enqueue time. A run carries one for its primary and,
+ *  when `ai.enrichmentFallback` is armed, one for the fallback. */
+type EnrichmentBackendPlan = {
+  /** "codex", "acp:<id>" or "custom:<uuid>": logs and the run record. */
+  provider: string;
+  /** The model id sent to the backend; "" → the ACP agent's own default. */
+  selectedModel: string;
+  /** A Direct API model's "custom:<uuid>", sent as `modelProvider`. */
+  selectedProvider?: string;
+  /** Snapshot keeps queued work on the endpoint selected when it was requested. */
+  customConnection?: CustomConnection;
+  customModel?: ResolvedCustomModel;
+  /** Set when the backend is an ACP agent (Gemini/Qwen/…); `acpSettings` is
+   *  the snapshot used to resolve the agent's active install. */
+  acpAgentId?: string;
+  acpSettings?: Settings;
+  /** Reasoning effort for the turn. */
+  effort: string;
+  /** Per-turn deadline (ms). */
+  turnTimeoutMs: number;
+};
+
+/** Resolve the backend `ai.defaults.enrichment` selects in `settings`. Called
+ *  with the fallback swapped into that slot to resolve the fallback, so the
+ *  two can never disagree about what a selector means. */
+function resolveEnrichmentBackendPlan(
+  settings: Settings,
+  managedEnrichment: CodexModelOption | undefined,
+  defaultTurnTimeoutMs: number,
+  turnTimeoutOverrideMs: number | undefined
+): EnrichmentBackendPlan {
+  // `provider` is a BACKEND selector ("" / codex → Codex; "acp:<id>" → an ACP
+  // agent; "custom:<uuid>" → a Direct API model). The model is resolved
+  // against that backend so an ACP run carries its OWN model id (or "" →
+  // agent default), not a Codex fallback.
+  const acpAgentId = enrichmentAcpAgentId(settings);
+  const provider = settings.ai.defaults.enrichment.provider;
+  const custom = provider?.startsWith("custom:") === true ? provider : undefined;
+  const customModel = custom !== undefined
+    ? resolveCustomModel(settings.ai.customConnections, settings.ai.customModels, custom.slice("custom:".length))
+    : null;
+  const customConnection = settings.ai.customConnections?.find((c) => c.id === customModel?.connectionId);
+  return {
+    provider: custom ?? (acpAgentId !== undefined ? `acp:${acpAgentId}` : "codex"),
+    selectedModel: enrichmentSelectedModel(settings, acpAgentId, managedEnrichment?.id),
+    ...(custom !== undefined ? { selectedProvider: custom } : {}),
+    ...(customConnection && customModel ? { customConnection, customModel } : {}),
+    ...(acpAgentId !== undefined ? { acpAgentId, acpSettings: settings } : {}),
+    effort: enrichmentEffortForSettings(settings, managedEnrichment),
+    turnTimeoutMs: turnTimeoutOverrideMs ?? (customModel ? DIRECT_ENRICHMENT_TIMEOUT_MS : defaultTurnTimeoutMs)
+  };
+}
+
 /** Resolve the selected ACP agent's active install (honoring the user's
  *  per-agent override / pick from `ai.acp.agents`) and build an enrichment
  *  client that rides the SHARED pooled agent process — enrichment never spawns
@@ -687,16 +749,24 @@ export function registerCodexHandlers(params?: {
     // the model that will actually run — and so it is SNAPSHOT at enqueue
     // time. Re-reading the setting inside `runCaptureEnrichment` would mean a
     // Settings flip mid-run silently swaps providers and skews run metrics.
-    const enrichmentAgent = enrichmentAcpAgentId(settings);
-    const customModel = settings.ai.defaults.enrichment.provider?.startsWith("custom:")
-      ? resolveCustomModel(settings.ai.customConnections, settings.ai.customModels,
-        settings.ai.defaults.enrichment.provider.slice("custom:".length)) : null;
-    const customConnection = settings.ai.customConnections?.find((c) => c.id === customModel?.connectionId);
+    const primary = resolveEnrichmentBackendPlan(settings, managedEnrichment, turnTimeoutMs, params?.turnTimeoutMs);
+    // Armed only when the primary can be "switched off" underneath us (a
+    // Direct API server, an ACP agent). Resolved from the same snapshot, so
+    // a Settings change mid-run can't swap either backend.
+    const fallbackDefault = enrichmentFallbackFor(settings);
+    const fallback = fallbackDefault === null
+      ? undefined
+      : resolveEnrichmentBackendPlan(
+        settingsWithEnrichmentDefault(settings, fallbackDefault),
+        managedEnrichment,
+        turnTimeoutMs,
+        params?.turnTimeoutMs
+      );
     const run = createAiRun({
       captureId: capture.id,
       codexCommand,
       triggerSource,
-      selectedModel: enrichmentSelectedModel(settings, enrichmentAgent, managedEnrichment?.id),
+      selectedModel: primary.selectedModel,
       request: {
         media: {
           maxLongEdgePx: 1024,
@@ -735,26 +805,14 @@ export function registerCodexHandlers(params?: {
       command: codexCommand,
       env: codexEnvForProfile(settings.codex.profile),
       settingsReader,
-      // Don't apply the Codex caption-model default to an ACP run — "" means
-      // "use the agent's own default" and is resolved to null at send time.
-      selectedModel:
-        run.selectedModel ?? (enrichmentAgent !== undefined ? "" : DEFAULT_CODEX_CAPTION_MODEL),
-      ...(settings.ai.defaults.enrichment.provider?.startsWith("custom:") ? { selectedProvider: settings.ai.defaults.enrichment.provider } : {}),
-      ...(customConnection && customModel ? { customConnection, customModel } : {}),
-      effort: enrichmentEffortForSettings(settings, managedEnrichment),
-      // When enrichment is routed to an ACP agent (Gemini/Qwen), pass its id +
-      // the settings snapshot so the run resolves + spawns that agent instead
-      // of Codex. Undefined → the Codex one-shot path.
-      ...(enrichmentAgent !== undefined
-        ? { acpAgentId: enrichmentAgent, acpSettings: settings }
-        : {}),
+      primary,
+      ...(fallback !== undefined ? { fallback } : {}),
       triggerSource,
       budgetBefore: budgetDecision.before,
       budgetAfter: budgetDecision.after,
       ctx,
       clientFactory,
-      closeClientAfterRun,
-      turnTimeoutMs: params?.turnTimeoutMs ?? (customModel ? DIRECT_ENRICHMENT_TIMEOUT_MS : turnTimeoutMs)
+      closeClientAfterRun
     });
     return ok({ runId: run.id });
   });
@@ -1070,35 +1128,24 @@ async function runCaptureEnrichment(params: {
    * the float-over checkbox visibly promises.
    */
   settingsReader: SettingsReader;
-  selectedModel: string;
-  /** Model provider from `ai.defaults.enrichment.provider`; undefined = Codex default. */
-  selectedProvider?: string;
-  /** Snapshot keeps queued work on the endpoint selected when it was requested. */
-  customConnection?: CustomConnection;
-  customModel?: ResolvedCustomModel;
-  /** When set, enrichment runs on this ACP agent (Gemini/Qwen) instead of
-   *  Codex. `acpSettings` carries the snapshot used to resolve the agent's
-   *  active install (override / pick). */
-  acpAgentId?: string;
-  acpSettings?: Settings;
-  /** Reasoning effort for the enrichment turn. Resolved from
-   *  `ai.defaults.enrichment.reasoning` (default "low"). */
-  effort: string;
+  /** The backend `ai.defaults.enrichment` selects. */
+  primary: EnrichmentBackendPlan;
+  /** `ai.enrichmentFallback`, armed only for a primary that can be switched
+   *  off underneath us. The run moves here once, and only when the primary
+   *  could not be reached (`isEnrichmentBackendUnavailable`). */
+  fallback?: EnrichmentBackendPlan;
   triggerSource: AiEnrichmentTriggerSource;
   budgetBefore: AiEnrichmentBudgetStatus;
   budgetAfter: AiEnrichmentBudgetStatus;
   ctx: CommandContext;
   clientFactory: CodexClientFactory;
   closeClientAfterRun: boolean;
-  /** Per-turn deadline (ms). The agent call is aborted + the run failed
-   *  if it outruns this, so a stalled agent can't wedge the run in
-   *  `running` until relaunch. */
-  turnTimeoutMs: number;
 }): Promise<void> {
   const captureId = params.capture.id;
   // The backend actually running this enrichment, for the logs (enrichment is
-  // no longer always Codex).
-  const provider = params.selectedProvider ?? (params.acpAgentId !== undefined ? `acp:${params.acpAgentId}` : "codex");
+  // no longer always Codex). Both move to the fallback if the run does.
+  let active = params.primary;
+  let provider = active.provider;
   const startedAt = performance.now();
   const abortController = new AbortController();
   const abortFromContext = (): void => abortController.abort();
@@ -1109,18 +1156,34 @@ async function runCaptureEnrichment(params: {
   let prepared: PreparedEnrichmentImage | PreparedEnrichmentVideoFrames | null = null;
   let client: EnrichmentBackend | null = null;
   let slot: ReturnType<EnrichmentQueue["acquire"]> | undefined;
-
-  try {
-    if (params.selectedProvider?.startsWith("custom:")) {
-      saveAiRunUsage({ aiRunId: params.runId, modelProvider: params.selectedProvider,
+  // A Direct API backend shares its connection's concurrency slots with every
+  // other run on that endpoint; wait for one before talking to it.
+  const enterBackend = async (plan: EnrichmentBackendPlan): Promise<void> => {
+    if (plan.selectedProvider?.startsWith("custom:")) {
+      saveAiRunUsage({ aiRunId: params.runId, modelProvider: plan.selectedProvider,
         usageStatus: "unavailable", usageUnavailableReason: "Run queued or in progress",
         cost: { status: "unavailable", reason: "usage unavailable" } });
     }
-    if (params.customConnection) {
-      slot = directEnrichmentQueue.acquire(params.customConnection.id,
-        customEnrichmentConcurrency(params.customConnection), abortController.signal);
+    if (plan.customConnection) {
+      slot = directEnrichmentQueue.acquire(plan.customConnection.id,
+        customEnrichmentConcurrency(plan.customConnection), abortController.signal);
       await slot.ready;
     }
+  };
+  // Test-provided Codex clients may need close; the ACP wrapper's close() is a
+  // no-op (its runs ride the shared pooled agent process).
+  const releaseClient = async (plan: EnrichmentBackendPlan): Promise<void> => {
+    if (!params.closeClientAfterRun && plan.acpAgentId === undefined) return;
+    await client?.close().catch((error: unknown) => {
+      log.warn("enrichment client close failed", {
+        runId: params.runId,
+        message: error instanceof Error ? error.message : String(error)
+      });
+    });
+  };
+
+  try {
+    await enterBackend(active);
     if (params.ctx.signal.aborted) abortController.abort();
     abortController.signal.throwIfAborted();
     const running = markAiRunRunning(params.runId);
@@ -1180,57 +1243,89 @@ async function runCaptureEnrichment(params: {
       bucketAfter: params.budgetAfter
     });
 
-    const acpAgentId = params.acpAgentId;
-    abortController.signal.throwIfAborted();
-    if (params.selectedProvider?.startsWith("custom:")) {
-      const service = getCustomModelService();
-      const selected = await service.selected(params.selectedProvider, params.selectedModel);
-      if (params.customModel && (selected.connectionId !== params.customModel.connectionId
-        || selected.baseUrl !== params.customModel.baseUrl || selected.protocol !== params.customModel.protocol
-        || JSON.stringify(selected.auth) !== JSON.stringify(params.customModel.auth))) {
-        throw new DirectApiError("The connection changed while enrichment was queued. Regenerate to use its new configuration.");
+    const runTurn = async (plan: EnrichmentBackendPlan): Promise<CaptureEnrichmentResponse> => {
+      const acpAgentId = plan.acpAgentId;
+      abortController.signal.throwIfAborted();
+      if (plan.selectedProvider?.startsWith("custom:")) {
+        const service = getCustomModelService();
+        const selected = await service.selected(plan.selectedProvider, plan.selectedModel);
+        if (plan.customModel && (selected.connectionId !== plan.customModel.connectionId
+          || selected.baseUrl !== plan.customModel.baseUrl || selected.protocol !== plan.customModel.protocol
+          || JSON.stringify(selected.auth) !== JSON.stringify(plan.customModel.auth))) {
+          throw new DirectApiError("The connection changed while enrichment was queued. Regenerate to use its new configuration.");
+        }
+        client = new DirectEnrichmentBackend(selected, service);
+      } else if (acpAgentId !== undefined) {
+        const acpClient = await buildAcpEnrichmentClient(
+          acpAgentId,
+          plan.acpSettings ?? (await params.settingsReader())
+        );
+        if (acpClient === null) throw new AcpAgentUnavailableError(acpAgentId);
+        client = acpClient;
+      } else {
+        client = await params.clientFactory(params.command, params.env);
       }
-      client = new DirectEnrichmentBackend(selected, service);
-    } else if (acpAgentId !== undefined) {
-      const acpClient = await buildAcpEnrichmentClient(
-        acpAgentId,
-        params.acpSettings ?? (await params.settingsReader())
+      // Bound the turn: a stalled agent (the ACP path forwards an abort
+      // signal but enforces no deadline) would otherwise leave the run in
+      // `running` forever. On timeout we abort the controller (best-effort
+      // stop) and the race rejects with EnrichmentTimeoutError → the catch
+      // fails the run so the UI shows "could not read … Regenerate".
+      abortController.signal.throwIfAborted();
+      return withTurnTimeout(
+        client.enrichCapture({
+          imagePaths,
+          metadata,
+          // Pass the resolved model for BOTH backends. For ACP this is the user's
+          // chosen agent model (the kit ignores an unknown id and falls back to the
+          // agent default, so a stale value can't break the run); "" → null → agent
+          // default. For Codex it's the caption model.
+          model: plan.selectedModel.length > 0 ? plan.selectedModel : null,
+          ...(acpAgentId === undefined && plan.selectedProvider !== undefined
+            ? { modelProvider: plan.selectedProvider }
+            : {}),
+          effort: plan.effort,
+          abortSignal: abortController.signal,
+          // Attribution for a denied sandbox escalation. Enrichment never
+          // legitimately asks for a tool / file / network, so if this run does,
+          // the error log needs to name the capture that provoked it.
+          diagnostics: { runId: params.runId, captureId }
+        }),
+        plan.turnTimeoutMs,
+        () => abortController.abort()
       );
-      if (acpClient === null) {
-        throw new Error(`ACP agent "${acpAgentId}" is not installed for enrichment`);
+    };
+
+    let response: CaptureEnrichmentResponse;
+    try {
+      response = await runTurn(active);
+    } catch (primaryError) {
+      const fallback = params.fallback;
+      if (fallback === undefined || abortController.signal.aborted ||
+          !isEnrichmentBackendUnavailable(primaryError)) {
+        throw primaryError;
       }
-      client = acpClient;
-    } else {
-      client = await params.clientFactory(params.command, params.env);
+      // Nothing answered at the primary, so nothing was spent there: move the
+      // SAME run (prepared media and all) to the fallback, once.
+      log.warn("capture enrichment primary unreachable; using fallback", {
+        runId: params.runId,
+        captureId,
+        triggerSource: params.triggerSource,
+        provider,
+        fallbackProvider: fallback.provider,
+        message: agentErrorMessage(primaryError)
+      });
+      await releaseClient(active);
+      client = null;
+      slot?.release();
+      slot = undefined;
+      const primaryProvider = active.provider;
+      active = fallback;
+      provider = fallback.provider;
+      const moved = markAiRunFallback(params.runId, primaryProvider, fallback.selectedModel);
+      broadcastAiRunUpdated({ run: moved, enrichment: getCaptureEnrichment(captureId) });
+      await enterBackend(fallback);
+      response = await runTurn(fallback);
     }
-    // Bound the turn: a stalled agent (the ACP path forwards an abort
-    // signal but enforces no deadline) would otherwise leave the run in
-    // `running` forever. On timeout we abort the controller (best-effort
-    // stop) and the race rejects with EnrichmentTimeoutError → the catch
-    // fails the run so the UI shows "could not read … Regenerate".
-    abortController.signal.throwIfAborted();
-    const response = await withTurnTimeout(
-      client.enrichCapture({
-        imagePaths,
-        metadata,
-        // Pass the resolved model for BOTH backends. For ACP this is the user's
-        // chosen agent model (the kit ignores an unknown id and falls back to the
-        // agent default, so a stale value can't break the run); "" → null → agent
-        // default. For Codex it's the caption model.
-        model: params.selectedModel.length > 0 ? params.selectedModel : null,
-        ...(acpAgentId === undefined && params.selectedProvider !== undefined
-          ? { modelProvider: params.selectedProvider }
-          : {}),
-        effort: params.effort,
-        abortSignal: abortController.signal,
-        // Attribution for a denied sandbox escalation. Enrichment never
-        // legitimately asks for a tool / file / network, so if this run does,
-        // the error log needs to name the capture that provoked it.
-        diagnostics: { runId: params.runId, captureId }
-      }),
-      params.turnTimeoutMs,
-      () => abortController.abort()
-    );
     abortController.signal.throwIfAborted();
 
     // A "completed but blank" reply is a failure, not a success. The result
@@ -1322,7 +1417,7 @@ async function runCaptureEnrichment(params: {
     try {
       saveAiRunUsage({
         aiRunId: params.runId,
-        ...(params.selectedProvider?.startsWith("custom:") ? { modelProvider: params.selectedProvider } : {}),
+        ...(active.selectedProvider?.startsWith("custom:") ? { modelProvider: active.selectedProvider } : {}),
         usageStatus: "unavailable",
         usageUnavailableReason: isAbort
           ? "AI run was cancelled before token usage was reported"
@@ -1387,16 +1482,7 @@ async function runCaptureEnrichment(params: {
     });
     // The default Codex enrichment wrapper is processless; the app-wide Codex
     // owner closes at app shutdown. Test-provided clients may still need close.
-    // The ACP wrapper's close() is a no-op — its runs ride the shared pooled
-    // agent process, which only closes at app quit.
-    if (params.closeClientAfterRun || params.acpAgentId !== undefined) {
-      await client?.close().catch((error: unknown) => {
-        log.warn("enrichment client close failed", {
-          runId: params.runId,
-          message: error instanceof Error ? error.message : String(error)
-        });
-      });
-    }
+    await releaseClient(active);
     slot?.release();
   }
 }

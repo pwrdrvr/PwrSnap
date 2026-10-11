@@ -218,8 +218,8 @@ importers:
         specifier: 1.0.1
         version: 1.0.1
       '@modelcontextprotocol/sdk':
-        specifier: 1.31.0
-        version: 1.31.0(supports-color@7.2.0)(zod@4.6.5)
+        specifier: 1.32.0
+        version: 1.32.0(supports-color@7.2.0)(zod@4.6.5)
       '@pwrdrvr/agent-acp':
         specifier: ^0.16.1
         version: 0.16.1(zod@4.6.5)
@@ -1099,8 +1099,8 @@ packages:
   '@mediapipe/tasks-vision@1.0.1':
     resolution: {integrity: sha512-rvRE2FmAZ6ZxKSw7wq+e+jQDpN3t1B/tD2mJz9SmAzb1msoDkd4dMoE4wAh8Z30Um0PQwLiHr9QtomhmXk3aUQ==}
 
-  '@modelcontextprotocol/sdk@1.31.0':
-    resolution: {integrity: sha512-UvTMgnNlnIBO/22ob2RcVGDlcvOslQs8T59+FTGdA0L27a39fdGF/EDETNtDVK4DZGpwomlsYpRdA8UXcVL/pw==}
+  '@modelcontextprotocol/sdk@1.32.0':
+    resolution: {integrity: sha512-8BviX/hK4Gd2eL1KdTwm0gfl4d3wdoErW0Jd00h6nomUAtk6IJk5vwQJc6kfWtJTzN5OEV/lgIiJKI8fiDGAlA==}
     engines: {node: '>=18'}
     peerDependencies:
       '@cfworker/json-schema': ^4.1.1
@@ -4348,7 +4348,7 @@ snapshots:
 
   '@mediapipe/tasks-vision@1.0.1': {}
 
-  '@modelcontextprotocol/sdk@1.31.0(supports-color@7.2.0)(zod@4.6.5)':
+  '@modelcontextprotocol/sdk@1.32.0(supports-color@7.2.0)(zod@4.6.5)':
     dependencies:
       '@hono/node-server': 2.1.1(hono@4.13.12)
       ajv: 8.20.0

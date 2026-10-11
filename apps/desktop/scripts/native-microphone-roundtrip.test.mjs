@@ -32,11 +32,27 @@ test.skipIf(process.platform !== "darwin")("microphone samples survive a real AV
   try {
     const native = resolve(import.meta.dirname, "..", "native", "recorder");
     const binary = join(dir, "verify");
+    const guard = join(dir, "no-device-io.dylib");
+    const probe = join(dir, "guard-probe");
+    const guardSource = join(native, "tests", "no-device-io.c");
+    await run("xcrun", ["clang", "-fblocks", "-Wall", "-Wextra", "-Werror",
+      "-dynamiclib", "-framework", "CoreAudio", "-o", guard, guardSource], { timeout: 10_000 });
+    await run("xcrun", ["clang", "-fblocks", "-DPWRSNAP_DEVICE_IO_GUARD_PROBE",
+      "-framework", "CoreAudio", "-o", probe, guardSource], { timeout: 10_000 });
+    const env = { ...process.env, DYLD_INSERT_LIBRARIES: guard };
+    // Prove the guard intercepts calls, even on hosts with an existing TCC grant.
+    for (const args of [[], ["--block"]]) {
+      await expect(run(probe, args, { timeout: 5_000, env })).rejects.toMatchObject({
+        code: 97,
+        stderr: expect.stringContaining("forbidden CoreAudio device IO initialization")
+      });
+    }
     await run("xcrun", ["swiftc", "-parse-as-library", "-o", binary,
       join(native, "microphone.swift"), join(native, "audio-level.swift"),
       join(native, "tests", "microphone-roundtrip.swift")], { timeout: 90_000 });
-    const result = await runWithDiagnostics(binary, [join(dir, "microphone.mp4")], { timeout: 30_000 });
+    const result = await runWithDiagnostics(binary, [join(dir, "microphone.mp4")], { timeout: 30_000, env });
     expect(result.stdout).toContain("microphone AAC roundtrip: appended=48");
+    expect(result.stderr).toContain("roundtrip: device IO guard active");
     expect(result.stderr).toContain("roundtrip: tone writer completed");
     expect(result.stderr).toContain("roundtrip: quiet writer completed status=2");
     expect(result.stderr).toContain("roundtrip: decode offline PCM");

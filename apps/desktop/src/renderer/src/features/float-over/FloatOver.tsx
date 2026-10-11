@@ -418,6 +418,7 @@ export function FloatOver({
   aiSafetyDisabled = false,
   enrichmentProviderLabel,
   enrichmentModelLabel,
+  enrichmentFallbackFromLabel,
   autoAcceptSuggestions = false,
   onEnableAi,
   onCancelEnrichment,
@@ -525,6 +526,9 @@ export function FloatOver({
   enrichmentProviderLabel?: string | undefined;
   /** Optional model id shown in parens in the status pill. */
   enrichmentModelLabel?: string | undefined;
+  /** The primary backend's label when the caption fallback answered this
+   *  run because the primary could not be reached. */
+  enrichmentFallbackFromLabel?: string | undefined;
   /** Mirrors `settings.ai.autoAcceptSuggestions`. When true, the
    *  toast renders the checkbox in the "checked" state and trusts
    *  main to promote `suggested_*` → `accepted_*` on its own at the
@@ -1399,6 +1403,9 @@ export function FloatOver({
                 : {})}
               {...(enrichmentModelLabel !== undefined
                 ? { modelLabel: enrichmentModelLabel }
+                : {})}
+              {...(enrichmentFallbackFromLabel !== undefined
+                ? { fallbackFrom: enrichmentFallbackFromLabel }
                 : {})}
               action={
                 thinking && enrichment?.latestRunId && onCancelEnrichment ? (

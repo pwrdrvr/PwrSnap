@@ -1691,6 +1691,9 @@ function DetailTab({
         safetyDisabled={aiSafetyDisabled}
         providerLabel={null}
         error={enrichment?.error}
+        // The usage strip below names the model that actually answered; the
+        // chip says it wasn't the usual one.
+        {...(enrichment?.fallbackFrom ? { fallbackFrom: "Your caption model" } : {})}
         clock={enrichmentRunClock(enrichment)}
         // Only recorded run metadata supplies attribution, once. Defaults
         // belong to the Regenerate tooltip, even while this detail is loading.

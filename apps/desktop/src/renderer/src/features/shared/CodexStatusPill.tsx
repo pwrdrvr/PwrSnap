@@ -1,5 +1,5 @@
 import type { CSSProperties, ReactElement, ReactNode } from "react";
-import { type AiRunStatus, type CustomModel, type CustomConnection } from "@pwrsnap/shared";
+import { type AiRunStatus, type CustomModel, type CustomConnection, type Settings } from "@pwrsnap/shared";
 
 // CodexStatusPill — single source of truth for "what is Codex doing"
 // across both the float-over toast and the Library Detail rail.
@@ -56,6 +56,18 @@ export function enrichmentBackendLabel(
   };
 }
 
+/** The backend a run's status line should name: the caption fallback when it
+ *  answered this run (`fallbackFrom` is set), otherwise the primary. */
+export function enrichmentRunBackend(
+  enrichment: { fallbackFrom?: string | null | undefined } | null | undefined,
+  settings: Pick<Settings, "ai"> | null | undefined
+): { providerLabel: string; modelLabel: string | undefined } {
+  const ai = settings?.ai;
+  return enrichment?.fallbackFrom
+    ? enrichmentBackendLabel(ai?.enrichmentFallback ?? {}, ai)
+    : enrichmentBackendLabel(ai?.defaults.enrichment, ai);
+}
+
 /** The next action's target, never historical run attribution. */
 export function enrichmentRegenerateLabel(
   enrichment: { provider?: string; model?: string } | undefined,
@@ -86,6 +98,10 @@ export type CodexStatusPillProps = {
   readonly modelLabel?: string | undefined;
   /** Failure message from the latest run, when available. */
   readonly error?: string | null | undefined;
+  /** Label of the primary backend this run stood in for, when the caption
+   *  fallback answered because the primary could not be reached. Marks the
+   *  pill FALLBACK and says why in the summary. */
+  readonly fallbackFrom?: string | undefined;
   /** Compact run metadata rendered on the SAME row as the status text,
    *  separated by a middot (e.g. `· GPT-5.6-Luna · <$0.001`). Exists so
    *  a surface can fold a second boxed "model / cost" card into this
@@ -226,6 +242,7 @@ export function CodexStatusPill({
   providerLabel = "Codex",
   modelLabel,
   error,
+  fallbackFrom,
   meta,
   clock,
   action,
@@ -235,11 +252,21 @@ export function CodexStatusPill({
 }: CodexStatusPillProps): ReactElement {
   const kind = resolveKind(status, draftAvailable, accepted, needsConsent, safetyDisabled);
   const hasMeta = meta !== undefined && meta !== null;
-  const summaryText = labelTextFor(kind, providerLabel, modelLabel, error, hasMeta);
-  const summaryTitle = kind === "failed" && error?.trim()
-    && !summaryText.includes(error.trim())
-    ? `${summaryText} Technical detail: ${error.trim()}`
+  const fellBack = fallbackFrom !== undefined && fallbackFrom.length > 0 &&
+    kind !== "idle" && kind !== "needs-consent" && kind !== "safety-disabled";
+  const statusText = labelTextFor(kind, providerLabel, modelLabel, error, hasMeta);
+  // A failed fallback says what happened to the primary too: both are why
+  // there is no caption.
+  const summaryText = fellBack && kind === "failed"
+    ? `${statusText.replace(/\.?$/, ".")} ${fallbackFrom} could not be reached.`
+    : statusText;
+  const withReason = fellBack && kind !== "failed"
+    ? `${summaryText} ${fallbackFrom} could not be reached, so ${providerLabel ?? "the fallback"} stood in.`
     : summaryText;
+  const summaryTitle = kind === "failed" && error?.trim()
+    && !withReason.includes(error.trim())
+    ? `${withReason} Technical detail: ${error.trim()}`
+    : withReason;
   const classes = [
     "ps-codex-pill",
     `ps-codex-pill--${variant}`,
@@ -274,6 +301,7 @@ export function CodexStatusPill({
           <span className="ps-codex-pill__summary" title={summaryTitle}>
             {labelFor(kind, summaryText)}
           </span>
+          {fellBack ? <span className="ps-codex-pill__fallback">Fallback</span> : null}
           {clock}
         </span>
         {hasMeta ? (

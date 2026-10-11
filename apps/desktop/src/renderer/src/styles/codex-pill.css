@@ -77,6 +77,22 @@
   min-width: 0;
   max-width: 100%;
 }
+/* The caption fallback answered this run. Amber: worth noticing (the usual
+   model was down), not an error. */
+.ps-codex-pill__fallback {
+  flex: none;
+  align-self: center;
+  margin-left: 6px;
+  padding: 2px 5px;
+  border: 1px solid var(--warn-border);
+  border-radius: 4px;
+  background: var(--warn-soft);
+  color: var(--warn-text);
+  font: 600 9px/1 var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
 .ps-codex-pill__clock {
   flex: none;
   margin-left: 6px;

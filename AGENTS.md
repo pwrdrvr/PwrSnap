@@ -299,7 +299,16 @@ separate from its schema, credential manager and protocol adapters, and reach
 them only through the `customModels:*` verbs — `ai.customConnections` and
 `ai.customModels` are main-owned and `settings:write` refuses both.
 
-Never route a custom model through Codex/ACP as a fallback. Never infer vision,
+Never route a custom model through Codex/ACP as a silent fallback. The one
+fallback that exists is `ai.enrichmentFallback`
+([enrichment-fallback.ts](apps/desktop/src/main/ai/enrichment-fallback.ts)):
+opt-in in Settings, captions only, and taken only when the primary could not be
+reached (connection refused, HTTP 404/502/503/504, ACP agent not installed). A
+401/403, a bad answer, a timeout, or a removed or repointed custom model still
+fails closed. A run that falls back records the primary in
+`ai_runs.fallback_from`, and the Float-Over and Library show a FALLBACK chip.
+Do not widen the trigger set to make a run succeed: each addition hides a
+failure the operator should see. Never infer vision,
 reasoning, Fast mode, pricing, OAuth access or subscription entitlement from a
 model name or base URL. Auth secrets stay in `DesktopSecretStore`, not settings.
 Direct chat has no tools. Direct enrichment sends bounded app-prepared image

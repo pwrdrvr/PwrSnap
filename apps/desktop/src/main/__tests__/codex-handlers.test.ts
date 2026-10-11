@@ -57,6 +57,7 @@ const { getCaptureEnrichment } = await import("../persistence/enrichment-repo");
 const { defaultSettings } = await import("../settings/desktop-settings-service");
 const { DesktopSettingsStore } = await import("../settings/desktop-settings-store");
 const { AiEnrichmentBudget } = await import("../ai/enrichment-budget");
+const { EnrichmentPrimaryHealth } = await import("../ai/enrichment-fallback");
 const {
   reportCodexCliTooOld,
   resetCodexCompatibilityAlertForTests
@@ -569,6 +570,50 @@ describe("Codex handlers", () => {
     }
   });
 
+
+  // A primary nothing answered at is marked down: later captures skip it
+  // until the window expires, then the next one probes it again.
+  test("a down primary is skipped until its window expires", async () => {
+    let hits = 0;
+    const http = await server((_req, res) => { hits += 1; res.writeHead(503).end(); });
+    const entry = model(`${http.url}/v1`);
+    entry.capabilities.streaming = false;
+    const settings = testSettings();
+    settings.ai.enabled = true;
+    settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+    settings.ai.defaults.enrichment = { provider: `custom:${entry.id}` };
+    settings.ai.enrichmentFallback = {};
+    settings.ai.customConnections = [{ id: entry.connectionId, name: "Local fixture",
+      baseUrl: entry.baseUrl, protocol: entry.protocol, auth: entry.auth }];
+    settings.ai.customModels = [entry];
+    const service = new CustomModelService({ read: async () => settings,
+      write: async () => { throw new Error("Unexpected settings write"); } },
+    { headers: async () => ({}) } as unknown as CustomCredentials, async () => undefined);
+    const serviceSpy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
+    let now = 0;
+    const primaryHealth = new EnrichmentPrimaryHealth(() => now, 60_000);
+    const enrich = async (): Promise<void> => {
+      const result = await bus.dispatch("codex:enrich", { captureId: "cap_1" }, { principal: "ipc" });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      await waitFor(() => ["completed", "failed"].includes(getAiRun(result.value.runId)?.status ?? ""));
+      expect(getAiRun(result.value.runId)).toMatchObject({ status: "completed", fallbackFrom: `custom:${entry.id}` });
+    };
+    try {
+      registerCodexHandlers({ clientFactory: () => new FakeCodexClient() as never,
+        settingsReader: async () => settings, budget: new AiEnrichmentBudget(), primaryHealth });
+      await enrich();
+      expect(hits).toBe(1);
+      await enrich();
+      expect(hits).toBe(1);
+      now = 60_000;
+      await enrich();
+      expect(hits).toBe(2);
+    } finally {
+      serviceSpy.mockRestore();
+      await http.close();
+    }
+  });
 
   // A fallback that fails too still says it was a fallback run: the pill
   // explains both failures from `fallbackFrom` on the failed run.

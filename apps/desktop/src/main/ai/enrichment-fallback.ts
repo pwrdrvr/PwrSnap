@@ -72,3 +72,41 @@ export function settingsWithEnrichmentDefault(
     ai: { ...settings.ai, defaults: { ...settings.ai.defaults, enrichment } }
   };
 }
+
+/** How long a primary that nothing answered at stays marked down. Runs in
+ *  that window go straight to the fallback; the first run after it tries the
+ *  primary again, so a restarted local server is back within a minute. */
+export const ENRICHMENT_PRIMARY_DOWN_MS = 60_000;
+
+/** Which enrichment primaries are down, in memory only (a restart forgets).
+ *  Keyed by provider selector. `markDown` / `markUp` return true only on a
+ *  transition, which is what the logs report: one line when a primary goes
+ *  down and one when it answers again, not one per capture. */
+export class EnrichmentPrimaryHealth {
+  /** Provider → when its down mark expires. An expired entry is kept: the
+   *  next probe either confirms it (quietly) or clears it (a transition). */
+  private readonly downUntil = new Map<string, number>();
+
+  constructor(
+    private readonly nowMs: () => number = () => Date.now(),
+    private readonly downMs: number = ENRICHMENT_PRIMARY_DOWN_MS
+  ) {}
+
+  /** True while the provider's down mark has not expired. */
+  isDown(provider: string): boolean {
+    const until = this.downUntil.get(provider);
+    return until !== undefined && this.nowMs() < until;
+  }
+
+  /** Nothing answered: (re)start the window. True if it was not down before. */
+  markDown(provider: string): boolean {
+    const wasKnown = this.downUntil.has(provider);
+    this.downUntil.set(provider, this.nowMs() + this.downMs);
+    return !wasKnown;
+  }
+
+  /** The provider answered (with anything). True if it had been marked down. */
+  markUp(provider: string): boolean {
+    return this.downUntil.delete(provider);
+  }
+}

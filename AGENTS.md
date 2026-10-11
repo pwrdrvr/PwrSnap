@@ -307,7 +307,9 @@ reached (connection refused, HTTP 404/502/503, ACP agent not installed). A
 401/403, a bad answer, a timeout (504 included), or a removed or repointed custom model still
 fails closed. A run that falls back records the primary in
 `ai_runs.fallback_from`, and the Float-Over and Library show a FALLBACK chip.
-Do not widen the trigger set to make a run succeed: each addition hides a
+An unreachable primary is marked down for 60 s (`EnrichmentPrimaryHealth`):
+captures in that window skip it, and only the down/up transitions log above
+debug. Do not widen the trigger set to make a run succeed: each addition hides a
 failure the operator should see. Never infer vision,
 reasoning, Fast mode, pricing, OAuth access or subscription entitlement from a
 model name or base URL. Auth secrets stay in `DesktopSecretStore`, not settings.

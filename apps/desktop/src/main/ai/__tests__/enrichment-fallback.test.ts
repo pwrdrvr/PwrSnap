@@ -3,6 +3,7 @@ import type { Settings } from "@pwrsnap/shared";
 import { DirectApiError, isConnectFailure } from "../direct-api/transport";
 import {
   AcpAgentUnavailableError,
+  EnrichmentPrimaryHealth,
   enrichmentFallbackFor,
   isEnrichmentBackendUnavailable,
   settingsWithEnrichmentDefault
@@ -93,5 +94,24 @@ describe("enrichmentFallbackFor", () => {
     const swapped = settingsWithEnrichmentDefault(base, { provider: "acp:kimi" });
     expect(swapped.ai.defaults.enrichment).toEqual({ provider: "acp:kimi" });
     expect(base.ai.defaults.enrichment).toEqual({ provider: CUSTOM });
+  });
+});
+
+describe("EnrichmentPrimaryHealth", () => {
+  test("reports transitions only, and expires the down window", () => {
+    let now = 0;
+    const health = new EnrichmentPrimaryHealth(() => now, 60_000);
+    expect(health.isDown(CUSTOM)).toBe(false);
+    expect(health.markDown(CUSTOM)).toBe(true);
+    expect(health.isDown(CUSTOM)).toBe(true);
+    now = 60_000;
+    // Expired: the next run probes again. Still down → no new transition.
+    expect(health.isDown(CUSTOM)).toBe(false);
+    expect(health.markDown(CUSTOM)).toBe(false);
+    expect(health.isDown(CUSTOM)).toBe(true);
+    // It answered: one transition back, then nothing to report.
+    expect(health.markUp(CUSTOM)).toBe(true);
+    expect(health.markUp(CUSTOM)).toBe(false);
+    expect(health.isDown(CUSTOM)).toBe(false);
   });
 });

@@ -46,6 +46,8 @@ import { relayRendererEventToPeer } from "../process-split/event-relay";
 import { AcpCaptureEnrichmentClient } from "../ai/acp-enrichment-client";
 import {
   AcpAgentUnavailableError,
+  ENRICHMENT_PRIMARY_DOWN_MS,
+  EnrichmentPrimaryHealth,
   enrichmentFallbackFor,
   isEnrichmentBackendUnavailable,
   settingsWithEnrichmentDefault
@@ -584,6 +586,8 @@ export function registerCodexHandlers(params?: {
   settingsWriter?: SettingsWriter;
   modelDefaultsReconciler?: ModelDefaultsReconciler;
   budget?: AiEnrichmentBudget;
+  /** Which enrichment primaries are down; tests inject a clock. */
+  primaryHealth?: EnrichmentPrimaryHealth;
   /** Override the per-turn enrichment timeout (ms). Defaults to
    *  `ENRICHMENT_TURN_TIMEOUT_MS`; tests pass a tiny value. */
   turnTimeoutMs?: number;
@@ -628,6 +632,9 @@ export function registerCodexHandlers(params?: {
   const managedEnrichmentByCatalog = new Map<string, CodexModelOption | null>();
   const budget = params?.budget ?? aiEnrichmentBudget;
   const turnTimeoutMs = params?.turnTimeoutMs ?? ENRICHMENT_TURN_TIMEOUT_MS;
+  // Production registers once, so this is the process's one record of which
+  // enrichment primaries are down.
+  const primaryHealth = params?.primaryHealth ?? new EnrichmentPrimaryHealth();
 
   bus.register("codex:compatibilityAlert", async () => {
     return ok(getCodexCliCompatibilityAlert());
@@ -824,6 +831,7 @@ export function registerCodexHandlers(params?: {
       settingsReader,
       primary,
       ...(resolveFallback !== undefined ? { resolveFallback } : {}),
+      primaryHealth,
       triggerSource,
       budgetBefore: budgetDecision.before,
       budgetAfter: budgetDecision.after,
@@ -1151,6 +1159,8 @@ async function runCaptureEnrichment(params: {
    *  off underneath us. The run moves here once, and only when the primary
    *  could not be reached (`isEnrichmentBackendUnavailable`). */
   resolveFallback?: () => Promise<EnrichmentBackendPlan>;
+  /** Which primaries are down right now; one per registration. */
+  primaryHealth: EnrichmentPrimaryHealth;
   triggerSource: AiEnrichmentTriggerSource;
   budgetBefore: AiEnrichmentBudgetStatus;
   budgetAfter: AiEnrichmentBudgetStatus;
@@ -1199,8 +1209,46 @@ async function runCaptureEnrichment(params: {
     });
   };
 
+  // Leave the primary for the fallback: release what the primary held,
+  // resolve the fallback, record the hop on the run and take its slot.
+  // Resolving can list the Codex catalog, which has no deadline of its own;
+  // the run is already queued or running, so bound it like a turn.
+  const moveToFallback = async (resolve: () => Promise<EnrichmentBackendPlan>): Promise<void> => {
+    await releaseClient(active);
+    client = null;
+    slot?.release();
+    slot = undefined;
+    const fallback = await withTurnTimeout(resolve(), active.turnTimeoutMs, () => abortController.abort());
+    abortController.signal.throwIfAborted();
+    log.debug("capture enrichment fallback resolved", {
+      runId: params.runId,
+      fallbackProvider: fallback.provider,
+      selectedModel: fallback.selectedModel
+    });
+    const primaryProvider = active.provider;
+    active = fallback;
+    provider = fallback.provider;
+    const moved = markAiRunFallback(params.runId, primaryProvider, fallback.selectedModel);
+    broadcastAiRunUpdated({ run: moved, enrichment: getCaptureEnrichment(captureId) });
+    await enterBackend(fallback);
+  };
+  const resolveFallback = params.resolveFallback;
+  const health = params.primaryHealth;
+
   try {
-    await enterBackend(active);
+    // A primary that was just unreachable goes straight to the fallback: no
+    // connect attempt and no per-capture warning until its window expires.
+    const primaryDown = resolveFallback !== undefined && health.isDown(active.provider);
+    if (primaryDown) {
+      log.debug("capture enrichment primary marked down; using fallback", {
+        runId: params.runId,
+        captureId,
+        provider
+      });
+      await moveToFallback(resolveFallback);
+    } else {
+      await enterBackend(active);
+    }
     if (params.ctx.signal.aborted) abortController.abort();
     abortController.signal.throwIfAborted();
     const running = markAiRunRunning(params.runId);
@@ -1313,44 +1361,46 @@ async function runCaptureEnrichment(params: {
     };
 
     let response: CaptureEnrichmentResponse;
-    try {
+    if (primaryDown) {
       response = await runTurn(active);
-    } catch (primaryError) {
-      if (params.resolveFallback === undefined || abortController.signal.aborted ||
-          !isEnrichmentBackendUnavailable(primaryError)) {
-        throw primaryError;
+    } else {
+      try {
+        response = await runTurn(active);
+        if (health.markUp(active.provider)) {
+          log.info("capture enrichment primary reachable again", { runId: params.runId, provider });
+        }
+      } catch (primaryError) {
+        const aborted = abortController.signal.aborted;
+        if (aborted || !isEnrichmentBackendUnavailable(primaryError)) {
+          // It answered, just not with a caption: it is up.
+          if (!aborted && health.markUp(active.provider)) {
+            log.info("capture enrichment primary reachable again", { runId: params.runId, provider });
+          }
+          throw primaryError;
+        }
+        if (resolveFallback === undefined) throw primaryError;
+        // Nothing answered at the primary: move the SAME run (prepared media
+        // and all) to the fallback, once. Warned once per outage, then quiet
+        // until the primary answers again. Logged before resolving, so the
+        // primary's failure is on record even if resolution fails.
+        const details = {
+          runId: params.runId,
+          captureId,
+          triggerSource: params.triggerSource,
+          provider,
+          message: agentErrorMessage(primaryError)
+        };
+        if (health.markDown(active.provider)) {
+          log.warn("capture enrichment primary unreachable; using fallback until it answers", {
+            ...details,
+            recheckAfterMs: ENRICHMENT_PRIMARY_DOWN_MS
+          });
+        } else {
+          log.debug("capture enrichment primary still unreachable; using fallback", details);
+        }
+        await moveToFallback(resolveFallback);
+        response = await runTurn(active);
       }
-      // Nothing answered at the primary: move the SAME run (prepared media
-      // and all) to the fallback, once. Logged before resolving, so the
-      // primary's failure is on record even if resolution fails.
-      log.warn("capture enrichment primary unreachable; using fallback", {
-        runId: params.runId,
-        captureId,
-        triggerSource: params.triggerSource,
-        provider,
-        message: agentErrorMessage(primaryError)
-      });
-      await releaseClient(active);
-      client = null;
-      slot?.release();
-      slot = undefined;
-      // Resolving can list the Codex catalog, which has no deadline of its
-      // own; the run is already `running`, so bound it like a turn.
-      const fallback = await withTurnTimeout(params.resolveFallback(), active.turnTimeoutMs,
-        () => abortController.abort());
-      abortController.signal.throwIfAborted();
-      log.info("capture enrichment fallback resolved", {
-        runId: params.runId,
-        fallbackProvider: fallback.provider,
-        selectedModel: fallback.selectedModel
-      });
-      const primaryProvider = active.provider;
-      active = fallback;
-      provider = fallback.provider;
-      const moved = markAiRunFallback(params.runId, primaryProvider, fallback.selectedModel);
-      broadcastAiRunUpdated({ run: moved, enrichment: getCaptureEnrichment(captureId) });
-      await enterBackend(fallback);
-      response = await runTurn(fallback);
     }
     abortController.signal.throwIfAborted();
 

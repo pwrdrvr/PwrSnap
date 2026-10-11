@@ -752,16 +752,33 @@ export function registerCodexHandlers(params?: {
     const primary = resolveEnrichmentBackendPlan(settings, managedEnrichment, turnTimeoutMs, params?.turnTimeoutMs);
     // Armed only when the primary can be "switched off" underneath us (a
     // Direct API server, an ACP agent). Resolved from the same snapshot, so
-    // a Settings change mid-run can't swap either backend.
+    // a Settings change mid-run can't swap either backend. Resolved only if
+    // the hop happens: the catalog listing above runs for a Codex PRIMARY, so
+    // a Codex fallback learns the managed caption model here, when needed —
+    // a local-first setup lists no Codex models while its primary answers.
     const fallbackDefault = enrichmentFallbackFor(settings);
-    const fallback = fallbackDefault === null
+    const fallbackSettings = fallbackDefault === null
+      ? null
+      : settingsWithEnrichmentDefault(settings, fallbackDefault);
+    const resolveFallback = fallbackSettings === null
       ? undefined
-      : resolveEnrichmentBackendPlan(
-        settingsWithEnrichmentDefault(settings, fallbackDefault),
-        managedEnrichment,
-        turnTimeoutMs,
-        params?.turnTimeoutMs
-      );
+      : async (): Promise<EnrichmentBackendPlan> => {
+        const catalogKey = codexCatalogKey(fallbackSettings);
+        const { provider, model } = fallbackSettings.ai.defaults.enrichment;
+        const codexBacked = enrichmentAcpAgentId(fallbackSettings) === undefined &&
+          provider?.startsWith("custom:") !== true;
+        if (refreshDefaultsBeforeEnrichment && codexBacked && !model &&
+            !managedEnrichmentByCatalog.has(catalogKey)) {
+          const catalog = await bus.dispatch("codex:models", {}, { principal: "ipc" });
+          if (!catalog.ok) log.warn("Codex enrichment catalog unavailable", { code: catalog.error.code });
+        }
+        return resolveEnrichmentBackendPlan(
+          fallbackSettings,
+          managedEnrichmentByCatalog.get(catalogKey) ?? undefined,
+          turnTimeoutMs,
+          params?.turnTimeoutMs
+        );
+      };
     const run = createAiRun({
       captureId: capture.id,
       codexCommand,
@@ -806,7 +823,7 @@ export function registerCodexHandlers(params?: {
       env: codexEnvForProfile(settings.codex.profile),
       settingsReader,
       primary,
-      ...(fallback !== undefined ? { fallback } : {}),
+      ...(resolveFallback !== undefined ? { resolveFallback } : {}),
       triggerSource,
       budgetBefore: budgetDecision.before,
       budgetAfter: budgetDecision.after,
@@ -1133,7 +1150,7 @@ async function runCaptureEnrichment(params: {
   /** `ai.enrichmentFallback`, armed only for a primary that can be switched
    *  off underneath us. The run moves here once, and only when the primary
    *  could not be reached (`isEnrichmentBackendUnavailable`). */
-  fallback?: EnrichmentBackendPlan;
+  resolveFallback?: () => Promise<EnrichmentBackendPlan>;
   triggerSource: AiEnrichmentTriggerSource;
   budgetBefore: AiEnrichmentBudgetStatus;
   budgetAfter: AiEnrichmentBudgetStatus;
@@ -1299,13 +1316,14 @@ async function runCaptureEnrichment(params: {
     try {
       response = await runTurn(active);
     } catch (primaryError) {
-      const fallback = params.fallback;
-      if (fallback === undefined || abortController.signal.aborted ||
+      if (params.resolveFallback === undefined || abortController.signal.aborted ||
           !isEnrichmentBackendUnavailable(primaryError)) {
         throw primaryError;
       }
-      // Nothing answered at the primary, so nothing was spent there: move the
-      // SAME run (prepared media and all) to the fallback, once.
+      const fallback = await params.resolveFallback();
+      abortController.signal.throwIfAborted();
+      // Nothing answered at the primary: move the SAME run (prepared media
+      // and all) to the fallback, once.
       log.warn("capture enrichment primary unreachable; using fallback", {
         runId: params.runId,
         captureId,

@@ -8,21 +8,25 @@ export class DirectApiError extends Error {
   constructor(
     message: string,
     readonly status?: number,
-    /** The request never reached a server: refused, reset or no route. What a
-     *  stopped local model server looks like, and what enrichment falls back on. */
+    /** No server answered: refused, no route, or the socket dropped before a
+     *  response. What a stopped local model server looks like (including one
+     *  stopped mid-request), and what enrichment falls back on. A drop can
+     *  come after the request was sent, so the endpoint may have done work. */
     readonly unreachable = false
   ) { super(message); this.name = "DirectApiError"; }
 }
 
-/** Socket-level codes that mean nothing is listening (or reachable) at the
- *  endpoint. TLS and certificate failures are deliberately absent: those are a
- *  server that answered with the wrong identity, which is a configuration error. */
+/** Socket-level codes that mean no server answered: nothing listening or
+ *  reachable (refused, no route, DNS), or the connection dropped before any
+ *  response (ECONNRESET, EPIPE, UND_ERR_SOCKET — a server stopped mid-request).
+ *  TLS and certificate failures are deliberately absent: those are a server
+ *  that answered with the wrong identity, which is a configuration error. */
 const UNREACHABLE_CODES = new Set([
   "ECONNREFUSED", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH", "EHOSTDOWN",
   "ENOTFOUND", "EAI_AGAIN", "EPIPE", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET"
 ]);
 
-/** True when a `fetch` rejection was caused by a connect-time socket failure.
+/** True when a `fetch` rejection was caused by one of those socket failures.
  *  undici wraps the system error as `TypeError("fetch failed", { cause })`,
  *  sometimes nested (AggregateError for happy-eyeballs). Exported for testing. */
 export function isConnectFailure(error: unknown): boolean {

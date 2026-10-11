@@ -6,8 +6,9 @@
 // someone regenerates it by hand. With one, the SAME run moves to the fallback
 // backend — once, and only for failures that mean "nothing answered".
 //
-// What does NOT fall back, on purpose: an HTTP answer other than 404/502/503/504
-// (401/403 is a credential the operator must fix), invalid or empty output, a
+// What does NOT fall back, on purpose: an HTTP answer other than 404/502/503
+// (401/403 is a credential the operator must fix; a 504 is an upstream that
+// took the request and was slow, which is the timeout case below), invalid or empty output, a
 // timeout (the server is up, just slow — paying for a second model would hide
 // that), a removed or changed custom-model setting (removal fails closed), and
 // a Codex primary (there is no stopped-server case to cover).
@@ -24,8 +25,9 @@ export class AcpAgentUnavailableError extends Error {
 }
 
 /** HTTP answers that mean the model is not being served: no such model loaded
- *  (404), or a proxy in front of a stopped upstream (502/503/504). */
-const UNAVAILABLE_HTTP_STATUSES: ReadonlySet<number> = new Set([404, 502, 503, 504]);
+ *  (404), or a proxy in front of a stopped upstream (502/503). Not 504: the
+ *  upstream accepted the request and was slow, and may already have spent. */
+const UNAVAILABLE_HTTP_STATUSES: ReadonlySet<number> = new Set([404, 502, 503]);
 
 /** Whether an enrichment failure means the backend could not be reached, so
  *  the run may move to `ai.enrichmentFallback`. Everything else fails the run. */
@@ -37,9 +39,14 @@ export function isEnrichmentBackendUnavailable(error: unknown): boolean {
   return false;
 }
 
-/** Normalize a provider selector: "" and "codex" both mean Codex. */
-function providerKey(provider: string | undefined): string {
-  return provider === undefined || provider === "" ? "codex" : provider;
+/** The backend a provider selector runs on: "" and "codex" are Codex, and so
+ *  is an `acp:<id>` whose agent is not enabled — the run resolver sends that to
+ *  Codex too, so the two must agree. */
+function providerKey(settings: Settings, provider: string | undefined): string {
+  if (provider === undefined || provider === "") return "codex";
+  if (provider.startsWith("acp:") &&
+      !settings.ai.acp.enabledAgentIds.includes(provider.slice("acp:".length))) return "codex";
+  return provider;
 }
 
 /** The fallback to arm for a run, or null. Null when the fallback is off, when
@@ -48,9 +55,9 @@ function providerKey(provider: string | undefined): string {
 export function enrichmentFallbackFor(settings: Settings): AiSurfaceDefault | null {
   const fallback = settings.ai.enrichmentFallback ?? null;
   if (fallback === null) return null;
-  const primary = providerKey(settings.ai.defaults.enrichment.provider);
+  const primary = providerKey(settings, settings.ai.defaults.enrichment.provider);
   if (primary === "codex") return null;
-  if (providerKey(fallback.provider) === primary) return null;
+  if (providerKey(settings, fallback.provider) === primary) return null;
   return fallback;
 }
 

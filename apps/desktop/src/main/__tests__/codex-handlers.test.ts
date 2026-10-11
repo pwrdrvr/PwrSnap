@@ -496,7 +496,8 @@ describe("Codex handlers", () => {
       const codex = new FakeCodexClient();
       const clientFactory = vi.fn(() => codex as never);
       try {
-        registerCodexHandlers({ clientFactory, settingsReader: async () => settings });
+        registerCodexHandlers({ clientFactory, settingsReader: async () => settings,
+          budget: new AiEnrichmentBudget() });
         const result = await bus.dispatch("codex:enrich", { captureId: "cap_1" }, { principal: "ipc" });
         expect(result.ok).toBe(true);
         if (!result.ok) return;
@@ -527,6 +528,47 @@ describe("Codex handlers", () => {
       }
     }
   );
+
+  // The pre-run catalog listing only runs for a Codex PRIMARY. A Codex
+  // fallback behind a local model learns the managed caption model at the
+  // hop, so it runs the catalog's successor at an effort that model takes.
+  test("a Codex fallback lists the catalog at the hop and runs the managed successor", async () => {
+    const http = await server((_req, res) => { res.writeHead(503).end(); });
+    const entry = model(`${http.url}/v1`);
+    entry.capabilities.streaming = false;
+    await http.close();
+    const settings = testSettings();
+    settings.ai.enabled = true;
+    settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+    settings.ai.defaults.enrichment = { provider: `custom:${entry.id}` };
+    settings.ai.enrichmentFallback = {};
+    settings.ai.customConnections = [{ id: entry.connectionId, name: "Local fixture",
+      baseUrl: entry.baseUrl, protocol: entry.protocol, auth: entry.auth }];
+    settings.ai.customModels = [entry];
+    const service = new CustomModelService({ read: async () => settings,
+      write: async () => { throw new Error("Unexpected settings write"); } },
+    { headers: async () => ({}) } as unknown as CustomCredentials, async () => undefined);
+    const serviceSpy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
+    const codex = new FakeCodexClient();
+    const modelLister = vi.fn(async () => [{ ...fakeCodexModels()[0]!, id: "gpt-6-luna", model: "gpt-6-luna",
+      supportedReasoningEfforts: ["medium", "high"], defaultReasoningEffort: "medium" }]);
+    try {
+      registerCodexHandlers({ clientFactory: () => codex as never, settingsReader: async () => settings,
+        modelLister, modelDefaultsReconciler: async () => settings, budget: new AiEnrichmentBudget() });
+      const result = await bus.dispatch("codex:enrich", { captureId: "cap_1" }, { principal: "ipc" });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      // Enqueue listed nothing: the primary was not Codex.
+      expect(modelLister).not.toHaveBeenCalled();
+      await waitFor(() => ["completed", "failed"].includes(getAiRun(result.value.runId)?.status ?? ""));
+      expect(modelLister).toHaveBeenCalledTimes(1);
+      expect(getAiRun(result.value.runId)).toMatchObject({ status: "completed", selectedModel: "gpt-6-luna" });
+      expect(codex.lastRequest).toMatchObject({ model: "gpt-6-luna", effort: "medium" });
+    } finally {
+      serviceSpy.mockRestore();
+    }
+  });
+
 
   test("eight direct enrichments share the connection queue; queued and active cancellation never dispatch again", async () => {
     const received: Array<{ model: string; reply: () => void }> = [];

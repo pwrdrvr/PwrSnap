@@ -37,6 +37,7 @@ import {
   isAiEnrichmentRateLimit,
   isAiReasoningEffort,
   isLoopbackApiUrl,
+  resolveCustomModel,
   resolveManagedCodexEnrichmentModel
 } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
@@ -218,14 +219,15 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
   // same backends as the primary's, minus the primary itself.
   const enrichmentPrimary = settings?.ai.defaults.enrichment.provider ?? "";
   const enrichmentFallback = settings?.ai.enrichmentFallback ?? null;
-  const fallbackApplies = enrichmentPrimary.startsWith("custom:") || enrichmentPrimary.startsWith("acp:");
-  const customUrl = (provider: string | undefined): string | undefined => {
-    const m = settings?.ai.customModels?.find((entry) => `custom:${entry.id}` === provider);
-    return settings?.ai.customConnections?.find((c) => c.id === m?.connectionId)?.baseUrl;
-  };
+  // A disabled ACP agent's captions run on Codex, which main never falls back from.
+  const fallbackApplies = enrichmentPrimary.startsWith("custom:") ||
+    (enrichmentPrimary.startsWith("acp:") &&
+      settings?.ai.acp.enabledAgentIds.includes(enrichmentPrimary.slice("acp:".length)) === true);
   const isLocalProvider = (provider: string | undefined): boolean => {
-    const url = customUrl(provider);
-    return url !== undefined && isLoopbackApiUrl(url);
+    if (provider?.startsWith("custom:") !== true) return false;
+    const resolved = resolveCustomModel(settings?.ai.customConnections, settings?.ai.customModels,
+      provider.slice("custom:".length));
+    return resolved !== null && isLoopbackApiUrl(resolved.baseUrl);
   };
   const enrichmentFallbackControl = (): ReactNode => {
     if (!fallbackApplies) return null;
@@ -890,7 +892,7 @@ function EnrichmentFallbackControl({
           </span>
           <span className="pss__role-fallback-sub">
             {on
-              ? "Only when nothing answers: the connection is refused, the server returns 404, 502, 503 or 504, or the agent is no longer installed. A bad answer or a timeout still fails, so you see it."
+              ? "Only when nothing answers: the connection is refused, the server returns 404, 502 or 503, or the agent is no longer installed. A bad answer or a timeout still fails, so you see it."
               : `Off. The caption fails, and Regenerate tries ${primaryLabel} again.`}
           </span>
         </div>

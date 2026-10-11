@@ -1160,6 +1160,7 @@ export function FloatOverHost({
       void dispatch("library:openInLibrary", { captureId: record.id });
       closeToast(false);
     };
+    const runBackend = enrichmentRunBackend(enrichment, settings);
 
     body = (
       <FloatOver
@@ -1188,8 +1189,8 @@ export function FloatOverHost({
         aiEnabled={settings?.ai.enabled ?? false}
         aiConsentAccepted={settings?.ai.consentAcceptedAt !== null && settings !== null}
         aiSafetyDisabled={settings?.ai.budgetSafetyDisabledAt !== null && settings !== null}
-        enrichmentProviderLabel={enrichmentRunBackend(enrichment, settings).providerLabel}
-        enrichmentModelLabel={enrichmentRunBackend(enrichment, settings).modelLabel}
+        enrichmentProviderLabel={runBackend.providerLabel}
+        enrichmentModelLabel={runBackend.modelLabel}
         {...(enrichment?.fallbackFrom
           ? { enrichmentFallbackFromLabel: enrichmentBackendLabel({ provider: enrichment.fallbackFrom }, settings?.ai).providerLabel }
           : {})}

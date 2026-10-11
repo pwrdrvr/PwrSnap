@@ -14,7 +14,8 @@ function settings(primary: string | undefined, fallback: Settings["ai"]["enrichm
   return {
     ai: {
       defaults: { libraryChat: {}, sizzleChat: {}, enrichment: primary === undefined ? {} : { provider: primary } },
-      enrichmentFallback: fallback
+      enrichmentFallback: fallback,
+      acp: { enabledAgentIds: ["kimi"] }
     }
   } as unknown as Settings;
 }
@@ -25,7 +26,7 @@ describe("isEnrichmentBackendUnavailable", () => {
     ["404 (no model loaded)", new DirectApiError("x", 404), true],
     ["502 (proxy, stopped upstream)", new DirectApiError("x", 502), true],
     ["503", new DirectApiError("x", 503), true],
-    ["504", new DirectApiError("x", 504), true],
+    ["504 (a slow upstream is a timeout)", new DirectApiError("x", 504), false],
     ["an uninstalled ACP agent", new AcpAgentUnavailableError("kimi"), true],
     ["401 (credential)", new DirectApiError("x", 401), false],
     ["403", new DirectApiError("x", 403), false],
@@ -77,6 +78,10 @@ describe("enrichmentFallbackFor", () => {
   test("never for a Codex primary — there is nothing to fall back from", () => {
     expect(enrichmentFallbackFor(settings(undefined, { provider: "acp:kimi" }))).toBeNull();
     expect(enrichmentFallbackFor(settings("codex", { provider: CUSTOM }))).toBeNull();
+  });
+
+  test("never for a disabled ACP agent's primary — that run is on Codex", () => {
+    expect(enrichmentFallbackFor(settings("acp:qwen", {}))).toBeNull();
   });
 
   test("never back onto the primary itself", () => {

@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.1.20 - 2026-10-11
+
+This release makes capture controls and recording setup easier to use.
+
+- Capture Controls - Added Shutter and Clapperboard selector styles, with
+  clear Snap and Record modes and recording sources together in one compact
+  bar. Choose the style in General settings.
+- Recording Devices - Added saved microphone and camera choices before
+  recording, with a live microphone level meter, clipping warning, and a
+  short record-and-playback test to check your input before a take.
+- Recording Devices - Improved handling of disconnected inputs and macOS
+  Bluetooth and virtual microphones, making the selected device more dependable
+  and showing when a saved device is disconnected or a source is unavailable.
+- macOS Dock - Fixed redundant Dock transitions when opening additional
+  windows, avoiding stale miniature Dock icons.
+
 ## v1.1.19 - 2026-10-08
 
 This release adds presenter camera recording and batch AI re-runs, with more

@@ -41,7 +41,7 @@
   "devDependencies": {
     "@types/node": "24.12.4",
     "jsdom": "^29.0.2",
-    "oxc-parser": "0.107.0",
+    "oxc-parser": "0.152.0",
     "oxlint": "1.86.0",
     "oxlint-tsgolint": "7.0.2003",
     "typescript": "^6.0.2",

@@ -1320,22 +1320,30 @@ async function runCaptureEnrichment(params: {
           !isEnrichmentBackendUnavailable(primaryError)) {
         throw primaryError;
       }
-      const fallback = await params.resolveFallback();
-      abortController.signal.throwIfAborted();
       // Nothing answered at the primary: move the SAME run (prepared media
-      // and all) to the fallback, once.
+      // and all) to the fallback, once. Logged before resolving, so the
+      // primary's failure is on record even if resolution fails.
       log.warn("capture enrichment primary unreachable; using fallback", {
         runId: params.runId,
         captureId,
         triggerSource: params.triggerSource,
         provider,
-        fallbackProvider: fallback.provider,
         message: agentErrorMessage(primaryError)
       });
       await releaseClient(active);
       client = null;
       slot?.release();
       slot = undefined;
+      // Resolving can list the Codex catalog, which has no deadline of its
+      // own; the run is already `running`, so bound it like a turn.
+      const fallback = await withTurnTimeout(params.resolveFallback(), active.turnTimeoutMs,
+        () => abortController.abort());
+      abortController.signal.throwIfAborted();
+      log.info("capture enrichment fallback resolved", {
+        runId: params.runId,
+        fallbackProvider: fallback.provider,
+        selectedModel: fallback.selectedModel
+      });
       const primaryProvider = active.provider;
       active = fallback;
       provider = fallback.provider;

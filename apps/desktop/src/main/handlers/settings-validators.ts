@@ -1048,6 +1048,11 @@ function aiSurfaceSettingPath(surface: string): string {
   return surface === "enrichmentFallback" ? "ai.enrichmentFallback" : `ai.defaults.${surface}`;
 }
 
+/** The error-code stem for the same block, so code and message name one path. */
+function aiSurfaceErrorCode(surface: string): string {
+  return surface === "enrichmentFallback" ? "invalid_ai_enrichmentFallback" : `invalid_ai_defaults_${surface}`;
+}
+
 /** Validate a surface's `provider` backend selector (every surface now —
  *  Library / Sizzle chat AND enrichment). Accepts "" / "codex" /
  *  "acp:<known-id>"; rejects unknown `acp:` ids and any other free-text token
@@ -1061,12 +1066,12 @@ function validateChatSurfaceProvider(
     const id = value.slice("acp:".length);
     if (isBuiltInAcpAgentId(id)) return null;
     return validationError(
-      `invalid_ai_defaults_${surface}_provider`,
+      `${aiSurfaceErrorCode(surface)}_provider`,
       `settings:write: ${aiSurfaceSettingPath(surface)}.provider has unknown ACP agent ${JSON.stringify(id)} (allowed: ${BUILT_IN_ACP_AGENT_IDS.join("/")})`
     );
   }
   return validationError(
-    `invalid_ai_defaults_${surface}_provider`,
+    `${aiSurfaceErrorCode(surface)}_provider`,
     `settings:write: ${aiSurfaceSettingPath(surface)}.provider must be "", "codex", or "acp:<${BUILT_IN_ACP_AGENT_IDS.join("|")}>" (got ${JSON.stringify(value)})`
   );
 }
@@ -1074,7 +1079,7 @@ function validateChatSurfaceProvider(
 function validateAiSurfaceDefault(surface: string, raw: unknown): PwrSnapError | null {
   if (!isObject(raw)) {
     return validationError(
-      `invalid_ai_defaults_${surface}`,
+      `${aiSurfaceErrorCode(surface)}`,
       `settings:write: ${aiSurfaceSettingPath(surface)} must be an object`
     );
   }
@@ -1085,7 +1090,7 @@ function validateAiSurfaceDefault(surface: string, raw: unknown): PwrSnapError |
   if (!isUndefined(raw.provider)) {
     if (!isString(raw.provider)) {
       return validationError(
-        `invalid_ai_defaults_${surface}_provider`,
+        `${aiSurfaceErrorCode(surface)}_provider`,
         `settings:write: ${aiSurfaceSettingPath(surface)}.provider must be a string`
       );
     }
@@ -1097,7 +1102,7 @@ function validateAiSurfaceDefault(surface: string, raw: unknown): PwrSnapError |
     if (isUndefined(v)) continue;
     if (!isString(v)) {
       return validationError(
-        `invalid_ai_defaults_${surface}_${key}`,
+        `${aiSurfaceErrorCode(surface)}_${key}`,
         `settings:write: ${aiSurfaceSettingPath(surface)}.${key} must be a string`
       );
     }
@@ -1108,7 +1113,7 @@ function validateAiSurfaceDefault(surface: string, raw: unknown): PwrSnapError |
     // oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
     if (v.length > 0 && !(typeof raw.provider === "string" && raw.provider.startsWith("custom:") && v.length <= 200 && /^[^\x00-\x1f\x7f]+$/.test(v)) && !isAiModelTokenShape(v)) {
       return validationError(
-        `invalid_ai_defaults_${surface}_${key}`,
+        `${aiSurfaceErrorCode(surface)}_${key}`,
         `settings:write: ${aiSurfaceSettingPath(surface)}.${key} must be a non-empty model id under 200 chars with no control characters (got ${JSON.stringify(v)})`
       );
     }
@@ -1121,7 +1126,7 @@ function validateAiSurfaceDefault(surface: string, raw: unknown): PwrSnapError |
     !isAiReasoningEffort(raw.reasoning)
   ) {
     return validationError(
-      `invalid_ai_defaults_${surface}_reasoning`,
+      `${aiSurfaceErrorCode(surface)}_reasoning`,
       `settings:write: ${aiSurfaceSettingPath(surface)}.reasoning must be "" or one of ${AI_REASONING_EFFORTS.join("/")}`
     );
   }

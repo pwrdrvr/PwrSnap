@@ -570,6 +570,43 @@ describe("Codex handlers", () => {
   });
 
 
+  // A fallback that fails too still says it was a fallback run: the pill
+  // explains both failures from `fallbackFrom` on the failed run.
+  test("a failed fallback fails the run and keeps fallbackFrom", async () => {
+    const http = await server((_req, res) => { res.writeHead(503).end(); });
+    const entry = model(`${http.url}/v1`);
+    entry.capabilities.streaming = false;
+    await http.close();
+    const settings = testSettings();
+    settings.ai.enabled = true;
+    settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+    settings.ai.defaults.enrichment = { provider: `custom:${entry.id}` };
+    settings.ai.enrichmentFallback = {};
+    settings.ai.customConnections = [{ id: entry.connectionId, name: "Local fixture",
+      baseUrl: entry.baseUrl, protocol: entry.protocol, auth: entry.auth }];
+    settings.ai.customModels = [entry];
+    const service = new CustomModelService({ read: async () => settings,
+      write: async () => { throw new Error("Unexpected settings write"); } },
+    { headers: async () => ({}) } as unknown as CustomCredentials, async () => undefined);
+    const serviceSpy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
+    const failing = {
+      enrichCapture: async () => { throw new Error("model overloaded"); },
+      close: async () => undefined
+    };
+    try {
+      registerCodexHandlers({ clientFactory: () => failing as never, settingsReader: async () => settings,
+        budget: new AiEnrichmentBudget() });
+      const result = await bus.dispatch("codex:enrich", { captureId: "cap_1" }, { principal: "ipc" });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      await waitFor(() => ["completed", "failed"].includes(getAiRun(result.value.runId)?.status ?? ""));
+      expect(getAiRun(result.value.runId)).toMatchObject({ status: "failed", fallbackFrom: `custom:${entry.id}` });
+      expect(getCaptureEnrichment("cap_1")).toMatchObject({ fallbackFrom: `custom:${entry.id}` });
+    } finally {
+      serviceSpy.mockRestore();
+    }
+  });
+
   test("eight direct enrichments share the connection queue; queued and active cancellation never dispatch again", async () => {
     const received: Array<{ model: string; reply: () => void }> = [];
     let active = 0;

@@ -176,6 +176,21 @@ class CommandBus {
     this.cancellation.delete(key);
   }
 
+  /**
+   * The signal a dispatch keyed by `key` would get, for main-process work
+   * that runs a handler's body without going through `dispatch`, so that
+   * `cancel(key)` still reaches it. Creates the scope when none exists, as
+   * `dispatch` does.
+   */
+  cancellationSignal(key: string): AbortSignal {
+    let controller = this.cancellation.get(key);
+    if (controller === undefined) {
+      controller = new AbortController();
+      this.cancellation.set(key, controller);
+    }
+    return controller.signal;
+  }
+
   async dispatch<C extends CommandName>(
     name: C,
     req: Req<C>,

@@ -13,7 +13,9 @@ import {
   DEFAULT_ENRICHMENT_REASONING_EFFORT,
   RejectTagRequestSchema,
   customEnrichmentConcurrency,
+  aiEnrichmentRefillIntervalMs,
   applyCodexModelVisibility,
+  effectiveAiEnrichmentRateLimit,
   codexEffortForModel,
   hasObsoleteCodexDefaults,
   resolveManagedCodexEnrichmentModel,
@@ -32,6 +34,8 @@ import type {
   CustomConnection,
   ResolvedCustomModel,
   PwrSnapError,
+  Req,
+  Res,
   Result,
   Settings,
   SettingsPatch
@@ -59,7 +63,11 @@ import { listCodexModels, type CodexModelLister } from "../ai/codex-model-client
 import { codexEnvForProfile } from "../ai/agent-kit-bindings";
 import { agentErrorMessage } from "../ai/agent-error-message";
 import { estimateAiUsageCost } from "../ai/ai-usage-cost";
-import { aiEnrichmentBudget, type AiEnrichmentBudget } from "../ai/enrichment-budget";
+import {
+  AI_ENRICHMENT_BUDGET_DEFAULTS,
+  aiEnrichmentBudget,
+  type AiEnrichmentBudget
+} from "../ai/enrichment-budget";
 import {
   prepareEnrichmentImage,
   prepareEnrichmentVideoFrames,
@@ -579,6 +587,22 @@ export function maybeEnqueueCaptureEnrichment(captureId: string): void {
     });
 }
 
+/** Which bucket an enqueue draws on. Never a request field: see
+ *  `enqueueEnrichment` in `registerCodexHandlers`. */
+type EnrichmentBudgetPolicy = "live" | "operator-repair";
+
+/** How the operator-started re-run (enrichment-repair-job.ts) enqueues
+ *  enrichment. It has no bus verb: `registerCodexHandlers` returns it, and
+ *  index.ts hands it to the repair handlers in the same process. */
+export type EnrichmentRepairDispatcher = {
+  /** Enqueue one capture as `library-repair`, outside the live budget.
+   *  Every other refusal (AI off, no consent, the breaker) still applies. */
+  enrich: (captureId: string) => Promise<Result<Res<"codex:enrich">, PwrSnapError>>;
+  /** Least time between two repair starts: one refill interval of the
+   *  rate limit in force (the user's steady rate, without its burst). */
+  dispatchIntervalMs: () => Promise<number>;
+};
+
 export function registerCodexHandlers(params?: {
   clientFactory?: CodexClientFactory;
   modelLister?: CodexModelLister;
@@ -591,7 +615,7 @@ export function registerCodexHandlers(params?: {
   /** Override the per-turn enrichment timeout (ms). Defaults to
    *  `ENRICHMENT_TURN_TIMEOUT_MS`; tests pass a tiny value. */
   turnTimeoutMs?: number;
-}): void {
+}): EnrichmentRepairDispatcher {
   const modelListInFlight = new Map<string, Promise<CodexModelOption[]>>();
   const clientFactory =
     params?.clientFactory ??
@@ -640,8 +664,19 @@ export function registerCodexHandlers(params?: {
     return ok(getCodexCliCompatibilityAlert());
   });
 
-  bus.register("codex:enrich", async (req, ctx) => {
-    const triggerSource = triggerSourceOrDefault(req.triggerSource, "unknown");
+  // The one enqueue path. `budgetPolicy` never comes from the request: the
+  // bus verb below always passes "live", whatever `triggerSource` says, and
+  // only the in-process repair dispatcher this function returns passes
+  // "operator-repair". So no renderer, HTTP or MCP caller can claim the
+  // exemption by naming a trigger source.
+  const enqueueEnrichment = async (
+    req: Req<"codex:enrich">,
+    ctx: CommandContext,
+    budgetPolicy: EnrichmentBudgetPolicy
+  ): Promise<Result<Res<"codex:enrich">, PwrSnapError>> => {
+    const triggerSource = budgetPolicy === "operator-repair"
+      ? "library-repair"
+      : triggerSourceOrDefault(req.triggerSource, "unknown");
     let settings: Settings;
     try {
       settings = await settingsReader();
@@ -692,63 +727,82 @@ export function registerCodexHandlers(params?: {
 
     const managedEnrichment = managedEnrichmentByCatalog.get(codexCatalogKey(settings)) ?? undefined;
     const codexCommand = codexCommandForSettings(settings);
-    const budgetDecision = budget.consume(settings);
-    broadcastAiBudgetUpdated(budgetDecision.after);
-    if (!budgetDecision.allowed) {
-      log.warn("capture enrichment budget limited", {
+    let bucketBefore: AiEnrichmentBudgetStatus;
+    let bucketAfter: AiEnrichmentBudgetStatus;
+    if (budgetPolicy === "operator-repair") {
+      // A re-run the operator started from a preview that named its size.
+      // It paces itself (enrichment-repair-job.ts) and takes nothing from
+      // the bucket live captures draw on, so it can neither starve them nor
+      // count toward the breaker. The status is logged for context only.
+      bucketBefore = budget.status(settings);
+      bucketAfter = bucketBefore;
+      log.info("capture enrichment outside the live budget", {
+        captureId: capture.id,
+        captureKind: capture.kind,
+        triggerSource,
+        bucket: bucketBefore
+      });
+    } else {
+      const budgetDecision = budget.consume(settings);
+      broadcastAiBudgetUpdated(budgetDecision.after);
+      if (!budgetDecision.allowed) {
+        log.warn("capture enrichment budget limited", {
+          captureId: capture.id,
+          captureKind: capture.kind,
+          sourceAppName: capture.source_app_name,
+          sourceAppBundleId: capture.source_app_bundle_id,
+          triggerSource,
+          codexCommand,
+          reason: budgetDecision.reason,
+          bucketBefore: budgetDecision.before,
+          bucketAfter: budgetDecision.after
+        });
+        if (budgetDecision.shouldDisableAi) {
+          const disabledAt = new Date().toISOString();
+          void settingsWriter({
+            ai: {
+              enabled: false,
+              budgetSafetyDisabledAt: disabledAt
+            }
+          })
+            .then((nextSettings) => {
+              const status = budget.status(nextSettings);
+              broadcastAiBudgetUpdated(status);
+              log.warn("AI enrichment disabled by budget circuit breaker", {
+                captureId: capture.id,
+                triggerSource,
+                disabledAt,
+                limitedAttemptsLastHour: status.limitedAttemptsLastHour,
+                disableThreshold: status.disableThreshold
+              });
+            })
+            .catch((error: unknown) => {
+              log.warn("AI enrichment budget auto-disable failed", {
+                captureId: capture.id,
+                triggerSource,
+                message: error instanceof Error ? error.message : String(error)
+              });
+            });
+        }
+        return validationError(
+          budgetDecision.shouldDisableAi ? "ai_budget_safety_disabled" : "ai_budget_limited",
+          budgetDecision.shouldDisableAi
+            ? "AI enrichment was disabled after repeated budget exhaustion"
+            : "AI enrichment is in budget-limited slow mode"
+        );
+      }
+      log.info("capture enrichment budget consumed", {
         captureId: capture.id,
         captureKind: capture.kind,
         sourceAppName: capture.source_app_name,
         sourceAppBundleId: capture.source_app_bundle_id,
         triggerSource,
-        codexCommand,
-        reason: budgetDecision.reason,
         bucketBefore: budgetDecision.before,
         bucketAfter: budgetDecision.after
       });
-      if (budgetDecision.shouldDisableAi) {
-        const disabledAt = new Date().toISOString();
-        void settingsWriter({
-          ai: {
-            enabled: false,
-            budgetSafetyDisabledAt: disabledAt
-          }
-        })
-          .then((nextSettings) => {
-            const status = budget.status(nextSettings);
-            broadcastAiBudgetUpdated(status);
-            log.warn("AI enrichment disabled by budget circuit breaker", {
-              captureId: capture.id,
-              triggerSource,
-              disabledAt,
-              limitedAttemptsLastHour: status.limitedAttemptsLastHour,
-              disableThreshold: status.disableThreshold
-            });
-          })
-          .catch((error: unknown) => {
-            log.warn("AI enrichment budget auto-disable failed", {
-              captureId: capture.id,
-              triggerSource,
-              message: error instanceof Error ? error.message : String(error)
-            });
-          });
-      }
-      return validationError(
-        budgetDecision.shouldDisableAi ? "ai_budget_safety_disabled" : "ai_budget_limited",
-        budgetDecision.shouldDisableAi
-          ? "AI enrichment was disabled after repeated budget exhaustion"
-          : "AI enrichment is in budget-limited slow mode"
-      );
+      bucketBefore = budgetDecision.before;
+      bucketAfter = budgetDecision.after;
     }
-    log.info("capture enrichment budget consumed", {
-      captureId: capture.id,
-      captureKind: capture.kind,
-      sourceAppName: capture.source_app_name,
-      sourceAppBundleId: capture.source_app_bundle_id,
-      triggerSource,
-      bucketBefore: budgetDecision.before,
-      bucketAfter: budgetDecision.after
-    });
     // `ai.defaults.enrichment.provider` is a BACKEND selector ("" / codex →
     // Codex; "acp:<id>" → an ACP agent). The selected model is resolved against
     // that backend so an ACP run carries its OWN model id (or "" → agent
@@ -833,14 +887,16 @@ export function registerCodexHandlers(params?: {
       ...(resolveFallback !== undefined ? { resolveFallback } : {}),
       primaryHealth,
       triggerSource,
-      budgetBefore: budgetDecision.before,
-      budgetAfter: budgetDecision.after,
+      budgetBefore: bucketBefore,
+      budgetAfter: bucketAfter,
       ctx,
       clientFactory,
       closeClientAfterRun
     });
     return ok({ runId: run.id });
-  });
+  };
+
+  bus.register("codex:enrich", (req, ctx) => enqueueEnrichment(req, ctx, "live"));
 
   bus.register("codex:enrichment", async (req) => {
     return ok(getCaptureEnrichment(req.captureId));
@@ -1137,6 +1193,42 @@ export function registerCodexHandlers(params?: {
       );
     });
   }
+
+  return {
+    enrich: async (captureId) => {
+      try {
+        return await enqueueEnrichment(
+          { captureId },
+          // The scope a bus dispatch keyed by capture id gets, so deleting
+          // the capture still aborts the run.
+          { signal: bus.cancellationSignal(captureId), principal: "ipc" },
+          "operator-repair"
+        );
+      } catch (cause) {
+        // What the bus turns a throwing handler into, so one bad capture
+        // fails on its own instead of ending the whole re-run.
+        log.error("repair enrichment threw", {
+          captureId,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+        return err({
+          kind: "unknown",
+          code: "handler_threw",
+          message: cause instanceof Error ? cause.message : String(cause),
+          cause
+        });
+      }
+    },
+    dispatchIntervalMs: async () => {
+      try {
+        const settings = await settingsReader();
+        return aiEnrichmentRefillIntervalMs(effectiveAiEnrichmentRateLimit(settings.ai.enrichmentRateLimit));
+      } catch {
+        // The next `enrich` reports the read failure and stops the job.
+        return AI_ENRICHMENT_BUDGET_DEFAULTS.refillIntervalMs;
+      }
+    }
+  };
 }
 
 async function runCaptureEnrichment(params: {

@@ -2,10 +2,10 @@
 //
 // Pick what to re-run (Failed, Never ran, or both), a capture-time window,
 // and which apps. The counts are live from main. Start hands the batch to
-// a background job in main (`codex:repair:*`), which works through it one
-// snap at a time, newest first, without eating the budget new captures
-// need. Closing the dialog while it runs collapses it to a progress toast
-// in the lower-left stack; clicking the toast opens the dialog again.
+// a background job in main (`codex:repair:*`), which works through it
+// newest first at its own pace, outside the budget new captures draw on.
+// Closing the dialog while it runs collapses it to a progress toast in
+// the lower-left stack; clicking the toast opens the dialog again.
 //
 // Apps work like a picker: every app runs until you click some. A click
 // selects or unselects an app; ⌥-click excludes one. So "never ran, just
@@ -361,7 +361,7 @@ export function EnrichmentRepairDialog({
         <footer className="ps-repair__foot">
           <span className="ps-repair__plan">
             {running
-              ? "Runs newest first and keeps some AI budget free for new snaps."
+              ? "Runs newest first, paced, without using the AI budget new snaps draw on."
               : total > 0
                 ? `${plural(total, "snap")}, newest first, ${concurrency === 1 ? "one at a time" : `${concurrency} at a time`}.`
                 : statuses.length === 0

@@ -672,12 +672,15 @@ const applicationMenuActions: ApplicationMenuActions = {
 /**
  * Electron 44 made every clipboard read async (clipboard/system-clipboard.ts),
  * so `menu-will-show` can no longer settle the item before the menu draws:
- * it starts a read whose answer usually lands after the menu is already up.
- * What keeps the item right is refreshing on activation — a copy made in
- * another app only reaches this menu by way of PwrSnap becoming active,
- * which fires `browser-window-focus`, or `did-become-active` on macOS when
- * no window takes focus. Both are wired next to the clipboard-changed
- * listener. A late answer from an older read never overwrites a newer one.
+ * the read it starts lands after the menu is up. After a copy in another
+ * app, the first open of File can show the previous answer; the next is
+ * right. A late answer from an older read never overwrites a newer one.
+ *
+ * Do not fix that by also refreshing on window focus or app activation. The
+ * Electron 44 upgrade tried it: when no image type is listed, the probe reads
+ * the clipboard's file URL and text, and on macOS reading the bytes of a
+ * Universal Clipboard or remote-desktop item is what pulls it across the
+ * network. It then ran on every click into PwrSnap.
  */
 function refreshPasteFromClipboardMenu(): void {
   const item = pasteFromClipboardMenuItem;
@@ -2001,11 +2004,6 @@ export function bootstrapApp(): void {
     // time. Listeners outlive the menu (re-set on developerMode change
     // via installApplicationMenu), so this single subscribe survives
     // every menu rebuild.
-    // Writes from other apps: see refreshPasteFromClipboardMenu.
-    app.on("browser-window-focus", refreshPasteFromClipboardMenu);
-    if (process.platform === "darwin") {
-      app.on("did-become-active", refreshPasteFromClipboardMenu);
-    }
     clipboardEvents.on("changed", () => {
       refreshPasteFromClipboardMenu();
       for (const win of BrowserWindow.getAllWindows()) {

@@ -46,6 +46,7 @@ const mocks = vi.hoisted(() => {
     updaterEvents,
     native: emitter(),
     broadcast: vi.fn(),
+    installAttempt: undefined as undefined | Record<string, unknown>,
     autoUpdater: {
       allowDowngrade: false,
       allowPrerelease: false,
@@ -86,7 +87,7 @@ vi.mock("../update-install-attempt-store", () => ({
   createAppUpdateInstallAttemptStore: () => ({
     clear: () => undefined,
     filePath: () => "",
-    read: () => undefined,
+    read: () => mocks.installAttempt,
     write: (attempt: object) => ({ schemaVersion: 1, ...attempt })
   })
 }));
@@ -176,9 +177,11 @@ beforeEach(() => {
   mocks.autoUpdater.quitAndInstall.mockReset();
   mocks.autoUpdater.autoInstallOnAppQuit = false;
   mocks.autoUpdater.currentVersion = { version: "1.0.0" };
+  mocks.installAttempt = undefined;
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   (await import("../auto-updater")).disposeAutoUpdater();
   setPlatform(originalPlatform);
   process.env.NODE_ENV = originalNodeEnv;
@@ -263,6 +266,38 @@ describe("a newer release replaces a downloaded update", () => {
     expect(mocks.native.count("update-downloaded")).toBe(0);
   });
 
+  test("macOS falls back to the older staged build when Squirrel.Mac never confirms the newer one", async () => {
+    setPlatform("darwin");
+    const updater = await bootWithDownloaded();
+    feed("1.0.2");
+    const second = offerDownload("1.0.2");
+    await updater.checkForAppUpdatesNow("manual");
+    vi.useFakeTimers();
+    mocks.updaterEvents.emit("update-downloaded", { version: "1.0.2" });
+    second.download.resolve([]);
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1_000 - 1);
+    expect(updater.readAppUpdateStatus()).toEqual({ status: "available", version: "1.0.2" });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(updater.readAppUpdateStatus()).toEqual({ status: "downloaded", version: "1.0.1" });
+    expect(mocks.native.count("update-downloaded")).toBe(0);
+  });
+
+  test("an unreadable held version is kept rather than downloaded again every check", async () => {
+    setPlatform("darwin");
+    feed("1.0.1");
+    const first = offerDownload("1.0.1");
+    const updater = await import("../auto-updater");
+    updater.initAppUpdater(() => ({ channel: "latest", train: "stable" }));
+    await vi.waitFor(() => expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1));
+    mocks.updaterEvents.emit("update-downloaded", { version: "build-1.0.1" });
+    first.download.resolve([]);
+
+    await expect(updater.checkForAppUpdatesNow("manual")).resolves.toEqual({
+      status: "downloaded", version: "build-1.0.1"
+    });
+    expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+  });
+
   test("the menu check reports the newer build, not the one it replaced", async () => {
     setPlatform("darwin");
     const updater = await bootWithDownloaded();
@@ -334,5 +369,37 @@ describe("a newer release replaces a downloaded update", () => {
       status: "downloaded", version: "1.0.1", downgrade: true
     });
     expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("an install that lands past the recorded version", () => {
+  function attempt(expectedVersion: string) {
+    return {
+      schemaVersion: 1, expectedVersion, fromVersion: "1.0.0",
+      channel: "latest", train: "stable", attemptedAt: "2026-10-11T00:00:00.000Z"
+    };
+  }
+
+  // Squirrel.Mac can finish staging the newer build after the older Restart
+  // offer was taken. Landing on it is a success, not a failed install whose
+  // "retry" would move the user back down.
+  test("is not reported as a failed install", async () => {
+    setPlatform("darwin");
+    feed("1.0.2");
+    mocks.autoUpdater.currentVersion = { version: "1.0.2" };
+    mocks.installAttempt = attempt("1.0.1");
+    const updater = await import("../auto-updater");
+    updater.initAppUpdater(() => ({ channel: "latest", train: "stable" }));
+    await vi.waitFor(() => expect(updater.readAppUpdateStatus().status).toBe("no-update"));
+  });
+
+  test("still reports the install that never happened", async () => {
+    setPlatform("darwin");
+    mocks.installAttempt = attempt("1.0.1");
+    const updater = await import("../auto-updater");
+    updater.initAppUpdater(() => ({ channel: "latest", train: "stable" }));
+    expect(updater.readAppUpdateStatus()).toMatchObject({
+      status: "install-failed", version: "1.0.1", currentVersion: "1.0.0"
+    });
   });
 });

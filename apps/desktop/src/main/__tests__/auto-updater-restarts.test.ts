@@ -239,6 +239,21 @@ describe("production release requests across process restarts", () => {
     expect(mocks.check).not.toHaveBeenCalled();
   });
 
+  test("a click that joins a deferred startup check still reads the feed while a download is held", async () => {
+    updater.initAppUpdater(() => ({ train: "stable", channel: "latest" }));
+    const downloaded = mocks.updater.on.mock.calls.find(([event]) => event === "update-downloaded")?.[1] as
+      (info: { version: string }) => void;
+    downloaded({ version: "1.0.1" });
+    // Inside the new-profile grace period the automatic check is deferred,
+    // and it must say so even with a download held: that answer is what
+    // makes a click that joined it run a real check of its own.
+    const startup = updater.checkForAppUpdatesNow("startup");
+    const click = updater.checkForAppUpdatesNow("manual");
+    await expect(startup).resolves.toEqual({ status: "skipped", reason: "automatic update check deferred" });
+    await expect(click).resolves.toEqual({ status: "downloaded", version: "1.0.1" });
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([latestURL, pageURL]);
+  });
+
   test("schedules from the successful response time so network latency does not skip the next hourly refresh", async () => {
     fetchMock.mockImplementation(async (input) => {
       vi.setSystemTime(Date.now() + 500);

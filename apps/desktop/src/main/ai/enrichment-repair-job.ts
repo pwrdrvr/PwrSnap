@@ -32,6 +32,7 @@
 // process split is on) and in memory only: a restart forgets it, and the
 // boot sweep fails whatever run it had in flight.
 
+import { IterableMapper } from "@shutterstock/p-map-iterable";
 import type {
   AiRunStatus,
   EnrichmentRepairCriteria,
@@ -152,24 +153,37 @@ export class EnrichmentRepairRunner {
     this.deps.publish(null);
   }
 
-  /** `concurrency` workers pull from one newest-first list. */
+  /** Up to `concurrency` captures at once from one newest-first list. The
+   *  source stops yielding once the job is cancelled or has a stop reason,
+   *  so nothing new starts after either; results are tallied as each run
+   *  finishes, not in list order. */
   private async run(active: ActiveJob, ids: readonly string[]): Promise<void> {
     const { signal } = active.abort;
-    let next = 0;
-    const worker = async (): Promise<void> => {
-      while (!signal.aborted && active.stopReason === null && next < ids.length) {
-        const captureId = ids[next++]!;
+    function* pending(): Generator<string> {
+      for (const captureId of ids) {
+        if (signal.aborted || active.stopReason !== null) return;
+        yield captureId;
+      }
+    }
+    const runs = new IterableMapper(
+      pending(),
+      async (captureId): Promise<Outcome | null> => {
         const status = this.deps.statusOf(captureId);
         if (status === "gone" || status === "other" || !active.job.criteria.statuses.includes(status)) {
-          this.update(active, { skipped: active.job.skipped + 1, processed: active.job.processed + 1 });
-          continue;
+          return { kind: "skipped" };
         }
         const outcome = await this.runOne(active, captureId);
-        if (signal.aborted) return;
-        if (outcome.kind === "stop") {
-          active.stopReason ??= outcome.reason;
-          return;
-        }
+        if (signal.aborted) return null;
+        // Set here, not when the result is read: the mapper may pull the
+        // next capture before the loop below sees this one.
+        if (outcome.kind === "stop") active.stopReason ??= outcome.reason;
+        return outcome;
+      },
+      { concurrency: active.job.concurrency, maxUnread: active.job.concurrency }
+    );
+    try {
+      for await (const outcome of runs) {
+        if (outcome === null || outcome.kind === "stop" || signal.aborted) continue;
         this.update(active, {
           processed: active.job.processed + 1,
           ...(outcome.kind === "succeeded"
@@ -179,9 +193,6 @@ export class EnrichmentRepairRunner {
               : { failed: active.job.failed + 1 })
         });
       }
-    };
-    try {
-      await Promise.all(Array.from({ length: active.job.concurrency }, () => worker()));
       if (signal.aborted) return;
       if (active.stopReason !== null) this.finish(active, "stopped", active.stopReason);
       else this.finish(active, "completed", null);

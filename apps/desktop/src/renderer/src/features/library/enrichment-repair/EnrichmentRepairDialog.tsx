@@ -1,171 +1,140 @@
 // Review and re-run AI enrichment for snaps it failed on or never saw.
 //
-// Pick what to re-run (Failed, Never ran, or both), a capture-time window,
-// and which apps. The counts are live from main. Start hands the batch to
-// a background job in main (`codex:repair:*`), which works through it
-// newest first at its own pace, outside the budget new captures draw on.
-// Closing the dialog while it runs collapses it to a progress toast in
-// the lower-left stack; clicking the toast opens the dialog again.
+// One dialog, three views, each replacing the one before it so no two speak
+// at once:
 //
-// Apps work like a picker: every app runs until you click some. A click
-// selects or unselects an app; ⌥-click excludes one. So "never ran, just
-// the three apps I search most" is three clicks, and "the rest" later is
-// the same dialog with All apps.
+//   set up   — what to re-run (Failed / Never ran tiles, with live counts),
+//              then one line of refinements ("Captured in the last 30 days
+//              from all apps · one at a time"), each a token with a small
+//              popover. The total lives in the one primary button.
+//   running  — a big count, a split bar (fixed / failed again / skipped /
+//              in flight) and one live line. Closing it leaves the job
+//              running, collapsed to a toast in the lower-left stack.
+//   outcome  — one message for how it ended, and the obvious next step.
+//
+// Main owns the job (`codex:repair:*`); every view is drawn from the job as
+// broadcast. The design is "PwrSnap Enrichment Repair" in Claude Design.
 
-import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import type {
   EnrichmentRepairAppCount,
   EnrichmentRepairAppFacet,
+  EnrichmentRepairCriteria,
   EnrichmentRepairJob,
+  EnrichmentRepairOpenRequest,
   EnrichmentRepairPreview,
   EnrichmentRepairStatus
 } from "@pwrsnap/shared";
 
 import { dispatch } from "../../../lib/pwrsnap";
 import { useModal } from "../../../lib/useModal";
-import { AppIcon } from "../../shared/AppIcons";
 import { APP_INFO } from "../captures";
-import { RepairProgressBar, RepairProgressSummary } from "./EnrichmentRepairProgress";
+import {
+  AppsPopover,
+  PacePopover,
+  RepairToken,
+  WhenPopover,
+  type RepairPopoverId
+} from "./EnrichmentRepairPopovers";
+import { RepairActivityLine, RepairLegend, RepairSplitBar } from "./EnrichmentRepairProgress";
 import {
   ALL_APPS,
-  REPAIR_CONCURRENCY_OPTIONS,
+  DEFAULT_REPAIR_WINDOW,
   WINDOW_PRESETS,
+  formatElapsed,
   plural,
-  repairAppRowState,
+  repairAppsToken,
   repairCriteria,
-  toggleRepairApp,
+  repairJobRecap,
+  repairOutcome,
+  repairPaceToken,
+  repairSetupFromRequest,
+  repairStopReasonText,
+  repairWindowToken,
   type RepairConcurrency,
+  type RepairWindow,
   type RepairWindowPreset
 } from "./enrichment-repair-model";
 
 const PREVIEW_DEBOUNCE_MS = 150;
-
-const STATUS_OPTIONS: ReadonlyArray<{ id: EnrichmentRepairStatus; label: string; detail: string }> = [
-  { id: "failed", label: "Failed", detail: "The last AI run failed or was cancelled" },
-  { id: "never", label: "Never ran", detail: "AI has not read these snaps yet" }
-];
+const BOTH: EnrichmentRepairStatus[] = ["failed", "never"];
 
 function appLabel(app: EnrichmentRepairAppCount): string {
   if (app.appKey === "") return "Unknown app";
   return app.name ?? APP_INFO[app.appKey]?.name ?? app.bundleId ?? app.appKey;
 }
 
+async function preview(criteria: EnrichmentRepairCriteria): Promise<EnrichmentRepairPreview | null> {
+  const result = await dispatch("codex:repair:preview", { criteria });
+  return result.ok ? result.value : null;
+}
+
 export function EnrichmentRepairDialog({
   job,
+  request,
+  providerLabel,
+  aiEnabled,
   altModifierLabel,
   onJobChange,
+  onEnableAi,
   onClose
 }: {
   job: EnrichmentRepairJob | null;
+  /** Set when something else opened the dialog (the rail, Settings, the
+   *  back-online toast): open on set up, configured as it asks. */
+  request?: EnrichmentRepairOpenRequest | undefined;
+  /** Who reads the snaps: "Codex", "Local llama.cpp". */
+  providerLabel: string;
+  aiEnabled: boolean;
   /** "⌥" on macOS, "Alt" elsewhere. */
   altModifierLabel: string;
   onJobChange: (job: EnrichmentRepairJob | null) => void;
+  /** Turn AI enrichment back on (the Library's own toggle, consent and all). */
+  onEnableAi: () => void;
   onClose: () => void;
 }): ReactElement {
   const running = job?.state === "running";
-  const [statuses, setStatuses] = useState<readonly EnrichmentRepairStatus[]>(["failed"]);
-  const [preset, setPreset] = useState<RepairWindowPreset>("30d");
-  const [custom, setCustom] = useState({ from: "", to: "" });
-  const [apps, setApps] = useState<EnrichmentRepairAppFacet>(ALL_APPS);
-  const [appQuery, setAppQuery] = useState("");
-  const [preview, setPreview] = useState<EnrichmentRepairPreview | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [starting, setStarting] = useState(false);
-  const [concurrency, setConcurrency] = useState<RepairConcurrency>(1);
+  // A finished job shows its outcome, unless the dialog was opened to set
+  // up a new run or the user asked for one.
+  const [wantSetup, setWantSetup] = useState(request !== undefined);
+  const view: "setup" | "running" | "outcome" = running
+    ? "running"
+    : job !== null && !wantSetup
+      ? "outcome"
+      : "setup";
+
   const closeRef = useRef<HTMLButtonElement | null>(null);
   const dialogRef = useModal<HTMLElement>({ onClose, initialFocusRef: closeRef });
 
-  // Every app any preview has named, so a picked app that drops to zero in
-  // a narrower window keeps its name and icon.
-  const seenApps = useRef(new Map<string, EnrichmentRepairAppCount>());
+  // A job that runs while the dialog is open ends on its outcome, even when
+  // the dialog was opened to set up a new one.
+  useEffect(() => {
+    if (running) setWantSetup(false);
+  }, [running]);
 
-  const criteria = useMemo(
-    () => repairCriteria({ statuses, preset, custom, apps, now: Date.now() }),
-    [statuses, preset, custom, apps]
+  // Each view replaces the last, taking the focused control with it (Start,
+  // Stop, a follow-up): put focus somewhere a keyboard user can go on from.
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (dialog !== null && !dialog.contains(document.activeElement)) closeRef.current?.focus();
+  }, [view, dialogRef]);
+
+  const startJob = useCallback(
+    async (criteria: EnrichmentRepairCriteria, concurrency: number): Promise<string | null> => {
+      const result = await dispatch("codex:repair:start", { criteria, concurrency });
+      if (!result.ok) return result.error.message;
+      setWantSetup(false);
+      onJobChange(result.value);
+      return null;
+    },
+    [onJobChange]
   );
 
-  // Live counts. Re-read as the job finishes snaps, since each one it
-  // repairs leaves these sets.
-  const processed = job?.processed ?? 0;
-  const jobState = job?.state ?? null;
-  useEffect(() => {
-    if (criteria.statuses.length === 0) {
-      setPreview({ total: 0, byStatus: { failed: 0, never: 0 }, apps: [] });
-      return undefined;
-    }
-    let cancelled = false;
-    const timer = window.setTimeout(() => {
-      void dispatch("codex:repair:preview", { criteria }).then((result) => {
-        if (cancelled) return;
-        if (result.ok) {
-          for (const app of result.value.apps) seenApps.current.set(app.appKey, app);
-          setPreview(result.value);
-          setError(null);
-        } else {
-          setError(result.error.message);
-        }
-      });
-    }, PREVIEW_DEBOUNCE_MS);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [criteria, processed, jobState]);
-
-  // Apps with something to re-run, plus any the user picked that dropped to
-  // zero (so they can still be unpicked).
-  const appRows = useMemo(() => {
-    const rows = [...(preview?.apps ?? [])];
-    for (const appKey of apps.appIds) {
-      if (!rows.some((row) => row.appKey === appKey)) {
-        const seen = seenApps.current.get(appKey);
-        rows.push({ appKey, bundleId: seen?.bundleId ?? null, name: seen?.name ?? null, count: 0 });
-      }
-    }
-    const query = appQuery.trim().toLowerCase();
-    return query.length === 0 ? rows : rows.filter((row) => appLabel(row).toLowerCase().includes(query));
-  }, [preview, apps.appIds, appQuery]);
-
-  const total = preview?.total ?? 0;
-  const canStart = !running && !starting && statuses.length > 0 && total > 0;
-
-  const toggleStatus = (status: EnrichmentRepairStatus): void => {
-    setStatuses((current) =>
-      current.includes(status) ? current.filter((s) => s !== status) : [...current, status]
-    );
-  };
-
-  const start = async (): Promise<void> => {
-    if (!canStart) return;
-    setStarting(true);
-    setError(null);
-    // Re-anchor a "last N days" window to now: the dialog may have sat open
-    // since `criteria` was built.
-    const fresh = repairCriteria({ statuses, preset, custom, apps, now: Date.now() });
-    const result = await dispatch("codex:repair:start", { criteria: fresh, concurrency });
-    setStarting(false);
-    if (result.ok) onJobChange(result.value);
-    else setError(result.error.message);
-  };
-
-  const cancelJob = async (): Promise<void> => {
+  const dismissJob = useCallback(async (): Promise<void> => {
     if (job === null) return;
-    const result = await dispatch("codex:repair:cancel", { jobId: job.jobId });
-    if (result.ok) onJobChange(result.value);
-  };
-
-  const dismissJob = async (): Promise<void> => {
-    if (job === null) return;
-    await dispatch("codex:repair:dismiss", { jobId: job.jobId });
     onJobChange(null);
-  };
-
-  const appsSummary =
-    apps.appIds.length === 0
-      ? "All apps"
-      : apps.mode === "include"
-        ? `${plural(apps.appIds.length, "app")} selected`
-        : `All but ${plural(apps.appIds.length, "app")}`;
+    await dispatch("codex:repair:dismiss", { jobId: job.jobId });
+  }, [job, onJobChange]);
 
   return (
     <div
@@ -187,169 +156,289 @@ export function EnrichmentRepairDialog({
           <div>
             <div className="ps-repair__eyebrow">AI enrichment</div>
             <h2 id="ps-repair-title" className="ps-repair__title">
-              Re-run AI on snaps
+              {view === "running" ? "Re-running AI" : "Re-run AI"}
             </h2>
+            <div className="ps-repair__by">
+              Reads with <b>{providerLabel}</b>
+            </div>
           </div>
-          <button ref={closeRef} type="button" className="ps-repair__btn" onClick={onClose}>
-            {running ? "Hide" : "Close"}
+          <button
+            ref={closeRef}
+            type="button"
+            className="ps-repair__x"
+            aria-label={running ? "Hide" : "Close"}
+            data-tip={running ? "Hide" : "Close"}
+            data-tip-detail={running ? "The re-run keeps going" : undefined}
+            onClick={onClose}
+          >
+            <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+              <path d="M2.5 2.5l7 7M9.5 2.5l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
           </button>
         </header>
 
-        <fieldset className="ps-repair__form" disabled={running}>
-          <div className="ps-repair__section">
-            <div className="ps-repair__label">Snaps</div>
-            <div className="ps-repair__chips">
-              {STATUS_OPTIONS.map((option) => (
-                <label key={option.id} className="ps-repair__check" data-tip={option.detail}>
-                  <input
-                    type="checkbox"
-                    checked={statuses.includes(option.id)}
-                    onChange={() => toggleStatus(option.id)}
-                  />
-                  <span>{option.label}</span>
-                  <span className="ps-repair__count">
-                    {preview === null ? "–" : preview.byStatus[option.id].toLocaleString()}
-                  </span>
-                </label>
-              ))}
-            </div>
-          </div>
+        {view === "setup" ? (
+          <RepairSetup
+            request={request}
+            altModifierLabel={altModifierLabel}
+            onStart={startJob}
+            onClose={onClose}
+          />
+        ) : view === "running" && job !== null ? (
+          <RepairRunning job={job} onClose={onClose} onJobChange={onJobChange} />
+        ) : job !== null ? (
+          <RepairOutcomeView
+            job={job}
+            aiEnabled={aiEnabled}
+            onStart={startJob}
+            onEnableAi={onEnableAi}
+            onDone={() => {
+              void dismissJob();
+              onClose();
+            }}
+            onSetUpAnother={() => {
+              setWantSetup(true);
+              void dismissJob();
+            }}
+          />
+        ) : null}
+      </section>
+    </div>
+  );
+}
 
-          <div className="ps-repair__section">
-            <div className="ps-repair__label">Captured</div>
-            <div className="ps-repair__segmented" role="radiogroup" aria-label="Capture window">
-              {WINDOW_PRESETS.map((option) => (
-                <button
-                  key={option.id}
-                  type="button"
-                  role="radio"
-                  aria-checked={preset === option.id}
-                  className={"ps-repair__seg" + (preset === option.id ? " is-active" : "")}
-                  onClick={() => setPreset(option.id)}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-            {preset === "custom" ? (
-              <div className="ps-repair__dates">
-                <label>
-                  <span>From</span>
-                  <input
-                    type="date"
-                    value={custom.from}
-                    onChange={(event) => setCustom((c) => ({ ...c, from: event.target.value }))}
-                  />
-                </label>
-                <label>
-                  <span>To</span>
-                  <input
-                    type="date"
-                    value={custom.to}
-                    onChange={(event) => setCustom((c) => ({ ...c, to: event.target.value }))}
-                  />
-                </label>
-              </div>
-            ) : null}
-          </div>
+// ---- Set up -------------------------------------------------------------
 
-          <div className="ps-repair__section">
-            <div className="ps-repair__label">
-              At a time{" "}
-              <span className="ps-repair__label-note">· the connection's own limit in AI Providers still applies</span>
-            </div>
-            <div className="ps-repair__segmented" role="radiogroup" aria-label="Snaps at a time">
-              {REPAIR_CONCURRENCY_OPTIONS.map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  role="radio"
-                  aria-checked={concurrency === option}
-                  className={"ps-repair__seg" + (concurrency === option ? " is-active" : "")}
-                  onClick={() => setConcurrency(option)}
-                >
-                  {option}
-                </button>
-              ))}
-            </div>
-          </div>
+function RepairSetup({
+  request,
+  altModifierLabel,
+  onStart,
+  onClose
+}: {
+  request: EnrichmentRepairOpenRequest | undefined;
+  altModifierLabel: string;
+  onStart: (criteria: EnrichmentRepairCriteria, concurrency: number) => Promise<string | null>;
+  onClose: () => void;
+}): ReactElement {
+  const initial = useMemo(() => repairSetupFromRequest(request), [request]);
+  const [statuses, setStatuses] = useState<readonly EnrichmentRepairStatus[]>(initial.statuses ?? ["failed"]);
+  const [window, setWindow] = useState<RepairWindow>(initial.window ?? DEFAULT_REPAIR_WINDOW);
+  const [apps, setApps] = useState<EnrichmentRepairAppFacet>(ALL_APPS);
+  const [concurrency, setConcurrency] = useState<RepairConcurrency>(1);
+  const [appQuery, setAppQuery] = useState("");
+  const [popover, setPopover] = useState<RepairPopoverId | null>(null);
+  const [counts, setCounts] = useState<EnrichmentRepairPreview | null>(null);
+  const [windowCounts, setWindowCounts] = useState<Partial<Record<RepairWindowPreset, number>> | null>(null);
+  const [wider, setWider] = useState<EnrichmentRepairPreview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+  const now = Date.now();
 
-          <div className="ps-repair__section ps-repair__section--apps">
-            <div className="ps-repair__apps-hdr">
-              <div className="ps-repair__label">
-                Apps <span className="ps-repair__label-note">· {appsSummary}</span>
-              </div>
-              {apps.appIds.length > 0 ? (
-                <button type="button" className="ps-repair__link" onClick={() => setApps(ALL_APPS)}>
-                  All apps
-                </button>
-              ) : null}
-            </div>
-            <input
-              type="search"
-              className="ps-repair__search"
-              placeholder="Find an app…"
-              aria-label="Find an app"
-              value={appQuery}
-              onChange={(event) => setAppQuery(event.target.value)}
-            />
-            <div className="ps-repair__apps" role="group" aria-label="Apps to re-run">
-              {appRows.length === 0 ? (
-                <div className="ps-repair__empty">
-                  {preview === null ? "Counting…" : "No snaps match."}
-                </div>
-              ) : (
-                appRows.map((app) => {
-                  const state = repairAppRowState(apps, app.appKey);
-                  const name = appLabel(app);
-                  const dimmed = state === "neutral" && apps.mode === "include" && apps.appIds.length > 0;
-                  return (
-                    <button
-                      key={app.appKey}
-                      type="button"
-                      aria-pressed={state !== "neutral"}
-                      aria-label={
-                        state === "excluded" ? `${name} (excluded)` : state === "included" ? `${name} (selected)` : name
-                      }
-                      className={
-                        "ps-repair__app" +
-                        (state === "included" ? " is-active" : "") +
-                        (state === "excluded" ? " is-excluded" : "") +
-                        (dimmed ? " is-dimmed" : "")
-                      }
-                      data-tip={
-                        state === "included"
-                          ? `Click to unselect ${name}`
-                          : state === "excluded"
-                            ? `Click to include ${name} again`
-                            : `Click to select ${name}`
-                      }
-                      data-tip-detail={`${altModifierLabel}-click to ${state === "excluded" ? "stop excluding" : "exclude"} it`}
-                      onClick={(event) => setApps((current) => toggleRepairApp(current, app.appKey, event.altKey))}
-                    >
-                      <span className="ps-repair__app-icon">
-                        <AppIcon
-                          app={app.appKey === "" ? "any" : app.appKey}
-                          size={11}
-                          name={name}
-                          bundleId={app.bundleId ?? undefined}
-                        />
-                      </span>
-                      <span className="ps-repair__app-name">{name}</span>
-                      <span className="ps-repair__count">{app.count.toLocaleString()}</span>
-                    </button>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        </fieldset>
+  // Every app any preview has named, so a picked app that drops to zero in
+  // a narrower window keeps its name and icon.
+  const seenApps = useRef(new Map<string, EnrichmentRepairAppCount>());
 
-        {job !== null ? (
-          <div className="ps-repair__job">
-            <RepairProgressSummary job={job} />
-            <RepairProgressBar job={job} />
-          </div>
+  // The tiles show both counts even when one (or neither) is ticked, so the
+  // preview always asks for something; the batch is only what is ticked.
+  const previewStatuses = useMemo(() => (statuses.length === 0 ? BOTH : statuses), [statuses]);
+  const criteria = useMemo(
+    () => repairCriteria({ statuses: previewStatuses, window, apps, now: Date.now() }),
+    [previewStatuses, window, apps]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    const timer = globalThis.setTimeout(() => {
+      void dispatch("codex:repair:preview", { criteria }).then((result) => {
+        if (cancelled) return;
+        if (result.ok) {
+          for (const app of result.value.apps) seenApps.current.set(app.appKey, app);
+          setCounts(result.value);
+          setError(null);
+        } else {
+          setError(result.error.message);
+        }
+      });
+    }, PREVIEW_DEBOUNCE_MS);
+    return () => {
+      cancelled = true;
+      globalThis.clearTimeout(timer);
+    };
+  }, [criteria]);
+
+  // The window popover shows what each preset would run.
+  useEffect(() => {
+    if (popover !== "when") return undefined;
+    // Counts for other tiles or apps would label the wrong batch.
+    setWindowCounts(null);
+    let cancelled = false;
+    const stamp = Date.now();
+    void Promise.all(
+      WINDOW_PRESETS.map(async (preset) => {
+        const value = await preview(
+          repairCriteria({ statuses: previewStatuses, window: { kind: "preset", preset: preset.id }, apps, now: stamp })
+        );
+        return [preset.id, value?.total] as const;
+      })
+    ).then((entries) => {
+      if (cancelled) return;
+      const next: Partial<Record<RepairWindowPreset, number>> = {};
+      for (const [id, total] of entries) if (total !== undefined) next[id] = total;
+      setWindowCounts(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [popover, previewStatuses, apps]);
+
+  const total = statuses.length === 0 ? 0 : (counts?.total ?? 0);
+  const empty = counts !== null && statuses.length > 0 && total === 0;
+  const allTime = window.kind === "preset" && window.preset === "all";
+
+  // Nothing here: does anything older qualify? Offered as one-click chips.
+  useEffect(() => {
+    if (!empty || allTime) {
+      setWider(null);
+      return undefined;
+    }
+    let cancelled = false;
+    void preview(repairCriteria({ statuses: BOTH, window: { kind: "preset", preset: "all" }, apps, now: Date.now() })).then(
+      (value) => {
+        if (!cancelled) setWider(value);
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [empty, allTime, apps]);
+
+  const appRows = useMemo(() => {
+    const rows = [...(counts?.apps ?? [])];
+    for (const appKey of apps.appIds) {
+      if (!rows.some((row) => row.appKey === appKey)) {
+        const seen = seenApps.current.get(appKey);
+        rows.push({ appKey, bundleId: seen?.bundleId ?? null, name: seen?.name ?? null, count: 0 });
+      }
+    }
+    const query = appQuery.trim().toLowerCase();
+    return query.length === 0 ? rows : rows.filter((row) => appLabel(row).toLowerCase().includes(query));
+  }, [counts, apps.appIds, appQuery]);
+
+  const nameOfKey = (appKey: string): string => {
+    const seen = seenApps.current.get(appKey);
+    return appLabel(seen ?? { appKey, bundleId: null, name: null, count: 0 });
+  };
+
+  const toggleStatus = (status: EnrichmentRepairStatus): void => {
+    setStatuses((current) =>
+      current.includes(status) ? current.filter((s) => s !== status) : BOTH.filter((s) => s === status || current.includes(s))
+    );
+  };
+
+  const start = async (): Promise<void> => {
+    if (starting || total === 0) return;
+    setStarting(true);
+    setError(null);
+    // Re-anchor a "last N days" window to now: the dialog may have sat open
+    // since `criteria` was built.
+    const message = await onStart(repairCriteria({ statuses, window, apps, now: Date.now() }), concurrency);
+    setStarting(false);
+    if (message !== null) setError(message);
+  };
+
+  const windowToken = repairWindowToken(window, now);
+  const windowSet = windowToken !== repairWindowToken(DEFAULT_REPAIR_WINDOW, now);
+
+  const tile = (status: EnrichmentRepairStatus, label: string, detail: string): ReactElement => {
+    const n = counts?.byStatus[status];
+    const on = statuses.includes(status);
+    return (
+      <label className={"ps-repair-tile" + (on ? " is-on" : "") + (n === 0 ? " is-zero" : "")}>
+        <input
+          type="checkbox"
+          className="ps-repair-tile__input"
+          checked={on}
+          onChange={() => toggleStatus(status)}
+        />
+        <span className="ps-repair-tile__box" aria-hidden="true">
+          {on ? "✓" : ""}
+        </span>
+        <span className="ps-repair-tile__label">{label}</span>
+        <span className="ps-repair-tile__n">{n === undefined ? "–" : n.toLocaleString()}</span>
+        <span className="ps-repair-tile__sub">{detail}</span>
+      </label>
+    );
+  };
+
+  return (
+    <>
+      <div className="ps-repair__body">
+        <div className="ps-repair-tiles" role="group" aria-label="Which snaps">
+          {tile("failed", "Failed", "The last AI run failed or was cancelled")}
+          {tile("never", "Never ran", "AI has not read these yet")}
+        </div>
+
+        <div className="ps-repair-scope">
+          <span>Captured</span>
+          <RepairToken
+            id="when"
+            label="Captured"
+            value={windowToken}
+            set={windowSet}
+            open={popover === "when"}
+            onOpenChange={setPopover}
+          >
+            {(close) => (
+              <WhenPopover window={window} counts={windowCounts} now={now} onChange={setWindow} close={close} />
+            )}
+          </RepairToken>
+          <span>from</span>
+          <RepairToken
+            id="apps"
+            label="Apps"
+            value={repairAppsToken(apps, nameOfKey)}
+            set={apps.appIds.length > 0}
+            open={popover === "apps"}
+            onOpenChange={setPopover}
+          >
+            {() => (
+              <AppsPopover
+                apps={apps}
+                rows={appRows}
+                query={appQuery}
+                counting={counts === null}
+                altModifierLabel={altModifierLabel}
+                nameOf={appLabel}
+                onQueryChange={setAppQuery}
+                onAppsChange={setApps}
+              />
+            )}
+          </RepairToken>
+          <span aria-hidden="true">·</span>
+          <RepairToken
+            id="pace"
+            label="At a time"
+            value={repairPaceToken(concurrency)}
+            set={concurrency !== 1}
+            open={popover === "pace"}
+            onOpenChange={setPopover}
+          >
+            {(close) => <PacePopover concurrency={concurrency} onChange={setConcurrency} close={close} />}
+          </RepairToken>
+        </div>
+
+        {empty ? (
+          <RepairEmpty
+            statuses={statuses}
+            windowToken={windowToken}
+            allTime={allTime}
+            narrowed={apps.appIds.length > 0}
+            wider={wider}
+            onWiden={(status) => {
+              setStatuses([status]);
+              setWindow({ kind: "preset", preset: "all" });
+            }}
+          />
         ) : null}
 
         {error !== null ? (
@@ -357,40 +446,342 @@ export function EnrichmentRepairDialog({
             {error}
           </div>
         ) : null}
+      </div>
 
-        <footer className="ps-repair__foot">
-          <span className="ps-repair__plan">
-            {running
-              ? "Runs newest first, paced, without using the AI budget new snaps draw on."
-              : total > 0
-                ? `${plural(total, "snap")}, newest first, ${concurrency === 1 ? "one at a time" : `${concurrency} at a time`}.`
-                : statuses.length === 0
-                  ? "Pick Failed, Never ran, or both."
-                  : "Nothing to re-run."}
-          </span>
-          <span className="ps-repair__actions">
-            {running ? (
-              <button type="button" className="ps-repair__btn" onClick={() => void cancelJob()}>
-                Stop
+      <footer className="ps-repair__foot">
+        <span className="ps-repair__foot-l">
+          {statuses.length === 0 ? (
+            "Pick Failed, Never ran, or both."
+          ) : counts === null ? (
+            "Counting…"
+          ) : total > 0 ? (
+            <>
+              <b>{plural(total, "snap")}</b>, newest first, paced outside the budget new captures use.
+            </>
+          ) : (
+            "Nothing to re-run in this range."
+          )}
+        </span>
+        <span className="ps-repair__actions">
+          {total > 0 ? (
+            <>
+              <button type="button" className="ps-repair-btn is-ghost" onClick={onClose}>
+                Cancel
               </button>
-            ) : job !== null ? (
-              <button type="button" className="ps-repair__btn" onClick={() => void dismissJob()}>
-                Clear result
-              </button>
-            ) : null}
-            {running ? null : (
               <button
                 type="button"
-                className="ps-repair__btn is-primary"
-                disabled={!canStart}
+                className="ps-repair-btn is-primary"
+                disabled={starting}
                 onClick={() => void start()}
               >
-                {starting ? "Starting…" : total > 0 ? `Re-run ${plural(total, "snap")}` : "Re-run"}
+                {starting ? (
+                  "Starting…"
+                ) : (
+                  <>
+                    Re-run <span className="ps-repair-btn__n">{total.toLocaleString()}</span>{" "}
+                    {total === 1 ? "snap" : "snaps"}
+                  </>
+                )}
               </button>
-            )}
-          </span>
-        </footer>
-      </section>
+            </>
+          ) : (
+            <button type="button" className="ps-repair-btn is-primary" onClick={onClose}>
+              Close
+            </button>
+          )}
+        </span>
+      </footer>
+    </>
+  );
+}
+
+function RepairEmpty({
+  statuses,
+  windowToken,
+  allTime,
+  narrowed,
+  wider,
+  onWiden
+}: {
+  statuses: readonly EnrichmentRepairStatus[];
+  windowToken: string;
+  allTime: boolean;
+  narrowed: boolean;
+  wider: EnrichmentRepairPreview | null;
+  onWiden: (status: EnrichmentRepairStatus) => void;
+}): ReactElement {
+  const scope = `captured ${windowToken}${narrowed ? " in these apps" : ""}`;
+  const title =
+    statuses.length === 2
+      ? `Every snap ${scope} has AI results.`
+      : statuses[0] === "failed"
+        ? `No failed snaps ${scope}.`
+        : `AI has read every snap ${scope}.`;
+  const chips = (wider === null ? [] : statuses)
+    .map((status) => ({ status, n: wider?.byStatus[status] ?? 0 }))
+    .filter((chip) => chip.n > 0);
+  return (
+    <div className="ps-repair-empty">
+      <div className="ps-repair-empty__t">{title}</div>
+      {allTime ? null : chips.length > 0 ? (
+        <>
+          <div className="ps-repair-empty__d">Older snaps still have some to re-run:</div>
+          <div className="ps-repair-empty__try">
+            {chips.map((chip) => (
+              <button key={chip.status} type="button" className="ps-repair-chip" onClick={() => onWiden(chip.status)}>
+                All time · <span className="ps-repair-chip__n">{chip.n.toLocaleString()}</span>{" "}
+                {chip.status === "failed" ? "failed" : "never ran"}
+              </button>
+            ))}
+          </div>
+        </>
+      ) : wider !== null ? (
+        <div className="ps-repair-empty__d">Nothing older needs it either.</div>
+      ) : null}
     </div>
+  );
+}
+
+// ---- Running --------------------------------------------------------------
+
+function RepairRunning({
+  job,
+  onClose,
+  onJobChange
+}: {
+  job: EnrichmentRepairJob;
+  onClose: () => void;
+  onJobChange: (job: EnrichmentRepairJob | null) => void;
+}): ReactElement {
+  const [stopping, setStopping] = useState(false);
+  const pct = job.total > 0 ? Math.floor((job.processed / job.total) * 100) : 0;
+  const stop = async (): Promise<void> => {
+    setStopping(true);
+    const result = await dispatch("codex:repair:cancel", { jobId: job.jobId });
+    setStopping(false);
+    if (result.ok) onJobChange(result.value);
+  };
+  return (
+    <>
+      <div className="ps-repair__body">
+        <div className="ps-repair-big">
+          <span className="ps-repair-big__done">{job.processed.toLocaleString()}</span>
+          <span className="ps-repair-big__of">/ {job.total.toLocaleString()}</span>
+          <span className="ps-repair-big__w">{job.total === 1 ? "snap" : "snaps"}</span>
+          <span className="ps-repair-big__pct">{pct}%</span>
+        </div>
+        <RepairSplitBar job={job} />
+        <RepairLegend job={job} />
+        <RepairActivityLine job={job} />
+        <div className="ps-repair-recap">{repairJobRecap(job, Date.now())}</div>
+      </div>
+      <footer className="ps-repair__foot">
+        <span className="ps-repair__foot-l">Keeps going if you close this.</span>
+        <span className="ps-repair__actions">
+          <button
+            type="button"
+            className="ps-repair-btn is-ghost is-danger"
+            disabled={stopping}
+            onClick={() => void stop()}
+          >
+            {stopping ? "Stopping…" : "Stop"}
+          </button>
+          <button type="button" className="ps-repair-btn is-primary" onClick={onClose}>
+            Run in background
+          </button>
+        </span>
+      </footer>
+    </>
+  );
+}
+
+// ---- Outcome --------------------------------------------------------------
+
+function RepairOutcomeView({
+  job,
+  aiEnabled,
+  onStart,
+  onEnableAi,
+  onDone,
+  onSetUpAnother
+}: {
+  job: EnrichmentRepairJob;
+  aiEnabled: boolean;
+  onStart: (criteria: EnrichmentRepairCriteria, concurrency: number) => Promise<string | null>;
+  onEnableAi: () => void;
+  onDone: () => void;
+  onSetUpAnother: () => void;
+}): ReactElement {
+  const outcome = repairOutcome(job) ?? "clean";
+  // The follow-up batch: what failed again, or what is left of this one.
+  // Fixed snaps leave both sets, so re-running the same criteria is a
+  // resume without a resume verb.
+  const followUp = useMemo<EnrichmentRepairCriteria | null>(() => {
+    if (outcome === "mixed") return { ...job.criteria, statuses: ["failed"] };
+    if (outcome === "cancelled" || outcome === "stopped") return job.criteria;
+    return null;
+  }, [outcome, job.criteria]);
+  const [followUpCount, setFollowUpCount] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+
+  useEffect(() => {
+    if (followUp === null) {
+      setFollowUpCount(null);
+      return undefined;
+    }
+    let cancelled = false;
+    void preview(followUp).then((value) => {
+      if (!cancelled) setFollowUpCount(value?.total ?? null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [followUp]);
+
+  const startFollowUp = async (): Promise<void> => {
+    if (followUp === null || starting) return;
+    setStarting(true);
+    setError(null);
+    const message = await onStart(followUp, job.concurrency);
+    setStarting(false);
+    if (message !== null) setError(message);
+  };
+
+  const elapsed =
+    job.finishedAt === null ? null : formatElapsed(Date.parse(job.finishedAt) - Date.parse(job.startedAt));
+  const notStarted = Math.max(0, job.total - job.processed);
+  const skippedSentence =
+    job.skipped === 0
+      ? ""
+      : job.skipped === 1
+        ? " 1 was skipped: something else read it first, or it was deleted."
+        : ` ${job.skipped.toLocaleString()} were skipped: something else read them first, or they were deleted.`;
+
+  let badge: { tone: string; glyph: string };
+  let title: ReactElement;
+  let detail: ReactElement | string;
+  switch (outcome) {
+    case "empty":
+      badge = { tone: "is-ok", glyph: "✓" };
+      title = <>Nothing to re-run</>;
+      detail = "Every snap it looked at already had AI results.";
+      break;
+    case "clean":
+      badge = { tone: "is-ok", glyph: "✓" };
+      title = (
+        <>
+          {job.skipped === 0 ? "All " : ""}
+          <span className="ps-repair-out__m">{job.succeeded.toLocaleString()}</span> fixed
+        </>
+      );
+      detail = `${elapsed === null ? "Finished." : `Finished in ${elapsed}.`}${skippedSentence}`;
+      break;
+    case "mixed":
+      badge = { tone: "is-mixed", glyph: "!" };
+      title = (
+        <>
+          <span className="ps-repair-out__m">{job.succeeded.toLocaleString()}</span> of{" "}
+          <span className="ps-repair-out__m">{job.total.toLocaleString()}</span> fixed
+        </>
+      );
+      detail = (
+        <>
+          <b>{job.failed.toLocaleString()} failed again</b> and {job.failed === 1 ? "stays" : "stay"} marked
+          Failed.{skippedSentence}
+        </>
+      );
+      break;
+    case "cancelled":
+      badge = { tone: "is-off", glyph: "■" };
+      title = (
+        <>
+          Stopped at <span className="ps-repair-out__m">{job.processed.toLocaleString()}</span> of{" "}
+          <span className="ps-repair-out__m">{job.total.toLocaleString()}</span>
+        </>
+      );
+      detail = (
+        <>
+          <b>{job.succeeded.toLocaleString()} fixed</b>
+          {job.failed > 0 ? `, ${job.failed.toLocaleString()} failed again` : ""}
+          {job.skipped > 0 ? `, ${job.skipped.toLocaleString()} skipped` : ""}. {plural(notStarted, "snap")}{" "}
+          {notStarted === 1 ? "was" : "were"} not started.
+        </>
+      );
+      break;
+    case "stopped":
+      badge = { tone: "is-warn", glyph: "‖" };
+      title = <>Paused: {repairStopReasonText(job.stopReason)}</>;
+      detail = (
+        <>
+          <b>
+            {job.processed.toLocaleString()} of {job.total.toLocaleString()}
+          </b>{" "}
+          done before it stopped.
+          {aiEnabled ? "" : ` Turn AI back on to read the other ${notStarted.toLocaleString()}.`}
+        </>
+      );
+      break;
+  }
+
+  const primary: ReactElement | null =
+    outcome === "stopped" && !aiEnabled ? (
+      <button type="button" className="ps-repair-btn is-primary" onClick={onEnableAi}>
+        Turn on AI
+      </button>
+    ) : followUp !== null && followUpCount !== null && followUpCount > 0 ? (
+      <button type="button" className="ps-repair-btn is-primary" disabled={starting} onClick={() => void startFollowUp()}>
+        {starting ? (
+          "Starting…"
+        ) : (
+          <>
+            Re-run <span className="ps-repair-btn__n">{followUpCount.toLocaleString()}</span>{" "}
+            {outcome === "mixed" ? "failed" : "left"}
+          </>
+        )}
+      </button>
+    ) : null;
+
+  return (
+    <>
+      <div className="ps-repair__body">
+        <div className="ps-repair-out">
+          <span className={"ps-repair-out__badge " + badge.tone} aria-hidden="true">
+            {badge.glyph}
+          </span>
+          <div>
+            <div className="ps-repair-out__t" role="status">
+              {title}
+            </div>
+            <div className="ps-repair-out__d">{detail}</div>
+          </div>
+        </div>
+        {outcome === "empty" ? null : (
+          <>
+            <RepairSplitBar job={job} />
+            <RepairLegend job={job} />
+          </>
+        )}
+        <div className="ps-repair-recap">{repairJobRecap(job, Date.now())}</div>
+        {error !== null ? (
+          <div className="ps-repair__error" role="alert">
+            {error}
+          </div>
+        ) : null}
+      </div>
+      <footer className="ps-repair__foot">
+        <span className="ps-repair__foot-l">
+          <button type="button" className="ps-repair-link" onClick={onSetUpAnother}>
+            Re-run other snaps…
+          </button>
+        </span>
+        <span className="ps-repair__actions">
+          <button type="button" className={"ps-repair-btn " + (primary === null ? "is-primary" : "is-ghost")} onClick={onDone}>
+            Done
+          </button>
+          {primary}
+        </span>
+      </footer>
+    </>
   );
 }

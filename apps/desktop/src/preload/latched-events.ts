@@ -4,7 +4,8 @@
 // late simply fetches current state on mount, so an event that lands
 // before anyone listens is safe to drop. A few channels instead carry a
 // one-shot INTENT that exists nowhere else — `libraryOpenCapture` ("open
-// this capture in Focus") is the one today. Dropping that event loses the
+// this capture in Focus") and `libraryOpenEnrichmentRepair` ("open the AI
+// re-run dialog") are the two today. Dropping that event loses the
 // user's action: the Library comes forward on the grid and the capture
 // they asked for never opens. App notices likewise have no state to fetch;
 // losing one hides the confirmation of a completed menu command.
@@ -41,6 +42,7 @@ import { EVENT_CHANNELS } from "@pwrsnap/shared/ipc";
 /** One consumer per channel; installed before the renderer scripts run. */
 export const LATCHED_EVENT_CHANNELS = [
   EVENT_CHANNELS.libraryOpenCapture,
+  EVENT_CHANNELS.libraryOpenEnrichmentRepair,
   EVENT_CHANNELS.appNotice
 ] as const;
 

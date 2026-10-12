@@ -4252,6 +4252,25 @@ export type EnrichmentRepairCriteria = {
   apps: EnrichmentRepairAppFacet;
 };
 
+/** How the AI re-run dialog should be set up when something other than
+ *  the dialog opens it. Omitted fields keep the dialog's defaults. */
+export type EnrichmentRepairOpenRequest = {
+  statuses?: EnrichmentRepairStatus[];
+  /** A preset window, or an exact `[since, until)` range (ISO) — the span a
+   *  caption model was unreachable, say. */
+  window?: "24h" | "7d" | "30d" | "90d" | "all" | { since: string; until: string | null };
+};
+
+/** A caption model that could not be reached answered again. */
+export type EnrichmentPrimaryRecovery = {
+  /** The provider selector, as `ai.defaults.enrichment.provider` holds it. */
+  provider: string;
+  /** When the first run could not reach it (ISO). */
+  downSince: string;
+  /** When it answered again (ISO). */
+  upAt: string;
+};
+
 export type EnrichmentRepairAppCount = {
   appKey: string;
   /** A representative real bundle id, for the app icon. */
@@ -4654,6 +4673,9 @@ export type Commands = {
    * just-captured image into the Library editor.
    */
   "library:openInLibrary": { req: { captureId: string }; res: void };
+  /** Bring the Library forward with its AI re-run dialog open, set up as
+   *  `request` says. Settings › AI Features › Enrichment uses it. */
+  "library:openEnrichmentRepair": { req: { request?: EnrichmentRepairOpenRequest }; res: void };
   /** Every duplicate family — captures sharing a `family_id` — newest
    *  activity first. Drives the tile ⧉ glyph and the Family tab. */
   "library:families": {

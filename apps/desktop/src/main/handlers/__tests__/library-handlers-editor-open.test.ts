@@ -215,3 +215,49 @@ describe("editor:open", () => {
     }
   });
 });
+
+// Settings › AI Features opens the Library's re-run dialog. Same latched
+// one-shot contract as `editor:open`, on its own channel.
+describe("library:openEnrichmentRepair", () => {
+  test("brings the Library forward and sends the checked request once", async () => {
+    const send = vi.fn();
+    const focus = vi.fn();
+    mocks.findMainLibraryWindow.mockReturnValueOnce({
+      isDestroyed: () => false,
+      isMinimized: () => false,
+      isVisible: () => true,
+      focus,
+      webContents: { isLoading: () => false, send }
+    });
+
+    const result = await bus.dispatch(
+      "library:openEnrichmentRepair",
+      { request: { statuses: ["failed"], window: "all" } },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(focus).toHaveBeenCalled();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith("events:library:open-enrichment-repair", {
+      statuses: ["failed"],
+      window: "all"
+    });
+  });
+
+  test("refuses a malformed request without touching the Library", async () => {
+    mocks.findMainLibraryWindow.mockClear();
+    mocks.createMainWindow.mockClear();
+
+    const result = await bus.dispatch(
+      "library:openEnrichmentRepair",
+      { request: { statuses: ["everything"] } as never },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.ok ? null : result.error.code).toBe("invalid_request");
+    expect(mocks.findMainLibraryWindow).not.toHaveBeenCalled();
+    expect(mocks.createMainWindow).not.toHaveBeenCalled();
+  });
+});

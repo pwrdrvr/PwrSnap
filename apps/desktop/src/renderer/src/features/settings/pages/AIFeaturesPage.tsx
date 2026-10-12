@@ -58,6 +58,7 @@ import {
   uncachedInputTokens
 } from "./ai-format";
 import { ChatSettingsCard } from "./ChatSettingsCard";
+import { useEnrichmentRepairCounts } from "../../library/enrichment-repair/use-enrichment-repair-counts";
 
 type AIFeaturesPageProps = {
   /** Section to bring into view, or `null` for the top of the page.
@@ -408,6 +409,7 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
             }}
           />
         </Row>
+        <EnrichmentRepairRow />
       </Card>
 
       <Card
@@ -905,6 +907,46 @@ function EnrichmentFallbackControl({
         </p>
       ) : null}
     </div>
+  );
+}
+
+// ---- Re-run AI on past snaps --------------------------------------------
+
+/** The way into the Library's re-run dialog from here: the counts, and a
+ *  button that brings the Library forward with the dialog open on them. */
+function EnrichmentRepairRow(): ReactElement {
+  const counts = useEnrichmentRepairCounts();
+  const [error, setError] = useState<string | null>(null);
+  const failed = counts?.failed ?? 0;
+  const never = counts?.never ?? 0;
+  const sub =
+    error ??
+    (counts === null
+      ? "Re-run AI on snaps it failed on or never read. Opens in the Library."
+      : failed + never === 0
+        ? "AI has read every snap. Nothing to re-run."
+        : `${failed.toLocaleString()} failed · ${never.toLocaleString()} never ran. Opens in the Library.`);
+  return (
+    <Row label="Re-run AI on past snaps" sub={sub}>
+      <button
+        className="pss__key-btn"
+        type="button"
+        aria-haspopup="dialog"
+        // Still counting (or the count could not be read) is not "nothing
+        // to re-run": the dialog counts for itself.
+        disabled={counts !== null && failed + never === 0}
+        onClick={() => {
+          setError(null);
+          void dispatch("library:openEnrichmentRepair", {
+            request: { statuses: failed > 0 ? ["failed"] : ["never"], window: "all" }
+          }).then((result) => {
+            if (!result.ok) setError(result.error.message);
+          });
+        }}
+      >
+        Re-run…
+      </button>
+    </Row>
   );
 }
 

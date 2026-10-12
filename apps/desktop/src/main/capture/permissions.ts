@@ -2,7 +2,7 @@
 // capture flow: classifying the outcome of a `screencapture` CLI run.
 //
 // Permission STATUS reads and System Settings routing live elsewhere:
-// `readScreenStatus` / `openSystemSettingsFor` / `triggerScreenCapturePrompt`
+// `readScreenStatus` / `openSystemSettingsFor`
 // in ../recording/recording-permissions.ts, gated by
 // ./screen-permission-gate.ts. A key macOS quirk those rely on:
 // `systemPreferences.getMediaAccessStatus('screen')` is backed by the

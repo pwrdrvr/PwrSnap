@@ -714,19 +714,9 @@ export function registerRecordingHandlers(): void {
         )
       );
     }
-    const result = await requestPermission(req.permission);
-    if (
-      process.platform === "darwin" &&
-      (req.permission === "screen" || req.permission === "systemAudio")
-    ) {
-      // We just drove the macOS screen-capture prompt (which also
-      // registers PwrSnap in the Privacy pane). Remember it so the UI
-      // switches to the "Open System Settings" path next time — macOS
-      // won't prompt twice. Off Darwin, `requestPermission` is unsupported
-      // and returns `unknown`, so there is no prompt attempt to remember.
-      await markScreenCapturePrompted();
-    }
-    return ok(result);
+    // Screen and system audio only report status here; their prompt is the
+    // permission guide (`permissions:showGuide`), never macOS's alert.
+    return ok(await requestPermission(req.permission));
   });
 
   bus.register("permissions:openSoundSettings", async () => {
@@ -799,6 +789,10 @@ export function registerRecordingHandlers(): void {
     }
     try {
       await showPermissionGuide();
+      // The user has now been asked, PwrSnap's way. Startup routing and the
+      // System Permissions page read this to tell "blocked" from "never
+      // tried".
+      await markScreenCapturePrompted();
       return ok(undefined);
     } catch (cause) {
       log.warn("permissions:showGuide failed", {

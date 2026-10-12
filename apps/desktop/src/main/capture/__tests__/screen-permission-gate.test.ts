@@ -1,8 +1,7 @@
-// Pins the first-run Screen Recording gate. The gate is the chokepoint
-// every capture/record entrypoint funnels through, so its three branches
-// (proceed / first-prompt / route-to-settings) are the contract that
-// keeps a fresh install from dead-ending at "Open System Settings" for an
-// app that macOS hasn't listed yet.
+// Pins the Screen Recording gate, the chokepoint every capture/record
+// entrypoint funnels through. Granted proceeds; anything else shows the
+// permission guide and NEVER touches a capture API — a capture call is what
+// raises macOS's own alert, which outlives a relaunch and stacks.
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -10,11 +9,7 @@ const electronMock = vi.hoisted(() => ({
   // What getMediaAccessStatus('screen') returns. macOS only ever gives
   // 'granted' | 'denied' here (CGPreflightScreenCaptureAccess is boolean).
   screenStatus: "denied" as string,
-  getSourcesCalls: 0,
-  // When true, a getSources() call flips screenStatus to "granted" to
-  // simulate the macOS configs that grant in-session straight off the
-  // prompt ("continue if possible").
-  grantOnPrompt: false
+  getSourcesCalls: 0
 }));
 
 vi.mock("electron", () => ({
@@ -25,7 +20,6 @@ vi.mock("electron", () => ({
   desktopCapturer: {
     getSources: vi.fn(async () => {
       electronMock.getSourcesCalls += 1;
-      if (electronMock.grantOnPrompt) electronMock.screenStatus = "granted";
       return [];
     })
   },
@@ -78,7 +72,6 @@ beforeEach(() => {
   vi.resetModules();
   electronMock.screenStatus = "denied";
   electronMock.getSourcesCalls = 0;
-  electronMock.grantOnPrompt = false;
   busMock.attempted = false;
   busMock.failSettingsRead = false;
   busMock.dispatched = [];
@@ -113,84 +106,38 @@ describe("guardScreenCapture", () => {
     expect(busMock.dispatched).toHaveLength(0);
   });
 
-  test("not granted + never asked → fires the OS prompt, records it, returns pending", async () => {
+  for (const asked of [false, true]) {
+    test(`not granted (${asked ? "asked before" : "never asked"}) → shows the guide, records the ask, and never calls a capture API`, async () => {
+      electronMock.screenStatus = "denied";
+      busMock.attempted = asked;
+      const { guardScreenCapture } = await import("../screen-permission-gate");
+      const result = await guardScreenCapture();
+      // The cardinal rule: no probe, so macOS raises no alert of its own.
+      expect(electronMock.getSourcesCalls).toBe(0);
+      expect(dispatchedNames()).toContain("permissions:showGuide");
+      expect(dispatchedNames()).toContain("settings:write");
+      if (result === null) throw new Error("expected blocked");
+      if (result.ok) throw new Error("expected error");
+      expect(result.error.kind).toBe("permission");
+      expect(result.error.code).toBe("screen_not_granted");
+    });
+  }
+
+  test("repeated blocked captures never stack a probe either", async () => {
     electronMock.screenStatus = "denied";
-    busMock.attempted = false;
     const { guardScreenCapture } = await import("../screen-permission-gate");
-    const result = await guardScreenCapture();
-    // Prompt fired exactly once; we recorded that we asked.
-    expect(electronMock.getSourcesCalls).toBe(1);
-    expect(dispatchedNames()).toContain("settings:write");
-    // We do NOT open our own Settings on top of the OS dialog.
-    expect(dispatchedNames()).not.toContain("permissions:showGuide");
-    expect(result).not.toBeNull();
-    if (result === null) throw new Error("expected blocked");
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected error");
-    expect(result.error.code).toBe("screen_permission_pending");
-    expect(result.error.kind).toBe("permission");
+    await guardScreenCapture();
+    await guardScreenCapture();
+    await guardScreenCapture();
+    expect(electronMock.getSourcesCalls).toBe(0);
   });
 
-  test("not granted + never asked + macOS grants in-session → proceeds (continue if possible)", async () => {
+  test("routeToSettings:false (headless) errors without opening the guide or probing", async () => {
     electronMock.screenStatus = "denied";
-    electronMock.grantOnPrompt = true; // prompt flips status to granted
-    busMock.attempted = false;
-    const { guardScreenCapture } = await import("../screen-permission-gate");
-    const result = await guardScreenCapture();
-    expect(electronMock.getSourcesCalls).toBe(1);
-    expect(dispatchedNames()).toContain("settings:write");
-    expect(result).toBeNull(); // proceeded straight into the capture
-  });
-
-  test("not granted + already asked → re-probes, THEN shows the permission guide", async () => {
-    electronMock.screenStatus = "denied";
-    busMock.attempted = true;
-    const { guardScreenCapture } = await import("../screen-permission-gate");
-    const result = await guardScreenCapture();
-    // CARDINAL RULE: always re-attempt the real probe — this is what
-    // re-registers PwrSnap after a tccutil reset our flag can't see. Only
-    // after the probe still fails do we open the guide.
-    expect(electronMock.getSourcesCalls).toBe(1);
-    expect(dispatchedNames()).toContain("permissions:showGuide");
-    if (result === null) throw new Error("expected blocked");
-    if (result.ok) throw new Error("expected error");
-    expect(result.error.code).toBe("screen_not_granted");
-  });
-
-  test("already asked + macOS grants on the re-probe → proceeds (no Settings)", async () => {
-    electronMock.screenStatus = "denied";
-    electronMock.grantOnPrompt = true; // grant lands on the re-attempt
-    busMock.attempted = true;
-    const { guardScreenCapture } = await import("../screen-permission-gate");
-    const result = await guardScreenCapture();
-    expect(electronMock.getSourcesCalls).toBe(1);
-    expect(result).toBeNull();
-    expect(dispatchedNames()).not.toContain("permissions:showGuide");
-  });
-
-  test("settings read failure defaults to never-asked (fires prompt, doesn't dead-end)", async () => {
-    electronMock.screenStatus = "denied";
-    busMock.failSettingsRead = true;
-    const { guardScreenCapture } = await import("../screen-permission-gate");
-    const result = await guardScreenCapture();
-    // Treated as never-asked: prompt fires rather than routing to a
-    // Settings pane that might not list us.
-    expect(electronMock.getSourcesCalls).toBe(1);
-    if (result === null) throw new Error("expected blocked");
-    if (result.ok) throw new Error("expected error");
-    expect(result.error.code).toBe("screen_permission_pending");
-  });
-
-  test("routeToSettings:false (headless) still probes + errors, but does NOT open Settings", async () => {
-    electronMock.screenStatus = "denied";
-    busMock.attempted = true; // asked before → denied branch
     const { guardScreenCapture } = await import("../screen-permission-gate");
     const result = await guardScreenCapture({ routeToSettings: false });
-    // Still re-probes (registers/grants if possible)…
-    expect(electronMock.getSourcesCalls).toBe(1);
-    // …but no window popped at the programmatic caller…
+    expect(electronMock.getSourcesCalls).toBe(0);
     expect(dispatchedNames()).not.toContain("permissions:showGuide");
-    // …and it short-circuits with the denied error.
     if (result === null) throw new Error("expected blocked");
     if (result.ok) throw new Error("expected error");
     expect(result.error.code).toBe("screen_not_granted");

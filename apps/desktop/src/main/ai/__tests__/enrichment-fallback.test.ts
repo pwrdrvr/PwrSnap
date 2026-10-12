@@ -114,4 +114,19 @@ describe("EnrichmentPrimaryHealth", () => {
     expect(health.markUp(CUSTOM)).toBe(false);
     expect(health.isDown(CUSTOM)).toBe(false);
   });
+
+  test("an outage runs from the first unreachable attempt to the next answer, fallback or not", () => {
+    let now = 1_000;
+    const health = new EnrichmentPrimaryHealth(() => now, 60_000);
+    expect(health.endOutage(CUSTOM)).toBeNull();
+    health.noteUnreachable(CUSTOM);
+    now = 5_000;
+    // A second failure does not move the start.
+    health.noteUnreachable(CUSTOM);
+    // Tracked apart from the fallback's down window.
+    expect(health.isDown(CUSTOM)).toBe(false);
+    now = 90_000;
+    expect(health.endOutage(CUSTOM)).toEqual({ downSince: 1_000, upAt: 90_000 });
+    expect(health.endOutage(CUSTOM)).toBeNull();
+  });
 });

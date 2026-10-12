@@ -109,4 +109,23 @@ export class EnrichmentPrimaryHealth {
   markUp(provider: string): boolean {
     return this.downUntil.delete(provider);
   }
+
+  /** When each provider's current outage began, fallback or not. Separate
+   *  from `downUntil`, which exists only to route runs to a fallback; this
+   *  is what the Library's "back online" nudge reports, and captions fail
+   *  during an outage precisely when there is no fallback. */
+  private readonly unreachableSince = new Map<string, number>();
+
+  /** A run could not reach the provider. Starts the outage clock once. */
+  noteUnreachable(provider: string): void {
+    if (!this.unreachableSince.has(provider)) this.unreachableSince.set(provider, this.nowMs());
+  }
+
+  /** The provider answered: the outage that ends, or null if there was none. */
+  endOutage(provider: string): { downSince: number; upAt: number } | null {
+    const downSince = this.unreachableSince.get(provider);
+    if (downSince === undefined) return null;
+    this.unreachableSince.delete(provider);
+    return { downSince, upAt: this.nowMs() };
+  }
 }

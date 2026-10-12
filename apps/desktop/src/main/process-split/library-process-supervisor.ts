@@ -46,6 +46,7 @@ const LIBRARY_WINDOW_WATCHDOG_MS = 20_000;
 const LIBRARY_WINDOW_SPAWN_VERBS: ReadonlySet<string> = new Set([
   "library:focus",
   "library:openInLibrary",
+  "library:openEnrichmentRepair",
   "editor:open"
 ]);
 

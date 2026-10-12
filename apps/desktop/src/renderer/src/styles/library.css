@@ -3982,6 +3982,33 @@
 .psl__ai-repair:focus-visible {
   outline-offset: 2px;
 }
+/* Failed snaps waiting: the count, in the danger tint, is the way in. */
+.psl__ai-repair.has-failed {
+  padding: 4px 7px;
+  background: var(--danger-soft);
+  box-shadow: inset 0 0 0 1px var(--danger-border);
+  color: var(--danger-text);
+}
+.psl__ai-repair.has-failed:hover {
+  color: var(--text-primary);
+}
+.psl__ai-repair b {
+  color: inherit;
+  font-weight: 700;
+}
+.psl__ai-repair.is-running {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-secondary);
+}
+.psl__ai-repair.is-running b {
+  color: var(--text-primary);
+}
+.psl__ai-repair-bar {
+  display: block;
+  width: 44px;
+}
 .psl__ai-toggle-track {
   width: 18px;
   height: 10px;

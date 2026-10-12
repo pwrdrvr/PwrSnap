@@ -32,6 +32,7 @@ import type {
   CaptureRecord,
   CodexModelOption,
   CustomConnection,
+  EnrichmentPrimaryRecovery,
   ResolvedCustomModel,
   PwrSnapError,
   Req,
@@ -210,6 +211,14 @@ function broadcastAiRunUpdated(payload: {
   broadcastRendererEventToLocalWindows(EVENT_CHANNELS.aiRunUpdated, payload);
   relayRendererEventToPeer(EVENT_CHANNELS.aiRunUpdated, payload);
   notifyAiRunObservers(payload.run);
+}
+
+/** Tell every Library window that a caption model is reachable again, so it
+ *  can offer to re-run what failed while it was down. */
+function publishEnrichmentPrimaryRecovered(recovery: EnrichmentPrimaryRecovery): void {
+  log.info("capture enrichment primary outage ended", { ...recovery });
+  broadcastRendererEventToLocalWindows(EVENT_CHANNELS.enrichmentPrimaryRecovered, recovery);
+  relayRendererEventToPeer(EVENT_CHANNELS.enrichmentPrimaryRecovered, recovery);
 }
 
 function preparedMediaShape(
@@ -612,6 +621,8 @@ export function registerCodexHandlers(params?: {
   budget?: AiEnrichmentBudget;
   /** Which enrichment primaries are down; tests inject a clock. */
   primaryHealth?: EnrichmentPrimaryHealth;
+  /** Where a primary's recovery is reported; tests observe it. */
+  onPrimaryRecovered?: (recovery: EnrichmentPrimaryRecovery) => void;
   /** Override the per-turn enrichment timeout (ms). Defaults to
    *  `ENRICHMENT_TURN_TIMEOUT_MS`; tests pass a tiny value. */
   turnTimeoutMs?: number;
@@ -659,6 +670,7 @@ export function registerCodexHandlers(params?: {
   // Production registers once, so this is the process's one record of which
   // enrichment primaries are down.
   const primaryHealth = params?.primaryHealth ?? new EnrichmentPrimaryHealth();
+  const onPrimaryRecovered = params?.onPrimaryRecovered ?? publishEnrichmentPrimaryRecovered;
 
   bus.register("codex:compatibilityAlert", async () => {
     return ok(getCodexCliCompatibilityAlert());
@@ -886,6 +898,7 @@ export function registerCodexHandlers(params?: {
       primary,
       ...(resolveFallback !== undefined ? { resolveFallback } : {}),
       primaryHealth,
+      onPrimaryRecovered,
       triggerSource,
       budgetBefore: bucketBefore,
       budgetAfter: bucketAfter,
@@ -1248,6 +1261,8 @@ async function runCaptureEnrichment(params: {
   resolveFallback?: () => Promise<EnrichmentBackendPlan>;
   /** Which primaries are down right now; one per registration. */
   primaryHealth: EnrichmentPrimaryHealth;
+  /** A primary that runs could not reach answered again. */
+  onPrimaryRecovered: (recovery: EnrichmentPrimaryRecovery) => void;
   triggerSource: AiEnrichmentTriggerSource;
   budgetBefore: AiEnrichmentBudgetStatus;
   budgetAfter: AiEnrichmentBudgetStatus;
@@ -1321,6 +1336,16 @@ async function runCaptureEnrichment(params: {
   };
   const resolveFallback = params.resolveFallback;
   const health = params.primaryHealth;
+  // The primary answered: if runs could not reach it before, say so once.
+  const endPrimaryOutage = (primaryProvider: string): void => {
+    const outage = health.endOutage(primaryProvider);
+    if (outage === null) return;
+    params.onPrimaryRecovered({
+      provider: primaryProvider,
+      downSince: new Date(outage.downSince).toISOString(),
+      upAt: new Date(outage.upAt).toISOString()
+    });
+  };
 
   try {
     // A primary that was just unreachable goes straight to the fallback: no
@@ -1456,6 +1481,7 @@ async function runCaptureEnrichment(params: {
         if (health.markUp(active.provider)) {
           log.info("capture enrichment primary reachable again", { runId: params.runId, provider });
         }
+        endPrimaryOutage(active.provider);
       } catch (primaryError) {
         const aborted = abortController.signal.aborted;
         if (aborted || !isEnrichmentBackendUnavailable(primaryError)) {
@@ -1463,8 +1489,13 @@ async function runCaptureEnrichment(params: {
           if (!aborted && health.markUp(active.provider)) {
             log.info("capture enrichment primary reachable again", { runId: params.runId, provider });
           }
+          if (!aborted) endPrimaryOutage(active.provider);
           throw primaryError;
         }
+        // Nothing answered. Recorded with or without a fallback: without
+        // one, this capture's caption fails, and the Library offers to
+        // re-run what failed once the primary answers again.
+        health.noteUnreachable(active.provider);
         if (resolveFallback === undefined) throw primaryError;
         // Nothing answered at the primary: move the SAME run (prepared media
         // and all) to the fallback, once. Warned once per outage, then quiet

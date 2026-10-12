@@ -182,6 +182,8 @@ export type DetailRailProps = {
   readonly duplicatePrefs?: LibraryDuplicateWithEditsSettings;
   /** Opens the dialog that re-runs AI over every snap it failed on. */
   readonly onOpenEnrichmentRepair?: () => void;
+  /** Snaps AI failed on, across all time, for the rail's re-run link. */
+  readonly enrichmentFailedCount?: number | null;
 };
 
 export function DetailRail({
@@ -211,7 +213,8 @@ export function DetailRail({
   onFilterFamily,
   onDuplicate,
   duplicatePrefs = DEFAULT_DUPLICATE_PREFS,
-  onOpenEnrichmentRepair
+  onOpenEnrichmentRepair,
+  enrichmentFailedCount
 }: DetailRailProps): ReactElement | null {
   // Skip the image render-metrics IPC for video captures — the
   // sharp-based preset pipeline is image-only and the video branch
@@ -912,6 +915,7 @@ export function DetailRail({
             }}
             onEnrichmentUpdate={setEnrichment}
             onOpenEnrichmentRepair={onOpenEnrichmentRepair}
+            enrichmentFailedCount={enrichmentFailedCount}
           />
         </div>
       );
@@ -1414,6 +1418,7 @@ type DetailTabProps = {
   readonly onSetAutoApply: (next: boolean) => void;
   readonly onEnrichmentUpdate: (next: CaptureEnrichment) => void;
   readonly onOpenEnrichmentRepair?: (() => void) | undefined;
+  readonly enrichmentFailedCount?: number | null | undefined;
 };
 
 function DetailTab({
@@ -1431,7 +1436,8 @@ function DetailTab({
   autoApply,
   onSetAutoApply,
   onEnrichmentUpdate,
-  onOpenEnrichmentRepair
+  onOpenEnrichmentRepair,
+  enrichmentFailedCount
 }: DetailTabProps): ReactElement {
   const acceptedTitle = enrichment?.acceptedTitle ?? "";
   const suggestedTitle = enrichment?.suggestedTitle ?? "";
@@ -1752,10 +1758,15 @@ function DetailTab({
                   <button
                     type="button"
                     className="psl__chip-link"
+                    aria-haspopup="dialog"
                     onClick={onOpenEnrichmentRepair}
-                    title="Re-run AI on every snap it failed on"
+                    data-tip="Re-run AI on every snap it failed on"
                   >
-                    Re-run all failed…
+                    {enrichmentFailedCount !== null &&
+                    enrichmentFailedCount !== undefined &&
+                    enrichmentFailedCount > 1
+                      ? `Re-run all ${enrichmentFailedCount.toLocaleString()} failed…`
+                      : "Re-run all failed…"}
                   </button>
                 ) : null}
               </span>

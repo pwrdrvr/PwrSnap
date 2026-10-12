@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.1.21 - 2026-10-11
+
+This release makes permission recovery, AI re-runs, and updates easier to manage.
+
+- macOS Permissions - Added a Screen Recording guide beside System Settings.
+  Drag the running PwrSnap app into the permission list and relaunch that exact
+  copy, avoiding confusion when multiple copies are installed.
+- AI Re-runs - Improved setup, progress, and results for re-running AI on past
+  snaps, with easier access from the Library and Settings and a recovery prompt
+  when the caption model comes back online. Bulk re-runs are paced separately
+  so they do not consume the allowance for new captures.
+- AI Captions - Added an optional fallback model when the primary cannot be
+  reached, with a visible FALLBACK indicator showing which backend answered.
+- App Updates - Fixed update checks stopping after a download, so a newer
+  release can replace the pending update instead of requiring two upgrades.
+
 ## v1.1.20 - 2026-10-11
 
 This release makes capture controls and recording setup easier to use.

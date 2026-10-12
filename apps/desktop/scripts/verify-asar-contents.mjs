@@ -15,6 +15,7 @@ import {
   sharpNativePackagesForTarget
 } from "./sharp-platform-packages.mjs";
 import { findRemoteScript, isRendererHtmlEntry } from "./packaged-html-rules.mjs";
+import { betterSqlite3PrebuildsForTarget } from "./better-sqlite3-prebuilds.mjs";
 
 // @electron/asar is declared as a direct devDependency of @pwrsnap/desktop.
 // The protected Windows signing job receives a self-contained staged toolchain,
@@ -121,6 +122,7 @@ const sharedSharpAsarRuntime = [
 // version-suffixed dylib name (`libvips-cpp.<ver>.dylib`) changes
 // across libvips upgrades, and a pattern decouples this
 // from the exact version in pnpm-lock.yaml.
+const BETTER_SQLITE3_PREBUILDS_DIR = "app.asar.unpacked/node_modules/better-sqlite3/prebuilds";
 const macRequiredUnpackedNative = [
   {
     packageName: "sharp-darwin-arm64",
@@ -145,6 +147,18 @@ const macRequiredUnpackedNative = [
     label: "@img/sharp-libvips-darwin-x64 dylib",
     dir: "app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-x64/lib",
     filePattern: /\.dylib$/
+  },
+  {
+    prebuild: "darwin-arm64.node",
+    label: "better-sqlite3 darwin-arm64 prebuild",
+    dir: BETTER_SQLITE3_PREBUILDS_DIR,
+    filePattern: /^darwin-arm64\.node$/
+  },
+  {
+    prebuild: "darwin-x64.node",
+    label: "better-sqlite3 darwin-x64 prebuild",
+    dir: BETTER_SQLITE3_PREBUILDS_DIR,
+    filePattern: /^darwin-x64\.node$/
   },
 ];
 
@@ -188,9 +202,9 @@ function windowsRequiredUnpackedRuntime(arch) {
       filePattern: /^index\.cjs$/
     },
     {
-      label: "better-sqlite3 Electron sidecar",
-      dir: "app.asar.unpacked/node_modules/better-sqlite3/electron-native",
-      filePattern: /^better_sqlite3\.node$/
+      label: `better-sqlite3 win32-${arch} prebuild`,
+      dir: BETTER_SQLITE3_PREBUILDS_DIR,
+      filePattern: new RegExp(`^win32-${arch}\\.node$`)
     }
   ];
 }
@@ -223,8 +237,13 @@ function requiredResourcesFor(platform) {
 
 function requiredUnpackedNativeFor(platform, arch = defaultArch(platform)) {
   if (platform !== "darwin") return windowsRequiredUnpackedRuntime(arch);
-  const required = new Set(sharpNativePackagesForTarget({ platform, arch }));
-  return macRequiredUnpackedNative.filter((entry) => required.has(entry.packageName));
+  const required = new Set([
+    ...sharpNativePackagesForTarget({ platform, arch }),
+    ...betterSqlite3PrebuildsForTarget({ platform, arch })
+  ]);
+  return macRequiredUnpackedNative.filter((entry) =>
+    required.has(entry.packageName ?? entry.prebuild)
+  );
 }
 
 function normalizedAsarEntries(listing) {
@@ -371,6 +390,25 @@ export function findForeignUnpackedNative(
     platform,
     arch
   }).removed;
+}
+
+/**
+ * better-sqlite3 prebuilds for any target but this app's. The stage prune
+ * (pruneBetterSqlite3Prebuilds) should have removed them; one left over is
+ * ~2 MB of dead weight, or on the arm64-only Mac an Intel Mach-O.
+ */
+export function findForeignBetterSqlite3Prebuilds(
+  appPath,
+  platform = packagedPlatform(appPath),
+  arch = defaultArch(platform)
+) {
+  const dir = resolve(resourcesPath(appPath, platform), BETTER_SQLITE3_PREBUILDS_DIR);
+  // A missing directory is findMissingUnpackedNative's to report.
+  if (!existsSync(dir)) return [];
+  const allowed = new Set(betterSqlite3PrebuildsForTarget({ platform, arch }));
+  return readdirSync(dir)
+    .filter((name) => name.endsWith(".node") && !allowed.has(name))
+    .sort();
 }
 
 function formatForbiddenViolations(violations) {
@@ -537,9 +575,11 @@ export function verifyUnpackedNative(
 ) {
   const missing = findMissingUnpackedNative(appPath, platform, arch);
   const foreign = findForeignUnpackedNative(appPath, platform, arch);
-  if (missing.length === 0 && foreign.length === 0) return;
+  const foreignSqlite = findForeignBetterSqlite3Prebuilds(appPath, platform, arch);
+  const failures = missing.length + foreign.length + foreignSqlite.length;
+  if (failures === 0) return;
   const lines = [
-    `verify-asar-contents: ${missing.length + foreign.length} unpacked-runtime expectation(s) failed`,
+    `verify-asar-contents: ${failures} unpacked-runtime expectation(s) failed`,
     ""
   ];
   for (const { label, reason } of missing) {
@@ -550,13 +590,17 @@ export function verifyUnpackedNative(
       `  - foreign Sharp native slice(s): ${foreign.map((name) => `@img/${name}`).join(", ")}`
     );
   }
+  if (foreignSqlite.length > 0) {
+    lines.push(`  - foreign better-sqlite3 prebuild(s): ${foreignSqlite.join(", ")}`);
+  }
   lines.push(
     "",
     "If sharp packages are missing: pnpm deploy is dropping platform-specific",
     "optionalDependencies — see the release packager's injection step. If",
     "foreign native slices are present, the stage step that prunes them",
     "(Windows, arm64 mac) or refuses them (universal mac) did not run.",
-    "@img/sharp-wasm32 is Linux-only and must never ship.",
+    "@img/sharp-wasm32 is Linux-only and must never ship. Foreign",
+    "better-sqlite3 prebuilds mean its prebuild pruning step did not run.",
     "If a native library is missing despite its package being present,",
     "the asarUnpack",
     "rule for @img/** is gone from electron-builder.yml."

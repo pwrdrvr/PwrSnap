@@ -7,10 +7,6 @@ vi.mock("../../log", () => ({
   })
 }));
 
-vi.mock("../native-binding", () => ({
-  getNativeBinding: () => undefined
-}));
-
 describe("configureDatabaseConnection", () => {
   test("sets explicit WAL and SSD-retention bounds", async () => {
     const calls: string[] = [];

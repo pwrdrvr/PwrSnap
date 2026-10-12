@@ -69,17 +69,19 @@ describe("Windows release configuration", () => {
     expect(script).toContain("PWRSNAP_WINDOWS_FFMPEG_PATH");
     expect(script).toContain('to: "PwrSnapFFmpeg.exe"');
     expect(script).toContain('from "./sharp-platform-packages.mjs"');
+    expect(script).toContain('from "./better-sqlite3-prebuilds.mjs"');
     expect(script).not.toContain("WIN_CSC_LINK");
     expect(script).not.toContain("--unsigned-release");
 
     const injection = script.indexOf("injectWin32PlatformPackages();");
     const pruning = script.indexOf("pruneSharpNativePackages({", injection);
-    const nativeRebuild = script.indexOf("prepare staged better-sqlite3", pruning);
+    const sqlitePruning = script.indexOf("pruneBetterSqlite3Prebuilds({", pruning);
     const prepareOnlyExit = script.indexOf("if (prepareOnly) {", pruning);
     const electronBuilder = script.indexOf("const builderCli = resolveElectronBuilderCli();", pruning);
     expect(injection).toBeGreaterThan(-1);
     expect(pruning).toBeGreaterThan(injection);
-    expect(nativeRebuild).toBeGreaterThan(pruning);
+    expect(sqlitePruning).toBeGreaterThan(pruning);
+    expect(prepareOnlyExit).toBeGreaterThan(sqlitePruning);
     expect(prepareOnlyExit).toBeGreaterThan(pruning);
     expect(electronBuilder).toBeGreaterThan(pruning);
   });

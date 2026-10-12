@@ -7,6 +7,7 @@ import {
   asarLookupPath,
   findForbiddenAsarEntries,
   findForeignSharpAsarPackages,
+  findForeignBetterSqlite3Prebuilds,
   findForeignUnpackedNative,
   findMissingPackagedResources,
   findMissingSharpAsarRuntime,
@@ -59,8 +60,14 @@ const allUnpackedNativeFixtures = [
   "app.asar.unpacked/node_modules/@img/sharp-darwin-arm64/lib/sharp-darwin-arm64.node",
   "app.asar.unpacked/node_modules/@img/sharp-darwin-x64/lib/sharp-darwin-x64.node",
   "app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-arm64/lib/libvips-cpp.8.17.3.dylib",
-  "app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-x64/lib/libvips-cpp.8.17.3.dylib"
+  "app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-x64/lib/libvips-cpp.8.17.3.dylib",
+  "app.asar.unpacked/node_modules/better-sqlite3/prebuilds/darwin-arm64.node",
+  "app.asar.unpacked/node_modules/better-sqlite3/prebuilds/darwin-x64.node"
 ];
+
+// The Intel half of the universal app: arch-named sharp packages, and
+// better-sqlite3's darwin-x64 prebuild.
+const isX64Fixture = (path) => /-x64(?:\/|\.node$)/.test(path);
 
 function writeUnpackedNativeFixtures(resources, fixtures = allUnpackedNativeFixtures) {
   for (const relative of fixtures) {
@@ -80,7 +87,7 @@ function windowsUnpackedRuntimeFixtures(arch) {
     `${packageRoot}/lib/libvips-42.dll`,
     `${packageRoot}/lib/libvips-cpp-8.18.3.dll`,
     "app.asar.unpacked/node_modules/@img/colour/index.cjs",
-    "app.asar.unpacked/node_modules/better-sqlite3/electron-native/better_sqlite3.node"
+    `app.asar.unpacked/node_modules/better-sqlite3/prebuilds/win32-${arch}.node`
   ];
 }
 
@@ -269,6 +276,24 @@ describe("verify-asar-contents", () => {
     );
   });
 
+  test("rejects another platform's better-sqlite3 prebuild left in the payload", () => {
+    const { appPath, resources } = fakeWindowsApp();
+    writeUnpackedNativeFixtures(resources, [
+      ...windowsUnpackedRuntimeFixtures("x64"),
+      "app.asar.unpacked/node_modules/better-sqlite3/prebuilds/win32-arm64.node",
+      "app.asar.unpacked/node_modules/better-sqlite3/prebuilds/linux-x64.node"
+    ]);
+
+    expect(findMissingUnpackedNative(appPath, "win32", "x64")).toEqual([]);
+    expect(findForeignBetterSqlite3Prebuilds(appPath, "win32", "x64")).toEqual([
+      "linux-x64.node",
+      "win32-arm64.node"
+    ]);
+    expect(() => verifyUnpackedNative(appPath, "win32", "x64")).toThrow(
+      /foreign better-sqlite3 prebuild\(s\): linux-x64\.node, win32-arm64\.node/
+    );
+  });
+
   test("fails arm64 verification when the staged target slice is x64", () => {
     const { appPath, resources } = fakeWindowsApp();
     writeUnpackedNativeFixtures(resources, windowsUnpackedRuntimeFixtures("x64"));
@@ -443,13 +468,17 @@ describe("verify-asar-contents", () => {
 describe("Apple Silicon unpacked runtime", () => {
   test("requires ARM64 bindings and rejects Intel payloads without weakening universal checks", () => {
     const { appPath, resources } = fakeApp();
-    writeUnpackedNativeFixtures(resources, allUnpackedNativeFixtures.filter((path) => !path.includes("-x64/")));
+    writeUnpackedNativeFixtures(resources, allUnpackedNativeFixtures.filter((path) => !isX64Fixture(path)));
     expect(findMissingUnpackedNative(appPath, "darwin", "arm64")).toEqual([]);
     expect(findForeignUnpackedNative(appPath, "darwin", "arm64")).toEqual([]);
-    expect(findMissingUnpackedNative(appPath, "darwin", "universal")).toHaveLength(2);
+    expect(findForeignBetterSqlite3Prebuilds(appPath, "darwin", "arm64")).toEqual([]);
+    expect(findMissingUnpackedNative(appPath, "darwin", "universal")).toHaveLength(3);
     writeUnpackedNativeFixtures(resources);
     expect(findForeignUnpackedNative(appPath, "darwin", "arm64")).toEqual(["sharp-darwin-x64", "sharp-libvips-darwin-x64"]);
-    expect(() => verifyUnpackedNative(appPath, "darwin", "arm64")).toThrow(/foreign Sharp/);
+    expect(findForeignBetterSqlite3Prebuilds(appPath, "darwin", "arm64")).toEqual(["darwin-x64.node"]);
+    expect(() => verifyUnpackedNative(appPath, "darwin", "arm64")).toThrow(
+      /foreign Sharp.*foreign better-sqlite3 prebuild\(s\): darwin-x64\.node/s
+    );
     expect(findForeignSharpAsarPackages(["/node_modules/@img/sharp-darwin-x64/package.json"], "darwin", "arm64")).toEqual(["sharp-darwin-x64"]);
   });
 });

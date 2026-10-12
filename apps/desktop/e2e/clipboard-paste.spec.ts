@@ -30,10 +30,14 @@ async function writeClipboardImage(
   png: Buffer
 ): Promise<void> {
   await app.electronApp.evaluate(
-    ({ clipboard, nativeImage }, payload: { bytes: number[] }) => {
+    async ({ clipboard, ClipboardItem, nativeImage }, payload: { bytes: number[] }) => {
       const image = nativeImage.createFromBuffer(Buffer.from(payload.bytes));
       if (image.isEmpty()) throw new Error("fixture image decoded empty");
-      clipboard.write({ image });
+      await clipboard.write([
+        new ClipboardItem({
+          "image/png": new Blob([new Uint8Array(image.toPNG())], { type: "image/png" })
+        })
+      ]);
     },
     { bytes: Array.from(png) }
   );
@@ -48,9 +52,13 @@ async function writeClipboardImageFileUrl(
   await writeFile(pngPath, png);
   const fileUrl = pathToFileURL(pngPath).href;
   await app.electronApp.evaluate(
-    ({ clipboard }, payload: { fileUrl: string }) => {
+    async ({ clipboard, ClipboardItem }, payload: { fileUrl: string }) => {
       clipboard.clear();
-      clipboard.writeBookmark("PwrSnap fixture", payload.fileUrl);
+      await clipboard.write([
+        new ClipboardItem({
+          "electron application/bookmark": { title: "PwrSnap fixture", url: payload.fileUrl }
+        })
+      ]);
     },
     { fileUrl }
   );
@@ -66,6 +74,9 @@ async function clearClipboard(app: Awaited<ReturnType<typeof launchPwrSnap>>): P
   });
 }
 
+// `menu-will-show` starts an async clipboard probe (Electron 44 reads the
+// clipboard asynchronously), and `enabled` changes when it lands. So this
+// returns the answer of the previous probe; poll it until it settles.
 async function readPasteMenuEnabled(app: Awaited<ReturnType<typeof launchPwrSnap>>): Promise<boolean> {
   return await app.electronApp.evaluate(({ Menu }) => {
     const menu = Menu.getApplicationMenu();
@@ -108,14 +119,14 @@ test.describe("clipboard paste into library", () => {
     const app = await launchPwrSnap();
     try {
       await clearClipboard(app);
-      expect(await readPasteMenuEnabled(app)).toBe(false);
+      await expect.poll(() => readPasteMenuEnabled(app)).toBe(false);
 
       await writeClipboardImage(app, await makeClipboardPng(80, 45));
-      expect(await readPasteMenuEnabled(app)).toBe(true);
+      await expect.poll(() => readPasteMenuEnabled(app)).toBe(true);
 
       await clearClipboard(app);
       await writeClipboardImageFileUrl(app, await makeClipboardPng(90, 50));
-      expect(await readPasteMenuEnabled(app)).toBe(true);
+      await expect.poll(() => readPasteMenuEnabled(app)).toBe(true);
     } finally {
       await app.close();
     }

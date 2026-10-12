@@ -67,7 +67,7 @@ vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 type ClipboardCapture =
   | { kind: "writeImage"; bytes: Buffer }
   | { kind: "writeText"; text: string }
-  | { kind: "writeBuffer"; uti: string; bytes: Buffer };
+  | { kind: "writeItem"; raw: Record<string, Buffer>; png: Buffer | undefined };
 
 const clipboardCaptured: ClipboardCapture[] = [];
 const fileClipboardCaptured: string[] = [];
@@ -90,30 +90,6 @@ vi.mock("electron", () => {
       isPackaged: false,
       on: () => undefined
     },
-    clipboard: {
-      write: vi.fn((args: { image?: unknown; text?: string }) => {
-        if (args.image !== undefined) {
-          // `image` is the mocked nativeImage object below — it
-          // carries `__bytes` so we can recover what got written.
-          const bytes = (args.image as { __bytes?: Buffer }).__bytes;
-          if (bytes !== undefined) {
-            clipboardCaptured.push({ kind: "writeImage", bytes });
-          }
-        }
-      }),
-      writeText: vi.fn((text: string) => {
-        clipboardCaptured.push({ kind: "writeText", text });
-      }),
-      writeImage: vi.fn((image: unknown) => {
-        const bytes = (image as { __bytes?: Buffer }).__bytes;
-        if (bytes !== undefined) {
-          clipboardCaptured.push({ kind: "writeImage", bytes });
-        }
-      }),
-      writeBuffer: vi.fn((uti: string, bytes: Buffer) => {
-        clipboardCaptured.push({ kind: "writeBuffer", uti, bytes });
-      })
-    },
     nativeImage: {
       // Return a stand-in that carries the bytes so the clipboard
       // mock can recover them. nativeImage.isEmpty() needs to return
@@ -135,6 +111,27 @@ vi.mock("../log", () => ({
     info: () => undefined,
     warn: () => undefined,
     error: () => undefined
+  })
+}));
+
+// The handlers write through clipboard/system-clipboard.ts; record what they
+// hand it. `image` is the mocked nativeImage above, which carries `__bytes`
+// so we can recover what got written.
+vi.mock("../clipboard/system-clipboard", () => ({
+  writeClipboardImage: vi.fn(async (image: unknown) => {
+    const bytes = (image as { __bytes?: Buffer }).__bytes;
+    if (bytes !== undefined) {
+      clipboardCaptured.push({ kind: "writeImage", bytes });
+    }
+  }),
+  writeClipboardText: vi.fn(async (text: string) => {
+    clipboardCaptured.push({ kind: "writeText", text });
+  }),
+  writeClipboard: vi.fn(async (write: { png?: Buffer; raw?: Record<string, Buffer> }) => {
+    clipboardCaptured.push({ kind: "writeItem", raw: { ...write.raw }, png: write.png });
+  }),
+  readClipboard: vi.fn(async () => {
+    throw new Error("export-surface-matrix does not read the clipboard");
   })
 }));
 
@@ -612,7 +609,7 @@ describe("clipboard:copy-file export filename", () => {
 
     expect(fileClipboardCaptured).toEqual([result.value.path]);
     expect(basename(fileClipboardCaptured[0]!)).toBe("library-sidebar-export-med.png");
-    expect(clipboardCaptured.find((c) => c.kind === "writeBuffer")).toBeUndefined();
+    expect(clipboardCaptured.find((c) => c.kind === "writeItem")).toBeUndefined();
   });
 });
 
@@ -668,14 +665,14 @@ describe("clipboard:copy pasted image filename", () => {
 
 // ---------------------------------------------------------------------
 // Additional pin for `clipboard:copyLayerFragment`'s private-UTI
-// fragment payload. This verb intentionally does NOT write a standard
-// image fallback: Electron clipboard writes are not additive, so a
-// second image write would clear the private UTI and break PwrSnap-to-
-// PwrSnap paste. Standard rendered image copy goes through
-// `clipboard:copy`.
-// Without this, the writeBuffer interceptor in the electron mock
-// would be untested — a regression where writeBuffer stopped being
-// called for some reason would slip through silently.
+// fragment payload. Off the native helper (which Vitest never runs), the
+// verb writes ONE Electron clipboard item carrying the fragment and the
+// flattened composite together. A second write would clear the private
+// UTI and break PwrSnap-to-PwrSnap paste, which is why the image rides in
+// the same item rather than after it.
+// Without this, the writeClipboard interceptor above would be untested —
+// a regression where the fragment stopped being written for some reason
+// would slip through silently.
 // ---------------------------------------------------------------------
 
 describe("clipboard:copyLayerFragment — private UTI fragment payload", () => {
@@ -690,27 +687,32 @@ describe("clipboard:copyLayerFragment — private UTI fragment payload", () => {
     );
     expect(result.ok).toBe(true);
 
-    const writeBuf = clipboardCaptured.find((c) => c.kind === "writeBuffer");
-    expect(writeBuf).toBeDefined();
-    if (writeBuf === undefined || writeBuf.kind !== "writeBuffer") return;
+    // Exactly one clipboard write, so nothing cleared the fragment after it.
+    expect(clipboardCaptured).toHaveLength(1);
+    const item = clipboardCaptured[0];
+    if (item === undefined || item.kind !== "writeItem") {
+      throw new Error(`expected one clipboard item, got ${JSON.stringify(clipboardCaptured)}`);
+    }
 
     // UTI matches the canonical PwrSnap one — the same constant
     // every PwrSnap-to-PwrSnap paste path looks for.
-    expect(writeBuf.uti).toBe("com.pwrdrvr.pwrsnap.layer-fragment");
+    expect(Object.keys(item.raw)).toEqual(["com.pwrdrvr.pwrsnap.layer-fragment"]);
+    const fragmentBytes = item.raw["com.pwrdrvr.pwrsnap.layer-fragment"]!;
 
     // Payload parses as JSON and carries the expected top-level
     // schema fields. We don't re-validate the whole zod schema here
     // (that's the handler's job); a presence check confirms the
     // wire path is intact.
-    const parsed = JSON.parse(writeBuf.bytes.toString("utf-8"));
+    const parsed = JSON.parse(fragmentBytes.toString("utf-8"));
     expect(parsed.format_version).toBe(1);
     expect(parsed.source_capture_id).toBe(captureId);
     expect(Array.isArray(parsed.layers)).toBe(true);
     expect(parsed.layers.length).toBeGreaterThan(0);
     expect(Array.isArray(parsed.source_refs)).toBe(true);
-    expect(
-      clipboardCaptured.some((entry) => entry.kind === "writeImage")
-    ).toBe(false);
+    // The flattened composite rides in the same item, as a PNG.
+    expect(item.png?.subarray(0, 8)).toEqual(
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    );
   });
 });
 

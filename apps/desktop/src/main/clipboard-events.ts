@@ -15,9 +15,9 @@
 //
 // CONTRACT
 // ────────
-// Fire AFTER the `clipboard.write*` call returns. Listeners may
-// re-read the clipboard (e.g. `clipboard.readImage()`); they must see
-// the write that triggered the event.
+// Fire AFTER the clipboard write resolves. Listeners may re-read the
+// clipboard (e.g. `readClipboard()` in clipboard/system-clipboard.ts);
+// they must see the write that triggered the event.
 //
 // Synchronous: handlers run on the same tick as `emit`. Don't do
 // blocking work inside a handler — schedule it.

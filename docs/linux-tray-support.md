@@ -220,6 +220,8 @@ does not depend on the answer.
 
 The post-capture toast was independently broken on Linux, and the root cause is
 one line of `electron.d.ts`: **`setOpacity` is `@platform win32,darwin`.**
+That held through Electron 41. Electron 44 implements it on Linux; see
+§"Measurements" for what that does and does not show.
 
 The toast never called `hide()` off Windows. It pseudo-hid with `setOpacity(0)`
 plus `setPosition(-20000, -20000)` and restored with `setOpacity(1)` plus a
@@ -369,6 +371,14 @@ exactly what would demote it back to a representation of a 16pt image.
 Everything asserted above about Electron's Linux behavior was measured on
 Electron 41.10.7, not inferred — including the two results that are easy to
 get backwards.
+
+**One row changed in Electron 44.** The same xvfb recipe on 44.4.5, with 41.10.7
+run beside it for control, gives `getOpacity()` = `0.25` after
+`setOpacity(0.25)` and `0` after `setOpacity(0)` (41.10.7: `1` both times).
+`hide()` / `showInactive()` are unchanged. That is a readback, and xvfb has no
+compositor to draw it, so it shows the call now stores the value, not that a
+window fades. The float-over keeps its real `hide()` on Linux either way. The
+rest of the table was not re-run on 44, and Wayland was not re-measured.
 
 | Call | Result on Linux |
 |---|---|

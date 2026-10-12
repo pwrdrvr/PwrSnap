@@ -25,10 +25,14 @@ async function writeClipboardImage(
     .png()
     .toBuffer();
   await app.electronApp.evaluate(
-    ({ clipboard, nativeImage }, payload: { bytes: number[] }) => {
+    async ({ clipboard, ClipboardItem, nativeImage }, payload: { bytes: number[] }) => {
       const image = nativeImage.createFromBuffer(Buffer.from(payload.bytes));
       if (image.isEmpty()) throw new Error("fixture image decoded empty");
-      clipboard.write({ image });
+      await clipboard.write([
+        new ClipboardItem({
+          "image/png": new Blob([new Uint8Array(image.toPNG())], { type: "image/png" })
+        })
+      ]);
     },
     { bytes: Array.from(png) }
   );

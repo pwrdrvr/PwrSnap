@@ -173,7 +173,7 @@ feed; use a published release to test real updates.
 Run these steps on Windows 10 or Windows 11 x64. Install:
 
 - Git.
-- Node.js `v24.14.1` (the version pinned in `.nvmrc`).
+- Node.js `v24.21.0` (the version pinned in `.nvmrc`).
 - `pnpm@12.9.1` (the version pinned in the root `package.json`).
 - Visual Studio Build Tools 2022 with the **Desktop development with C++**
   workload.

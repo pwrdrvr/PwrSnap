@@ -114,9 +114,9 @@ jobs:
   #
   # Deliberate divergence from PwrAgnt: we do NOT set `cache-electron`, which
   # PwrAgnt sets on every call site. Measured on PwrSnap (PR #429) it takes the
-  # Windows cache entry from 259 MB to 397 MB while saving ~0.23s — the
-  # better-sqlite3 Electron prebuild that `rebuild:electron-native` fetches
-  # resolves locally, not over the network, so there is no download for the
+  # Windows cache entry from 259 MB to 397 MB while saving ~0.23s — nothing
+  # in the install downloads an Electron-specific artifact (better-sqlite3's
+  # prebuilds ship inside its npm tarball), so there is no download for the
   # flag to capture. PwrGit reached the same conclusion independently and
   # backed the flag out. Revisit only if a dependency starts making a real
   # runtime download on a warm pnpm store.
@@ -132,7 +132,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:
-          node-version: "24.14.1"
+          node-version: "^24.21.0"
           lookup-only: "true"
 
   windows-install-deps:
@@ -147,7 +147,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:
-          node-version: "24.14.1"
+          node-version: "^24.21.0"
           lookup-only: "true"
 
   lint:
@@ -162,7 +162,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:
-          node-version: "24.14.1"
+          node-version: "^24.21.0"
 
       - name: Lint
         run: pnpm run lint
@@ -179,7 +179,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:
-          node-version: "24.14.1"
+          node-version: "^24.21.0"
 
       - name: Build
         run: pnpm run build
@@ -196,7 +196,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:
-          node-version: "24.14.1"
+          node-version: "^24.21.0"
 
       - name: Test
         run: pnpm run test
@@ -221,7 +221,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:
-          node-version: "24.14.1"
+          node-version: "^24.21.0"
 
       - name: Run desktop Electron E2E specs
         # The macOS-only specs (screencapture-based) are gated via
@@ -287,9 +287,9 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:
-          node-version: "24.14.1"
+          node-version: "^24.21.0"
 
-      - name: Rebuild Electron native modules
+      - name: Build native helpers
         run: pnpm rebuild:electron-native
 
       - name: Run desktop Electron E2E specs
@@ -330,7 +330,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:
-          node-version: "24.14.1"
+          node-version: "^24.21.0"
 
       - name: Lint
         run: pnpm run lint
@@ -371,7 +371,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:
-          node-version: "24.14.1"
+          node-version: "^24.21.0"
 
       - name: Run desktop Electron E2E specs (Windows)
         # windows-latest provides an interactive desktop session, so (unlike the

@@ -501,9 +501,10 @@ type ClipboardLayerFragment = {
 };
 ```
 
-Always co-write standard PNG bytes via `clipboard.writeImage()` so
-non-PwrSnap consumers (Slack, Messages, Mail) get the flattened
-selection. The private UTI is opt-in for PwrSnap-to-PwrSnap fidelity.
+Always co-write standard PNG bytes in the same clipboard item (the
+`pasteboard-writer` helper on macOS, one Electron `ClipboardItem`
+elsewhere) so non-PwrSnap consumers (Slack, Messages, Mail) get the
+flattened selection. The private UTI is opt-in for PwrSnap-to-PwrSnap fidelity.
 
 UTI registration in `electron-builder.yml` `extendInfo`:
 

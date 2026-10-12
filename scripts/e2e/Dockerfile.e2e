@@ -5,19 +5,19 @@
 # `playwright install-deps` because Chrome+Firefox ship preinstalled
 # and drag in the GTK/libnss/libgbm/libasound stack Electron needs.
 #
-# We mimic that: noble-based Node 24.14.1 image + the runtime libs
+# We mimic that: a bookworm-based Node 24.21 image + the runtime libs
 # Electron needs + xvfb. The repo is bind-mounted at run time, so
 # the image stays generic and fast to rebuild when only the test
 # code changes.
 #
-# Multi-arch: built off `node:24.14.1-noble`, which has linux/amd64
+# Multi-arch: built off `node:24.21-bookworm`, which has linux/amd64
 # AND linux/arm64 variants. On Apple Silicon hosts it runs natively
 # (arm64) — that's slightly faster than GHA's amd64 hardware but
 # the test flake we're reproducing is timing-based, not arch-
 # specific. If a future check wants exact-arch parity, add
 # `--platform linux/amd64` to the docker build/run invocation.
 
-FROM node:24.14-bookworm
+FROM node:24.21-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
@@ -61,9 +61,9 @@ RUN corepack enable
 
 # Hermetic install dir: bind the repo at /work, but install into a
 # container-local pnpm store so we don't fight the host's
-# .pnpm-store or arch-specific .node binaries (better-sqlite3 +
-# sharp ship per-platform prebuilt .node files; the host's macOS
-# arm64 .node files would crash inside the container).
+# .pnpm-store or platform-specific packages (Electron itself and
+# sharp's native slice install per platform; the host's macOS arm64
+# copies would not run inside the container).
 ENV PNPM_HOME=/root/.local/share/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 ENV CI=1

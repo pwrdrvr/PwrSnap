@@ -97,22 +97,6 @@ vi.mock("electron", () => ({
     isPackaged: false,
     on: () => undefined
   },
-  clipboard: {
-    write: vi.fn((args: { image?: unknown; text?: string }) => {
-      if (args.image !== undefined) {
-        const bytes = (args.image as { __bytes?: Buffer }).__bytes;
-        if (bytes !== undefined) clipboardCaptured.push({ kind: "writeImage", bytes });
-      }
-    }),
-    writeText: vi.fn((text: string) => {
-      clipboardCaptured.push({ kind: "writeText", text });
-    }),
-    writeImage: vi.fn((image: unknown) => {
-      const bytes = (image as { __bytes?: Buffer }).__bytes;
-      if (bytes !== undefined) clipboardCaptured.push({ kind: "writeImage", bytes });
-    }),
-    writeBuffer: vi.fn(() => undefined)
-  },
   nativeImage: {
     createFromBuffer: (bytes: Buffer) => ({
       isEmpty: () => bytes.length === 0,
@@ -135,6 +119,22 @@ vi.mock("../log", () => ({
 
 vi.mock("../clipboard/named-image-pasteboard", () => ({
   writeNamedPngToPasteboard: vi.fn(async () => false)
+}));
+
+// The handlers write through clipboard/system-clipboard.ts; record what they
+// hand it. `image` is the mocked nativeImage above, which carries `__bytes`.
+vi.mock("../clipboard/system-clipboard", () => ({
+  writeClipboardImage: vi.fn(async (image: unknown) => {
+    const bytes = (image as { __bytes?: Buffer }).__bytes;
+    if (bytes !== undefined) clipboardCaptured.push({ kind: "writeImage", bytes });
+  }),
+  writeClipboardText: vi.fn(async (text: string) => {
+    clipboardCaptured.push({ kind: "writeText", text });
+  }),
+  writeClipboard: vi.fn(async () => undefined),
+  readClipboard: vi.fn(async () => {
+    throw new Error("tool-matrix-wysiwyg does not read the clipboard");
+  })
 }));
 
 const { bus } = await import("../command-bus");

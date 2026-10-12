@@ -55,6 +55,7 @@ import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { stagedPnpmConfigEnv } from "./staged-pnpm-config.mjs";
 import { releaseArchitecture, stageName, verifyStageTarget, thinStagedHelpers, thinStagedFfmpeg, verifyPackagedArchitecture, pruneStagedSharp, assertStagedSharpTarget } from "./macos-release-artifacts.mjs";
+import { pruneBetterSqlite3Prebuilds } from "./better-sqlite3-prebuilds.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -489,18 +490,17 @@ if (!signStageOnly) {
   pruneStagedSharp(stageDir, releaseArch);
   assertStagedSharpTarget(stageDir, releaseArch);
 
-  // 6. Build the staged Electron-native sqlite sidecar. The stage contains only
-  //    production dependencies, so the script gets the packaged Electron version
-  //    from electron-builder.yml instead of devDependency resolution.
-  step("prepare staged better-sqlite3 Electron sidecar");
-  runChecked("node", ["scripts/rebuild-native-for-electron.mjs"], {
-    cwd: stageDir,
-    env: {
-      PWRSNAP_ELECTRON_VERSION: readElectronBuilderVersion(),
-      npm_config_arch: releaseArch,
-      npm_config_target_arch: releaseArch
-    }
+  // 6. Keep only the darwin better-sqlite3 prebuilds this app loads. The
+  //    package's N-API prebuilds serve Electron as-is, so nothing is rebuilt;
+  //    the other platforms' files are dead weight, and an x64 slice would fail
+  //    the arm64-only app's architecture check.
+  step(`prune foreign better-sqlite3 prebuilds (keep darwin/${releaseArch})`);
+  const sqlitePrune = pruneBetterSqlite3Prebuilds({
+    nodeModulesDir: join(stageDir, "node_modules"),
+    platform: "darwin",
+    arch: releaseArch
   });
+  console.log(`  = retained: ${sqlitePrune.kept.join(", ")}`);
 
   // 7. Seed the stage with the build output + electron-builder inputs.
   //    pnpm deploy copies the package source tree (including out/ if it
@@ -691,15 +691,6 @@ runChecked("node", [join(desktopRoot, "scripts", "verify-asar-contents.mjs"), bu
 step("done");
 const dist = join(stageDir, "dist");
 console.log(`  artifacts: ${dist}`);
-
-function readElectronBuilderVersion() {
-  const config = readFileSync(join(desktopRoot, "electron-builder.yml"), "utf8");
-  const match = /^electronVersion:\s*([^\s#]+)/m.exec(config);
-  if (!match) {
-    throw new Error("electron-builder.yml is missing electronVersion");
-  }
-  return match[1];
-}
 
 /**
  * Workaround for `pnpm deploy` dropping platform-specific

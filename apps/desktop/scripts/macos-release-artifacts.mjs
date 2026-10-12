@@ -139,9 +139,14 @@ export function verifyPackagedArchitecture(app, arch) {
     "Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework",
     ...Object.values(NATIVE_RESOURCES).map((name) => `Contents/Resources/${name}`),
     "Contents/Resources/PwrSnapFFmpeg",
-    "Contents/Resources/app.asar.unpacked/node_modules/better-sqlite3/electron-native/better_sqlite3.node",
+    // better-sqlite3's N-API prebuilds are thin, one per arch, picked by
+    // process.arch at runtime; the arm64 one is in every Mac app.
+    "Contents/Resources/app.asar.unpacked/node_modules/better-sqlite3/prebuilds/darwin-arm64.node",
     ...EXTENSIONS.map((name) => `Contents/PlugIns/${name}.appex/Contents/MacOS/${name}`)
   ];
+  if (arch === "universal") {
+    required.push("Contents/Resources/app.asar.unpacked/node_modules/better-sqlite3/prebuilds/darwin-x64.node");
+  }
   for (const path of required) if (!existsSync(join(app, path))) throw new Error(`Missing packaged runtime: ${path}`);
   for (const target of arch === "universal" ? ["arm64", "x64"] : ["arm64"]) {
     for (const name of [`sharp-darwin-${target}`, `sharp-libvips-darwin-${target}`]) {
@@ -160,8 +165,8 @@ export function verifyPackagedArchitecture(app, arch) {
     const found = arches(path);
     const name = relative(app, path);
     const expected = arch === "arm64" ? ["arm64"]
-      : name.includes("/sharp-darwin-arm64/") || name.includes("/sharp-libvips-darwin-arm64/") ? ["arm64"]
-      : name.includes("/sharp-darwin-x64/") || name.includes("/sharp-libvips-darwin-x64/") ? ["x86_64"]
+      : name.includes("/sharp-darwin-arm64/") || name.includes("/sharp-libvips-darwin-arm64/") || name.endsWith("/better-sqlite3/prebuilds/darwin-arm64.node") ? ["arm64"]
+      : name.includes("/sharp-darwin-x64/") || name.includes("/sharp-libvips-darwin-x64/") || name.endsWith("/better-sqlite3/prebuilds/darwin-x64.node") ? ["x86_64"]
       : ["arm64", "x86_64"];
     if (found.join() !== expected.join()) throw new Error(`Wrong architecture for ${name}: ${found}, expected ${expected}`);
     binaries.add(name);

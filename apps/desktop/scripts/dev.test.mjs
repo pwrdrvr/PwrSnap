@@ -181,13 +181,15 @@ describe("dev launch environment", () => {
     expect(env.PWRSNAP_DATA_ROOT).toBe("/tmp/pwrsnap");
   });
 
-  it("requires the active Node version to match .nvmrc exactly", () => {
-    expect(checkNodeVersion("v24.14.1", "v24.14.1\n")).toMatchObject({ ok: true });
-    expect(checkNodeVersion("v24.13.0", "v24.14.1\n")).toMatchObject({
-      actual: "24.13.0",
-      expected: "24.14.1",
+  it("accepts any Node satisfying ^<.nvmrc>, the range GitHub Actions installs", () => {
+    expect(checkNodeVersion("v24.21.0", "v24.21.0\n")).toMatchObject({ ok: true });
+    expect(checkNodeVersion("v24.22.3", "v24.21.0\n")).toMatchObject({ ok: true });
+    expect(checkNodeVersion("v24.20.0", "v24.21.0\n")).toMatchObject({
+      actual: "24.20.0",
+      expected: "24.21.0",
       ok: false
     });
+    expect(checkNodeVersion("v25.0.0", "v24.21.0\n")).toMatchObject({ ok: false });
   });
 
   it("accepts a complete Electron package install", () => {

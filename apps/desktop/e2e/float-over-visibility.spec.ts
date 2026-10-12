@@ -32,6 +32,7 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { type Page } from "@playwright/test";
 import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 import { EVENT_CHANNELS, popoverWidthDip, type CaptureEnrichment } from "@pwrsnap/shared";
 
@@ -137,6 +138,69 @@ async function inspectFloatOver(
     };
   }, includeRendererInfo);
 }
+
+/**
+ * Where the dock's tab lands on screen. Not the window's width: Electron 44
+ * on Windows will not make a window narrower than 32 DIP, so the window
+ * around the 18px tab is wider there. What has to hold everywhere is that
+ * the tab is drawn at its width, flush with the work area's edge (the dock
+ * starts on the right), and the window stays inside the work area.
+ */
+async function dockGeometry(
+  app: Awaited<ReturnType<typeof launchPwrSnap>>,
+  page: Page
+): Promise<{
+  visible: boolean;
+  opacity: number;
+  tabWidth: number;
+  tabEdgeGap: number;
+  insideWorkArea: boolean;
+  height: number;
+} | null> {
+  const native = await app.electronApp.evaluate(({ BrowserWindow, screen }) => {
+    const bridge = (
+      globalThis as unknown as {
+        __PWRSNAP_TEST__: { getFloatOverWindowId: () => number | null };
+      }
+    ).__PWRSNAP_TEST__;
+    const windowId = bridge.getFloatOverWindowId();
+    const win = windowId === null ? null : BrowserWindow.fromId(windowId);
+    if (win === null || win.isDestroyed()) return null;
+    const bounds = win.getBounds();
+    return {
+      visible: win.isVisible(),
+      opacity: win.getOpacity(),
+      bounds,
+      height: win.getContentSize()[1]!,
+      workArea: screen.getDisplayMatching(bounds).workArea
+    };
+  });
+  if (native === null) return null;
+  const tab = await page.locator(".fo-host__measure").evaluate((el) => {
+    const rect = el.getBoundingClientRect();
+    return { x: rect.x, width: rect.width };
+  });
+  const workAreaRight = native.workArea.x + native.workArea.width;
+  return {
+    visible: native.visible,
+    opacity: native.opacity,
+    tabWidth: tab.width,
+    tabEdgeGap: workAreaRight - (native.bounds.x + tab.x + tab.width),
+    insideWorkArea:
+      native.bounds.x >= native.workArea.x &&
+      native.bounds.x + native.bounds.width <= workAreaRight,
+    height: native.height
+  };
+}
+
+const DOCK_AT_REST = {
+  visible: true,
+  opacity: 1,
+  tabWidth: 18,
+  tabEdgeGap: 0,
+  insideWorkArea: true,
+  height: 54
+};
 
 /**
  * Wait until the float-over content size settles after the renderer
@@ -271,18 +335,7 @@ test.describe("float-over visibility", () => {
         // The toast is gone after tucking. Its sizing helper requires
         // .fo and can never settle for the dock; wait for the native
         // window to finish reshaping to the single tab instead.
-        await expect.poll(() => inspectFloatOver(app)).toMatchObject({
-          visible: true,
-          opacity: 1,
-          contentSize: { width: 18, height: 54 }
-        });
-        const info = await inspectFloatOver(app);
-        expect(info.visible).toBe(true);
-        expect(info.opacity).toBe(1);
-        expect(info.contentSize?.width).toBe(18);
-        const workArea = await app.electronApp.evaluate(({ screen }) => screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea);
-        expect(info.bounds!.x).toBeGreaterThanOrEqual(workArea.x);
-        expect(info.bounds!.x + info.bounds!.width).toBeLessThanOrEqual(workArea.x + workArea.width);
+        await expect.poll(() => dockGeometry(app, page)).toEqual(DOCK_AT_REST);
         if (status === null) await expect(page.locator(".fod-st")).toHaveCount(0);
       } finally {
         await app.close();
@@ -346,11 +399,7 @@ test.describe("float-over visibility", () => {
         recording: { showRecentCaptureSidebar: true }
       });
       expect(shown.ok).toBe(true);
-      await expect.poll(() => inspectFloatOver(app)).toMatchObject({
-        visible: true,
-        opacity: 1,
-        contentSize: { width: 18, height: 54 }
-      });
+      await expect.poll(() => dockGeometry(app, page)).toEqual(DOCK_AT_REST);
       await expect(page.locator(".fod-tab")).toHaveCount(1);
     } finally {
       await app.close();

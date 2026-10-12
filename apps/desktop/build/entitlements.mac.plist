@@ -14,9 +14,9 @@
 
   <!-- disable-library-validation: needed because of `sharp`, NOT because of
        `better-sqlite3`. PwrAgnt also ships better-sqlite3 and does NOT need
-       this entitlement — electron-builder rebuilds and re-signs the
-       better-sqlite3 .node file with our Developer ID during packaging, so
-       library validation is satisfied for the SQLite path.
+       this entitlement — electron-builder re-signs the better-sqlite3 .node
+       prebuilds with our Developer ID during packaging, so library
+       validation is satisfied for the SQLite path.
 
        Sharp is two-layer: the JS↔C++ bridge `sharp.node` (which DOES get
        re-signed by electron-builder), plus a libvips-cpp.42.x.dylib that

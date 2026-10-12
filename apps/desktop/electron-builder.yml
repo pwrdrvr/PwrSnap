@@ -13,7 +13,7 @@ copyright: "Copyright © 2026 PwrDrvr LLC. All rights reserved."
 # exemptions, this is a sandboxed Quick Look provider).
 afterPack: "scripts/afterpack-sign-appex.mjs"
 
-electronVersion: 44.4.5
+electronVersion: 44.5.1
 
 # No @electron/rebuild pass while packaging. The only native module it finds
 # is better-sqlite3, whose N-API prebuilds already load in Electron (sharp

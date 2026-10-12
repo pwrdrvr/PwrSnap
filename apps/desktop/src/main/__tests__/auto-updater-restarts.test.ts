@@ -211,7 +211,9 @@ describe("production release requests across process restarts", () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
-  test("a resident relaunch keeps the original deadline and a downloaded update does not poll every second", async () => {
+  // A downloaded update keeps reading the feed so a newer release can replace
+  // it, but on the same hourly budget as any other check, never in a loop.
+  test("a resident relaunch keeps the original deadline and a downloaded update still checks hourly", async () => {
     await updater.checkForAppUpdatesNow("startup");
     vi.setSystemTime(START + 5 * MINUTE);
     await restart();
@@ -220,11 +222,21 @@ describe("production release requests across process restarts", () => {
     const downloaded = mocks.updater.on.mock.calls.find(([event]) => event === "update-downloaded")?.[1] as
       (info: { version: string }) => void;
     downloaded({ version: "1.0.1" });
-    await vi.advanceTimersToNextTimerAsync();
-    expect(Date.now()).toBe(START + 10 * MINUTE);
-    await vi.advanceTimersToNextTimerAsync();
-    expect(Date.now()).toBe(START + 70 * MINUTE);
+    await vi.advanceTimersByTimeAsync(5 * MINUTE - 1);
     expect(fetchMock).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(updater.checkForAppUpdatesNow("periodic")).resolves.toEqual({
+      status: "downloaded",
+      version: "1.0.1"
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(HOUR - 1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    await updater.checkForAppUpdatesNow("periodic");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    // v1.0.0 on the feed is older than the held v1.0.1: nothing to replace.
+    expect(mocks.check).not.toHaveBeenCalled();
   });
 
   test("schedules from the successful response time so network latency does not skip the next hourly refresh", async () => {

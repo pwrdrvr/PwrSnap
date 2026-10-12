@@ -131,11 +131,35 @@ The result channel's `checking` tick outruns the status event it mirrors by
 however long the GitHub release read takes, so `use-user-update-check.ts`
 shows a local `checking` until a real status arrives. It is **local state**,
 not a write into the shared status, because a check started while an update is
-already downloaded must not walk that status backwards — main answers that
-case from its held download without emitting a single status event, so a
-clobbered status would take the standing Restart offer away permanently.
+already downloaded must not walk that status backwards — when the feed has
+nothing newer, main answers that case from its held download without emitting
+a single status event, so a clobbered status would take the standing Restart
+offer away permanently.
 Pinned by `AppUpdateBanner.test.tsx` §"keeps a standing Restart offer while a
 fresh check runs beside it".
+
+## A newer release replaces a downloaded one
+
+A downloaded update no longer ends the check. When the selected track has a
+release newer than the held download, main downloads it, and the Restart offer
+moves to the newer build. Without that, someone who left the app open across
+two releases restarted into the older one only to be offered the newer one
+straight away. The status therefore can move `downloaded` → `available` →
+`downloading` → `downloaded` for a higher version. Surfaces key on the version,
+so the newer `downloaded` brings back a row the user dismissed for the older one.
+
+What can be installed while that runs depends on the platform. Main owns that
+(`supersedingDownload` in
+[auto-updater.ts](../../../../main/auto-updater.ts)), and the renderer only
+follows the status:
+
+- **macOS** shows the newer build as ready only after Squirrel.Mac has staged
+  it. Until then `quitAndInstall` still installs the older build. If the newer
+  download fails or is canceled, the older offer comes back.
+- **Windows** drops the older offer when the newer download starts, because
+  electron-updater deletes the older installer at that point.
+
+A held switch-back (`downgrade: true`) is never replaced this way.
 
 ## The dev fake is the only way to see any of this
 

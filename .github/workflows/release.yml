@@ -338,7 +338,7 @@ jobs:
             apps/desktop/release-stage/dist/latest-mac.yml
             apps/desktop/release-stage/dist/macos-artifact-sizes.json
             apps/desktop/release-stage/build/ffmpeg-source/*
-          retention-days: 30
+          retention-days: 90
 
   linux-build:
     name: Validate Linux desktop build
@@ -682,7 +682,7 @@ jobs:
             apps/desktop/release-stage/dist/PwrSnap.Setup*.exe
             apps/desktop/release-stage/dist/latest.yml
             apps/desktop/release-stage/dist/SHA256SUMS
-          retention-days: 7
+          retention-days: 90
 
   publish-release-assets:
     name: Create release and publish platform assets

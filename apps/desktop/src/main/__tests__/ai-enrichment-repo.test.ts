@@ -69,6 +69,7 @@ describe("AI enrichment repositories", () => {
     testDb.exec(migration("0010_ai_enrichment_title.sql"));
     testDb.exec(migration("0011_ai_enrichment_filename.sql"));
     testDb.exec(migration("0022_ai_usage_accounting.sql"));
+    testDb.exec(migration("0039_ai_run_fallback.sql"));
     seedCapture();
   });
 

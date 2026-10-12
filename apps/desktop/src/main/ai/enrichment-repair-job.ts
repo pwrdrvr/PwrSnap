@@ -1,25 +1,39 @@
 // Background re-run of AI enrichment over captures whose last run failed,
 // or that AI never saw.
 //
-// One job at a time, one capture at a time, newest first. Each capture is
-// dispatched through `codex:enrich` like a Regenerate click, and the job
-// waits for that run to finish before starting the next, so a repair of
-// hundreds of snaps never has more than one turn of its own in flight.
+// One job at a time, newest first, at most `concurrency` captures in
+// flight. Each capture is enqueued through the dispatcher codex-handlers.ts
+// returns (`EnrichmentRepairDispatcher`), which runs the same path as
+// `codex:enrich` with one difference: it does not draw on the live
+// enrichment budget.
 //
-// Pacing is the part that matters. Enrichment shares one token bucket
-// (`AiEnrichmentBudget`) with every new capture, and a dispatch the bucket
-// refuses is counted toward the circuit breaker that turns AI OFF for the
-// user. So the job never asks while the bucket is low: it holds
-// `BUDGET_RESERVE` tokens back for live captures and waits for the refill
-// instead. A refusal that still slips through (a capture landed between
-// the check and the dispatch) is retried after a refill, never skipped.
+// That exemption is why the job paces itself. The operator started
+// this job from a preview that said how many snaps it covers, so it is not
+// the runaway the token bucket (`AiEnrichmentBudget`) and its circuit
+// breaker exist to catch. Sharing the bucket used to leave new captures a
+// few tokens of headroom for the length of a re-run, and every capture the
+// bucket then refused counted toward the breaker that turns AI OFF. So the
+// job never touches the bucket. It paces itself instead: at most one run
+// starts per refill interval of the rate limit in force (the user's steady
+// rate, without the burst), and the concurrency limit caps what is in
+// flight. Every other refusal still applies and ends the job: AI turned
+// off, consent missing, or the breaker already tripped by live captures.
+//
+// The exemption cannot be claimed over the bus. `codex:enrich` always
+// spends a token, whatever `triggerSource` a caller names; only this job,
+// in the process that registered the codex handlers, holds the dispatcher.
+//
+// A local model is paced too. A loopback base URL does not make a run free
+// (it can be a gateway to a paid API, and a fallback can be a hosted model),
+// and PwrSnap does not infer pricing from a URL. A user who wants a backlog
+// to go faster raises the rate limit in Settings → AI Features.
 //
 // The job lives in the process that owns `codex:*` (the agent, when the
 // process split is on) and in memory only: a restart forgets it, and the
 // boot sweep fails whatever run it had in flight.
 
+import { IterableMapper } from "@shutterstock/p-map-iterable";
 import type {
-  AiEnrichmentBudgetStatus,
   AiRunStatus,
   EnrichmentRepairCriteria,
   EnrichmentRepairJob,
@@ -31,27 +45,10 @@ import type {
 /** Most snaps one repair keeps in flight. A connection's own limit
  *  (Settings → AI Providers) still caps what reaches its endpoint. */
 export const MAX_REPAIR_CONCURRENCY = 8;
-/** Tokens left in the bucket for new captures while a repair runs. */
-export const BUDGET_RESERVE = 5;
+/** Longest single sleep while waiting out the pace. */
+export const MAX_PACE_SLICE_MS = 5_000;
 
-/** The reserve for a bucket of `capacity`: a quarter of it, at most
- *  `BUDGET_RESERVE`, so a small user-set burst still lets a repair run. At
- *  least one token whenever the bucket holds two: a repair that takes the
- *  last token sends the next new capture into slow mode, and slow-mode
- *  attempts count toward the breaker that turns AI off. Only a one-token
- *  bucket gets no reserve, since a repair could otherwise never start. */
-export function repairBudgetReserve(capacity: number): number {
-  if (capacity < 2) return 0;
-  return Math.max(1, Math.min(BUDGET_RESERVE, Math.floor(capacity / 4)));
-}
-/** Longest single wait for the bucket, so a cancel or a settings change is
- *  noticed even if `nextTokenAt` is far off. */
-const MAX_BUDGET_WAIT_MS = 30_000;
-const MIN_BUDGET_WAIT_MS = 1_000;
-/** Pause after a dispatch the bucket refused anyway: one refill interval. */
-const LIMITED_RETRY_MS = 6_000;
-
-/** Errors from `codex:enrich` that end the job rather than one capture. */
+/** Enqueue errors that end the job rather than one capture. */
 const STOP_CODES: Record<string, string> = {
   ai_disabled: "AI enrichment was turned off.",
   ai_consent_required: "AI enrichment needs consent first.",
@@ -62,7 +59,10 @@ const STOP_CODES: Record<string, string> = {
 export type EnrichmentRepairDeps = {
   listCaptureIds: (criteria: EnrichmentRepairCriteria) => string[];
   statusOf: (captureId: string) => EnrichmentRepairStatus | "other" | "gone";
-  budgetStatus: () => Promise<Result<AiEnrichmentBudgetStatus, PwrSnapError>>;
+  /** Least time between two starts; read before each one, so a rate-limit
+   *  change in Settings applies to the rest of the job. */
+  dispatchIntervalMs: () => Promise<number>;
+  /** Enqueue one capture outside the live budget. */
   enrich: (captureId: string) => Promise<Result<{ runId: string }, PwrSnapError>>;
   cancelRun: (runId: string) => Promise<void>;
   /** Resolves with the run's terminal status, or null if `signal` aborts
@@ -79,9 +79,11 @@ type ActiveJob = {
   abort: AbortController;
   /** Run id per capture in flight, for cancel. */
   runs: Map<string, string>;
-  /** Serializes "check the bucket, then dispatch" across workers, so N
-   *  workers cannot all see the same spare token and dig into the reserve. */
+  /** Serializes "wait for the pace, then dispatch" across workers, so N
+   *  workers cannot all start at once. */
   dispatchTail: Promise<unknown>;
+  /** When the last run started, for the pace. */
+  lastStartAt: number | null;
   /** Set by the first worker that hits a job-ending error. Workers queued
    *  behind it on `dispatchTail` check it before dispatching anything new. */
   stopReason: string | null;
@@ -125,6 +127,7 @@ export class EnrichmentRepairRunner {
       abort: new AbortController(),
       runs: new Map(),
       dispatchTail: Promise.resolve(),
+      lastStartAt: null,
       stopReason: null
     };
     this.active = active;
@@ -150,24 +153,37 @@ export class EnrichmentRepairRunner {
     this.deps.publish(null);
   }
 
-  /** `concurrency` workers pull from one newest-first list. */
+  /** Up to `concurrency` captures at once from one newest-first list. The
+   *  source stops yielding once the job is cancelled or has a stop reason,
+   *  so nothing new starts after either; results are tallied as each run
+   *  finishes, not in list order. */
   private async run(active: ActiveJob, ids: readonly string[]): Promise<void> {
     const { signal } = active.abort;
-    let next = 0;
-    const worker = async (): Promise<void> => {
-      while (!signal.aborted && active.stopReason === null && next < ids.length) {
-        const captureId = ids[next++]!;
+    function* pending(): Generator<string> {
+      for (const captureId of ids) {
+        if (signal.aborted || active.stopReason !== null) return;
+        yield captureId;
+      }
+    }
+    const runs = new IterableMapper(
+      pending(),
+      async (captureId): Promise<Outcome | null> => {
         const status = this.deps.statusOf(captureId);
         if (status === "gone" || status === "other" || !active.job.criteria.statuses.includes(status)) {
-          this.update(active, { skipped: active.job.skipped + 1, processed: active.job.processed + 1 });
-          continue;
+          return { kind: "skipped" };
         }
         const outcome = await this.runOne(active, captureId);
-        if (signal.aborted) return;
-        if (outcome.kind === "stop") {
-          active.stopReason ??= outcome.reason;
-          return;
-        }
+        if (signal.aborted) return null;
+        // Set here, not when the result is read: the mapper may pull the
+        // next capture before the loop below sees this one.
+        if (outcome.kind === "stop") active.stopReason ??= outcome.reason;
+        return outcome;
+      },
+      { concurrency: active.job.concurrency, maxUnread: active.job.concurrency }
+    );
+    try {
+      for await (const outcome of runs) {
+        if (outcome === null || outcome.kind === "stop" || signal.aborted) continue;
         this.update(active, {
           processed: active.job.processed + 1,
           ...(outcome.kind === "succeeded"
@@ -177,9 +193,6 @@ export class EnrichmentRepairRunner {
               : { failed: active.job.failed + 1 })
         });
       }
-    };
-    try {
-      await Promise.all(Array.from({ length: active.job.concurrency }, () => worker()));
       if (signal.aborted) return;
       if (active.stopReason !== null) this.finish(active, "stopped", active.stopReason);
       else this.finish(active, "completed", null);
@@ -192,77 +205,66 @@ export class EnrichmentRepairRunner {
 
   private async runOne(active: ActiveJob, captureId: string): Promise<Outcome> {
     const { signal } = active.abort;
-    for (;;) {
-      const dispatched = await this.dispatchPaced(active, captureId);
-      if (dispatched === null) return { kind: "skipped" };
-      if (signal.aborted) {
-        // Cancelled while `codex:enrich` was answering: `cancel()` could not
-        // see this run, so stop it here rather than leave it running.
-        if (!("kind" in dispatched) && dispatched.ok) await this.deps.cancelRun(dispatched.value.runId);
-        return { kind: "skipped" };
-      }
-      if ("kind" in dispatched) return dispatched;
-      if (!dispatched.ok) {
-        const code = dispatched.error.code;
-        if (code === "ai_budget_limited") {
-          // Lost a race with a new capture for the last token. Wait for the
-          // refill and try the SAME capture again.
-          await this.deps.sleep(LIMITED_RETRY_MS, signal);
-          continue;
-        }
-        const stopReason = STOP_CODES[code];
-        if (stopReason !== undefined) return { kind: "stop", reason: stopReason };
-        return code === "not_found" ? { kind: "skipped" } : { kind: "failed" };
-      }
-
-      const runId = dispatched.value.runId;
-      active.runs.set(captureId, runId);
-      this.update(active, { inFlight: [...active.job.inFlight, { captureId, startedAt: this.iso() }] });
-      const terminal = await this.deps.waitForRun(runId, signal);
-      active.runs.delete(captureId);
-      this.update(active, { inFlight: active.job.inFlight.filter((run) => run.captureId !== captureId) });
-      return { kind: terminal === "completed" ? "succeeded" : "failed" };
+    const dispatched = await this.dispatchPaced(active, captureId);
+    if (dispatched === null) return { kind: "skipped" };
+    if (signal.aborted) {
+      // Cancelled while the enqueue was answering: `cancel()` could not see
+      // this run, so stop it here rather than leave it running.
+      if (dispatched.ok) await this.deps.cancelRun(dispatched.value.runId);
+      return { kind: "skipped" };
     }
+    if (!dispatched.ok) {
+      const code = dispatched.error.code;
+      const stopReason = STOP_CODES[code];
+      if (stopReason !== undefined) return { kind: "stop", reason: stopReason };
+      return code === "not_found" ? { kind: "skipped" } : { kind: "failed" };
+    }
+
+    const runId = dispatched.value.runId;
+    active.runs.set(captureId, runId);
+    this.update(active, { inFlight: [...active.job.inFlight, { captureId, startedAt: this.iso() }] });
+    const terminal = await this.deps.waitForRun(runId, signal);
+    active.runs.delete(captureId);
+    this.update(active, { inFlight: active.job.inFlight.filter((run) => run.captureId !== captureId) });
+    return { kind: terminal === "completed" ? "succeeded" : "failed" };
   }
 
-  /** Wait for budget above the reserve, then dispatch, one worker at a time.
-   *  Null when the job was cancelled while waiting. */
+  /** Wait out the pace, then dispatch, one worker at a time. Null when the
+   *  job was cancelled or stopped first. */
   private dispatchPaced(
     active: ActiveJob,
     captureId: string
-  ): Promise<Result<{ runId: string }, PwrSnapError> | { kind: "stop"; reason: string } | null> {
+  ): Promise<Result<{ runId: string }, PwrSnapError> | null> {
     const turn = active.dispatchTail.then(async () => {
       if (active.stopReason !== null) return null;
-      const paced = await this.waitForBudget(active);
-      if (paced !== null) return paced;
+      await this.waitForPace(active);
       if (active.abort.signal.aborted || active.stopReason !== null) return null;
-      return this.deps.enrich(captureId);
+      const result = await this.deps.enrich(captureId);
+      // Only a run that started sets the pace: a refusal sent nothing to
+      // the model.
+      if (result.ok) active.lastStartAt = this.deps.now();
+      return result;
     });
     active.dispatchTail = turn.catch(() => undefined);
     return turn;
   }
 
-  /** Null once a token above the reserve is free; a stop outcome when the
-   *  bucket says AI is off. */
-  private async waitForBudget(active: ActiveJob): Promise<{ kind: "stop"; reason: string } | null> {
+  /** Resolves once one interval has passed since the last start. The first
+   *  start does not wait. Sleeps in slices and re-reads the interval after
+   *  each, so raising the rate limit mid-wait takes effect within a slice
+   *  rather than after a full interval (up to a minute at 1/min). */
+  private async waitForPace(active: ActiveJob): Promise<void> {
+    const lastStartAt = active.lastStartAt;
+    if (lastStartAt === null) return;
     const { signal } = active.abort;
     for (;;) {
-      if (signal.aborted) return null;
-      const budget = await this.deps.budgetStatus();
-      if (!budget.ok) return { kind: "stop", reason: budget.error.message };
-      if (budget.value.mode === "safety_disabled") {
-        return { kind: "stop", reason: STOP_CODES.ai_budget_safety_disabled! };
-      }
-      if (budget.value.tokensAvailable >= repairBudgetReserve(budget.value.capacity) + 1) {
-        if (active.job.waitingUntil !== null) this.update(active, { waitingUntil: null });
-        return null;
-      }
-      const next = budget.value.nextTokenAt === null ? Number.NaN : Date.parse(budget.value.nextTokenAt);
-      const untilNext = Number.isFinite(next) ? next - this.deps.now() : budget.value.refillIntervalMs;
-      const waitMs = Math.min(MAX_BUDGET_WAIT_MS, Math.max(MIN_BUDGET_WAIT_MS, untilNext));
+      const intervalMs = await this.deps.dispatchIntervalMs();
+      const waitMs = lastStartAt + intervalMs - this.deps.now();
+      if (waitMs <= 0 || signal.aborted) break;
       this.update(active, { waitingUntil: new Date(this.deps.now() + waitMs).toISOString() });
-      await this.deps.sleep(waitMs, signal);
+      await this.deps.sleep(Math.min(waitMs, MAX_PACE_SLICE_MS), signal);
     }
+    if (active.job.waitingUntil !== null) this.update(active, { waitingUntil: null });
   }
 
   private finish(

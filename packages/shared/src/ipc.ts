@@ -64,6 +64,11 @@ export const EVENT_CHANNELS = {
    *  enrichment repair job changed. Payload: `{ job: EnrichmentRepairJob |
    *  null }` (null once a finished job is dismissed). */
   enrichmentRepairJob: "events:enrichment-repair:job",
+  /** Agent → every BrowserWindow, relayed across the process split: the
+   *  caption model answered again after one or more runs could not reach
+   *  it. Payload: `EnrichmentPrimaryRecovery`. A nudge, not state: a
+   *  window that misses it has nothing to fetch. */
+  enrichmentPrimaryRecovered: "events:enrichment-primary:recovered",
   /** Main → every BrowserWindow: run-scoped GIF/MP4 export progress.
    * Payload type: `VideoExportProgressEvent`. */
   renderProgress: "events:render:progress",
@@ -231,6 +236,16 @@ export const EVENT_CHANNELS = {
    * Payload: `{ captureId: string }`.
    */
   libraryOpenCapture: "events:library:open-capture",
+  /**
+   * Tells the Library renderer to open the AI re-run dialog, set up as
+   * the payload says. Sent by `library:openEnrichmentRepair` (Settings ›
+   * AI Features › Enrichment). Latched in the preload like
+   * `libraryOpenCapture`: it is a one-shot intent a late subscriber
+   * cannot fetch.
+   *
+   * Payload: `EnrichmentRepairOpenRequest`.
+   */
+  libraryOpenEnrichmentRepair: "events:library:open-enrichment-repair",
   /**
    * Renderer → main perf signals for the dev seeder's measurement
    * pipeline (Phase 5 of the perf plan). The renderer dispatches

@@ -80,3 +80,6 @@ design/.thumbnail
 todos/
 
 /apps/desktop/src/renderer/public/mediapipe/
+
+# Python release-tool bytecode
+__pycache__/

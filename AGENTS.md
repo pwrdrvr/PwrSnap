@@ -299,7 +299,18 @@ separate from its schema, credential manager and protocol adapters, and reach
 them only through the `customModels:*` verbs — `ai.customConnections` and
 `ai.customModels` are main-owned and `settings:write` refuses both.
 
-Never route a custom model through Codex/ACP as a fallback. Never infer vision,
+Never route a custom model through Codex/ACP as a silent fallback. The one
+fallback that exists is `ai.enrichmentFallback`
+([enrichment-fallback.ts](apps/desktop/src/main/ai/enrichment-fallback.ts)):
+opt-in in Settings, captions only, and taken only when the primary could not be
+reached (connection refused, HTTP 404/502/503, ACP agent not installed). A
+401/403, a bad answer, a timeout (504 included), or a removed or repointed custom model still
+fails closed. A run that falls back records the primary in
+`ai_runs.fallback_from`, and the Float-Over and Library show a FALLBACK chip.
+An unreachable primary is marked down for 60 s (`EnrichmentPrimaryHealth`):
+captures in that window skip it, and only the down/up transitions log above
+debug. Do not widen the trigger set to make a run succeed: each addition hides a
+failure the operator should see. Never infer vision,
 reasoning, Fast mode, pricing, OAuth access or subscription entitlement from a
 model name or base URL. Auth secrets stay in `DesktopSecretStore`, not settings.
 Direct chat has no tools. Direct enrichment sends bounded app-prepared image
@@ -533,6 +544,46 @@ had a test asserting exactly that — but the test covered
 pointing into `~/Documents/PwrSnap`. The doc and the test agreed with each
 other and both disagreed with what shipped. When you pin a security
 property, pin the production wiring, not the default.
+
+## Only the operator's re-run is exempt from the enrichment budget
+
+**`codex:enrich` spends a token from `AiEnrichmentBudget` on every call, for
+every principal and every `triggerSource`. The one enqueue that skips the
+bucket is the Library's "Re-run AI on snaps" job, and it reaches the handler
+through the `EnrichmentRepairDispatcher` that `registerCodexHandlers` returns
+— never through the bus.** Owners: `enqueueEnrichment` in
+[codex-handlers.ts](apps/desktop/src/main/handlers/codex-handlers.ts) and the
+pacing in
+[enrichment-repair-job.ts](apps/desktop/src/main/ai/enrichment-repair-job.ts).
+Pinned by the "operator-started re-runs" block in
+[codex-handlers.test.ts](apps/desktop/src/main/__tests__/codex-handlers.test.ts)
+and by
+[enrichment-repair-job.test.ts](apps/desktop/src/main/ai/__tests__/enrichment-repair-job.test.ts).
+
+- **Why exempt.** The bucket and its breaker (8 refusals in an hour turns AI
+  off) exist to stop a runaway: a stuck hotkey, a folder import. A re-run is
+  started by the operator from a preview that names how many snaps it
+  covers. Sharing the bucket left live captures five tokens of headroom for
+  the length of a re-run, and each capture it then refused counted toward
+  turning AI off.
+- **Never key the exemption on a request field.** `codex:enrich` is reachable
+  from every renderer and over the process bridge, and a
+  `triggerSource: "library-repair"` from either still spends a token. The
+  local-agent policy refuses it to MCP today; the budget must not depend on
+  that staying true.
+  Do not add a bus verb, dispatch option or context flag that skips
+  `budget.consume` either: a capability that travels with a request is one
+  something else can forge.
+- **Exempt from the bucket, not from the gates.** AI off, missing consent and
+  a breaker that live captures already tripped all still refuse the re-run,
+  and each ends the job.
+- **The re-run paces itself.** At most one run starts per refill interval of
+  the rate limit in force (the user's steady `perMinute`, without the burst),
+  read before each start; the job's concurrency (1–8) caps what is in
+  flight. A loopback Direct API model is paced the same: a local URL can be a
+  gateway to a paid API, a fallback can be hosted, and pricing is never
+  inferred from a URL (see "AI backends" above). Users who want a backlog to
+  go faster raise the rate limit.
 
 ## Bundle format v2 — the only bundle format (v1 fully removed)
 

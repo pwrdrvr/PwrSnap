@@ -18,6 +18,7 @@ import {
 } from "./sizzle-validators";
 import { z } from "zod";
 import { writeClipboardText } from "../clipboard/system-clipboard";
+import { parseEnrichmentRepairOpenRequest } from "../ai/enrichment-repair-open-request";
 import { bus } from "../command-bus";
 import {
   countCaptures,
@@ -146,9 +147,19 @@ function sendOpenCaptureWhenReady(
   captureId: string,
   justCreated: boolean
 ): void {
+  sendLatchedIntentWhenReady(window, EVENT_CHANNELS.libraryOpenCapture, { captureId }, justCreated);
+}
+
+/** The same one send, for any channel latched in the preload. */
+function sendLatchedIntentWhenReady(
+  window: BrowserWindow,
+  channel: string,
+  payload: unknown,
+  justCreated: boolean
+): void {
   const send = (): void => {
     if (window.isDestroyed()) return;
-    window.webContents.send(EVENT_CHANNELS.libraryOpenCapture, { captureId });
+    window.webContents.send(channel, payload);
   };
   if (justCreated || window.webContents.isLoading()) {
     window.webContents.once("did-stop-loading", send);
@@ -536,6 +547,16 @@ export function registerLibraryWindowHandlers(): void {
     }
     const { window: main, justCreated } = bringLibraryForward();
     sendOpenCaptureWhenReady(main, req.captureId, justCreated);
+    return ok(undefined);
+  });
+
+  bus.register("library:openEnrichmentRepair", async (req) => {
+    const request = parseEnrichmentRepairOpenRequest(req?.request);
+    if (request === null) {
+      return err({ kind: "validation", code: "invalid_request", message: "invalid re-run request" });
+    }
+    const { window: main, justCreated } = bringLibraryForward();
+    sendLatchedIntentWhenReady(main, EVENT_CHANNELS.libraryOpenEnrichmentRepair, request, justCreated);
     return ok(undefined);
   });
 

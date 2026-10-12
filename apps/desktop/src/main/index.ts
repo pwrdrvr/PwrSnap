@@ -100,7 +100,10 @@ import { closeAcpAgentPool } from "./ai/acp-agent-pool";
 import { closeCodexAgentPool } from "./ai/codex-agent-pool";
 import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerCodexHandlers } from "./handlers/codex-handlers";
-import { registerEnrichmentRepairHandlers } from "./handlers/enrichment-repair-handlers";
+import {
+  productionRepairDeps,
+  registerEnrichmentRepairHandlers
+} from "./handlers/enrichment-repair-handlers";
 import { registerDiagnosticsHandlers } from "./handlers/diagnostics-handlers";
 import {
   registerLogsHandlers,
@@ -2059,8 +2062,7 @@ export function bootstrapApp(): void {
         }
       );
       registerCaptureStorageHandlers();
-      registerCodexHandlers();
-      registerEnrichmentRepairHandlers();
+      registerEnrichmentRepairHandlers(productionRepairDeps(registerCodexHandlers()));
       registerCodexProfileHandlers();
       registerAcpHandlers();
       // `capture:saveAs` is the one capture verb owned by the Library in

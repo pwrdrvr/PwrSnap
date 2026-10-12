@@ -67,7 +67,7 @@ import {
   type DockItem
 } from "./float-over-dock-model";
 import type { VideoCopyShortcutRequest } from "../shared/VideoExportPresetsPanel";
-import { enrichmentBackendLabel } from "../shared/CodexStatusPill";
+import { enrichmentBackendLabel, enrichmentRunBackend } from "../shared/CodexStatusPill";
 import { isEnrichmentProviderAvailable } from "../shared/enrichment-provider-availability";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { useSurfaceCopyShortcuts } from "../shared/useSurfaceCopyShortcuts";
@@ -1160,6 +1160,7 @@ export function FloatOverHost({
       void dispatch("library:openInLibrary", { captureId: record.id });
       closeToast(false);
     };
+    const runBackend = enrichmentRunBackend(enrichment, settings);
 
     body = (
       <FloatOver
@@ -1188,8 +1189,11 @@ export function FloatOverHost({
         aiEnabled={settings?.ai.enabled ?? false}
         aiConsentAccepted={settings?.ai.consentAcceptedAt !== null && settings !== null}
         aiSafetyDisabled={settings?.ai.budgetSafetyDisabledAt !== null && settings !== null}
-        enrichmentProviderLabel={enrichmentBackendLabel(settings?.ai.defaults.enrichment, settings?.ai).providerLabel}
-        enrichmentModelLabel={enrichmentBackendLabel(settings?.ai.defaults.enrichment, settings?.ai).modelLabel}
+        enrichmentProviderLabel={runBackend.providerLabel}
+        enrichmentModelLabel={runBackend.modelLabel}
+        {...(enrichment?.fallbackFrom
+          ? { enrichmentFallbackFromLabel: enrichmentBackendLabel({ provider: enrichment.fallbackFrom }, settings?.ai).providerLabel }
+          : {})}
         autoAcceptSuggestions={settings?.ai.autoAcceptSuggestions ?? false}
         onSetAutoAccept={(next) => {
           void dispatch("settings:write", {

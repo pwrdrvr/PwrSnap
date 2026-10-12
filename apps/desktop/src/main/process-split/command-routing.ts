@@ -39,6 +39,7 @@ const EXACT_OWNERS: Readonly<Record<string, CommandOwner>> = {
   "capture:saveAs": "library",
   "library:focus": "library",
   "library:openInLibrary": "library",
+  "library:openEnrichmentRepair": "library",
   "library:export": "library",
   // Capture-folder health and location mutations share process-local state
   // and an exclusive queue with capture persistence. They must remain with

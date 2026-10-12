@@ -67,6 +67,7 @@ function applyMigrations(): void {
   testDb.exec(migration("0019_chat_threads.sql"));
   testDb.exec(migration("0022_ai_usage_accounting.sql"));
   testDb.exec(migration("0023_ai_thread_usage.sql"));
+  testDb.exec(migration("0039_ai_run_fallback.sql"));
 }
 
 describe("AI usage repository", () => {

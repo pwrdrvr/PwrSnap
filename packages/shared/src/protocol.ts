@@ -2873,6 +2873,12 @@ export type Settings = {
      *  Codex default" (no `model` / `modelProvider` / `effort` is sent on
      *  thread/start or turn/start). */
     defaults: AiSurfaceDefaults;
+    /** Second choice for capture enrichment, used only when the primary
+     *  (`defaults.enrichment`, a Direct API model or an ACP agent) can't be
+     *  reached — see `isEnrichmentBackendUnavailable` in main. Same field
+     *  semantics as a surface default (`{}` = Codex on its managed default).
+     *  null / absent = off: an unreachable primary fails the run. Additive. */
+    enrichmentFallback?: AiSurfaceDefault | null;
     /** ACP-agent enablement (Settings → AI → ACP agents). The set of
      *  locally-installed ACP agents the user has opted into. Additive;
      *  defaults to empty. Discovery is the `acp:discover` verb; enabling
@@ -3899,6 +3905,9 @@ export type SettingsPatch = {
       sizzleChat?: AiSurfaceDefaultPatch;
       enrichment?: AiSurfaceDefaultPatch;
     };
+    /** `null` turns the enrichment fallback off. An object turns it on (from
+     *  `{}` when it was off) and merges leaf-by-leaf like a surface default. */
+    enrichmentFallback?: AiSurfaceDefaultPatch | null;
     /** ACP-agent enablement patch. `enabledAgentIds` REPLACES the stored
      *  set wholesale (the renderer ships the full desired set on each
      *  toggle, mirroring `ai.chat.sensitiveDataPatterns`). An empty array
@@ -4050,6 +4059,9 @@ export type AiRunSnapshot = {
   task: string;
   triggerSource: AiEnrichmentTriggerSource;
   selectedModel: string | null;
+  /** The primary provider this run stood in for, when `ai.enrichmentFallback`
+   *  answered it because the primary could not be reached. */
+  fallbackFrom?: string | null;
   status: AiRunStatus;
   error: string | null;
   latencyMs: number | null;
@@ -4240,6 +4252,25 @@ export type EnrichmentRepairCriteria = {
   apps: EnrichmentRepairAppFacet;
 };
 
+/** How the AI re-run dialog should be set up when something other than
+ *  the dialog opens it. Omitted fields keep the dialog's defaults. */
+export type EnrichmentRepairOpenRequest = {
+  statuses?: EnrichmentRepairStatus[];
+  /** A preset window, or an exact `[since, until)` range (ISO) — the span a
+   *  caption model was unreachable, say. */
+  window?: "24h" | "7d" | "30d" | "90d" | "all" | { since: string; until: string | null };
+};
+
+/** A caption model that could not be reached answered again. */
+export type EnrichmentPrimaryRecovery = {
+  /** The provider selector, as `ai.defaults.enrichment.provider` holds it. */
+  provider: string;
+  /** When the first run could not reach it (ISO). */
+  downSince: string;
+  /** When it answered again (ISO). */
+  upAt: string;
+};
+
 export type EnrichmentRepairAppCount = {
   appKey: string;
   /** A representative real bundle id, for the app icon. */
@@ -4274,10 +4305,12 @@ export type EnrichmentRepairJob = {
   concurrency: number;
   /** The captures being read right now, with when each run started (ISO). */
   inFlight: Array<{ captureId: string; startedAt: string }>;
-  /** Non-null while the job holds back to leave enrichment budget for new
-   *  captures: when it expects to continue (ISO). */
+  /** Non-null while the job waits out its own pace between run starts:
+   *  when it expects to continue (ISO). The job never draws on the live
+   *  enrichment budget. */
   waitingUntil: string | null;
-  /** Why a `stopped` job stopped (AI turned off, budget safety, …). */
+  /** Why a `stopped` job stopped (AI turned off, the cost-safety breaker
+   *  tripped by live captures, …). */
   stopReason: string | null;
   startedAt: string;
   finishedAt: string | null;
@@ -4640,6 +4673,9 @@ export type Commands = {
    * just-captured image into the Library editor.
    */
   "library:openInLibrary": { req: { captureId: string }; res: void };
+  /** Bring the Library forward with its AI re-run dialog open, set up as
+   *  `request` says. Settings › AI Features › Enrichment uses it. */
+  "library:openEnrichmentRepair": { req: { request?: EnrichmentRepairOpenRequest }; res: void };
   /** Every duplicate family — captures sharing a `family_id` — newest
    *  activity first. Drives the tile ⧉ glyph and the Family tab. */
   "library:families": {

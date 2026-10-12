@@ -7,7 +7,7 @@
 // `settings-nav.ts`): a section sub keeps this page rendered and scrolls to
 // that card, the way PwrAgnt's Messaging → Routes does.
 
-import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import type {
   AcpAgentDiscovery,
   AcpAgentModelOption,
@@ -36,11 +36,14 @@ import {
   EVENT_CHANNELS,
   isAiEnrichmentRateLimit,
   isAiReasoningEffort,
+  isLoopbackApiUrl,
+  resolveCustomModel,
   resolveManagedCodexEnrichmentModel
 } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import { Card, Row, Switch } from "../components";
 import { AiConsentDialog } from "../../shared/AiConsentDialog";
+import { enrichmentBackendLabel } from "../../shared/CodexStatusPill";
 import { useAiProvidersContext, useInUseAcpModelProbes } from "../AiProvidersContext";
 import { acpAgentIdOfProvider, AI_SURFACE_LABELS } from "../ai-provider-status";
 import { AI_FEATURE_SECTION_LABELS, settingsSectionId } from "../settings-nav";
@@ -55,6 +58,7 @@ import {
   uncachedInputTokens
 } from "./ai-format";
 import { ChatSettingsCard } from "./ChatSettingsCard";
+import { useEnrichmentRepairCounts } from "../../library/enrichment-repair/use-enrichment-repair-counts";
 
 type AIFeaturesPageProps = {
   /** Section to bring into view, or `null` for the top of the page.
@@ -211,6 +215,57 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
     focusRequest: sub === id ? request : undefined
   });
 
+  // The caption fallback: offered only for a primary that can be switched off
+  // underneath us (a Direct API model or an ACP agent). Its picker offers the
+  // same backends as the primary's, minus the primary itself.
+  const enrichmentPrimary = settings?.ai.defaults.enrichment.provider ?? "";
+  const enrichmentFallback = settings?.ai.enrichmentFallback ?? null;
+  // A disabled ACP agent's captions run on Codex, which main never falls back from.
+  const fallbackApplies = enrichmentPrimary.startsWith("custom:") ||
+    (enrichmentPrimary.startsWith("acp:") &&
+      settings?.ai.acp.enabledAgentIds.includes(enrichmentPrimary.slice("acp:".length)) === true);
+  const isLocalProvider = (provider: string | undefined): boolean => {
+    if (provider?.startsWith("custom:") !== true) return false;
+    const resolved = resolveCustomModel(settings?.ai.customConnections, settings?.ai.customModels,
+      provider.slice("custom:".length));
+    return resolved !== null && isLoopbackApiUrl(resolved.baseUrl);
+  };
+  const enrichmentFallbackControl = (): ReactNode => {
+    if (!fallbackApplies) return null;
+    const value = enrichmentFallback ?? {};
+    const fallbackProvider = value.provider ?? "";
+    return (
+      <EnrichmentFallbackControl
+        primaryLabel={enrichmentBackendLabel(settings?.ai.defaults.enrichment, settings?.ai).providerLabel}
+        on={enrichmentFallback !== null}
+        // A local primary with a fallback that isn't: say where images go.
+        leavesThisMac={isLocalProvider(enrichmentPrimary) && !isLocalProvider(fallbackProvider)}
+        fallbackLabel={enrichmentBackendLabel(value, settings?.ai).providerLabel}
+        onToggle={(on) => {
+          void patch({ ai: { enrichmentFallback: on ? {} : null } });
+        }}
+      >
+        <AiSurfaceDefaultControl
+          embedded
+          surface="enrichment"
+          name="Caption fallback"
+          sub=""
+          value={value}
+          models={codexModels?.models ?? []}
+          modelsLoading={codexModelsLoading}
+          acpProviderOptions={[...acpChatProviderOptions, ...customProviderOptions("enrichment")]
+            .filter((o) => o.value !== enrichmentPrimary)}
+          acpModelOptions={acpModelsForProvider(value.provider)}
+          acpModelsLoading={acpModelsLoadingForProvider(value.provider)}
+          acpModelError={acpModelErrorForProvider(value.provider)}
+          onChange={(p) => {
+            void patch({ ai: { enrichmentFallback: p } });
+          }}
+        />
+      </EnrichmentFallbackControl>
+    );
+  };
+
   const surfaceControl = (surface: AiSurfaceId, description: string): ReactElement => {
     const value = settings?.ai.defaults[surface] ?? {};
     return (
@@ -228,7 +283,9 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
         onChange={(p) => {
           void patch({ ai: { defaults: { [surface]: p } } });
         }}
-      />
+      >
+        {surface === "enrichment" ? enrichmentFallbackControl() : null}
+      </AiSurfaceDefaultControl>
     );
   };
 
@@ -317,7 +374,7 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
         </Row>
         <Row
           label="Budget"
-          sub="Enrichment runs draw from a small budget that refills over time, so a burst of captures can't run up a bill. If it keeps running dry, PwrSnap turns enrichment off; switch it back on above."
+          sub="Enrichment runs draw from a small budget that refills over time, so a burst of captures can't run up a bill. If it keeps running dry, PwrSnap turns enrichment off; switch it back on above. A Library re-run you start doesn't draw on it."
         >
           <div className="pss__test">
             <span className="pss__test-icon">AI</span>
@@ -338,7 +395,7 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
         </Row>
         <Row
           label="Rate limit"
-          sub={`How fast enrichment may start: a burst back to back, then a steady rate. The default (${AI_ENRICHMENT_RATE_LIMIT_DEFAULT.burst} at once, ${AI_ENRICHMENT_RATE_LIMIT_DEFAULT.perMinute} a minute) is cautious; raise it for a fast hosted model or to work through a backlog. The cost-safety cutoff still applies.`}
+          sub={`How fast enrichment may start: a burst back to back, then a steady rate. The default (${AI_ENRICHMENT_RATE_LIMIT_DEFAULT.burst} at once, ${AI_ENRICHMENT_RATE_LIMIT_DEFAULT.perMinute} a minute) is cautious; raise it for a fast hosted model or to work through a backlog. A Library re-run starts at the steady rate on its own, alongside new captures. The cost-safety cutoff still applies.`}
           tag={settings?.ai.enrichmentRateLimit != null ? "custom" : "default"}
         >
           <EnrichmentRateLimitControl
@@ -352,6 +409,7 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
             }}
           />
         </Row>
+        <EnrichmentRepairRow />
       </Card>
 
       <Card
@@ -442,6 +500,11 @@ export type AiSurfaceDefaultControlProps = {
   /** Error from probing the selected ACP agent's runtime model/session state. */
   acpModelError?: string | undefined;
   onChange: (patch: AiSurfaceDefaultPatch) => void;
+  /** Render only the Provider / Model / Reasoning fields, for a control
+   *  nested inside another job (the caption fallback). */
+  embedded?: boolean;
+  /** Rendered inside the job row, under its fields. */
+  children?: ReactNode;
 };
 
 /** Build the `<select>` model option list for the Codex backend. Filters to
@@ -491,7 +554,9 @@ export function AiSurfaceDefaultControl({
   acpModelOptions,
   acpModelsLoading,
   acpModelError,
-  onChange
+  onChange,
+  embedded = false,
+  children
 }: AiSurfaceDefaultControlProps): ReactElement {
   const providerValue = value.provider ?? "";
   const modelValue = value.model ?? "";
@@ -669,17 +734,7 @@ export function AiSurfaceDefaultControl({
     onChange({ reasoning: "" });
   }, [modelValue, onChange, reasoningValue, staleCodexReasoning]);
 
-  return (
-    <div className="pss__role pss__role--routable" data-surface={surface}>
-      <div className="pss__role-head">
-        <span className="pss__role-icon" aria-hidden="true">
-          ◆
-        </span>
-        <div className="pss__role-l">
-          <span className="pss__role-name">{name}</span>
-          <span className="pss__role-sub">{sub}</span>
-        </div>
-      </div>
+  const controls = (
       <div className="pss__role-controls">
         <label className="pss__ai-surface-field">
           <span className="pss__ai-surface-field-label">Provider</span>
@@ -792,7 +847,106 @@ export function AiSurfaceDefaultControl({
         </label>}
         {isCustomProvider && <span className="pss__opt-sub">Direct API · no tools, reasoning controls or pricing estimate</span>}
       </div>
+  );
+  if (embedded) return controls;
+  return (
+    <div className="pss__role pss__role--routable" data-surface={surface}>
+      <div className="pss__role-head">
+        <span className="pss__role-icon" aria-hidden="true">
+          ◆
+        </span>
+        <div className="pss__role-l">
+          <span className="pss__role-name">{name}</span>
+          <span className="pss__role-sub">{sub}</span>
+        </div>
+      </div>
+      {controls}
+      {children}
     </div>
+  );
+}
+
+/** "If <primary> can't be reached": the caption fallback, nested in the
+ *  Captions job. Off by default; turning it on starts at `{}` — Codex on
+ *  PwrSnap's managed caption default — and reveals the fields. */
+function EnrichmentFallbackControl({
+  primaryLabel,
+  fallbackLabel,
+  on,
+  leavesThisMac,
+  onToggle,
+  children
+}: {
+  primaryLabel: string;
+  fallbackLabel: string;
+  on: boolean;
+  leavesThisMac: boolean;
+  onToggle: (on: boolean) => void;
+  children: ReactNode;
+}): ReactElement {
+  return (
+    <div className="pss__role-fallback" data-on={on ? "true" : "false"}>
+      <div className="pss__role-fallback-head">
+        <span className="pss__role-fallback-arrow" aria-hidden="true">↳</span>
+        <div className="pss__role-l">
+          <span className="pss__role-name">
+            If {primaryLabel} can't be reached{on ? ", use" : ""}
+          </span>
+          <span className="pss__role-fallback-sub">
+            {on
+              ? "Only when nothing answers: the connection is refused, the server returns 404, 502 or 503, or the agent is no longer installed. A bad answer or a timeout still fails, so you see it."
+              : `Off. The caption fails, and Regenerate tries ${primaryLabel} again.`}
+          </span>
+        </div>
+        <Switch on={on} onChange={onToggle} label={`Fall back when ${primaryLabel} can't be reached`} />
+      </div>
+      {on ? children : null}
+      {on && leavesThisMac ? (
+        <p className="pss__role-fallback-note">
+          While {primaryLabel} is down, each new capture's image goes to {fallbackLabel} instead of staying on this Mac.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+// ---- Re-run AI on past snaps --------------------------------------------
+
+/** The way into the Library's re-run dialog from here: the counts, and a
+ *  button that brings the Library forward with the dialog open on them. */
+function EnrichmentRepairRow(): ReactElement {
+  const counts = useEnrichmentRepairCounts();
+  const [error, setError] = useState<string | null>(null);
+  const failed = counts?.failed ?? 0;
+  const never = counts?.never ?? 0;
+  const sub =
+    error ??
+    (counts === null
+      ? "Re-run AI on snaps it failed on or never read. Opens in the Library."
+      : failed + never === 0
+        ? "AI has read every snap. Nothing to re-run."
+        : `${failed.toLocaleString()} failed · ${never.toLocaleString()} never ran. Opens in the Library.`);
+  return (
+    <Row label="Re-run AI on past snaps" sub={sub}>
+      <button
+        className="pss__key-btn"
+        type="button"
+        aria-haspopup="dialog"
+        // Still counting (or the count could not be read) is not "nothing
+        // to re-run": the dialog counts for itself.
+        disabled={counts !== null && failed + never === 0}
+        onClick={() => {
+          setError(null);
+          void dispatch("library:openEnrichmentRepair", {
+            request: { statuses: failed > 0 ? ["failed"] : ["never"], window: "all" }
+          }).then((result) => {
+            if (!result.ok) setError(result.error.message);
+          });
+        }}
+      >
+        Re-run…
+      </button>
+    </Row>
   );
 }
 

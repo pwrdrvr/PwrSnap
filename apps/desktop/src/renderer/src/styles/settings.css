@@ -2246,6 +2246,48 @@ a.pss__top-btn[aria-disabled="true"]:hover {
   min-width: 0;
 }
 
+/* Caption fallback, nested under the Captions job's own fields and aligned
+   with them. Its fields reuse .pss__role-controls; the padding-left that
+   aligns a job's fields with its text column is already applied by this box. */
+.pss__role-fallback {
+  margin-left: 42px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+}
+.pss__role-fallback .pss__role-controls { padding-left: 0; }
+.pss__role-fallback-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+/* Both sit on the heading's line, not centred against the explanation. */
+.pss__role-fallback-arrow {
+  flex: none;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font: 600 12px/1 var(--font-mono);
+}
+.pss__role-fallback-head > .pss__switch { flex: none; }
+.pss__role-fallback-sub {
+  font: 400 11px/1.4 var(--font-sans);
+  color: var(--text-muted);
+  text-wrap: pretty;
+}
+.pss__role-fallback-note {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--info-border);
+  border-radius: 6px;
+  background: var(--info-soft);
+  font: 400 11.5px/1.45 var(--font-sans);
+  color: var(--text-secondary);
+}
+
 /* Customization-count badge in page-header actions — shows
    "N customizations" next to the Reset button on Hotkeys (extensible
    to any page that grows a Reset). */

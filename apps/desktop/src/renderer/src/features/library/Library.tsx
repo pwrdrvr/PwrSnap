@@ -26,7 +26,8 @@ import type {
   Settings,
   ShortcutPlatform,
   AcpAgentDiscovery,
-  DesktopCodexDiscoverySnapshot
+  DesktopCodexDiscoverySnapshot,
+  EnrichmentRepairOpenRequest
 } from "@pwrsnap/shared";
 import {
   EVENT_CHANNELS,
@@ -82,8 +83,15 @@ import {
   DuplicateTileProgress
 } from "./DuplicateProgress";
 import { EnrichmentRepairDialog } from "./enrichment-repair/EnrichmentRepairDialog";
-import { EnrichmentRepairToast } from "./enrichment-repair/EnrichmentRepairProgress";
+import {
+  EnrichmentRecoveryToast,
+  EnrichmentRepairToast,
+  RepairSplitBar
+} from "./enrichment-repair/EnrichmentRepairProgress";
+import { repairWindowToken } from "./enrichment-repair/enrichment-repair-model";
+import { useEnrichmentRepairCounts } from "./enrichment-repair/use-enrichment-repair-counts";
 import { useEnrichmentRepairJob } from "./enrichment-repair/use-enrichment-repair-job";
+import { useEnrichmentRecoveryOffer } from "./enrichment-repair/use-enrichment-recovery-offer";
 import { GridCopyPalette } from "./GridCopyPalette";
 import { closeWhenFocusLeaves } from "../shared/close-when-focus-leaves";
 import { primeEditToolbarDock } from "./useEditToolbarDock";
@@ -1519,9 +1527,36 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   const [storagePanelOpen, setStoragePanelOpen] = useState(false);
   // AI repair: the dialog is ours, the job is main's. Closing the dialog
   // while the job runs leaves its progress toast in the lower-left stack.
-  const [enrichmentRepairOpen, setEnrichmentRepairOpen] = useState(false);
+  // A request (from the rail, Settings, or the back-online toast) opens it
+  // on set up, configured as asked; a new one re-mounts it.
+  const [enrichmentRepair, setEnrichmentRepair] = useState<{
+    key: number;
+    request: EnrichmentRepairOpenRequest | undefined;
+  } | null>(null);
+  const enrichmentRepairOpen = enrichmentRepair !== null;
   const { job: enrichmentRepairJob, setJob: setEnrichmentRepairJob } = useEnrichmentRepairJob();
-  const openEnrichmentRepair = useCallback(() => setEnrichmentRepairOpen(true), []);
+  const enrichmentRepairCounts = useEnrichmentRepairCounts();
+  const openEnrichmentRepairWith = useCallback((request: EnrichmentRepairOpenRequest | undefined) => {
+    setEnrichmentRepair((current) => ({ key: (current?.key ?? 0) + 1, request }));
+  }, []);
+  const openEnrichmentRepair = useCallback(() => openEnrichmentRepairWith(undefined), [openEnrichmentRepairWith]);
+  const openFailedEnrichmentRepair = useCallback(
+    () => openEnrichmentRepairWith({ statuses: ["failed"], window: "all" }),
+    [openEnrichmentRepairWith]
+  );
+  // Settings → AI Features asks over a latched channel (main sends once,
+  // after load); this is its only subscriber.
+  useEffect(
+    () =>
+      subscribe(EVENT_CHANNELS.libraryOpenEnrichmentRepair, (payload) => {
+        openEnrichmentRepairWith(
+          typeof payload === "object" && payload !== null ? (payload as EnrichmentRepairOpenRequest) : undefined
+        );
+      }),
+    [openEnrichmentRepairWith]
+  );
+  // The caption model answered again after captures failed to reach it.
+  const { offer: enrichmentRecovery, dismiss: dismissEnrichmentRecovery } = useEnrichmentRecoveryOffer();
   const storagePanelRef = useRef<HTMLDivElement | null>(null);
   const storageTriggerRef = useRef<HTMLButtonElement | null>(null);
   const storagePopoverRef = useRef<HTMLDivElement | null>(null);
@@ -5444,7 +5479,8 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           onSelectFamilyMember={selectFamilyMember}
           onFilterFamily={filterToFamily}
           duplicatePrefs={duplicatePrefs}
-          onOpenEnrichmentRepair={openEnrichmentRepair}
+          onOpenEnrichmentRepair={openFailedEnrichmentRepair}
+          enrichmentFailedCount={enrichmentRepairCounts?.failed ?? null}
           onDuplicate={(record, request) => {
             void duplicateRecord(record, request);
           }}
@@ -5478,12 +5514,17 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
 
       {/* AI re-run of failed / never-run snaps. The toast is the dialog
           collapsed: clicking it opens the dialog again. */}
-      {enrichmentRepairOpen ? (
+      {enrichmentRepair !== null ? (
         <EnrichmentRepairDialog
+          key={enrichmentRepair.key}
           job={enrichmentRepairJob}
+          request={enrichmentRepair.request}
+          providerLabel={enrichmentProviderLabel}
+          aiEnabled={aiEnabled}
           altModifierLabel={altModifierLabel}
           onJobChange={setEnrichmentRepairJob}
-          onClose={() => setEnrichmentRepairOpen(false)}
+          onEnableAi={toggleAiEnabled}
+          onClose={() => setEnrichmentRepair(null)}
         />
       ) : enrichmentRepairJob !== null ? (
         <EnrichmentRepairToast
@@ -5498,6 +5539,24 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
             setEnrichmentRepairJob(null);
             void dispatch("codex:repair:dismiss", { jobId });
           }}
+        />
+      ) : null}
+      {enrichmentRecovery !== null && !enrichmentRepairOpen && enrichmentRepairJob?.state !== "running" ? (
+        <EnrichmentRecoveryToast
+          providerLabel={enrichmentProviderLabel}
+          failed={enrichmentRecovery.failed}
+          windowLabel={repairWindowToken(
+            { kind: "range", since: enrichmentRecovery.downSince, until: enrichmentRecovery.upAt },
+            Date.now()
+          )}
+          onRerun={() => {
+            openEnrichmentRepairWith({
+              statuses: ["failed"],
+              window: { since: enrichmentRecovery.since, until: enrichmentRecovery.until }
+            });
+            dismissEnrichmentRecovery();
+          }}
+          onDismiss={dismissEnrichmentRecovery}
         />
       ) : null}
 
@@ -5657,7 +5716,39 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               )}
             </span>
           </button>
-          {aiEnabled ? (
+          {enrichmentRepairJob?.state === "running" ? (
+            <button
+              type="button"
+              className="psl__ai-repair is-running"
+              aria-haspopup="dialog"
+              aria-label={`Re-running AI, ${enrichmentRepairJob.processed} of ${enrichmentRepairJob.total}`}
+              data-tip="Show the AI re-run"
+              onClick={openEnrichmentRepair}
+            >
+              <span>
+                Re-running{" "}
+                <b>
+                  {enrichmentRepairJob.processed.toLocaleString()}/{enrichmentRepairJob.total.toLocaleString()}
+                </b>
+              </span>
+              <span className="psl__ai-repair-bar" aria-hidden="true">
+                <RepairSplitBar job={enrichmentRepairJob} small />
+              </span>
+            </button>
+          ) : aiEnabled && (enrichmentRepairCounts?.failed ?? 0) > 0 ? (
+            <button
+              type="button"
+              className="psl__ai-repair has-failed"
+              aria-haspopup="dialog"
+              data-tip={`AI failed on ${enrichmentRepairCounts?.failed.toLocaleString()} ${
+                enrichmentRepairCounts?.failed === 1 ? "snap" : "snaps"
+              }`}
+              data-tip-detail="Re-run AI on them"
+              onClick={openFailedEnrichmentRepair}
+            >
+              <b>{enrichmentRepairCounts?.failed.toLocaleString()}</b> failed · Re-run…
+            </button>
+          ) : aiEnabled ? (
             <button
               type="button"
               className="psl__ai-repair"

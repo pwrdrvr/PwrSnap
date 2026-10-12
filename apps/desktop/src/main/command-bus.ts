@@ -81,6 +81,17 @@ export type CommandDispatchOptions = {
   localAgent?: CommandContext["localAgent"];
 };
 
+/** The result a handler that threw is reported as. Shared with main-process
+ *  code that runs a handler body without `dispatch`, so both report alike. */
+export function handlerThrewResult(cause: unknown): Result<never, PwrSnapError> {
+  return err({
+    kind: "unknown",
+    code: "handler_threw",
+    message: cause instanceof Error ? cause.message : String(cause),
+    cause
+  });
+}
+
 export type CommandHandler<C extends CommandName> = (
   req: Req<C>,
   ctx: CommandContext
@@ -174,6 +185,21 @@ class CommandBus {
     if (!controller) return;
     controller.abort();
     this.cancellation.delete(key);
+  }
+
+  /**
+   * The signal a dispatch keyed by `key` would get, for main-process work
+   * that runs a handler's body without going through `dispatch`, so that
+   * `cancel(key)` still reaches it. Creates the scope when none exists, as
+   * `dispatch` does.
+   */
+  cancellationSignal(key: string): AbortSignal {
+    let controller = this.cancellation.get(key);
+    if (controller === undefined) {
+      controller = new AbortController();
+      this.cancellation.set(key, controller);
+    }
+    return controller.signal;
   }
 
   async dispatch<C extends CommandName>(
@@ -271,12 +297,7 @@ class CommandBus {
         principal: options.principal,
         message: cause instanceof Error ? cause.message : String(cause)
       });
-      return err({
-        kind: "unknown",
-        code: "handler_threw",
-        message: cause instanceof Error ? cause.message : String(cause),
-        cause
-      });
+      return handlerThrewResult(cause);
     } finally {
       // Don't auto-clean controllers tied to a long-lived cancellation
       // key — capture-keyed dispatches reuse the controller across

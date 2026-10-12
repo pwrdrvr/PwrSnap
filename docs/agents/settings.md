@@ -74,11 +74,14 @@ Rules:
 - **All secrets via `safeStorage`.** Plaintext credentials are never returned over IPC. A write-only API-key
   input may cross renderer → main once for secure persistence. The renderer only ever sees `SecretStatus = { configured,
   lastSetAt }`. `DesktopSecretStore.getValue()` is the only plaintext
-  accessor and is main-only — **never register it on the bus.** If
-  `safeStorage.isEncryptionAvailable() === false`, the store throws
-  `SecretUnavailableError`; the handler returns `Result.err` with
-  `kind: "settings", code: "secret_unavailable"`. **Never fall back to
-  plaintext.** A unit test grep-asserts the plaintext never appears in
+  accessor and is main-only — **never register it on the bus.** Use the
+  async Electron API. `isAsyncEncryptionAvailable()` reports encryptor
+  initialization and can resolve true without a usable key. The store
+  refuses the Linux `basic_text` backend and refuses to write Linux
+  ciphertext tagged `v10`, which uses Chromium's built-in key. Storage
+  unavailability is reported as `SecretUnavailableError`, mapped by the
+  handler to `kind: "settings", code: "secret_unavailable"`. **Never fall
+  back to plaintext.** A unit test checks that plaintext never appears in
   `pwrsnap-secrets.bin`.
 - **`getValue()` is the ONLY read allowed to decrypt.** On macOS the first
   `safeStorage` call in a process is what can raise the login-keychain
@@ -98,6 +101,10 @@ Rules:
   undecryptable v1 file is left alone rather than rewritten empty. A rewrite
   must stitch `lastSetAt` back from the index — the payload carries values
   only, so forgetting blanks every surviving timestamp.
+  Availability checks initialize the async encryptor and can fetch the
+  keychain key, so v2 status reads must avoid them too. When
+  `decryptStringAsync()` reports `shouldReEncrypt`, `getValue()` queues a
+  rewrite under the current key through the same write queue.
 - **E2E runs must not touch the real login keychain.**
   [darwin-keychain-startup-policy.ts](../../apps/desktop/src/main/darwin-keychain-startup-policy.ts)
   appends Chromium's `--use-mock-keychain` under `PWRSNAP_E2E`, so an unsigned

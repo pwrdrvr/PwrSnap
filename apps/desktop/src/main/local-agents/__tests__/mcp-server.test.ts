@@ -14,12 +14,13 @@ import { LOCAL_AGENT_CAPABILITIES, ok, resolveLocalAgentPolicy } from "@pwrsnap/
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { z } from "zod";
 import { Agent, request } from "node:http";
+
 vi.mock("electron", () => ({
   app: { getVersion: () => "9.8.7" },
   safeStorage: {
-    isEncryptionAvailable: () => true,
-    encryptString: (s: string) => Buffer.from(s),
-    decryptString: (b: Buffer) => b.toString()
+    isAsyncEncryptionAvailable: async () => true,
+    encryptStringAsync: async (s: string) => Buffer.from(s),
+    decryptStringAsync: async (b: Buffer) => ({ result: b.toString(), shouldReEncrypt: false })
   }
 }));
 import { DesktopSecretStore } from "../../settings/desktop-secret-store";

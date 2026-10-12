@@ -1,7 +1,7 @@
 {
   "name": "@pwrsnap/desktop",
   "productName": "PwrSnap",
-  "version": "1.1.18",
+  "version": "1.1.20",
   "private": true,
   "description": "Screen capture with a local-first library",
   "author": "PwrDrvr LLC",
@@ -31,14 +31,15 @@
     "tray-icon": "node ./scripts/generate-tray-icon.mjs",
     "probe:linux-capture": "electron ./scripts/linux-capture-probe.mjs",
     "probe:quit-reentry": "electron ./scripts/electron-quit-reentry-probe.mjs",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test:camera": "pnpm build && node ./scripts/test-camera-pipeline.mjs"
+    "typecheck": "node ../../node_modules/typescript-native/bin/tsc --noEmit -p tsconfig.json",
+    "test:camera": "pnpm build && node ./scripts/test-camera-pipeline.mjs",
+    "typecheck:legacy": "node ../../node_modules/typescript/bin/tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "@fontsource/geist-mono": "^5.3.0",
     "@fontsource/geist-sans": "^5.3.0",
     "@mediapipe/tasks-vision": "1.0.1",
-    "@modelcontextprotocol/sdk": "1.31.0",
+    "@modelcontextprotocol/sdk": "1.32.0",
     "@pwrdrvr/agent-acp": "^0.16.1",
     "@pwrdrvr/agent-chat-react": "^0.1.3",
     "@pwrdrvr/agent-client": "^0.8.2",

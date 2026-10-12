@@ -27,6 +27,7 @@ function isRejectedUncShare(path: string): boolean {
 export function normalizeWindowsPathForPolicy(path: string): string | null {
   // Control characters are invalid Win32 filename components and would also
   // make the native verifier's newline-delimited stdin protocol ambiguous.
+  // oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
   if (path.length === 0 || /[\x00-\x1f]/.test(path)) return null;
   let candidate = path.replaceAll("/", "\\");
   let folded = candidate.toLowerCase();

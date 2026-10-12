@@ -349,7 +349,7 @@ describe("menu actions", () => {
       click(find(help, "Third-Party Notices"));
       click(find(file, "Duplicate Snap"));
       click(find(file, "Edit a Copy"));
-      click((find(file, "New")?.submenu as Item[])[0]);
+      click((find(file, "New")!.submenu as Item[])[0]);
       const library = submenuOf(platform, "Library", opts);
       click(find(library, "Export Library…"));
       click(find(library, "Sizzle Reels"));
@@ -405,7 +405,7 @@ describe("menu actions", () => {
 
   test("Paste from Clipboard starts disabled and is found by id", () => {
     const file = submenuOf("linux", "File");
-    const paste = (find(file, "New")?.submenu as Item[])[0];
+    const paste = (find(file, "New")!.submenu as Item[])[0];
     expect(paste?.id).toBe(PASTE_FROM_CLIPBOARD_MENU_ID);
     expect(paste?.enabled).toBe(false);
   });

@@ -47,5 +47,6 @@ export * from "./custom-models";
 export * from "./codex-model-policy";
 
 export * from "./camera";
+export * from "./recording-devices";
 export * from "./presenter";
 export * from "./presenter-spans";

@@ -20,11 +20,24 @@ describe("native recorder audio contract", () => {
   });
 
   test("requested microphone setup cannot silently skip an unavailable device", () => {
-    expect(recorderSource).toContain("guard setUpMicrophoneCapture(into: mi, writer: writer) else { return }");
+    expect(recorderSource).toContain(
+      "guard setUpMicrophoneCapture(into: mi, writer: writer, named: req.microphoneDevice) else { return }"
+    );
     expect(recorderSource).toContain("guard session.canAddInput(micInputDevice) else");
     expect(recorderSource).toContain("guard session.canAddOutput(micOutput) else");
     expect(recorderSource).toContain("guard session.isRunning else");
     expect(recorderSource).toContain('emitError("microphone_unavailable"');
+  });
+
+  // The selector showed the user a microphone by name. Recording the
+  // system default in its place would be the exact failure the picker
+  // exists to prevent, so an unmatched name must fail the start.
+  test("a named microphone that is not attached fails the start, never falls back", () => {
+    expect(recorderSource).toContain("guard let device = microphoneDevice(named: requested) else");
+    expect(recorderSource).toContain('is not connected. Choose another in the capture selector.');
+    // The default is reached ONLY when no name was given.
+    expect(recorderSource.match(/AVCaptureDevice\.default\(for: \.audio\)/g)).toHaveLength(1);
+    expect(recorderSource).toContain("guard let name else { return AVCaptureDevice.default(for: .audio) }");
   });
 
   // An append COUNT cannot answer "did this source capture audio". A muted

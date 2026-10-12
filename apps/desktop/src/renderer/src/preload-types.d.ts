@@ -145,11 +145,17 @@ declare global {
            *  recording, which is also what leaves the chips hidden. */
           sources?: import("@pwrsnap/shared").RecordingCapabilities;
   cameraOffered?: boolean;
+          /** The saved microphone and camera, from
+           *  `settings.recording.microphoneDevice` / `.cameraDevice`. */
+          devices?: import("@pwrsnap/shared").RecordingDeviceDefaults;
           invocationId?: string;
           generation?: number;
           /** Snap-vs-Record policy for this show, from
            *  `settings.recording.quickCaptureAction`. `undefined` = "ask". */
           quickCaptureAction?: "ask" | "snap" | "record";
+          /** HUD style for this show, from `settings.recording.selectorHud`.
+           *  `undefined` = "shutter". */
+          hudStyle?: import("@pwrsnap/shared").SelectorHudStyle;
         }) => void
       ): () => void;
       requestTrayResize(payload: { width: number; height: number }): void;

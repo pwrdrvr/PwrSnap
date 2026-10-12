@@ -1,0 +1,36 @@
+name: Development Check Performance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-performance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  paired-compilers:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       contains(github.event.pull_request.labels.*.name, 'ci:check-performance'))
+    runs-on: [self-hosted, macOS, ARM64, pwrdrvr-macos]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pwrdrvr/configure-nodejs@v1
+        with:
+          node-version: "24.14.1"
+      - name: Compare compilers and assert coverage
+        run: pnpm check:benchmark
+      - name: Save measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dev-check-performance
+          path: .local/check-performance/paired.json
+          if-no-files-found: warn

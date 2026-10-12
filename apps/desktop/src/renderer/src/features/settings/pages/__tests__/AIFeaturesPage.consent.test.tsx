@@ -309,3 +309,62 @@ describe("AIFeaturesPage — enrichment rate limit", () => {
     expect(patchMock).toHaveBeenCalledWith({ ai: { enrichmentRateLimit: null } });
   });
 });
+
+describe("AIFeaturesPage — caption fallback", () => {
+  const MODEL_ID = "12345678-1234-4234-8234-123456789001";
+  const CONNECTION_ID = "12345678-1234-4234-8234-123456789003";
+  const localPrimary: Partial<Settings["ai"]> = {
+    defaults: { libraryChat: {}, sizzleChat: {}, enrichment: { provider: `custom:${MODEL_ID}` } },
+    customConnections: [{ id: CONNECTION_ID, name: "Local llama.cpp", baseUrl: "http://127.0.0.1:8080/v1",
+      protocol: "openai-chat", auth: { type: "none" } }],
+    customModels: [{ id: MODEL_ID, connectionId: CONNECTION_ID, displayName: "qwen3-vl-8b",
+      modelId: "qwen3-vl-8b-instruct", capabilities: { vision: true, streaming: true }, maxOutputTokens: 1024 }]
+  } as unknown as Partial<Settings["ai"]>;
+
+  function fallbackSwitch(): HTMLButtonElement | null {
+    return container?.querySelector<HTMLButtonElement>('[role="switch"][aria-label^="Fall back when"]') ?? null;
+  }
+
+  test("is not offered while captions run on Codex", async () => {
+    await renderPage("2026-10-01T00:00:00.000Z", { enrichmentFallback: {} });
+    expect(fallbackSwitch()).toBeNull();
+  });
+
+  test("is off by default under a Direct API primary, and turns on from {}", async () => {
+    await renderPage("2026-10-01T00:00:00.000Z", localPrimary);
+    expect(container?.textContent).toContain("If qwen3-vl-8b can't be reached");
+    expect(fallbackSwitch()?.getAttribute("aria-checked")).toBe("false");
+    expect(container?.querySelector('[aria-label="Caption fallback provider"]')).toBeNull();
+    await act(async () => {
+      fallbackSwitch()?.click();
+      await Promise.resolve();
+    });
+    expect(patchMock).toHaveBeenCalledWith({ ai: { enrichmentFallback: {} } });
+  });
+
+  test("when on, offers every backend but the primary and says the image leaves this Mac", async () => {
+    await renderPage("2026-10-01T00:00:00.000Z", { ...localPrimary, enrichmentFallback: {} });
+    expect(fallbackSwitch()?.getAttribute("aria-checked")).toBe("true");
+    const provider = container?.querySelector<HTMLSelectElement>('[aria-label="Caption fallback provider"]');
+    expect(provider?.value).toBe("");
+    expect(Array.from(provider?.options ?? []).map((o) => o.value)).not.toContain(`custom:${MODEL_ID}`);
+    expect(container?.textContent).toContain("goes to Codex instead of staying on this Mac");
+    await act(async () => {
+      fallbackSwitch()?.click();
+      await Promise.resolve();
+    });
+    expect(patchMock).toHaveBeenCalledWith({ ai: { enrichmentFallback: null } });
+  });
+
+  test("a field change patches the fallback, not the primary", async () => {
+    await renderPage("2026-10-01T00:00:00.000Z", { ...localPrimary, enrichmentFallback: {} });
+    const reasoning = container?.querySelector<HTMLSelectElement>('[aria-label="Caption fallback reasoning effort"]');
+    expect(reasoning).not.toBeNull();
+    await act(async () => {
+      reasoning!.value = "medium";
+      reasoning!.dispatchEvent(new Event("change", { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(patchMock).toHaveBeenCalledWith({ ai: { enrichmentFallback: { reasoning: "medium" } } });
+  });
+});

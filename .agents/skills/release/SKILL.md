@@ -414,9 +414,9 @@ This is required even when the new release must wait for manual promotion:
 check existing stable-channel lag and prepare or advance eligible updates.
 Inspect `distribution-audit-after`'s report; a complete source audit still does
 not prove client indexing, installation or upgrade. No audit uses the read token
-to submit manifests or merge Homebrew updates.
+to submit manifests or prove Homebrew publication.
 
-Reuse `pwrdrvr/homebrew-tap`'s `bump.yml` and `scripts/bump-cask.sh`; the cask
+Use `pwrdrvr/homebrew-tap`'s automatic `bump.yml` publisher; the cask
 uses the universal macOS DMG on both Intel and Apple Silicon. Winget uses the
 signed Windows x64 NSIS installer and requires first submission if its remote
 package directory is absent. Its local `1.0.3` manifests are a historical
@@ -443,3 +443,15 @@ pnpm --filter @pwrsnap/desktop package:dryrun
 pnpm --filter @pwrsnap/desktop package
 pnpm --filter @pwrsnap/desktop release
 ```
+
+## Homebrew automation contract
+
+Routine stable Homebrew updates are published automatically by the vendor tap,
+after artifact-backed native validation; do not open or merge per-release bump
+PRs. Follow the current package-manager runbook's automatic-publication section.
+CI must use the original successful release-build Actions artifacts and verify
+published SHA-256/size. No published release-installer download fallback is
+allowed. Missing/expired artifacts are named blockers, not permission to fetch
+from release URLs or rebuild published bytes. Signed artifact retention is 90
+days. Immediate dispatch is optional; the tap's 15-minute schedule remains the
+fallback. Verify tap main and a refreshed client before declaring publication.

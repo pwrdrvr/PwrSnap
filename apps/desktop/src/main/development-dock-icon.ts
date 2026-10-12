@@ -50,6 +50,14 @@ export function showDockWithDevelopmentIcon(options: DevelopmentDockIconOptions 
   if (dockShowInFlight !== null) {
     return;
   }
+  // A packaged app uses this helper too. Even without a PNG override,
+  // show() starts a native activation-policy transition; repeating it
+  // for an existing tile can race Dock animations and leave tiny stale
+  // tiles. Opening another Library window must not transform it again.
+  if (app.dock.isVisible()) {
+    installDevelopmentDockIcon(options);
+    return;
+  }
   // Show FIRST, then set the icon — once the tile exists. (The pre-show
   // setIcon we used to do ran while Accessory and was the phantom's
   // origin.) installDevelopmentDockIcon self-guards on isVisible, so a

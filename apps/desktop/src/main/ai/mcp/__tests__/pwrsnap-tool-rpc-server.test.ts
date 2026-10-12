@@ -104,7 +104,7 @@ describe("PwrSnapToolRpcServer", () => {
     };
     expect(res.ok).toBe(true);
     expect(seen?.tool).toBe("draw_arrow");
-    expect((seen?.arguments as { capture_id: string }).capture_id).toBe("cap-1");
+    expect((seen!.arguments as { capture_id: string }).capture_id).toBe("cap-1");
   });
 
   test("rejects an unknown / unregistered token", async () => {

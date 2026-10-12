@@ -1271,11 +1271,13 @@ const FFMPEG_FAILURE_MAX_CHARS = 900;
  *  "Nothing was written" / "Conversion failed" teardown messages. */
 export function ffmpegFailureSummary(stderr: string): string {
   const lines = stderr
+    // oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
     .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
     .replaceAll("\r", "\n")
     .split("\n")
     .map((line) =>
       line
+        // oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
         .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
         .trim()
     )

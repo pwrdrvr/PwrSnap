@@ -9,7 +9,39 @@ export class DirectApiError extends Error {
   constructor(message: string, readonly status?: number,
     /** A short machine code from the endpoint's error (`error.code`), kept
      *  as data. Never shown; known Sign in with ChatGPT codes pick the message. */
-    readonly code?: string) { super(message); this.name = "DirectApiError"; }
+    readonly code?: string,
+    /** No server answered: refused, no route, or the socket dropped before a
+     *  response. A drop can come after sending, so the endpoint may have done work. */
+    readonly unreachable = false) { super(message); this.name = "DirectApiError"; }
+}
+
+/** Socket-level codes that mean no server answered: nothing listening or
+ *  reachable (refused, no route, DNS), or the connection dropped before any
+ *  response (ECONNRESET, EPIPE, UND_ERR_SOCKET — a server stopped mid-request).
+ *  TLS and certificate failures are deliberately absent: those are a server
+ *  that answered with the wrong identity, which is a configuration error. */
+const UNREACHABLE_CODES = new Set([
+  "ECONNREFUSED", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH", "EHOSTDOWN",
+  "ENOTFOUND", "EAI_AGAIN", "EPIPE", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET"
+]);
+
+/** True when a `fetch` rejection was caused by one of those socket failures.
+ *  undici wraps the system error as `TypeError("fetch failed", { cause })`,
+ *  sometimes nested (AggregateError for happy-eyeballs). Exported for testing. */
+export function isConnectFailure(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  const queue: unknown[] = [error];
+  while (queue.length > 0) {
+    const e = queue.shift();
+    if (typeof e !== "object" || e === null || seen.has(e)) continue;
+    seen.add(e);
+    const code = (e as { code?: unknown }).code;
+    if (typeof code === "string" && UNREACHABLE_CODES.has(code)) return true;
+    queue.push((e as { cause?: unknown }).cause);
+    const errors = (e as { errors?: unknown }).errors;
+    if (Array.isArray(errors)) queue.push(...errors);
+  }
+  return false;
 }
 export const record = (v: unknown): Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -48,7 +80,7 @@ export async function safeFetch(url: string, init: RequestInit): Promise<Respons
     if (e instanceof DirectApiError) throw e;
     if (init.signal?.aborted) throw new DirectApiError("Model request cancelled or timed out.");
     // Never expose URLs, headers, transport causes or a server-controlled error body.
-    throw new DirectApiError("Could not reach the configured endpoint. Check its address and TLS configuration.");
+    throw new DirectApiError("Could not reach the configured endpoint. Check its address and TLS configuration.", undefined, undefined, isConnectFailure(e));
   }
 }
 
@@ -215,10 +247,12 @@ export async function discoverApi(endpoint: Pick<CustomConnection, "baseUrl" | "
   if (Array.isArray(body.models)) {
     for (const row of body.models.map(record)) {
       const id = string(row.slug);
+      // oxlint-disable-next-line no-control-regex -- Intentionally reject control characters.
       if (row.visibility !== "list" || id.length === 0 || id.length > 200 || /[\x00-\x1f\x7f]/.test(id) || seen.has(id)) continue;
       seen.add(id);
       const displayName = string(row.display_name).trim();
       const modalities = Array.isArray(row.input_modalities) ? row.input_modalities : null;
+      // oxlint-disable-next-line no-control-regex -- Intentionally reject control characters.
       const named = displayName.length > 0 && displayName.length <= 120 && !/[\x00-\x1f\x7f]/.test(displayName);
       models.push({ id, ...(named ? { displayName } : {}),
         vision: modalities === null ? null : modalities.includes("image") });
@@ -228,6 +262,7 @@ export async function discoverApi(endpoint: Pick<CustomConnection, "baseUrl" | "
   }
   for (const row of array(body.data).map(record)) {
     const id = string(row.id);
+    // oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
     if (id.length === 0 || id.length > 200 || /[\x00-\x1f\x7f]/.test(id) || seen.has(id)) continue;
     seen.add(id);
     // Only a row that SAYS so. Never from the model's name.
@@ -235,6 +270,7 @@ export async function discoverApi(endpoint: Pick<CustomConnection, "baseUrl" | "
     // Only explicit display metadata. IDs/aliases may be server-side paths;
     // never turn those into invented names or assume a path is locally readable.
     const displayName = string(row.display_name).trim();
+    // oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
     const hasName = displayName.length > 0 && displayName.length <= 120 && !/[\x00-\x1f\x7f]/.test(displayName);
     models.push({ id, ...(hasName ? { displayName } : {}), vision: typeof vision === "boolean" ? vision : null });
     if (models.length >= 1000) break;

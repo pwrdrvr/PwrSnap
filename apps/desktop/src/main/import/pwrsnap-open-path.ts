@@ -84,6 +84,7 @@ function normalizeWindowsPath(input: string, cwd: string | undefined): string {
         segment === "." ||
         segment === ".." ||
         /[. ]$/.test(segment) ||
+        // oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
         /[<>:"|?*\u0000-\u001f]/.test(segment) ||
         /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/i.test(segment)
     )
@@ -110,6 +111,7 @@ function normalizePosixPath(input: string, cwd: string | undefined): string {
       "File-open paths must be absolute."
     );
   }
+  // oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
   if (/[/](?:\.{1,2})(?:[/]|$)/.test(input) || input.includes("//") || /[\u0000-\u001f\u007f]/.test(input)) {
     throw new InvalidPwrsnapOpenPathError(
       "noncanonical_path",

@@ -254,6 +254,37 @@ describe("DesktopSettingsService.write", () => {
     expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentRateLimit).toBeNull();
   });
 
+  test("the enrichment fallback is off by default, turns on from {}, merges, and turns off with null", async () => {
+    const filePath = join(workDir, "settings.json");
+    const svc = new DesktopSettingsService({ filePath });
+    expect((await svc.read()).ai.enrichmentFallback).toBeNull();
+    // Turning it on with no leaves is Codex on its managed default.
+    await svc.write({ ai: { enrichmentFallback: {} } });
+    expect(JSON.parse(readFileSync(filePath, "utf8")).ai.enrichmentFallback).toEqual({});
+    await svc.write({ ai: { enrichmentFallback: { reasoning: "low" } } });
+    await svc.write({ ai: { enrichmentFallback: { provider: "acp:kimi" } } });
+    expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentFallback).toEqual({
+      provider: "acp:kimi",
+      reasoning: "low"
+    });
+    // "" clears a leaf, as on a surface default.
+    await svc.write({ ai: { enrichmentFallback: { provider: "" } } });
+    expect((await svc.read()).ai.enrichmentFallback).toEqual({ reasoning: "low" });
+    await svc.write({ ai: { enabled: true } });
+    expect((await svc.read()).ai.enrichmentFallback).toEqual({ reasoning: "low" });
+    await svc.write({ ai: { enrichmentFallback: null } });
+    expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentFallback).toBeNull();
+
+    // A malformed value on disk reads as off, and junk leaves are dropped.
+    const raw = defaultSettings() as unknown as { ai: Record<string, unknown> };
+    raw.ai.enrichmentFallback = "codex";
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+    expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentFallback).toBeNull();
+    raw.ai.enrichmentFallback = { provider: "acp:not-an-agent", reasoning: 7 };
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+    expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentFallback).toEqual({});
+  });
+
   test("write + read round-trips", async () => {
     const svc = makeService();
     const merged = await svc.write({
@@ -970,6 +1001,48 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(
       (await new DesktopSettingsService({ filePath }).read()).recording.showRecentCaptureSidebar
     ).toBe(true);
+  });
+
+  test("device choices default to none, survive a restart, and clear back to null", async () => {
+    expect(defaultSettings().recording.microphoneDevice).toBeNull();
+    expect(defaultSettings().recording.cameraDevice).toBeNull();
+    const filePath = join(workDir, "settings.json");
+    // A file from before the pickers has no device fields at all.
+    writeFileSync(filePath, JSON.stringify({ schemaVersion: 1, recording: {} }), "utf8");
+    expect((await new DesktopSettingsService({ filePath }).read()).recording.microphoneDevice).toBeNull();
+
+    const mic = { deviceId: "chromium-id-granola", label: "Granola Interface (USB)" };
+    const camera = { deviceId: "chromium-id-bran", label: "Bran Flake Cam" };
+    await new DesktopSettingsService({ filePath }).write({
+      recording: { microphoneDevice: mic, cameraDevice: camera }
+    });
+    const restarted = await new DesktopSettingsService({ filePath }).read();
+    expect(restarted.recording.microphoneDevice).toEqual(mic);
+    expect(restarted.recording.cameraDevice).toEqual(camera);
+    // Picking a device names it; it never arms the source.
+    expect(restarted.recording.includeMicrophone).toBe(defaultSettings().recording.includeMicrophone);
+
+    await new DesktopSettingsService({ filePath }).write({ recording: { microphoneDevice: null } });
+    const cleared = await new DesktopSettingsService({ filePath }).read();
+    expect(cleared.recording.microphoneDevice).toBeNull();
+    expect(cleared.recording.cameraDevice).toEqual(camera);
+  });
+
+  test("a malformed device choice on disk reads as no choice, not a corrupt file", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        recording: { microphoneDevice: { label: "Muesli Mic" }, cameraDevice: "cam", showRegionFrame: false }
+      }),
+      "utf8"
+    );
+    const settings = await new DesktopSettingsService({ filePath }).read();
+    expect(settings.recording.microphoneDevice).toBeNull();
+    expect(settings.recording.cameraDevice).toBeNull();
+    // The rest of the block is untouched.
+    expect(settings.recording.showRegionFrame).toBe(false);
   });
 
   test("v1 recording block preserves an explicit cursor:false choice", async () => {

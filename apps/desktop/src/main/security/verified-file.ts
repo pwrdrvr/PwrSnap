@@ -328,6 +328,7 @@ export async function withVerifiedFileHandle<T>(
     } catch {
       // Preserve a more useful callback/verification failure. If all prior
       // work succeeded, surface a typed, path-free close failure.
+      // oxlint-disable-next-line no-unsafe-finally -- Only replace a successful result; preserve any original failure.
       if (completed) throw new VerifiedFileError("close_failed");
     }
   }
@@ -426,6 +427,7 @@ async function withWindowsVerifiedFileHandle<T>(
       cleanupFailed = true;
     }
     if (completed && cleanupFailed) {
+      // oxlint-disable-next-line no-unsafe-finally -- Only replace a successful result; preserve any original failure.
       throw new VerifiedFileError("close_failed");
     }
   }

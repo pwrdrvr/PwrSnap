@@ -52,10 +52,17 @@ func sample(packet: Int, amplitude: Float = 0.3) throws -> CMSampleBuffer {
     return result!
 }
 
+// Write directly to stderr so a killed process still identifies the last
+// native operation. Buffered stdout used to leave reader-start hangs blank.
+func stage(_ message: String) {
+    FileHandle.standardError.write(Data(("roundtrip: \(message)\n").utf8))
+}
+
 @main
 struct MicrophoneRoundtrip {
     static func main() async throws {
         let url = URL(fileURLWithPath: CommandLine.arguments[1])
+        stage("create tone writer")
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
         let input = AVAssetWriterInput(mediaType: .audio, outputSettings: [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
@@ -67,6 +74,7 @@ struct MicrophoneRoundtrip {
         let forwarder = MicForwarder(input: input, writer: writer)
         forwarder.append(try sample(packet: -1))
         try check(forwarder.samplesAppended == 0, "countdown pre-roll must be dropped")
+        stage("start tone writer")
         try check(writer.startWriting(), "start writing")
         writer.startSession(atSourceTime: CMTime(value: 20, timescale: 1))
         for packet in 0..<48 {
@@ -77,8 +85,10 @@ struct MicrophoneRoundtrip {
             try check(input.isReadyForMoreMediaData, "AAC encoder stalled")
             forwarder.append(try sample(packet: packet))
         }
+        stage("finish tone writer appended=\(forwarder.samplesAppended)")
         input.markAsFinished()
         await writer.finishWriting()
+        stage("tone writer completed")
         try check(writer.status == .completed, "finish AAC: \(writer.error?.localizedDescription ?? "unknown")")
         forwarder.append(try sample(packet: 48))
         try check(forwarder.samplesReceived == 50 && forwarder.samplesAppended == 48, "sample lifecycle counts")
@@ -88,6 +98,7 @@ struct MicrophoneRoundtrip {
         // a silent track play back at full volume with no explanation.
         try check(forwarder.heardSound, "a 0.3-amplitude tone must register as heard")
 
+        stage("create quiet writer")
         let quietWriter = try AVAssetWriter(
             outputURL: url.deletingLastPathComponent().appendingPathComponent("quiet.mp4"),
             fileType: .mp4
@@ -109,35 +120,41 @@ struct MicrophoneRoundtrip {
             }
             quiet.append(try sample(packet: packet, amplitude: 0))
         }
+        stage("finish quiet writer appended=\(quiet.samplesAppended)")
         quietInput.markAsFinished()
         await quietWriter.finishWriting()
+        stage("quiet writer completed status=\(quietWriter.status.rawValue)")
+        try check(quietWriter.status == .completed, "finish quiet AAC: \(quietWriter.error?.localizedDescription ?? "unknown")")
         try check(quiet.samplesAppended == 4, "silent buffers still append")
         try check(!quiet.heardSound, "digital silence must not register as heard")
 
         let asset = AVURLAsset(url: url)
+        stage("load audio tracks")
         let tracks = try await asset.loadTracks(withMediaType: .audio)
         try check(tracks.count == 1, "one encoded microphone track")
-        let reader = try AVAssetReader(asset: asset)
-        let output = AVAssetReaderTrackOutput(track: tracks[0], outputSettings: [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVLinearPCMIsFloatKey: true, AVLinearPCMBitDepthKey: 32,
-            AVLinearPCMIsNonInterleaved: false
-        ])
-        reader.add(output)
-        try check(reader.startReading(), "start PCM decoding")
+        // AVAssetReader's PCM output creates an AudioQueue render pipeline.
+        // On a fresh macOS account that can initialize an input device and
+        // block at a microphone permission prompt. AVAudioFile decodes the
+        // file offline, with no audio engine, capture session, or device.
+        stage("open offline PCM decoder")
+        let file = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)
+        try check(file.processingFormat.channelCount == 1 && file.processingFormat.sampleRate == 48_000, "decoded PCM format")
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4096) else {
+            throw NSError(domain: "MicrophoneRoundtrip", code: 1, userInfo: [NSLocalizedDescriptionKey: "PCM decode storage"])
+        }
+        stage("decode offline PCM")
         var sum = 0.0
         var decoded = 0
-        while let buffer = output.copyNextSampleBuffer() {
-            guard let data = CMSampleBufferGetDataBuffer(buffer) else { continue }
-            var values = [Float](repeating: 0, count: CMBlockBufferGetDataLength(data) / 4)
-            let status = values.withUnsafeMutableBytes { bytes in
-                CMBlockBufferCopyDataBytes(data, atOffset: 0, dataLength: bytes.count, destination: bytes.baseAddress!)
+        while file.framePosition < file.length {
+            try file.read(into: buffer)
+            try check(buffer.frameLength > 0, "PCM decoder must advance")
+            guard let values = buffer.floatChannelData?[0] else {
+                throw NSError(domain: "MicrophoneRoundtrip", code: 1, userInfo: [NSLocalizedDescriptionKey: "decoded Float32 PCM"])
             }
-            try check(status == noErr, "decoded PCM bytes")
-            for value in values { sum += Double(value * value) }
-            decoded += values.count
+            for index in 0..<Int(buffer.frameLength) { sum += Double(values[index] * values[index]) }
+            decoded += Int(buffer.frameLength)
         }
-        try check(reader.status == .completed, "complete PCM decoding")
+        stage("decoded \(decoded) samples")
         let rms = sqrt(sum / Double(max(1, decoded)))
         let duration = try await asset.load(.duration).seconds
         try check(decoded >= 48_000 && rms > 0.1, "audible microphone PCM must survive AAC")

@@ -20,7 +20,8 @@
     "./release-notes": "./src/release-notes.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "node ../../node_modules/typescript-native/bin/tsc --noEmit -p tsconfig.json",
+    "typecheck:legacy": "node ../../node_modules/typescript/bin/tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "zod": "^4.6.5"

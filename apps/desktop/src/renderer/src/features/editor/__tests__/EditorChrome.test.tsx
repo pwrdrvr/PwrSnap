@@ -61,6 +61,7 @@ const baseSettings: Settings = {
   storage: { filenameTimestampZone: "local", capturesLocation: "documents" },
   recording: {
     quickCaptureAction: "ask",
+    selectorHud: "shutter",
     includeSystemAudio: false,
     includeMicrophone: false,
     mp4IncludeMicrophone: true,
@@ -68,6 +69,8 @@ const baseSettings: Settings = {
     videoCaptureCursor: true,
     showRegionFrame: true,
     showRecentCaptureSidebar: true,
+    microphoneDevice: null,
+    cameraDevice: null,
     imageCaptureCursor: true,
     lastRoutedPermissionFingerprint: "",
     screenCapturePrompted: false
@@ -487,7 +490,7 @@ describe("EditorChrome", () => {
     });
     expect(sidebarWrites.length).toBeGreaterThan(0);
     expect(
-      (sidebarWrites[sidebarWrites.length - 1]?.req as {
+      (sidebarWrites[sidebarWrites.length - 1]!.req as {
         editor: { sidebar: { pinned: boolean } };
       }).editor.sidebar.pinned
     ).toBe(true);

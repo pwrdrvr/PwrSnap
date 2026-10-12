@@ -292,6 +292,20 @@ describe("useDropImage", () => {
     });
   });
 
+  test("preserves the file-path resolver receiver when importing a drop", async () => {
+    const api = window.pwrsnapApi!;
+    api.getPathForFile = function (file: File): string {
+      expect(this).toBe(api);
+      return filePaths.get(file) ?? "";
+    };
+    dispatchMock.mockResolvedValue({ ok: true, value: { layerId: "dropped_id" } });
+    const hook = await mountHook({ captureId: "cap_v2", bundleFormatVersion: 2 });
+    await drop(hook, makeDragEvent(["Files"], [makeFile("x.png", "image/png", "/tmp/x.png")]));
+    expect(dispatchMock).toHaveBeenCalledWith("editor:dropImageAsLayer", {
+      captureId: "cap_v2", filePath: "/tmp/x.png", operationId: expect.any(String)
+    });
+  });
+
   test("drop rejects missing file path (drop_path_unavailable)", async () => {
     const errors: { code: string }[] = [];
     const hook = await mountHook({
@@ -555,7 +569,7 @@ describe("useDropImage", () => {
     });
     await act(async () => await Promise.resolve());
     expect(dropDispatchCalls()).toHaveLength(1);
-    const oldOperationId = (dropDispatchCalls()[0]?.[1] as { operationId: string })
+    const oldOperationId = (dropDispatchCalls()[0]![1] as { operationId: string })
       .operationId;
 
     await renderHook({
@@ -624,7 +638,7 @@ describe("useDropImage", () => {
       );
     });
     await act(async () => await Promise.resolve());
-    const operationId = (dropDispatchCalls()[0]?.[1] as { operationId: string })
+    const operationId = (dropDispatchCalls()[0]![1] as { operationId: string })
       .operationId;
     act(() => root!.unmount());
     root = null;

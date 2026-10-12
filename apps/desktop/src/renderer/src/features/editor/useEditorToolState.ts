@@ -104,15 +104,16 @@ export interface UseEditorToolStateReturn {
    *  Same rendering-read caveat as `activeStyle`: factory defaults until
    *  settings land, so nothing that persists may read it. */
   toolStyles: EditorToolStyles;
-  setActiveTool(tool: Tool, options?: { singleShot?: boolean }): void;
+  setActiveTool(this: void, tool: Tool, options?: { singleShot?: boolean }): void;
   setStyleField<T extends StyledTool, K extends keyof StyleFor<T>>(
+    this: void,
     tool: T,
     field: K,
     value: StyleFor<T>[K]
   ): void;
   /** Called once per committed annotation. Only single-shot (⌥-click)
    *  mode reacts: it returns to pointer. */
-  onAnnotationPlaced(placement: { tool: Tool }): void;
+  onAnnotationPlaced(this: void, placement: { tool: Tool }): void;
   /** The saved bag — settings, overlaid with any slot write still in
    *  flight. Always exactly `TOOL_BAG_SIZE` entries. */
   bag: EditorToolBag;
@@ -124,9 +125,9 @@ export interface UseEditorToolStateReturn {
   armedSlotModified: boolean;
   /** Arm slot `index`: activate its tool and load its full style. An
    *  empty slot is a no-op that returns false. */
-  armSlot(index: number, options?: { singleShot?: boolean }): boolean;
+  armSlot(this: void, index: number, options?: { singleShot?: boolean }): boolean;
   /** Save (or with null, clear) slot `index`. Writes the whole bag. */
-  setBagSlot(index: number, slot: ToolBagSlot | null): void;
+  setBagSlot(this: void, index: number, slot: ToolBagSlot | null): void;
   /** The merged tool styles for a PERSISTING commit, awaited so a
    *  draw racing `settings:read` stamps the user's configured styles
    *  rather than the pre-settle defaults (the toolbar is interactive
@@ -136,7 +137,7 @@ export interface UseEditorToolStateReturn {
    *  the LIVE styles at resolve time; never reuse a render-closure
    *  `activeStyle` after awaiting this. History:
    *  docs/solutions/2026-08-31-editor-border-outline-settings-race.md */
-  settledToolStyles(): Promise<EditorToolStyles>;
+  settledToolStyles(this: void): Promise<EditorToolStyles>;
 }
 
 // ---- Tunables -------------------------------------------------------

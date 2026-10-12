@@ -45,9 +45,25 @@ decoder** shipped for two months. Every image-backed Sizzle reel failed with
 > `apps/desktop/scripts/dev-ffmpeg.mjs` — and is restated in the table above.
 > Landing a fix in the build repo does nothing until **all** are bumped to the
 > new commit. PR previews intentionally use digest-pinned public release
-> payloads instead of private-repo credentials.
+> build artifacts instead of private-repo credentials or release downloads.
 > `apps/desktop/scripts/windows-release-config.test.mjs` asserts every pin
 > agrees, so drift fails CI instead of shipping.
+
+## Preview dependency retention
+
+PR previews identify the vetted v1.1.19 release payloads by immutable URLs and
+SHA-256 pins, but only request release JSON metadata.
+`scripts/preview-build-assets.py` restores the installer, manifest, source and
+notices through `scripts/build-artifact.py` from the successful tagged release
+build. It verifies published size/digest, exact tag commit and workflow provenance.
+The signed macOS helper is also checked after extraction; the FFmpeg 8.1.1
+profile and source notices are unchanged.
+
+Release artifacts are retained for 90 days. Before a preview pin expires, update
+both platforms to a retained vetted release and recompute the installer/helper
+pins. Missing or expired artifacts fail the preview; release-download fallback
+is prohibited. PR jobs use only the read-only GitHub token, without signing or
+private build-repository credentials.
 
 ## Bumping the bundled FFmpeg version
 

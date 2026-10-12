@@ -1,4 +1,4 @@
-import { AvatarStyleSchema, PresenterSpansSchema, RecordingCameraSchema } from "@pwrsnap/shared";
+import { AvatarStyleSchema, PresenterSpansSchema, RecordingCameraSchema, RecordingMicrophoneSchema } from "@pwrsnap/shared";
 import { acceptCameraChunk } from "../recording/camera-recording";
 import { prepareAvatarVideo } from "../recording/avatar-video";
 import { setVideoAvatar, setVideoAvatarSpans } from "../persistence/video-repo";
@@ -56,11 +56,13 @@ import {
   setVideoSegments
 } from "../persistence/video-repo";
 import {
+  openSoundSettings,
   openSystemSettingsFor,
   readRecordingPermissionEvidence,
   readRecordingReadiness,
   requestPermission,
-  UnsupportedPermissionSettingsError
+  UnsupportedPermissionSettingsError,
+  UnsupportedSoundSettingsError
 } from "../recording/recording-permissions";
 import {
   guardScreenCapture,
@@ -338,7 +340,7 @@ export function validateRecordingStartRequest(
   const capabilities = value.capabilities;
   if (
     !isObjectRecord(capabilities) ||
-    !hasOnlyKeys(capabilities, ["systemAudio", "microphone", "camera"]) ||
+    !hasOnlyKeys(capabilities, ["systemAudio", "microphone", "camera", "microphoneDevice"]) ||
     typeof capabilities.systemAudio !== "boolean" ||
     typeof capabilities.microphone !== "boolean"
   ) {
@@ -346,6 +348,15 @@ export function validateRecordingStartRequest(
   }
 
   if (capabilities.camera !== undefined && !RecordingCameraSchema.safeParse(capabilities.camera).success) return invalid();
+  // A named input with the microphone off records nothing from it, and a
+  // caller that sent one meant something else. Refuse rather than guess.
+  if (
+    capabilities.microphoneDevice !== undefined &&
+    (capabilities.microphone !== true ||
+      !RecordingMicrophoneSchema.safeParse(capabilities.microphoneDevice).success)
+  ) {
+    return invalid();
+  }
 
   if (
     value.countdownSeconds !== undefined &&
@@ -706,6 +717,23 @@ export function registerRecordingHandlers(): void {
       await markScreenCapturePrompted();
     }
     return ok(result);
+  });
+
+  bus.register("permissions:openSoundSettings", async () => {
+    try {
+      await openSoundSettings();
+      return ok(undefined);
+    } catch (cause) {
+      if (cause instanceof UnsupportedSoundSettingsError) {
+        return err(permissionError("permission_settings_unsupported", cause.message));
+      }
+      log.warn("permissions:openSoundSettings failed", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err(
+        permissionError("open_settings_failed", cause instanceof Error ? cause.message : String(cause))
+      );
+    }
   });
 
   bus.register("permissions:openSystemSettings", async (req) => {

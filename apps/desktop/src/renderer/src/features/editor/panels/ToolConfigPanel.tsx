@@ -46,6 +46,7 @@ export interface ToolConfigPanelProps {
    *  field so a setStyleField('arrow', 'thickness', 'medium') call
    *  typechecks both arms. */
   onStyleFieldChange<T extends StyledTool, K extends keyof StyleFor<T>>(
+    this: void,
     tool: T,
     field: K,
     value: StyleFor<T>[K]

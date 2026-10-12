@@ -357,6 +357,7 @@ function assertPortableAiRunId(id: string): void {
   if (
     id.length < 1 ||
     id.length > 64 ||
+    // oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
     /[\u0000-\u001f]/u.test(id) ||
     FORBIDDEN_KEYS.has(id)
   ) {

@@ -1151,6 +1151,7 @@ async function runInteractiveRecord(
     protectWindowIds,
     // Seed the selector's cursor toggle from the persisted default.
     cursorDefault: settings.recording.videoCaptureCursor,
+    hudStyle: settings.recording.selectorHud,
     // Seed the source chips the same way. This is the first path that
     // makes `recording.includeMicrophone` / `.includeSystemAudio`
     // reachable from a renderer at all — before the chips they were
@@ -1164,6 +1165,10 @@ async function runInteractiveRecord(
     // setting was simply ignored end-to-end. protocol.ts states the rule:
     // unsupported controls are omitted, not rendered as if they might work.
     cameraOffered: recordingSources.webcam,
+    devicesDefault: {
+      microphone: settings.recording.microphoneDevice,
+      camera: settings.recording.cameraDevice
+    },
     ...(recordingSources.microphone || recordingSources.systemAudio
       ? {
           sourcesDefault: {

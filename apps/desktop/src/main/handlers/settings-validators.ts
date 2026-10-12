@@ -32,6 +32,7 @@ import {
   isEditToolbarDock,
   isLibrarySidebarTab,
   isQuickCaptureAction,
+  isSelectorHudStyle,
   isRedactionStyle,
   isSettingsPage,
   isSettingsSub,
@@ -47,6 +48,7 @@ import {
   canonicalAcceleratorForPlatform,
   shortcutPlatformDisplayName,
   shortcutPlatformFromString,
+  RecordingDevicePreferenceSchema,
   REDACTION_STYLES,
   TOOL_BAG_SIZE
 } from "@pwrsnap/shared";
@@ -296,6 +298,12 @@ export function validateSettingsWrite(
     if (!isUndefined(ai.defaults)) {
       const defaultsErr = validateAiDefaultsPatch(ai.defaults);
       if (defaultsErr) return { ok: false, error: defaultsErr };
+    }
+    // null turns the caption fallback off; an object is a surface-default
+    // patch under the same rules as `ai.defaults.enrichment`.
+    if (!isUndefined(ai.enrichmentFallback) && ai.enrichmentFallback !== null) {
+      const fallbackErr = validateAiSurfaceDefault("enrichmentFallback", ai.enrichmentFallback);
+      if (fallbackErr) return { ok: false, error: fallbackErr };
     }
     if (!isUndefined(ai.acp)) {
       const acpErr = validateAcpPatch(ai.acp, platform);
@@ -639,6 +647,31 @@ export function validateSettingsWrite(
           'settings:write: recording.quickCaptureAction must be "ask", "snap", or "record"'
         )
       };
+    }
+    if (!isUndefined(recording.selectorHud) && !isSelectorHudStyle(recording.selectorHud)) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_recording_selectorHud",
+          'settings:write: recording.selectorHud must be "shutter" or "clapperboard"'
+        )
+      };
+    }
+    // A device choice is `null` (system default) or one full
+    // preference. A half-filled one would save a device the chips can
+    // neither open by id nor find by name.
+    for (const key of ["microphoneDevice", "cameraDevice"] as const) {
+      const v = recording[key];
+      if (isUndefined(v) || v === null) continue;
+      if (!RecordingDevicePreferenceSchema.safeParse(v).success) {
+        return {
+          ok: false,
+          error: validationError(
+            `invalid_recording_${key}`,
+            `settings:write: recording.${key} must be null or { deviceId, label }`
+          )
+        };
+      }
     }
     if (
       !isUndefined(recording.lastRoutedPermissionFingerprint) &&
@@ -1015,6 +1048,16 @@ function isAiModelTokenShape(value: string): boolean {
   return value.length > 0 && value.length <= 200 && /^[A-Za-z0-9._:/()[\]-]+$/.test(value);
 }
 
+/** Where a surface-default-shaped block lives, for error text. */
+function aiSurfaceSettingPath(surface: string): string {
+  return surface === "enrichmentFallback" ? "ai.enrichmentFallback" : `ai.defaults.${surface}`;
+}
+
+/** The error-code stem for the same block, so code and message name one path. */
+function aiSurfaceErrorCode(surface: string): string {
+  return surface === "enrichmentFallback" ? "invalid_ai_enrichmentFallback" : `invalid_ai_defaults_${surface}`;
+}
+
 /** Validate a surface's `provider` backend selector (every surface now —
  *  Library / Sizzle chat AND enrichment). Accepts "" / "codex" /
  *  "acp:<known-id>"; rejects unknown `acp:` ids and any other free-text token
@@ -1028,21 +1071,21 @@ function validateChatSurfaceProvider(
     const id = value.slice("acp:".length);
     if (isBuiltInAcpAgentId(id)) return null;
     return validationError(
-      `invalid_ai_defaults_${surface}_provider`,
-      `settings:write: ai.defaults.${surface}.provider has unknown ACP agent ${JSON.stringify(id)} (allowed: ${BUILT_IN_ACP_AGENT_IDS.join("/")})`
+      `${aiSurfaceErrorCode(surface)}_provider`,
+      `settings:write: ${aiSurfaceSettingPath(surface)}.provider has unknown ACP agent ${JSON.stringify(id)} (allowed: ${BUILT_IN_ACP_AGENT_IDS.join("/")})`
     );
   }
   return validationError(
-    `invalid_ai_defaults_${surface}_provider`,
-    `settings:write: ai.defaults.${surface}.provider must be "", "codex", or "acp:<${BUILT_IN_ACP_AGENT_IDS.join("|")}>" (got ${JSON.stringify(value)})`
+    `${aiSurfaceErrorCode(surface)}_provider`,
+    `settings:write: ${aiSurfaceSettingPath(surface)}.provider must be "", "codex", or "acp:<${BUILT_IN_ACP_AGENT_IDS.join("|")}>" (got ${JSON.stringify(value)})`
   );
 }
 
 function validateAiSurfaceDefault(surface: string, raw: unknown): PwrSnapError | null {
   if (!isObject(raw)) {
     return validationError(
-      `invalid_ai_defaults_${surface}`,
-      `settings:write: ai.defaults.${surface} must be an object`
+      `${aiSurfaceErrorCode(surface)}`,
+      `settings:write: ${aiSurfaceSettingPath(surface)} must be an object`
     );
   }
   // `provider` is a BACKEND selector for EVERY surface now — chat surfaces
@@ -1052,8 +1095,8 @@ function validateAiSurfaceDefault(surface: string, raw: unknown): PwrSnapError |
   if (!isUndefined(raw.provider)) {
     if (!isString(raw.provider)) {
       return validationError(
-        `invalid_ai_defaults_${surface}_provider`,
-        `settings:write: ai.defaults.${surface}.provider must be a string`
+        `${aiSurfaceErrorCode(surface)}_provider`,
+        `settings:write: ${aiSurfaceSettingPath(surface)}.provider must be a string`
       );
     }
     const provErr = validateChatSurfaceProvider(surface, raw.provider);
@@ -1064,18 +1107,19 @@ function validateAiSurfaceDefault(surface: string, raw: unknown): PwrSnapError |
     if (isUndefined(v)) continue;
     if (!isString(v)) {
       return validationError(
-        `invalid_ai_defaults_${surface}_${key}`,
-        `settings:write: ai.defaults.${surface}.${key} must be a string`
+        `${aiSurfaceErrorCode(surface)}_${key}`,
+        `settings:write: ${aiSurfaceSettingPath(surface)}.${key} must be a string`
       );
     }
     // Empty string clears the field (→ Codex / agent default); always allowed.
     // The model id is an opaque, possibly-ACP token (e.g. Qwen's
     // `qwen3.6-plus(openai)`), so use the tolerant model-token shape — NOT the
     // Codex-narrow alphabet, which would reject valid agent model ids.
+    // oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
     if (v.length > 0 && !(typeof raw.provider === "string" && raw.provider.startsWith("custom:") && v.length <= 200 && /^[^\x00-\x1f\x7f]+$/.test(v)) && !isAiModelTokenShape(v)) {
       return validationError(
-        `invalid_ai_defaults_${surface}_${key}`,
-        `settings:write: ai.defaults.${surface}.${key} must be a non-empty model id under 200 chars with no control characters (got ${JSON.stringify(v)})`
+        `${aiSurfaceErrorCode(surface)}_${key}`,
+        `settings:write: ${aiSurfaceSettingPath(surface)}.${key} must be a non-empty model id under 200 chars with no control characters (got ${JSON.stringify(v)})`
       );
     }
   }
@@ -1087,8 +1131,8 @@ function validateAiSurfaceDefault(surface: string, raw: unknown): PwrSnapError |
     !isAiReasoningEffort(raw.reasoning)
   ) {
     return validationError(
-      `invalid_ai_defaults_${surface}_reasoning`,
-      `settings:write: ai.defaults.${surface}.reasoning must be "" or one of ${AI_REASONING_EFFORTS.join("/")}`
+      `${aiSurfaceErrorCode(surface)}_reasoning`,
+      `settings:write: ${aiSurfaceSettingPath(surface)}.reasoning must be "" or one of ${AI_REASONING_EFFORTS.join("/")}`
     );
   }
   return null;

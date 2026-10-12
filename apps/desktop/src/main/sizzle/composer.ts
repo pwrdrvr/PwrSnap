@@ -749,10 +749,12 @@ function ffmpegFailureDetails(stderr: string): string | undefined {
 
 function ffmpegErrorLines(stderr: string): string[] {
   return stderr
+    // oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
     .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
     .split(/\r?\n/)
     .map((line) =>
       line
+        // oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
         .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
         .trim()
     )

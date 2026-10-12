@@ -145,6 +145,7 @@ function makeSettings(): Settings {
     storage: { filenameTimestampZone: "local", capturesLocation: "documents" },
     recording: {
       quickCaptureAction: "ask",
+      selectorHud: "shutter",
       includeSystemAudio: false,
       includeMicrophone: false,
       mp4IncludeMicrophone: true,
@@ -152,6 +153,8 @@ function makeSettings(): Settings {
       videoCaptureCursor: true,
       showRegionFrame: true,
       showRecentCaptureSidebar: true,
+      microphoneDevice: null,
+      cameraDevice: null,
       imageCaptureCursor: true,
       lastRoutedPermissionFingerprint: "",
       screenCapturePrompted: false
@@ -601,7 +604,7 @@ describe("EditToolbar (Library Focus, v2 refresh)", () => {
         name === "settings:write" &&
         (req as { editor?: { toolBag?: unknown } }).editor?.toolBag !== undefined
     );
-    const slots = (bagWrite?.[1] as { editor: { toolBag: { slots: unknown[] } } }).editor
+    const slots = (bagWrite![1] as { editor: { toolBag: { slots: unknown[] } } }).editor
       .toolBag.slots;
     expect(slots).toHaveLength(9);
     expect(slots[0]).toMatchObject({ tool: "arrow", style: { color: "blue" } });

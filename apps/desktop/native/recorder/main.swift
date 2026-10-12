@@ -29,6 +29,7 @@
 // AVFoundation and predate ScreenCaptureKit).
 
 import AVFoundation
+import CoreAudio
 import CoreMedia
 import Foundation
 import ScreenCaptureKit
@@ -41,6 +42,10 @@ struct StartRequest: Decodable {
     let outputPath: String
     let systemAudio: Bool
     let microphone: Bool
+    /// The input the selector showed, by its Chromium name. Nil records
+    /// the system default. A name that matches no attached input fails the
+    /// start with `microphone_unavailable` rather than falling back.
+    let microphoneDevice: String?
     /// Whether the recording bakes in the mouse cursor. Optional for
     /// back-compat with older callers — `nil` defaults to `true`, which
     /// is the behavior before this field existed (cursor always shown).
@@ -313,7 +318,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             }
             writer.add(mi)
             micInput = mi
-            guard setUpMicrophoneCapture(into: mi, writer: writer) else { return }
+            guard setUpMicrophoneCapture(into: mi, writer: writer, named: req.microphoneDevice) else { return }
         }
 
         // Sleep until the requested wall-clock capture time. The TS
@@ -543,14 +548,103 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         return err.domain == "com.apple.ScreenCaptureKit.SCStreamErrorDomain" && err.code == -3805
     }
 
+    private func microphoneDevice(named name: String?) -> AVCaptureDevice? {
+        guard let name else { return AVCaptureDevice.default(for: .audio) }
+        let types: [AVCaptureDevice.DeviceType]
+        if #available(macOS 14.0, *) {
+            types = [.microphone, .external]
+        } else {
+            types = [.builtInMicrophone, .externalUnknown]
+        }
+        let devices = AVCaptureDevice.DiscoverySession(
+            deviceTypes: types, mediaType: .audio, position: .unspecified
+        ).devices
+        let candidates = devices.map(microphoneCandidate(for:))
+        guard let index = indexOfMicrophone(named: name, among: candidates) else {
+            diag("microphone \"\(name)\" not among \(candidates.map { "\($0.name) [source \($0.sourceName ?? "-")\($0.bluetooth ? ", bluetooth" : "")]" })")
+            return nil
+        }
+        return devices[index]
+    }
+
+    /// The CoreAudio facts the name match needs for one AVFoundation input:
+    /// its input data source's name and whether it is Bluetooth. Either can
+    /// be missing; the match then falls back to the device name alone.
+    private func microphoneCandidate(for device: AVCaptureDevice) -> MicrophoneCandidate {
+        guard let id = coreAudioDevice(uid: device.uniqueID) else {
+            return MicrophoneCandidate(name: device.localizedName)
+        }
+        var transport: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let haveTransport = AudioObjectGetPropertyData(id, &address, 0, nil, &size, &transport) == noErr
+        let bluetooth = haveTransport &&
+            (transport == kAudioDeviceTransportTypeBluetooth || transport == kAudioDeviceTransportTypeBluetoothLE)
+        return MicrophoneCandidate(name: device.localizedName, sourceName: inputSourceName(id), bluetooth: bluetooth)
+    }
+
+    private func coreAudioDevice(uid: String) -> AudioObjectID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var qualifier = uid as CFString
+        var device = AudioObjectID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        let status = withUnsafeMutablePointer(to: &qualifier) { pointer in
+            AudioObjectGetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject), &address,
+                UInt32(MemoryLayout<CFString>.size), pointer, &size, &device
+            )
+        }
+        return status == noErr && device != kAudioObjectUnknown ? device : nil
+    }
+
+    private func inputSourceName(_ device: AudioObjectID) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDataSource,
+            mScope: kAudioDevicePropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var source: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &source) == noErr else { return nil }
+        var name: Unmanaged<CFString>?
+        let status: OSStatus = withUnsafeMutablePointer(to: &source) { sourcePointer in
+            withUnsafeMutablePointer(to: &name) { namePointer in
+                var translation = AudioValueTranslation(
+                    mInputData: sourcePointer,
+                    mInputDataSize: UInt32(MemoryLayout<UInt32>.size),
+                    mOutputData: namePointer,
+                    mOutputDataSize: UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+                )
+                var translationSize = UInt32(MemoryLayout<AudioValueTranslation>.size)
+                address.mSelector = kAudioDevicePropertyDataSourceNameForIDCFString
+                return AudioObjectGetPropertyData(device, &address, 0, nil, &translationSize, &translation)
+            }
+        }
+        guard status == noErr, let value = name?.takeRetainedValue() as String?, !value.isEmpty else { return nil }
+        return value
+    }
+
     private func setUpMicrophoneCapture(
         into input: AVAssetWriterInput,
-        writer: AVAssetWriter
+        writer: AVAssetWriter,
+        named requested: String?
     ) -> Bool {
         let session = AVCaptureSession()
         session.sessionPreset = .high
-        guard let device = AVCaptureDevice.default(for: .audio) else {
-            emitError("microphone_unavailable", "No default microphone is connected. Choose an input in macOS Sound settings.")
+        guard let device = microphoneDevice(named: requested) else {
+            if let requested {
+                emitError("microphone_unavailable", "The microphone \"\(requested)\" is not connected. Choose another in the capture selector.")
+            } else {
+                emitError("microphone_unavailable", "No default microphone is connected. Choose an input in macOS Sound settings.")
+            }
             return false
         }
         let micInputDevice: AVCaptureDeviceInput
@@ -565,6 +659,9 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             return false
         }
         session.addInput(micInputDevice)
+        // Which input the take records from, in the main log. The chip named
+        // one; this line is the only evidence of which one actually opened.
+        diag("microphone: \"\(device.localizedName)\" (requested \(requested.map { "\"\($0)\"" } ?? "system default"))")
         let micOutput = AVCaptureAudioDataOutput()
         guard session.canAddOutput(micOutput) else {
             emitError("microphone_unavailable", "The microphone capture session could not deliver audio samples.")

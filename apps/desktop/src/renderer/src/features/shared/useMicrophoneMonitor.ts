@@ -33,22 +33,54 @@
 // COUNT changes, so a steady voice re-renders a couple of times a
 // second and silence re-renders not at all.
 
-import { useCallback, useEffect, useState } from "react";
+// Which device
+// ────────────
+// The saved choice (`settings.recording.microphoneDevice`) is opened by
+// its Chromium id. If that id no longer exists the system default is
+// opened instead and the saved device is looked for BY NAME: Chromium's
+// ids are salted per profile, so a reset salt turns every saved id into a
+// stranger while the device itself is still plugged in. Only when the name
+// is gone too does the monitor report `missing` — and it stays on the
+// default, because a meter that shows nothing is a worse answer to "which
+// microphone?" than one that shows the default and says so.
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  displayDeviceLabel,
+  isDefaultPseudoDevice,
+  isMissingDeviceError,
+  resolveDevicePreference,
+  type RecordingDevicePreference
+} from "@pwrsnap/shared";
+import { createLevelMeterStore, peakOf, type LevelMeterStore } from "./mic-level-meter";
 
 /** Number of lit segments the meter can show. Matches SourceChip.css. */
 const METER_SEGMENTS = 7;
 /** Sampling cadence. Fast enough to feel live, far below frame rate. */
 const SAMPLE_INTERVAL_MS = 33;
-/** Silence for this long, while enabled, flips the chip to `silent`. */
+/** No signal at all for this long, while enabled, flips the chip to `silent`. */
 const SILENCE_GRACE_MS = 3_000;
 /**
- * Full-scale reference for the meter. Speech at a normal distance sits
- * around 0.05–0.15 RMS; mapping 1.0 to full scale would leave a working
- * microphone showing one segment. 0.35 puts conversational speech
- * around the middle of the meter and leaves the top two segments — the
- * warm ones — for genuine clipping.
+ * The dBFS peak at which each of the seven segments lights — the SAME
+ * scale as the picker's meter, which reads whole dBFS peaks. The chip
+ * used to quantize linear RMS against a 0.35 full scale, so its first
+ * segment needed about −32 dBFS RMS: the picker read −33 dB and moved
+ * while the chip sat dark, and a quiet room flipped it to "no signal".
+ *
+ * The middle segments follow the picker's own advice ("peaks between −18
+ * and −6 dB are a good level"): good speech lights four or five, the warm
+ * sixth means hot, and the seventh is the clip zone. A quiet room lights
+ * one, which is the honest reading of a working microphone.
  */
-const RMS_FULL_SCALE = 0.35;
+const SEGMENT_THRESHOLDS_DB = [-54, -42, -30, -18, -12, -6, -1] as const;
+/**
+ * Below this a buffer carries no signal: −80 dBFS, under the noise floor
+ * of any working input. What it catches is a muted or dead input, which
+ * delivers zeros — the case the `silent` state exists to flag. Ambient
+ * noise in a quiet room sits well above it, so silence of the ROOM never
+ * reads as a fault of the MICROPHONE.
+ */
+const NO_SIGNAL_PEAK = 1e-4;
 
 export type MicPermission = "granted" | "denied" | "prompt" | "unsupported";
 
@@ -69,7 +101,7 @@ export type MicDevice = {
 export type MicrophoneMonitor = {
   /** 0..7 — already quantized to meter segments. */
   readonly segments: number;
-  /** True once enabled and no samples above the floor for 3s. */
+  /** True once enabled and the input has carried no signal at all for 3s. */
   readonly silent: boolean;
   readonly permission: MicPermission;
   readonly devices: readonly MicDevice[];
@@ -85,28 +117,45 @@ export type MicrophoneMonitor = {
    * state is known either way.
    */
   readonly request: () => Promise<void>;
+  /** Name of the device feeding the meter, without Chromium's "Default - ". */
+  readonly activeLabel: string | null;
+  /** What the OS default input currently is, for the "System default" row. */
+  readonly defaultLabel: string | null;
+  /**
+   * True when the open stream is the OS default rather than a named pick:
+   * no preference, or a saved one that is not attached. The recorder is then
+   * told nothing and opens the default itself.
+   */
+  readonly followsDefault: boolean;
+  /** A saved device that is attached under neither its id nor its name. */
+  readonly missing: RecordingDevicePreference | null;
+  /** A clipped sample arrived within the last `CLIP_HOLD_MS`. */
+  readonly clipping: boolean;
+  /** dBFS level, peak hold and clip latch for the picker's meter. */
+  readonly meter: LevelMeterStore;
+  /** The open stream, for the picker's record-and-play-back check. */
+  readonly getStream: () => MediaStream | null;
 };
 
 type MonitorOptions = {
   /** Whether the microphone is switched on for this take. */
   readonly enabled: boolean;
-  /** Preferred device; falls back to the system default when absent. */
-  readonly deviceId?: string | undefined;
+  /** The saved choice. `null` / absent opens the system default. */
+  readonly preference?: RecordingDevicePreference | null | undefined;
 };
 
-function rmsOf(buffer: Float32Array): number {
-  let sum = 0;
-  for (let i = 0; i < buffer.length; i += 1) {
-    const sample = buffer[i]!;
-    sum += sample * sample;
-  }
-  return Math.sqrt(sum / buffer.length);
+/** Map a buffer's peak amplitude to a lit-segment count (0..7). */
+export function segmentsForPeak(peak: number): number {
+  if (!(peak > 0)) return 0;
+  const db = Math.min(0, 20 * Math.log10(peak));
+  let lit = 0;
+  for (const threshold of SEGMENT_THRESHOLDS_DB) if (db >= threshold) lit += 1;
+  return Math.min(METER_SEGMENTS, lit);
 }
 
-/** Map an RMS reading to a lit-segment count. */
-export function segmentsForRms(rms: number): number {
-  const scaled = Math.min(1, Math.max(0, rms / RMS_FULL_SCALE));
-  return Math.round(scaled * METER_SEGMENTS);
+/** True when a buffer's peak carries any signal at all (see `NO_SIGNAL_PEAK`). */
+export function hasSignal(peak: number): boolean {
+  return peak > NO_SIGNAL_PEAK;
 }
 
 /** A `getUserMedia` rejection, turned into something a chip can say. */
@@ -141,7 +190,37 @@ export function describeMicError(cause: unknown): {
   }
 }
 
-export function useMicrophoneMonitor({ enabled, deviceId }: MonitorOptions): MicrophoneMonitor {
+/**
+ * Whether a saved microphone is attached, asked without opening anything.
+ *
+ * Record calls this when the chip never opened the microphone (a Quick
+ * Capture that only offers Record). The chip is showing the saved name and
+ * the recorder would be asked for it, so a device that has gone is caught
+ * here, in the selector, instead of as a failed start after the user
+ * pressed Record. Names are visible without a stream because main's
+ * permission check grants `media` to PwrSnap's own pages (see
+ * media-permissions.ts). `unknown` when the names are hidden anyway or the
+ * enumeration fails: the recorder's refusal remains the backstop.
+ */
+export async function savedMicrophonePresence(
+  preference: RecordingDevicePreference
+): Promise<"attached" | "missing" | "unknown"> {
+  if (typeof navigator === "undefined" || navigator.mediaDevices?.enumerateDevices === undefined) {
+    return "unknown";
+  }
+  try {
+    const inputs = (await navigator.mediaDevices.enumerateDevices()).filter(
+      (d) => d.kind === "audioinput" && !isDefaultPseudoDevice(d.deviceId)
+    );
+    if (!inputs.some((d) => d.label !== "")) return "unknown";
+    const listed = inputs.map((d) => ({ deviceId: d.deviceId, label: displayDeviceLabel(d.label) }));
+    return resolveDevicePreference(listed, preference).kind === "missing" ? "missing" : "attached";
+  } catch {
+    return "unknown";
+  }
+}
+
+export function useMicrophoneMonitor({ enabled, preference }: MonitorOptions): MicrophoneMonitor {
   const [segments, setSegments] = useState(0);
   const [silent, setSilent] = useState(false);
   const [permission, setPermission] = useState<MicPermission>("prompt");
@@ -149,29 +228,58 @@ export function useMicrophoneMonitor({ enabled, deviceId }: MonitorOptions): Mic
   const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null);
   const [fault, setFault] = useState<MicFault>("none");
   const [error, setError] = useState<string | null>(null);
+  const [activeLabel, setActiveLabel] = useState<string | null>(null);
+  const [defaultLabel, setDefaultLabel] = useState<string | null>(null);
+  const [followsDefault, setFollowsDefault] = useState(true);
+  const [missing, setMissing] = useState<RecordingDevicePreference | null>(null);
+  const [clipping, setClipping] = useState(false);
+  const [meter] = useState(createLevelMeterStore);
+  const streamRef = useRef<MediaStream | null>(null);
+  const getStream = useCallback(() => streamRef.current, []);
   // Bumped to force a re-open after an explicit `request()`.
   const [attempt, setAttempt] = useState(0);
+  // The effect keys on the preference's fields, not its object identity:
+  // main re-seeds an equal object on every show.
+  const preferredId = preference?.deviceId;
+  const preferredLabel = preference?.label;
 
   const supported =
     typeof navigator !== "undefined" && navigator.mediaDevices?.getUserMedia !== undefined;
 
-  const refreshDevices = useCallback(async (): Promise<void> => {
-    if (!supported || navigator.mediaDevices.enumerateDevices === undefined) return;
+  const refreshDevices = useCallback(async (): Promise<readonly MicDevice[]> => {
+    if (!supported || navigator.mediaDevices.enumerateDevices === undefined) return [];
     try {
-      const all = await navigator.mediaDevices.enumerateDevices();
-      setDevices(
-        all
-          .filter((d) => d.kind === "audioinput")
-          // Labels are empty until a grant exists. A list of blank rows
-          // is worse than no list, so unnamed devices are dropped and
-          // the chip falls back to being a plain toggle.
-          .filter((d) => d.label !== "")
-          .map((d) => ({ deviceId: d.deviceId, label: d.label }))
-      );
+      const inputs = (await navigator.mediaDevices.enumerateDevices())
+        .filter((d) => d.kind === "audioinput")
+        // Labels are empty until a grant exists. A list of blank rows
+        // is worse than no list, so unnamed devices are dropped and
+        // the chip falls back to being a plain toggle.
+        .filter((d) => d.label !== "");
+      // The pseudo-devices are not rows of their own: "System default" is,
+      // and it names the device the "default" entry points at.
+      const named = inputs
+        .filter((d) => !isDefaultPseudoDevice(d.deviceId))
+        .map((d) => ({ deviceId: d.deviceId, label: displayDeviceLabel(d.label) }));
+      const pointer = inputs.find((d) => d.deviceId === "default");
+      setDevices(named);
+      setDefaultLabel(pointer !== undefined ? displayDeviceLabel(pointer.label) : null);
+      return named;
     } catch {
       // Enumeration is a nicety; a failure must not break the chip.
+      return [];
     }
   }, [supported]);
+
+  // Re-list on hot-plug while open, so a newly attached microphone is a row
+  // without closing the picker, and "System default" follows the OS.
+  useEffect(() => {
+    if (!supported || !enabled || navigator.mediaDevices.addEventListener === undefined) return;
+    const onChange = (): void => {
+      void refreshDevices();
+    };
+    navigator.mediaDevices.addEventListener("devicechange", onChange);
+    return () => navigator.mediaDevices.removeEventListener("devicechange", onChange);
+  }, [supported, enabled, refreshDevices]);
 
   const request = useCallback(async (): Promise<void> => {
     if (!supported) {
@@ -231,6 +339,11 @@ export function useMicrophoneMonitor({ enabled, deviceId }: MonitorOptions): Mic
       setSegments(0);
       setSilent(false);
       setActiveDeviceId(null);
+      setActiveLabel(null);
+      setMissing(null);
+      setFollowsDefault(true);
+      setClipping(false);
+      meter.reset();
       return;
     }
 
@@ -244,26 +357,83 @@ export function useMicrophoneMonitor({ enabled, deviceId }: MonitorOptions): Mic
       timer = null;
       stream?.getTracks().forEach((track) => track.stop());
       stream = null;
+      streamRef.current = null;
       void context?.close().catch(() => undefined);
       context = null;
     };
+    const open = (deviceId: string | undefined): Promise<MediaStream> =>
+      navigator.mediaDevices.getUserMedia({
+        audio: deviceId !== undefined ? { deviceId: { exact: deviceId } } : true
+      });
 
     void (async () => {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: deviceId !== undefined ? { deviceId: { exact: deviceId } } : true
-        });
+        // The saved device by id; if no device has that id, the default —
+        // and then, below, the saved device by name.
+        let lookByName = false;
+        try {
+          stream = await open(preferredId);
+        } catch (cause) {
+          if (preferredId === undefined || !isMissingDeviceError(cause)) throw cause;
+          lookByName = true;
+          stream = await open(undefined);
+        }
         if (disposed) {
           stop();
           return;
         }
+        const listed = await refreshDevices();
+        if (disposed) {
+          stop();
+          return;
+        }
+        let named = preferredId !== undefined && !lookByName;
+        let lost: RecordingDevicePreference | null = null;
+        if (lookByName && preferredId !== undefined) {
+          const found = resolveDevicePreference(listed, {
+            deviceId: preferredId,
+            label: preferredLabel ?? ""
+          });
+          const openedLabel = displayDeviceLabel(stream.getAudioTracks()[0]?.label ?? "");
+          if (found.kind === "found" && found.device.label !== openedLabel) {
+            // A different physical device: reopening it cannot collide
+            // with the default's teardown (see `request`).
+            stream.getTracks().forEach((track) => track.stop());
+            stream = await open(found.device.deviceId);
+            if (disposed) {
+              stop();
+              return;
+            }
+            named = true;
+          } else if (found.kind === "found") {
+            // The default IS the saved device, under a new id.
+            named = true;
+          } else {
+            lost = { deviceId: preferredId, label: preferredLabel ?? "" };
+          }
+        }
+        streamRef.current = stream;
+        const track = stream.getAudioTracks()[0];
         setPermission("granted");
         setFault("none");
         setError(null);
-        setActiveDeviceId(
-          stream.getAudioTracks()[0]?.getSettings().deviceId ?? deviceId ?? null
-        );
-        void refreshDevices();
+        setMissing(lost);
+        setFollowsDefault(!named);
+        setActiveDeviceId(track?.getSettings().deviceId ?? preferredId ?? null);
+        const trackLabel = displayDeviceLabel(track?.label ?? "");
+        setActiveLabel(trackLabel !== "" ? trackLabel : null);
+        if (track !== undefined) {
+          // Unplugged while open. Stop naming it at once, so Record checks
+          // the saved device instead of asking the recorder for one that is
+          // gone, and reopen: by id fails, the default opens, and the
+          // picker says the saved device is not connected. A `stop()` of
+          // our own does not fire `ended`.
+          track.onended = () => {
+            if (disposed) return;
+            setActiveLabel(null);
+            setAttempt((n) => n + 1);
+          };
+        }
 
         context = new AudioContext();
         const analyser = context.createAnalyser();
@@ -274,10 +444,20 @@ export function useMicrophoneMonitor({ enabled, deviceId }: MonitorOptions): Mic
         let lastSegments = -1;
         let lastSoundAt = Date.now();
         let wasSilent = false;
+        let wasClipping = false;
 
         timer = setInterval(() => {
           analyser.getFloatTimeDomainData(buffer);
-          const next = segmentsForRms(rmsOf(buffer));
+          const peak = peakOf(buffer);
+          const next = segmentsForPeak(peak);
+          // The fine meter goes to its own store; only the clip latch, which
+          // flips a few times a minute at most, reaches React state.
+          meter.push(peak, Date.now());
+          const nowClipping = meter.get().clipping;
+          if (nowClipping !== wasClipping) {
+            wasClipping = nowClipping;
+            setClipping(nowClipping);
+          }
           // Publish only on a segment change — see the header note on
           // why this does not run at frame rate.
           if (next !== lastSegments) {
@@ -285,7 +465,7 @@ export function useMicrophoneMonitor({ enabled, deviceId }: MonitorOptions): Mic
             setSegments(next);
           }
           const now = Date.now();
-          if (next > 0) lastSoundAt = now;
+          if (hasSignal(peak)) lastSoundAt = now;
           const nowSilent = now - lastSoundAt >= SILENCE_GRACE_MS;
           if (nowSilent !== wasSilent) {
             wasSilent = nowSilent;
@@ -299,6 +479,9 @@ export function useMicrophoneMonitor({ enabled, deviceId }: MonitorOptions): Mic
         setFault(described.fault);
         setError(described.message);
         setSegments(0);
+        setActiveLabel(null);
+        setClipping(false);
+        meter.reset();
         stop();
       }
     })();
@@ -307,7 +490,23 @@ export function useMicrophoneMonitor({ enabled, deviceId }: MonitorOptions): Mic
       disposed = true;
       stop();
     };
-  }, [enabled, deviceId, supported, refreshDevices, attempt]);
+  }, [enabled, preferredId, preferredLabel, supported, refreshDevices, attempt, meter]);
 
-  return { segments, silent, permission, devices, activeDeviceId, fault, error, request };
+  return {
+    segments,
+    silent,
+    permission,
+    devices,
+    activeDeviceId,
+    fault,
+    error,
+    request,
+    activeLabel,
+    defaultLabel,
+    followsDefault,
+    missing,
+    clipping,
+    meter,
+    getStream
+  };
 }

@@ -9,6 +9,7 @@ type AiRunRow = {
   task: string;
   trigger_source: AiEnrichmentTriggerSource;
   selected_model: string | null;
+  fallback_from?: string | null;
   status: AiRunStatus;
   codex_command: string | null;
   codex_version: string | null;
@@ -43,6 +44,7 @@ function rowToSnapshot(row: AiRunRow): AiRunSnapshot {
     task: row.task,
     triggerSource: row.trigger_source,
     selectedModel: row.selected_model,
+    fallbackFrom: row.fallback_from ?? null,
     status: row.status,
     error: row.error,
     latencyMs: row.latency_ms,
@@ -90,6 +92,23 @@ export function markAiRunRunning(id: string): AiRunSnapshot | null {
      SET status = 'running', started_at = COALESCE(started_at, datetime('now'))
      WHERE id = ?`
   ).run(id);
+  return getAiRun(id);
+}
+
+/** Record that the run moved to `ai.enrichmentFallback` because its primary
+ *  provider could not be reached. `selected_model` follows the run to the
+ *  model that now answers it, so the run record names what actually ran. */
+export function markAiRunFallback(
+  id: string,
+  fallbackFrom: string,
+  selectedModel: string | null
+): AiRunSnapshot | null {
+  const db = getDb();
+  db.prepare(
+    `UPDATE ai_runs
+     SET fallback_from = @fallbackFrom, selected_model = @selectedModel
+     WHERE id = @id AND status IN ('queued', 'running')`
+  ).run({ id, fallbackFrom, selectedModel });
   return getAiRun(id);
 }
 

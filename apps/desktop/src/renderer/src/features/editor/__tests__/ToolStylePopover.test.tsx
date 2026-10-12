@@ -124,6 +124,7 @@ function makeSettings(overrides?: {
     storage: { filenameTimestampZone: "local", capturesLocation: "documents" },
     recording: {
       quickCaptureAction: "ask",
+      selectorHud: "shutter",
       includeSystemAudio: false,
       includeMicrophone: false,
       mp4IncludeMicrophone: true,
@@ -131,6 +132,8 @@ function makeSettings(overrides?: {
       videoCaptureCursor: true,
       showRegionFrame: true,
       showRecentCaptureSidebar: true,
+      microphoneDevice: null,
+      cameraDevice: null,
       imageCaptureCursor: true,
       lastRoutedPermissionFingerprint: "",
       screenCapturePrompted: false

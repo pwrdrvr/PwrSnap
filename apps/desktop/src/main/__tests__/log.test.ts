@@ -92,6 +92,13 @@ describe("initializeMainLogger", () => {
     }
   });
 
+  test("preserves the console transport receiver when wrapping its writer", async () => {
+    const { initializeMainLogger } = await import("../log");
+    initializeMainLogger();
+    mocks.consoleTransport.writeFn(makeMessage());
+    expect(mocks.consoleWriteFn.mock.contexts).toEqual([mocks.consoleTransport]);
+  });
+
   test("disables console logging when the console transport hits a broken stdout pipe", async () => {
     mocks.consoleWriteFn.mockImplementation(() => {
       throw makeBrokenPipeError();

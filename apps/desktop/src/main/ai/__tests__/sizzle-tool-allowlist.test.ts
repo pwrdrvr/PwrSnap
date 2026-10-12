@@ -254,7 +254,7 @@ describe("buildSizzleToolAllowlist", () => {
     expect(r.ok).toBe(true);
     const updateCall = dispatch.mock.calls.find((c) => c[0] === "sizzle:update");
     expect(updateCall?.[1]).toMatchObject({ id: PROJECT_ID });
-    const scenes = (updateCall?.[1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
+    const scenes = (updateCall![1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
     expect(scenes).toHaveLength(2);
     expect(scenes[1]?.captureId).toBe("cap_b");
     expect(scenes[1]?.id).toMatch(/^sc_/);
@@ -268,7 +268,7 @@ describe("buildSizzleToolAllowlist", () => {
       CTX
     );
     const updateCall = dispatch.mock.calls.find((c) => c[0] === "sizzle:update");
-    const scenes = (updateCall?.[1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
+    const scenes = (updateCall![1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
     expect(scenes.find((s) => s.id === "sc_a")?.scriptLine).toBe("");
     expect(scenes.find((s) => s.id === "sc_b")?.scriptLine).toBe("new");
   });
@@ -299,7 +299,7 @@ describe("buildSizzleToolAllowlist", () => {
     );
     expect(r.ok).toBe(true);
     const updateCall = dispatch.mock.calls.find((c) => c[0] === "sizzle:update");
-    const scenes = (updateCall?.[1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
+    const scenes = (updateCall![1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
     expect(scenes).toHaveLength(1);
     expect(scenes[0]!.kind).toBe("sequence");
     expect(scenes[0]!.scriptLine).toBe("Open Settings, then enable Telegram.");
@@ -326,7 +326,7 @@ describe("buildSizzleToolAllowlist", () => {
     );
     expect(r.ok).toBe(true);
     const updateCall = dispatch.mock.calls.find((c) => c[0] === "sizzle:update");
-    const scenes = (updateCall?.[1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
+    const scenes = (updateCall![1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
     expect(scenes[0]!.beats).toHaveLength(3);
     expect(scenes[0]!.beats![0]!.timing).toEqual({ kind: "auto" });
     expect(scenes[0]!.beats![1]!.timing).toEqual({ kind: "auto" });
@@ -379,7 +379,7 @@ describe("buildSizzleToolAllowlist", () => {
     );
     expect(r.ok).toBe(true);
     const updateCall = dispatch.mock.calls.find((c) => c[0] === "sizzle:update");
-    const scenes = (updateCall?.[1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
+    const scenes = (updateCall![1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
     const beats = scenes[0]!.beats!;
     expect(beats[0]!.timing).toEqual({ kind: "offset", startSec: 0, endSec: null });
     expect(beats[1]!.timing).toEqual({

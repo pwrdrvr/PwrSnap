@@ -191,6 +191,9 @@ export function defaultSettings(
         sizzleChat: { ...DEFAULT_AI_SURFACE_DEFAULTS.sizzleChat },
         enrichment: { ...DEFAULT_AI_SURFACE_DEFAULTS.enrichment }
       },
+      // Off: an unreachable caption backend fails the run unless the user
+      // picked somewhere else to send it.
+      enrichmentFallback: null,
       // No ACP agents enabled on a fresh install. The user opts agents
       // into the enabled set from Settings → AI → ACP agents (additive,
       // no schemaVersion bump).
@@ -962,6 +965,11 @@ function parseV1(
       // Explicit provider/model/effort choices are preserved.
       // No `schemaVersion` bump per the additive convention.
       defaults: aiSurfaceDefaults,
+      // Additive; absent or malformed → off. `{}` is a valid ON state (Codex
+      // on its managed default), so only a non-object reads as off.
+      enrichmentFallback: isRecord(ai.enrichmentFallback)
+        ? parseAiSurfaceDefault(ai.enrichmentFallback)
+        : null,
       // `ai.acp.*` is additive — older files won't have it. Falls through
       // to an empty enabled set; only recognized built-in agent ids
       // survive the parse so a stale/forged file can't enable an unknown
@@ -2091,6 +2099,12 @@ function mergeAi(current: Settings["ai"], patch: SettingsPatch["ai"]): Settings[
     // a "leave alone" sentinel — substrate rule `undefined ≠ null ≠ ""`.
     chat: mergeChat(current.chat, patch.chat),
     defaults: mergeAiSurfaceDefaults(current.defaults, patch.defaults),
+    enrichmentFallback:
+      patch.enrichmentFallback === undefined
+        ? current.enrichmentFallback ?? null
+        : patch.enrichmentFallback === null
+          ? null
+          : mergeAiSurfaceDefault(current.enrichmentFallback ?? {}, patch.enrichmentFallback),
     customConnections: patch.customConnections ?? current.customConnections ?? [],
     customModels: patch.customModels ?? current.customModels ?? [],
     acp: mergeAcp(current.acp, patch.acp)

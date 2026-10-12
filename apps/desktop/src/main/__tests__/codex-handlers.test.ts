@@ -57,6 +57,7 @@ const { getCaptureEnrichment } = await import("../persistence/enrichment-repo");
 const { defaultSettings } = await import("../settings/desktop-settings-service");
 const { DesktopSettingsStore } = await import("../settings/desktop-settings-store");
 const { AiEnrichmentBudget } = await import("../ai/enrichment-budget");
+const { EnrichmentPrimaryHealth } = await import("../ai/enrichment-fallback");
 const {
   reportCodexCliTooOld,
   resetCodexCompatibilityAlertForTests
@@ -282,6 +283,7 @@ describe("Codex handlers", () => {
     testDb.exec(migration("0019_chat_threads.sql"));
     testDb.exec(migration("0022_ai_usage_accounting.sql"));
     testDb.exec(migration("0023_ai_thread_usage.sql"));
+    testDb.exec(migration("0039_ai_run_fallback.sql"));
     await seedCapture();
   });
 
@@ -460,6 +462,195 @@ describe("Codex handlers", () => {
       }
     }
   );
+
+  // A stopped local server is what `ai.enrichmentFallback` exists for. The
+  // primary's failure decides: nothing answered → the SAME run moves to the
+  // fallback once; an answer of any other kind fails the run as before.
+  test.each([
+    { scenario: "refused", fallback: {}, expected: "fallback" },
+    { scenario: "http-503", fallback: {}, expected: "fallback" },
+    { scenario: "http-404", fallback: {}, expected: "fallback" },
+    { scenario: "http-401", fallback: {}, expected: "failed" },
+    { scenario: "refused", fallback: null, expected: "failed" }
+  ] as const)(
+    "direct primary $scenario with fallback $fallback → $expected",
+    async ({ scenario, fallback, expected }) => {
+      const http = await server((_req, res) => {
+        res.writeHead(scenario === "http-401" ? 401 : scenario === "http-404" ? 404 : 503).end();
+      });
+      const entry = model(`${http.url}/v1`);
+      entry.capabilities.streaming = false;
+      // Nothing listens on a port whose server was closed: ECONNREFUSED.
+      if (scenario === "refused") await http.close();
+      const settings = testSettings();
+      settings.ai.enabled = true;
+      settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+      settings.ai.defaults.enrichment = { provider: `custom:${entry.id}` };
+      settings.ai.enrichmentFallback = fallback;
+      settings.ai.customConnections = [{ id: entry.connectionId, name: "Local fixture",
+        baseUrl: entry.baseUrl, protocol: entry.protocol, auth: entry.auth }];
+      settings.ai.customModels = [entry];
+      const service = new CustomModelService({ read: async () => settings,
+        write: async () => { throw new Error("Unexpected settings write"); } },
+      { headers: async () => ({}) } as unknown as CustomCredentials, async () => undefined);
+      const serviceSpy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
+      const codex = new FakeCodexClient();
+      const clientFactory = vi.fn(() => codex as never);
+      try {
+        registerCodexHandlers({ clientFactory, settingsReader: async () => settings,
+          budget: new AiEnrichmentBudget() });
+        const result = await bus.dispatch("codex:enrich", { captureId: "cap_1" }, { principal: "ipc" });
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        await waitFor(() => ["completed", "failed"].includes(getAiRun(result.value.runId)?.status ?? ""));
+        const run = getAiRun(result.value.runId);
+        if (expected === "failed") {
+          expect(run?.status).toBe("failed");
+          expect(run?.fallbackFrom).toBeNull();
+          expect(clientFactory).not.toHaveBeenCalled();
+          return;
+        }
+        expect(run).toMatchObject({ status: "completed", fallbackFrom: `custom:${entry.id}` });
+        expect(clientFactory).toHaveBeenCalledTimes(1);
+        // `{}` is Codex on its managed default: the run record names that
+        // model, and the turn carries enrichment's low effort.
+        expect(run?.selectedModel).toBe(codex.lastRequest?.model);
+        expect(codex.lastRequest?.effort).toBe("low");
+        expect(getCaptureEnrichment("cap_1")).toMatchObject({
+          status: "completed",
+          fallbackFrom: `custom:${entry.id}`
+        });
+        const usage = await bus.dispatch("codex:usageRunDetail", { runId: result.value.runId }, { principal: "ipc" });
+        expect(usage).toMatchObject({ ok: true, value: { modelProvider: "openai" } });
+        expect(testDb.prepare("SELECT count(*) AS n FROM ai_runs").get()).toEqual({ n: 1 });
+      } finally {
+        serviceSpy.mockRestore();
+        if (scenario !== "refused") await http.close();
+      }
+    }
+  );
+
+  // The pre-run catalog listing only runs for a Codex PRIMARY. A Codex
+  // fallback behind a local model learns the managed caption model at the
+  // hop, so it runs the catalog's successor at an effort that model takes.
+  test("a Codex fallback lists the catalog at the hop and runs the managed successor", async () => {
+    const http = await server((_req, res) => { res.writeHead(503).end(); });
+    const entry = model(`${http.url}/v1`);
+    entry.capabilities.streaming = false;
+    await http.close();
+    const settings = testSettings();
+    settings.ai.enabled = true;
+    settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+    settings.ai.defaults.enrichment = { provider: `custom:${entry.id}` };
+    settings.ai.enrichmentFallback = {};
+    settings.ai.customConnections = [{ id: entry.connectionId, name: "Local fixture",
+      baseUrl: entry.baseUrl, protocol: entry.protocol, auth: entry.auth }];
+    settings.ai.customModels = [entry];
+    const service = new CustomModelService({ read: async () => settings,
+      write: async () => { throw new Error("Unexpected settings write"); } },
+    { headers: async () => ({}) } as unknown as CustomCredentials, async () => undefined);
+    const serviceSpy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
+    const codex = new FakeCodexClient();
+    const modelLister = vi.fn(async () => [{ ...fakeCodexModels()[0]!, id: "gpt-6-luna", model: "gpt-6-luna",
+      supportedReasoningEfforts: ["medium", "high"], defaultReasoningEffort: "medium" }]);
+    try {
+      registerCodexHandlers({ clientFactory: () => codex as never, settingsReader: async () => settings,
+        modelLister, modelDefaultsReconciler: async () => settings, budget: new AiEnrichmentBudget() });
+      const result = await bus.dispatch("codex:enrich", { captureId: "cap_1" }, { principal: "ipc" });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      // Enqueue listed nothing: the primary was not Codex.
+      expect(modelLister).not.toHaveBeenCalled();
+      await waitFor(() => ["completed", "failed"].includes(getAiRun(result.value.runId)?.status ?? ""));
+      expect(modelLister).toHaveBeenCalledTimes(1);
+      expect(getAiRun(result.value.runId)).toMatchObject({ status: "completed", selectedModel: "gpt-6-luna" });
+      expect(codex.lastRequest).toMatchObject({ model: "gpt-6-luna", effort: "medium" });
+    } finally {
+      serviceSpy.mockRestore();
+    }
+  });
+
+
+  // A primary nothing answered at is marked down: later captures skip it
+  // until the window expires, then the next one probes it again.
+  test("a down primary is skipped until its window expires", async () => {
+    let hits = 0;
+    const http = await server((_req, res) => { hits += 1; res.writeHead(503).end(); });
+    const entry = model(`${http.url}/v1`);
+    entry.capabilities.streaming = false;
+    const settings = testSettings();
+    settings.ai.enabled = true;
+    settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+    settings.ai.defaults.enrichment = { provider: `custom:${entry.id}` };
+    settings.ai.enrichmentFallback = {};
+    settings.ai.customConnections = [{ id: entry.connectionId, name: "Local fixture",
+      baseUrl: entry.baseUrl, protocol: entry.protocol, auth: entry.auth }];
+    settings.ai.customModels = [entry];
+    const service = new CustomModelService({ read: async () => settings,
+      write: async () => { throw new Error("Unexpected settings write"); } },
+    { headers: async () => ({}) } as unknown as CustomCredentials, async () => undefined);
+    const serviceSpy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
+    let now = 0;
+    const primaryHealth = new EnrichmentPrimaryHealth(() => now, 60_000);
+    const enrich = async (): Promise<void> => {
+      const result = await bus.dispatch("codex:enrich", { captureId: "cap_1" }, { principal: "ipc" });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      await waitFor(() => ["completed", "failed"].includes(getAiRun(result.value.runId)?.status ?? ""));
+      expect(getAiRun(result.value.runId)).toMatchObject({ status: "completed", fallbackFrom: `custom:${entry.id}` });
+    };
+    try {
+      registerCodexHandlers({ clientFactory: () => new FakeCodexClient() as never,
+        settingsReader: async () => settings, budget: new AiEnrichmentBudget(), primaryHealth });
+      await enrich();
+      expect(hits).toBe(1);
+      await enrich();
+      expect(hits).toBe(1);
+      now = 60_000;
+      await enrich();
+      expect(hits).toBe(2);
+    } finally {
+      serviceSpy.mockRestore();
+      await http.close();
+    }
+  });
+
+  // A fallback that fails too still says it was a fallback run: the pill
+  // explains both failures from `fallbackFrom` on the failed run.
+  test("a failed fallback fails the run and keeps fallbackFrom", async () => {
+    const http = await server((_req, res) => { res.writeHead(503).end(); });
+    const entry = model(`${http.url}/v1`);
+    entry.capabilities.streaming = false;
+    await http.close();
+    const settings = testSettings();
+    settings.ai.enabled = true;
+    settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+    settings.ai.defaults.enrichment = { provider: `custom:${entry.id}` };
+    settings.ai.enrichmentFallback = {};
+    settings.ai.customConnections = [{ id: entry.connectionId, name: "Local fixture",
+      baseUrl: entry.baseUrl, protocol: entry.protocol, auth: entry.auth }];
+    settings.ai.customModels = [entry];
+    const service = new CustomModelService({ read: async () => settings,
+      write: async () => { throw new Error("Unexpected settings write"); } },
+    { headers: async () => ({}) } as unknown as CustomCredentials, async () => undefined);
+    const serviceSpy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
+    const failing = {
+      enrichCapture: async () => { throw new Error("model overloaded"); },
+      close: async () => undefined
+    };
+    try {
+      registerCodexHandlers({ clientFactory: () => failing as never, settingsReader: async () => settings,
+        budget: new AiEnrichmentBudget() });
+      const result = await bus.dispatch("codex:enrich", { captureId: "cap_1" }, { principal: "ipc" });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      await waitFor(() => ["completed", "failed"].includes(getAiRun(result.value.runId)?.status ?? ""));
+      expect(getAiRun(result.value.runId)).toMatchObject({ status: "failed", fallbackFrom: `custom:${entry.id}` });
+      expect(getCaptureEnrichment("cap_1")).toMatchObject({ fallbackFrom: `custom:${entry.id}` });
+    } finally {
+      serviceSpy.mockRestore();
+    }
+  });
 
   test("eight direct enrichments share the connection queue; queued and active cancellation never dispatch again", async () => {
     const received: Array<{ model: string; reply: () => void }> = [];

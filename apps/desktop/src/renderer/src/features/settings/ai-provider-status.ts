@@ -261,6 +261,7 @@ export function enabledAcpAgentIdsForModelProbes(
   const enabled = new Set(settings.ai.acp.enabledAgentIds);
   const providers = [
     settings.ai.defaults.enrichment.provider,
+    settings.ai.enrichmentFallback?.provider,
     settings.ai.defaults.libraryChat.provider,
     settings.ai.defaults.sizzleChat.provider
   ];

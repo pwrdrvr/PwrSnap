@@ -59,7 +59,7 @@ import {
   estimateMetricForRung,
   type CopyPreset
 } from "../shared/CopyButton";
-import { CodexStatusPill, enrichmentRegenerateLabel } from "../shared/CodexStatusPill";
+import { CodexStatusPill, enrichmentBackendLabel, enrichmentRegenerateLabel } from "../shared/CodexStatusPill";
 import { useFieldEditor } from "../shared/useFieldEditor";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { useVideoExportPresets } from "../shared/useVideoExportPresets";
@@ -328,6 +328,11 @@ export function DetailRail({
   const [budgetStatus, setBudgetStatus] = useState<AiEnrichmentBudgetStatus | null>(null);
   // Current defaults describe the NEXT run, never the capture's history.
   const [regenerateLabel, setRegenerateLabel] = useState("configured model");
+  // Custom models + connections, so a fallback chip can name the primary.
+  const [labelModels, setLabelModels] = useState<NonNullable<Parameters<typeof enrichmentBackendLabel>[1]>>({});
+  const fallbackFromLabel = enrichment?.fallbackFrom
+    ? enrichmentBackendLabel({ provider: enrichment.fallbackFrom }, labelModels).providerLabel
+    : undefined;
   // Mirrors settings.ai.autoAcceptSuggestions, same switch the post-capture
   // popover shows. `null` hides the control: settings not read yet, or AI is
   // off / unconsented (the popover hides it then too).
@@ -425,7 +430,10 @@ export function DetailRail({
       void dispatch("settings:read", {}).then((result) => {
         if (cancelled || !result.ok) return;
         const settings = result.value as Settings | undefined;
-        if (settings !== undefined) setRegenerateLabel(enrichmentRegenerateLabel(settings.ai?.defaults?.enrichment, settings.ai));
+        if (settings !== undefined) {
+          setRegenerateLabel(enrichmentRegenerateLabel(settings.ai?.defaults?.enrichment, settings.ai));
+          setLabelModels({ customModels: settings.ai?.customModels, customConnections: settings.ai?.customConnections });
+        }
         const ai = settings?.ai;
         setAutoApply(
           ai !== undefined && ai.enabled === true && ai.consentAcceptedAt !== null && ai.consentAcceptedAt !== undefined
@@ -893,6 +901,7 @@ export function DetailRail({
             allDraftsAccepted={allDraftsAccepted}
             aiSafetyDisabled={aiSafetyDisabled}
             regenerateLabel={regenerateLabel}
+            fallbackFromLabel={fallbackFromLabel}
             autoApply={autoApply}
             onSetAutoApply={(next) => {
               const previous = autoApply;
@@ -915,6 +924,7 @@ export function DetailRail({
             enrichment={enrichment}
             aiSafetyDisabled={aiSafetyDisabled}
             regenerateLabel={regenerateLabel}
+            fallbackFromLabel={fallbackFromLabel}
           />
         </div>
       );
@@ -1397,6 +1407,8 @@ type DetailTabProps = {
   readonly aiSafetyDisabled: boolean;
   /** Current target for the Regenerate action only. */
   readonly regenerateLabel: string;
+  /** The primary backend this run's caption fallback stood in for. */
+  readonly fallbackFromLabel?: string | undefined;
   /** Current auto-apply setting, or null when the control should not show. */
   readonly autoApply: boolean | null;
   readonly onSetAutoApply: (next: boolean) => void;
@@ -1415,6 +1427,7 @@ function DetailTab({
   allDraftsAccepted,
   aiSafetyDisabled,
   regenerateLabel,
+  fallbackFromLabel,
   autoApply,
   onSetAutoApply,
   onEnrichmentUpdate,
@@ -1691,6 +1704,9 @@ function DetailTab({
         safetyDisabled={aiSafetyDisabled}
         providerLabel={null}
         error={enrichment?.error}
+        // The usage strip below names the model that actually answered; the
+        // chip says it wasn't the usual one, and the tooltip which one failed.
+        fallbackFrom={fallbackFromLabel}
         clock={enrichmentRunClock(enrichment)}
         // Only recorded run metadata supplies attribution, once. Defaults
         // belong to the Regenerate tooltip, even while this detail is loading.
@@ -2100,13 +2116,16 @@ type OcrTabProps = {
   readonly enrichment: CaptureEnrichment | null;
   readonly aiSafetyDisabled: boolean;
   readonly regenerateLabel: string;
+  /** The primary backend this run's caption fallback stood in for. */
+  readonly fallbackFromLabel?: string | undefined;
 };
 
 function OcrTab({
   record,
   enrichment,
   aiSafetyDisabled,
-  regenerateLabel
+  regenerateLabel,
+  fallbackFromLabel
 }: OcrTabProps): ReactElement {
   const ocrText = enrichment?.ocrText ?? "";
   const status = enrichment?.status ?? null;
@@ -2128,6 +2147,7 @@ function OcrTab({
           safetyDisabled={aiSafetyDisabled}
           providerLabel={null}
           error={enrichment?.error}
+          fallbackFrom={fallbackFromLabel}
         />
         <div className="psl__ocr-tab-actions">
           {refreshing && enrichment?.latestRunId ? (

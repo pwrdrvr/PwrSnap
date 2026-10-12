@@ -44,6 +44,8 @@ import type {
 /** Most snaps one repair keeps in flight. A connection's own limit
  *  (Settings → AI Providers) still caps what reaches its endpoint. */
 export const MAX_REPAIR_CONCURRENCY = 8;
+/** Longest single sleep while waiting out the pace. */
+export const MAX_PACE_SLICE_MS = 5_000;
 
 /** Enqueue errors that end the job rather than one capture. */
 const STOP_CODES: Record<string, string> = {
@@ -237,15 +239,21 @@ export class EnrichmentRepairRunner {
   }
 
   /** Resolves once one interval has passed since the last start. The first
-   *  start does not wait. */
+   *  start does not wait. Sleeps in slices and re-reads the interval after
+   *  each, so raising the rate limit mid-wait takes effect within a slice
+   *  rather than after a full interval (up to a minute at 1/min). */
   private async waitForPace(active: ActiveJob): Promise<void> {
-    if (active.lastStartAt === null) return;
-    const intervalMs = await this.deps.dispatchIntervalMs();
-    const waitMs = active.lastStartAt + intervalMs - this.deps.now();
-    if (waitMs <= 0 || active.abort.signal.aborted) return;
-    this.update(active, { waitingUntil: new Date(this.deps.now() + waitMs).toISOString() });
-    await this.deps.sleep(waitMs, active.abort.signal);
-    this.update(active, { waitingUntil: null });
+    const lastStartAt = active.lastStartAt;
+    if (lastStartAt === null) return;
+    const { signal } = active.abort;
+    for (;;) {
+      const intervalMs = await this.deps.dispatchIntervalMs();
+      const waitMs = lastStartAt + intervalMs - this.deps.now();
+      if (waitMs <= 0 || signal.aborted) break;
+      this.update(active, { waitingUntil: new Date(this.deps.now() + waitMs).toISOString() });
+      await this.deps.sleep(Math.min(waitMs, MAX_PACE_SLICE_MS), signal);
+    }
+    if (active.job.waitingUntil !== null) this.update(active, { waitingUntil: null });
   }
 
   private finish(

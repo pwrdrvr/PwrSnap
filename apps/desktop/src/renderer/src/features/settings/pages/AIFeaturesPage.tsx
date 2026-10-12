@@ -373,7 +373,7 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
         </Row>
         <Row
           label="Budget"
-          sub="Enrichment runs draw from a small budget that refills over time, so a burst of captures can't run up a bill. If it keeps running dry, PwrSnap turns enrichment off; switch it back on above."
+          sub="Enrichment runs draw from a small budget that refills over time, so a burst of captures can't run up a bill. If it keeps running dry, PwrSnap turns enrichment off; switch it back on above. A Library re-run you start doesn't draw on it."
         >
           <div className="pss__test">
             <span className="pss__test-icon">AI</span>
@@ -394,7 +394,7 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
         </Row>
         <Row
           label="Rate limit"
-          sub={`How fast enrichment may start: a burst back to back, then a steady rate. The default (${AI_ENRICHMENT_RATE_LIMIT_DEFAULT.burst} at once, ${AI_ENRICHMENT_RATE_LIMIT_DEFAULT.perMinute} a minute) is cautious; raise it for a fast hosted model or to work through a backlog. The cost-safety cutoff still applies.`}
+          sub={`How fast enrichment may start: a burst back to back, then a steady rate. The default (${AI_ENRICHMENT_RATE_LIMIT_DEFAULT.burst} at once, ${AI_ENRICHMENT_RATE_LIMIT_DEFAULT.perMinute} a minute) is cautious; raise it for a fast hosted model or to work through a backlog. A Library re-run starts at the steady rate on its own, alongside new captures. The cost-safety cutoff still applies.`}
           tag={settings?.ai.enrichmentRateLimit != null ? "custom" : "default"}
         >
           <EnrichmentRateLimitControl

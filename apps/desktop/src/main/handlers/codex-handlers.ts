@@ -78,7 +78,7 @@ import {
   isEnrichmentResultEmpty,
   type CaptureEnrichmentPromptMetadata
 } from "../ai/enrichment-schema";
-import { bus, type CommandContext } from "../command-bus";
+import { bus, handlerThrewResult, type CommandContext } from "../command-bus";
 import { getMainLogger } from "../log";
 import { notifyAiRunObservers } from "../ai/ai-run-observers";
 import {
@@ -1211,12 +1211,7 @@ export function registerCodexHandlers(params?: {
           captureId,
           message: cause instanceof Error ? cause.message : String(cause)
         });
-        return err({
-          kind: "unknown",
-          code: "handler_threw",
-          message: cause instanceof Error ? cause.message : String(cause),
-          cause
-        });
+        return handlerThrewResult(cause);
       }
     },
     dispatchIntervalMs: async () => {

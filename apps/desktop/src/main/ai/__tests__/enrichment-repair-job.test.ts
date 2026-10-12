@@ -12,7 +12,11 @@ import type {
   Result
 } from "@pwrsnap/shared";
 
-import { EnrichmentRepairRunner, type EnrichmentRepairDeps } from "../enrichment-repair-job";
+import {
+  EnrichmentRepairRunner,
+  MAX_PACE_SLICE_MS,
+  type EnrichmentRepairDeps
+} from "../enrichment-repair-job";
 
 const CRITERIA: EnrichmentRepairCriteria = {
   statuses: ["failed"],
@@ -21,7 +25,8 @@ const CRITERIA: EnrichmentRepairCriteria = {
   apps: { mode: "include", appIds: [] }
 };
 
-const INTERVAL_MS = 6_000;
+/** Under one slice, so each wait is a single sleep. */
+const INTERVAL_MS = 4_000;
 
 function fail(code: string): Result<never, PwrSnapError> {
   return { ok: false, error: { kind: "validation", code, message: code } };
@@ -178,6 +183,15 @@ describe("EnrichmentRepairRunner", () => {
     await h.settle();
     expect(h.dispatched).toEqual(["a", "b"]);
     expect(h.sleeps).toEqual([]);
+  });
+
+  test("a long wait sleeps in slices and notices a raised rate limit within one", async () => {
+    // 1/min, then the user raises it to 6/min while the job is waiting.
+    const h = harness({ ids: ["a", "b"], intervals: [60_000, 10_000] });
+    new EnrichmentRepairRunner(h.deps).start(CRITERIA, 2);
+    await h.settle();
+    expect(h.dispatched).toEqual(["a", "b"]);
+    expect(h.sleeps).toEqual([MAX_PACE_SLICE_MS, MAX_PACE_SLICE_MS]);
   });
 
   test("re-reads the interval before each start, so a rate-limit change applies mid-job", async () => {

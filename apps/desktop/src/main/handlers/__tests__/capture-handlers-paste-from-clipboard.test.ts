@@ -14,8 +14,7 @@
 // The native-image happy path (`capture:pasteFromClipboard persists current
 // clipboard image`) stays in E2E because it depends on real macOS
 // NSPasteboard semantics + the full persistence + render pipeline. The File
-// menu wiring test also stays there; this unit only pins its filesystem-free
-// availability probe (async since Electron 44 made every clipboard read so).
+// menu's enablement hint is pinned by clipboard/__tests__/paste-menu-hint.test.ts.
 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,7 +31,6 @@ const mocks = vi.hoisted(() => ({
   readBuffer: vi.fn((_format: string) => Buffer.alloc(0)),
   readText: vi.fn(() => ""),
   readWindowsClipboardImageFile: vi.fn(),
-  windowsClipboardFormatsMayContainFiles: vi.fn((_formats: readonly string[]) => false),
   readSafePastedFile: vi.fn(),
   ingestImageBufferToTempPng: vi.fn(),
   writeFirstDecodableClipboardBufferToPng: vi.fn(),
@@ -115,11 +113,6 @@ vi.mock("../../security/assertSafePastedFile", () => ({
 }));
 
 vi.mock("../../clipboard-image-buffer", () => ({
-  clipboardImageBufferFormats: (formats: readonly string[]) =>
-    formats.filter((format) => {
-      const lower = format.toLowerCase();
-      return !lower.includes("url") && lower.includes("png");
-    }),
   ingestImageBufferToTempPng: mocks.ingestImageBufferToTempPng,
   writeFirstDecodableClipboardBufferToPng:
     mocks.writeFirstDecodableClipboardBufferToPng
@@ -186,9 +179,7 @@ vi.mock("../../capture/window-list", () => ({
 vi.mock("../../clipboard/windows-file-clipboard-reader", () => ({
   readWindowsClipboardImageFile: () => mocks.readWindowsClipboardImageFile(),
   isSupportedClipboardImagePath: (path: string) =>
-    /\.(?:avif|bmp|gif|heic|heif|jpe?g|png|tiff?|webp)$/i.test(path),
-  windowsClipboardFormatsMayContainFiles: (formats: readonly string[]) =>
-    mocks.windowsClipboardFormatsMayContainFiles(formats)
+    /\.(?:avif|bmp|gif|heic|heif|jpe?g|png|tiff?|webp)$/i.test(path)
 }));
 
 vi.mock("../../events", () => ({
@@ -235,9 +226,7 @@ vi.mock("../../render/file-alias", () => ({
 }));
 
 const { bus } = await import("../../command-bus");
-const { clipboardHasPasteableImage, registerCaptureHandlers } = await import(
-  "../capture-handlers"
-);
+const { registerCaptureHandlers } = await import("../capture-handlers");
 
 registerCaptureHandlers();
 
@@ -273,7 +262,6 @@ beforeEach(() => {
   mocks.readBuffer.mockReturnValue(Buffer.alloc(0));
   mocks.readText.mockReturnValue("");
   mocks.readWindowsClipboardImageFile.mockResolvedValue({ ok: true, path: null });
-  mocks.windowsClipboardFormatsMayContainFiles.mockReturnValue(false);
   mocks.readSafePastedFile.mockResolvedValue(Buffer.from("safe image bytes"));
   mocks.ingestImageBufferToTempPng.mockResolvedValue({
     tempPath: "/test/tmp/clipboard.png",
@@ -430,23 +418,6 @@ describe("capture:pasteFromClipboard", () => {
     expect(mocks.readSafePastedFile).not.toHaveBeenCalled();
   });
 
-  test("keeps the menu probe filesystem-free for file URLs", async () => {
-    const safeUrl = pathToFileURL(join(tmpdir(), "menu probe.png")).href;
-    mocks.readBookmark.mockReturnValue({ title: "menu probe.png", url: safeUrl });
-
-    expect(await clipboardHasPasteableImage()).toBe(true);
-    expect(mocks.readSafePastedFile).not.toHaveBeenCalled();
-    expect(mocks.ingestImageBufferToTempPng).not.toHaveBeenCalled();
-  });
-
-  test("keeps the menu probe filesystem-free for native file formats", async () => {
-    mocks.windowsClipboardFormatsMayContainFiles.mockReturnValue(true);
-    mocks.availableFormats.mockReturnValue(["text/uri-list"]);
-
-    expect(await clipboardHasPasteableImage()).toBe(true);
-    expect(mocks.readWindowsClipboardImageFile).not.toHaveBeenCalled();
-    expect(mocks.readSafePastedFile).not.toHaveBeenCalled();
-  });
 
   test("returns a sanitized stable error when the secure file gate refuses the URL", async () => {
     const privatePath = join(tmpdir(), "private credentials", "secret.png");

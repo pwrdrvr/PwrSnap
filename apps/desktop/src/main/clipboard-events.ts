@@ -15,20 +15,21 @@
 //
 // CONTRACT
 // ────────
-// Fire AFTER the clipboard write resolves. Listeners may re-read the
-// clipboard (e.g. `readClipboard()` in clipboard/system-clipboard.ts);
-// they must see the write that triggered the event.
+// Fire AFTER the clipboard write resolves. Listeners may list the
+// clipboard's types (clipboard/pasteboard-types.ts) and must see the write
+// that triggered the event. They may not read its bytes: a listener is not
+// the user pasting (AGENTS.md, "Clipboard bytes are read only for a paste
+// or copy the user started").
 //
 // Synchronous: handlers run on the same tick as `emit`. Don't do
 // blocking work inside a handler — schedule it.
 //
 // SCOPE
 // ─────
-// Covers OUR writes only. Writes from other apps still surface
-// through the existing `menu-will-show` listener (re-reads clipboard
-// on open) and through the BrowserWindow focus handler. A future
-// improvement would poll NSPasteboard's changeCount on focus to
-// cover the external-write case more aggressively.
+// Covers OUR writes only. Writes from other apps surface through the
+// `menu-will-show` listener and, on macOS, the `did-become-active`
+// refresh, both of which list types only (refreshPasteFromClipboardMenu
+// in index.ts).
 
 import { EventEmitter } from "node:events";
 

@@ -77,7 +77,6 @@ import {
   resolveSourceAppByRect
 } from "../capture/source-app";
 import {
-  clipboardImageBufferFormats,
   ingestImageBufferToTempPng,
   writeFirstDecodableClipboardBufferToPng,
   type RawClipboardDecodeFailure
@@ -85,7 +84,6 @@ import {
 import {
   isSupportedClipboardImagePath,
   readWindowsClipboardImageFile,
-  windowsClipboardFormatsMayContainFiles,
   type WindowsClipboardImageErrorCode,
   type WindowsClipboardImageReadResult
 } from "../clipboard/windows-file-clipboard-reader";
@@ -145,19 +143,6 @@ const CLIPBOARD_FILE_URL_FORMATS = [
   "NSURLPboardType"
 ] as const;
 type CaptureSource = Pick<WindowInfo, "bundleId" | "appName"> | null;
-
-export async function clipboardHasPasteableImage(): Promise<boolean> {
-  const snapshot = await readClipboard();
-  const { formats } = snapshot;
-  // A listed `image/*` flavor is enough for a menu hint; the command decodes.
-  if (formats.some((format) => format.toLowerCase().startsWith("image/"))) return true;
-  if (clipboardImageBufferFormats(formats).length > 0) return true;
-  const filePath = await clipboardImageFileUrlPath(snapshot);
-  if (filePath !== null && isSupportedClipboardImagePath(filePath)) return true;
-  // This is only a format hint; the command itself asks the native helper to
-  // parse predefined CF_HDROP.
-  return windowsClipboardFormatsMayContainFiles(formats);
-}
 
 /**
  * The Library window id when THIS capture was triggered from inside the

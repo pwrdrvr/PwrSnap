@@ -26,7 +26,9 @@ export function __setNamedImagePasteboardHelperForTests(path: string | null): vo
   cachedHelperPath = undefined;
 }
 
-function resolvePasteboardWriterPath(): string | null {
+/** The bundled macOS pasteboard helper, or null where there is none. Its
+ *  `--list-types` mode backs clipboard/pasteboard-types.ts. */
+export function resolvePasteboardWriterPath(): string | null {
   if (helperPathForTests !== null) return helperPathForTests;
   // Unit tests must never touch the developer's real system pasteboard —
   // gate auto-resolution off under Vitest (see native-clipboard.ts).

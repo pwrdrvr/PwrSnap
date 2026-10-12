@@ -34,7 +34,7 @@
 // the current fingerprint differs AND any permission needs attention.
 
 import { createHash } from "node:crypto";
-import { desktopCapturer, shell, systemPreferences } from "electron";
+import { shell, systemPreferences } from "electron";
 import type {
   RecordingPermission,
   RecordingPermissionEvidenceReport,
@@ -216,47 +216,15 @@ export function needsAttention(readiness: RecordingReadiness): boolean {
 }
 
 /**
- * Force the macOS Screen Recording TCC prompt the first time
- * PwrSnap is unknown to TCC. `desktopCapturer.getSources` is the
- * standard Electron incantation: it touches the screen-capture API
- * on the user's behalf, which causes the OS to show its standard
- * consent dialog and to add our bundle ID to System Settings →
- * Privacy & Security → Screen & System Audio Recording. After the
- * user has answered once, TCC remembers the decision and this call
- * resolves immediately without re-prompting; the read-back of
- * `getMediaAccessStatus` then reflects the new state.
- *
- * We discard the returned sources — the call is purely a prompt
- * trigger. `thumbnailSize` is a 1×1 placeholder so we don't pay for
- * a real thumbnail render on a path we don't consume.
- */
-export async function triggerScreenCapturePrompt(): Promise<void> {
-  try {
-    await desktopCapturer.getSources({
-      types: ["screen"],
-      thumbnailSize: { width: 1, height: 1 },
-      fetchWindowIcons: false
-    });
-  } catch (cause) {
-    log.warn("permissions:request: desktopCapturer.getSources threw", {
-      message: cause instanceof Error ? cause.message : String(cause)
-    });
-  }
-}
-
-/**
- * Trigger an OS-level prompt where one is possible:
+ * Trigger an OS-level prompt where one is useful:
  *
  *   • Microphone — `systemPreferences.askForMediaAccess`
  *     shows the standard TCC dialog directly.
- *   • Screen Recording / System Audio — no `askForMediaAccess`
- *     equivalent exists, but issuing a real `desktopCapturer.getSources`
- *     call drives the same first-grant dialog and registers PwrSnap in
- *     the Screen Recording pane. The caller (System Permissions page)
- *     only invokes this when PwrSnap has never asked; once macOS has
- *     recorded a decision it won't re-prompt, so the page switches to
- *     the separate `permissions:openSystemSettings` verb. Returns the
- *     live status read back after the prompt.
+ *   • Screen Recording / System Audio — deliberately NO prompt: only the
+ *     live status. The one way to make macOS ask is a real capture call,
+ *     and its alert outlives a relaunch and stacks on a second attempt.
+ *     PwrSnap's own permission guide (`permissions:showGuide`) is the
+ *     prompt for these; see capture/screen-permission-gate.ts.
  */
 export async function requestPermission(
   permission: RecordingPermission
@@ -278,28 +246,9 @@ export async function requestPermission(
       return { status };
     }
     case "screen":
-    case "systemAudio": {
-      // No `askForMediaAccess` equivalent exists for screen capture.
-      // Issuing a real screen-source request via
-      // `desktopCapturer.getSources` drives the macOS first-grant dialog
-      // AND registers PwrSnap's bundle ID in System Settings → Privacy &
-      // Security → Screen & System Audio Recording. That registration is
-      // the whole point: until it happens the pane doesn't list us, so
-      // there is nothing for an "Open System Settings" button to point
-      // at — routing there on a fresh install is the dead-end this fix
-      // removes.
-      //
-      // The caller (System Permissions page) only invokes this verb when
-      // PwrSnap has NOT yet asked (`recording.screenCapturePrompted ===
-      // false`). Once macOS has recorded a decision it will not prompt
-      // again, so the page switches to the `permissions:openSystemSettings`
-      // path. The `permissions:request` HANDLER persists the
-      // `screenCapturePrompted` flag after this returns. A few macOS
-      // configurations grant in-session straight off the dialog; we read
-      // the status back so the caller sees the live result.
-      await triggerScreenCapturePrompt();
+    case "systemAudio":
+      // No capture call: it would raise macOS's alert (see the doc above).
       return { status: readScreenStatus() };
-    }
   }
 }
 

@@ -187,6 +187,8 @@ declare global {
        *  already gone. */
       readWindowFrameState(): Promise<WindowFrameState | null>;
       startCaptureDrag(payload: { captureId: string; preset: RenderPreset }): void;
+      /** Permission guide only: drag the running app bundle. */
+      startPermissionGuideDrag(): void;
       startVideoDrag(payload: {
         captureId: string;
         format: "gif" | "mp4";

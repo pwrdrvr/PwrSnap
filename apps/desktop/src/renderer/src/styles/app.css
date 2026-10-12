@@ -13,6 +13,7 @@
 @import "./logs.css";
 @import "./local-agent-consent.css";
 @import "./recording-frame.css";
+@import "./permission-guide.css";
 @import "./tooltip.css";
 
 /* Thin, themed scrollbars on every scroll container — sidebar, grid,

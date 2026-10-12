@@ -190,47 +190,23 @@ describe("requestPermission", () => {
     expect(res.status).toBe("denied");
   });
 
-  test("screen denied still drives the prompt (registers PwrSnap in the pane)", async () => {
-    // macOS reports `denied` for a fresh install that has never asked —
-    // it's indistinguishable from an explicit denial. requestPermission
-    // is only invoked by the System Permissions page when PwrSnap has
-    // never asked, so it ALWAYS issues a real screen-source request,
-    // which both shows the OS dialog and registers our bundle in the
-    // Privacy pane. It never opens System Settings directly (that's the
-    // separate permissions:openSystemSettings verb the page switches to
-    // once it knows we've asked).
-    electronMock.status = { screen: "denied", microphone: "granted" };
-    const { requestPermission } = await import("../recording-permissions");
-    const res = await requestPermission("screen");
-    expect(electronMock.desktopCapturerCalls).toBe(1);
-    expect(electronMock.shellOpenUrls).toEqual([]);
-    // User hasn't granted yet — status read back is still denied.
-    expect(res.status).toBe("denied");
-  });
-
-  test("screen not-determined triggers the TCC prompt via desktopCapturer", async () => {
-    // Fresh install: bundle has never been seen by TCC, so the
-    // Screen Recording pane will not list us yet. The prompt path
-    // (desktopCapturer.getSources) shows the OS dialog and registers
-    // the bundle in the pane.
-    electronMock.status = { screen: "not-determined", microphone: "granted" };
-    const { requestPermission } = await import("../recording-permissions");
-    const res = await requestPermission("screen");
-    expect(electronMock.desktopCapturerCalls).toBe(1);
-    expect(electronMock.shellOpenUrls).toEqual([]);
-    // User hasn't clicked Allow yet — status still not-determined.
-    expect(res.status).toBe("not-determined");
-  });
-
-  test("systemAudio mirrors the screen prompt path", async () => {
-    electronMock.status = { screen: "denied", microphone: "granted" };
-    const { requestPermission } = await import("../recording-permissions");
-    const res = await requestPermission("systemAudio");
-    expect(electronMock.desktopCapturerCalls).toBe(1);
-    expect(electronMock.shellOpenUrls).toEqual([]);
-    // Same read-back as the screen path this mirrors — user hasn't granted yet.
-    expect(res.status).toBe("denied");
-  });
+  // Screen and system audio only report status. The one way to make macOS
+  // ask is a real capture call, and the alert it raises outlives a relaunch
+  // and stacks, so the permission guide is PwrSnap's prompt instead.
+  for (const [permission, screen] of [
+    ["screen", "denied"],
+    ["screen", "not-determined"],
+    ["systemAudio", "denied"]
+  ] as const) {
+    test(`${permission} (${screen}) reads status back without a capture call or System Settings`, async () => {
+      electronMock.status = { screen, microphone: "granted" };
+      const { requestPermission } = await import("../recording-permissions");
+      const res = await requestPermission(permission);
+      expect(electronMock.desktopCapturerCalls).toBe(0);
+      expect(electronMock.shellOpenUrls).toEqual([]);
+      expect(res.status).toBe(screen);
+    });
+  }
 
   test("Windows request reports unknown and never calls a prompt API", async () => {
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });

@@ -8,12 +8,14 @@ import {
   IPC_CAPTURE_DRAG_START,
   IPC_CART_ZIP_DRAG_START,
   IPC_CMD,
+  IPC_PERMISSION_GUIDE_DRAG_START,
   IPC_VIDEO_DRAG_START
 } from "@pwrsnap/shared";
 import type { RenderPreset, VideoExportCoordinates, VideoPreset } from "@pwrsnap/shared";
 import { bus } from "./command-bus";
 import { getMainLogger } from "./log";
 import { admitHotkeyRecorderDocument } from "./hotkeys/hotkey-recorder-document";
+import { startPermissionGuideDrag } from "./capture/permission-guide";
 import { relayCancellationToPeer } from "./process-split/event-relay";
 import { validateVideoSpanList, videoExportAudioError } from "./recording/video-export-validation";
 
@@ -91,6 +93,13 @@ export function registerIpcDispatcher(): void {
         cancelExport();
       }
     }
+  });
+
+  // Permission guide: drag the running app bundle into System Settings.
+  // No payload — main drags the path it resolved, and only for the guide's
+  // own WebContents (checked inside).
+  ipcMain.on(IPC_PERMISSION_GUIDE_DRAG_START, (event) => {
+    startPermissionGuideDrag(event.sender);
   });
 
   ipcMain.on(IPC_CAPTURE_DRAG_START, (event, req: unknown) => {

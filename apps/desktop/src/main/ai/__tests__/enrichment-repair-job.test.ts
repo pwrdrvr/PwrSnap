@@ -1,10 +1,9 @@
 // The enrichment repair runner, against fake dependencies: how many runs
-// it keeps in flight, budget pacing that never asks a low bucket, and the
-// ways a job ends.
+// it keeps in flight, its own pace between starts (it never reads the live
+// enrichment budget), and the ways a job ends.
 
 import { describe, expect, test } from "vitest";
 import type {
-  AiEnrichmentBudgetStatus,
   AiRunStatus,
   EnrichmentRepairCriteria,
   EnrichmentRepairJob,
@@ -14,9 +13,8 @@ import type {
 } from "@pwrsnap/shared";
 
 import {
-  BUDGET_RESERVE,
   EnrichmentRepairRunner,
-  repairBudgetReserve,
+  MAX_PACE_SLICE_MS,
   type EnrichmentRepairDeps
 } from "../enrichment-repair-job";
 
@@ -27,18 +25,8 @@ const CRITERIA: EnrichmentRepairCriteria = {
   apps: { mode: "include", appIds: [] }
 };
 
-function budget(tokensAvailable: number, mode: AiEnrichmentBudgetStatus["mode"] = "available"): AiEnrichmentBudgetStatus {
-  return {
-    mode,
-    tokensAvailable,
-    capacity: 20,
-    refillIntervalMs: 6_000,
-    nextTokenAt: null,
-    limitedAttemptsLastHour: 0,
-    disableThreshold: 8,
-    disabledAt: null
-  };
-}
+/** Under one slice, so each wait is a single sleep. */
+const INTERVAL_MS = 4_000;
 
 function fail(code: string): Result<never, PwrSnapError> {
   return { ok: false, error: { kind: "validation", code, message: code } };
@@ -61,13 +49,14 @@ type Harness = {
 function harness(opts: {
   ids: string[];
   statusOf?: (id: string) => EnrichmentRepairStatus | "other" | "gone";
-  budgets?: AiEnrichmentBudgetStatus[];
-  enrich?: (id: string, attempt: number) => Result<{ runId: string }, PwrSnapError>;
+  /** Pace per start, read before each one; defaults to 0 (unpaced). */
+  intervals?: number[];
+  enrich?: (id: string) => Result<{ runId: string }, PwrSnapError>;
 }): Harness {
   const published: Array<EnrichmentRepairJob | null> = [];
   const dispatched: string[] = [];
   const sleeps: number[] = [];
-  const budgets = [...(opts.budgets ?? [])];
+  const intervals = [...(opts.intervals ?? [])];
   const pendingRuns = new Map<string, (status: AiRunStatus | null) => void>();
   const resolveRun = (runId: string | undefined, status: AiRunStatus | null): void => {
     if (runId === undefined) return;
@@ -77,16 +66,13 @@ function harness(opts: {
   };
   let clock = Date.parse("2026-10-07T12:00:00.000Z");
   let nextId = 0;
-  const attempts = new Map<string, number>();
   const deps: EnrichmentRepairDeps = {
     listCaptureIds: () => [...opts.ids],
     statusOf: opts.statusOf ?? (() => "failed"),
-    budgetStatus: async () => ({ ok: true, value: budgets.shift() ?? budget(20) }),
+    dispatchIntervalMs: async () => (intervals.length > 1 ? intervals.shift()! : intervals[0] ?? 0),
     enrich: async (captureId) => {
       dispatched.push(captureId);
-      const attempt = (attempts.get(captureId) ?? 0) + 1;
-      attempts.set(captureId, attempt);
-      return opts.enrich?.(captureId, attempt) ?? { ok: true, value: { runId: `run-${captureId}` } };
+      return opts.enrich?.(captureId) ?? { ok: true, value: { runId: `run-${captureId}` } };
     },
     cancelRun: async (runId) => resolveRun(runId, "cancelled"),
     waitForRun: (runId, signal) =>
@@ -174,27 +160,78 @@ describe("EnrichmentRepairRunner", () => {
     expect(new EnrichmentRepairRunner(none.deps).start(CRITERIA, 0)?.concurrency).toBe(1);
   });
 
-  test("the reserve shrinks with a small user-set burst, so a repair can still run", () => {
-    expect(repairBudgetReserve(20)).toBe(BUDGET_RESERVE);
-    expect(repairBudgetReserve(200)).toBe(BUDGET_RESERVE);
-    expect(repairBudgetReserve(8)).toBe(2);
-    // Never the last token while the bucket holds two or more.
-    expect(repairBudgetReserve(3)).toBe(1);
-    expect(repairBudgetReserve(2)).toBe(1);
-    expect(repairBudgetReserve(1)).toBe(0);
+  test("starts at most one run per interval, even with several workers", async () => {
+    const h = harness({ ids: ["a", "b", "c"], intervals: [INTERVAL_MS] });
+    new EnrichmentRepairRunner(h.deps).start(CRITERIA, 3);
+    await h.settle();
+    // The first start does not wait; each later one waits a full interval
+    // after the one before it, one worker at a time.
+    expect(h.dispatched).toEqual(["a", "b", "c"]);
+    expect(h.sleeps).toEqual([INTERVAL_MS, INTERVAL_MS]);
+    expect(h.published.some((job) => job?.waitingUntil !== null)).toBe(true);
+    expect(h.last()?.waitingUntil).toBeNull();
   });
 
-  test("parallel workers still check the bucket one at a time, so none digs into the reserve", async () => {
-    // Only one token above the reserve: the first worker takes it, the
-    // second must see the bucket after that dispatch and wait.
-    const h = harness({
-      ids: ["a", "b"],
-      budgets: [budget(BUDGET_RESERVE + 1), budget(BUDGET_RESERVE), budget(BUDGET_RESERVE + 1)]
-    });
+  test("a run that took longer than the interval starts the next one at once", async () => {
+    const h = harness({ ids: ["a", "b"], intervals: [INTERVAL_MS] });
+    let clock = Date.parse("2026-10-07T12:00:00.000Z");
+    const deps: EnrichmentRepairDeps = { ...h.deps, now: () => clock };
+    new EnrichmentRepairRunner(deps).start(CRITERIA);
+    await h.settle();
+    clock += INTERVAL_MS * 3;
+    h.finishRun("completed");
+    await h.settle();
+    expect(h.dispatched).toEqual(["a", "b"]);
+    expect(h.sleeps).toEqual([]);
+  });
+
+  test("a long wait sleeps in slices and notices a raised rate limit within one", async () => {
+    // 1/min, then the user raises it to 6/min while the job is waiting.
+    const h = harness({ ids: ["a", "b"], intervals: [60_000, 10_000] });
     new EnrichmentRepairRunner(h.deps).start(CRITERIA, 2);
     await h.settle();
     expect(h.dispatched).toEqual(["a", "b"]);
-    expect(h.sleeps).toHaveLength(1);
+    expect(h.sleeps).toEqual([MAX_PACE_SLICE_MS, MAX_PACE_SLICE_MS]);
+  });
+
+  test("re-reads the interval before each start, so a rate-limit change applies mid-job", async () => {
+    const h = harness({ ids: ["a", "b", "c"], intervals: [INTERVAL_MS, 1_000] });
+    new EnrichmentRepairRunner(h.deps).start(CRITERIA, 3);
+    await h.settle();
+    expect(h.sleeps).toEqual([INTERVAL_MS, 1_000]);
+  });
+
+  test("a refused enqueue does not hold back the next start", async () => {
+    const h = harness({
+      ids: ["a", "b"],
+      intervals: [INTERVAL_MS],
+      enrich: (id) => (id === "a" ? fail("not_found") : { ok: true, value: { runId: `run-${id}` } })
+    });
+    new EnrichmentRepairRunner(h.deps).start(CRITERIA);
+    await h.settle();
+    expect(h.dispatched).toEqual(["a", "b"]);
+    expect(h.sleeps).toEqual([]);
+  });
+
+  test("cancel during the pace dispatches nothing more", async () => {
+    const h = harness({ ids: ["a", "b"], intervals: [INTERVAL_MS] });
+    let pacing = false;
+    const deps: EnrichmentRepairDeps = {
+      ...h.deps,
+      sleep: (_ms, signal) =>
+        new Promise((resolve) => {
+          pacing = true;
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        })
+    };
+    const runner = new EnrichmentRepairRunner(deps);
+    const job = runner.start(CRITERIA, 2)!;
+    await h.settle();
+    expect(pacing).toBe(true);
+    await runner.cancel(job.jobId);
+    await h.settle();
+    expect(h.dispatched).toEqual(["a"]);
+    expect(h.last()?.state).toBe("cancelled");
   });
 
   test("a run that starts while cancel is underway is cancelled too", async () => {
@@ -260,32 +297,6 @@ describe("EnrichmentRepairRunner", () => {
     expect(h.last()).toMatchObject({ state: "completed", skipped: 3, succeeded: 1, processed: 4 });
   });
 
-  test("never dispatches into the reserve new captures need", async () => {
-    const h = harness({
-      ids: ["a"],
-      budgets: [budget(BUDGET_RESERVE), budget(BUDGET_RESERVE), budget(BUDGET_RESERVE + 1)]
-    });
-    new EnrichmentRepairRunner(h.deps).start(CRITERIA);
-    await h.settle();
-    expect(h.sleeps).toHaveLength(2);
-    expect(h.published.some((job) => job?.waitingUntil !== null)).toBe(true);
-    expect(h.dispatched).toEqual(["a"]);
-    expect(h.last()?.waitingUntil).toBeNull();
-  });
-
-  test("a dispatch the bucket refuses anyway is retried, not skipped", async () => {
-    const h = harness({
-      ids: ["a"],
-      enrich: (id, attempt) => (attempt === 1 ? fail("ai_budget_limited") : { ok: true, value: { runId: `run-${id}` } })
-    });
-    new EnrichmentRepairRunner(h.deps).start(CRITERIA);
-    await h.settle();
-    expect(h.dispatched).toEqual(["a", "a"]);
-    h.finishRun("completed");
-    await h.settle();
-    expect(h.last()).toMatchObject({ state: "completed", succeeded: 1, skipped: 0 });
-  });
-
   test("stops when AI is turned off, and says why", async () => {
     const h = harness({ ids: ["a", "b"], enrich: () => fail("ai_disabled") });
     new EnrichmentRepairRunner(h.deps).start(CRITERIA);
@@ -294,12 +305,16 @@ describe("EnrichmentRepairRunner", () => {
     expect(h.last()).toMatchObject({ state: "stopped", stopReason: "AI enrichment was turned off.", processed: 0 });
   });
 
-  test("stops when the budget circuit breaker has fired", async () => {
-    const h = harness({ ids: ["a"], budgets: [budget(0, "safety_disabled")] });
+  test("stops when live captures have tripped the cost-safety breaker", async () => {
+    const h = harness({ ids: ["a", "b"], enrich: () => fail("ai_budget_safety_disabled") });
     new EnrichmentRepairRunner(h.deps).start(CRITERIA);
     await h.settle();
-    expect(h.dispatched).toEqual([]);
-    expect(h.last()?.state).toBe("stopped");
+    expect(h.dispatched).toEqual(["a"]);
+    expect(h.last()).toMatchObject({
+      state: "stopped",
+      stopReason: "AI enrichment was turned off for cost safety.",
+      processed: 0
+    });
   });
 
   test("cancel stops the job and cancels the run in flight", async () => {

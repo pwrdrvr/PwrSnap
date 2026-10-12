@@ -48,7 +48,7 @@ function RepairActivity({ job }: { job: EnrichmentRepairJob }): ReactElement {
     const left = Math.max(0, Date.parse(job.waitingUntil) - now);
     return (
       <span className="ps-repair-progress__detail">
-        {reading !== null ? `${reading} · ` : ""}Leaving AI budget for new snaps · next in{" "}
+        {reading !== null ? `${reading} · ` : ""}Pacing re-runs · next in{" "}
         {formatRunDuration(left + 999)}
       </span>
     );

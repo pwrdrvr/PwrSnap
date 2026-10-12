@@ -50,9 +50,12 @@ vi.mock("electron", (): Partial<typeof import("electron")> => ({
     getAllWindows: () => []
   } as unknown as typeof import("electron").BrowserWindow,
   safeStorage: {
-    isEncryptionAvailable: () => true,
-    encryptString: (s: string): Buffer => Buffer.from(`enc:${s}`),
-    decryptString: (b: Buffer): string => b.toString("utf8").replace(/^enc:/, "")
+    isAsyncEncryptionAvailable: async (): Promise<boolean> => true,
+    encryptStringAsync: async (s: string): Promise<Buffer> => Buffer.from(`enc:${s}`),
+    decryptStringAsync: async (b: Buffer): Promise<{ shouldReEncrypt: boolean; result: string }> => ({
+      shouldReEncrypt: false,
+      result: b.toString("utf8").replace(/^enc:/, "")
+    })
   } as unknown as typeof import("electron").safeStorage
 }));
 

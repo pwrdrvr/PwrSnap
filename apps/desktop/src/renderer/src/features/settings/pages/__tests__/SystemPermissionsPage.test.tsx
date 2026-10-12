@@ -2,8 +2,9 @@
 // disambiguation that is the user-facing heart of the first-run fix:
 //   • screen not granted + screenCapturePrompted=false → synthesized
 //     "Not yet requested" + a "Request access" button (fires the prompt);
-//   • screen not granted + screenCapturePrompted=true → "Denied" + an
-//     "Open System Settings" button (macOS won't re-prompt).
+//   • screen not granted + screenCapturePrompted=true → "Denied" + a
+//     "Show me how" button that opens System Settings with the permission
+//     guide beside it (macOS won't re-prompt).
 // macOS itself can't tell these apart (getMediaAccessStatus('screen') is
 // `denied` in both cases) — the page leans on `screenCapturePrompted`.
 // Windows instead consumes explicit permission evidence: screen is not
@@ -194,13 +195,13 @@ describe("SystemPermissionsPage — screen permission disambiguation", () => {
     expect(button?.textContent).toBe("Request access");
   });
 
-  test("already prompted: denied screen shows 'Denied' + Open System Settings", async () => {
+  test("already prompted: denied screen shows 'Denied' + Show me how", async () => {
     await render({ ...baseReport, screenCapturePrompted: true });
     const row = rowByTag("screen");
     const status = row.querySelector<HTMLElement>("[data-permission-status]");
     expect(status?.getAttribute("data-permission-status")).toBe("denied");
     const button = row.querySelector("button");
-    expect(button?.textContent).toBe("Open System Settings");
+    expect(button?.textContent).toBe("Show me how");
   });
 
   test("granted screen shows no action button", async () => {
@@ -219,59 +220,28 @@ describe("SystemPermissionsPage — screen permission disambiguation", () => {
     expect(row.textContent).not.toContain("app version");
   });
 
-  test("Request access (first ask) probes but does NOT open System Settings", async () => {
-    const { calls } = await render({ ...baseReport, screenCapturePrompted: false });
-    const button = rowByTag("screen").querySelector("button");
-    await act(async () => {
-      button?.click();
+  // Both buttons open the permission guide and nothing else. A capture probe
+  // would raise macOS's own alert, which outlives a relaunch and stacks.
+  for (const prompted of [false, true]) {
+    test(`${prompted ? "Show me how (denied)" : "Request access (first ask)"} opens the guide and never probes`, async () => {
+      const { calls } = await render({ ...baseReport, screenCapturePrompted: prompted });
+      const button = rowByTag("screen").querySelector("button");
+      expect(button?.textContent).toBe(prompted ? "Show me how" : "Request access");
+      await act(async () => {
+        button?.click();
+      });
+      const names = calls.map((c) => c.name);
+      expect(
+        calls.some(
+          (c) =>
+            c.name === "permissions:showGuide" &&
+            (c.req as { permission?: string }).permission === "screen"
+        )
+      ).toBe(true);
+      expect(names).not.toContain("permissions:request");
+      expect(names).not.toContain("permissions:openSystemSettings");
     });
-    const names = calls.map((c) => c.name);
-    // Always probe via the real screen-capture attempt…
-    expect(
-      calls.some(
-        (c) =>
-          c.name === "permissions:request" &&
-          (c.req as { permission?: string }).permission === "screen"
-      )
-    ).toBe(true);
-    // …but on the first ask the OS dialog is the UI — don't pile Settings on.
-    expect(names).not.toContain("permissions:openSystemSettings");
-  });
-
-  test("Open System Settings (denied) probes FIRST, then opens System Settings", async () => {
-    // The probe is what re-registers PwrSnap after a tccutil reset / new
-    // build — clicking must never skip it.
-    const { calls } = await render(
-      { ...baseReport, screenCapturePrompted: true },
-      { requestStatus: "denied" }
-    );
-    const button = rowByTag("screen").querySelector("button");
-    expect(button?.textContent).toBe("Open System Settings");
-    await act(async () => {
-      button?.click();
-    });
-    const names = calls.map((c) => c.name);
-    expect(names).toContain("permissions:request");
-    expect(names).toContain("permissions:openSystemSettings");
-    // Order: probe before the Settings fallback.
-    expect(names.indexOf("permissions:request")).toBeLessThan(
-      names.indexOf("permissions:openSystemSettings")
-    );
-  });
-
-  test("denied screen where the probe grants in-session → no System Settings", async () => {
-    const { calls } = await render(
-      { ...baseReport, screenCapturePrompted: true },
-      { requestStatus: "granted" }
-    );
-    const button = rowByTag("screen").querySelector("button");
-    await act(async () => {
-      button?.click();
-    });
-    const names = calls.map((c) => c.name);
-    expect(names).toContain("permissions:request");
-    expect(names).not.toContain("permissions:openSystemSettings");
-  });
+  }
 
   test("captures folder: healthy → OK + Check access, no Open System Settings", async () => {
     await render(baseReport, { capturesDenied: false });

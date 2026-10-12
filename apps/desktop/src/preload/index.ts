@@ -65,6 +65,7 @@ import {
   EVENT_CHANNELS,
   IPC_CAPTURE_DRAG_START,
   IPC_CART_ZIP_DRAG_START,
+  IPC_PERMISSION_GUIDE_DRAG_START,
   IPC_CMD,
   IPC_VIDEO_DRAG_START
 } from "@pwrsnap/shared/ipc";
@@ -529,6 +530,14 @@ const pwrsnapApi = {
    */
   startCaptureDrag(payload: { captureId: string; preset: RenderPreset }): void {
     ipcRenderer.send(IPC_CAPTURE_DRAG_START, payload);
+  },
+  /**
+   * Permission guide → main: drag the running app bundle into System
+   * Settings. No payload: main drags the path it resolved itself, and only
+   * for the guide window's own WebContents.
+   */
+  startPermissionGuideDrag(): void {
+    ipcRenderer.send(IPC_PERMISSION_GUIDE_DRAG_START);
   },
   /**
    * Renderer -> main native file drag for a VIDEO export. Sibling of

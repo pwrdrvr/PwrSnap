@@ -71,6 +71,16 @@ import {
 } from "../capture/screen-permission-gate";
 import { ensureCapturesDirReady } from "../capture/capture-storage-gate";
 import {
+  closePermissionGuide,
+  getPermissionGuideState,
+  isPermissionGuideSupported,
+  relaunchFromPermissionGuide,
+  resetPermissionGuideGrant,
+  reopenPermissionGuideSettings,
+  resizePermissionGuide,
+  showPermissionGuide
+} from "../capture/permission-guide";
+import {
   getRecordingService,
   type RecordingService
 } from "../recording/recording-service";
@@ -704,19 +714,9 @@ export function registerRecordingHandlers(): void {
         )
       );
     }
-    const result = await requestPermission(req.permission);
-    if (
-      process.platform === "darwin" &&
-      (req.permission === "screen" || req.permission === "systemAudio")
-    ) {
-      // We just drove the macOS screen-capture prompt (which also
-      // registers PwrSnap in the Privacy pane). Remember it so the UI
-      // switches to the "Open System Settings" path next time — macOS
-      // won't prompt twice. Off Darwin, `requestPermission` is unsupported
-      // and returns `unknown`, so there is no prompt attempt to remember.
-      await markScreenCapturePrompted();
-    }
-    return ok(result);
+    // Screen and system audio only report status here; their prompt is the
+    // permission guide (`permissions:showGuide`), never macOS's alert.
+    return ok(await requestPermission(req.permission));
   });
 
   bus.register("permissions:openSoundSettings", async () => {
@@ -765,6 +765,94 @@ export function registerRecordingHandlers(): void {
         )
       );
     }
+  });
+
+  // The macOS permission guide (capture/permission-guide.ts). Screen and
+  // system audio share one grant and one list; microphone and camera lists
+  // take no drops, so they keep `permissions:request`'s macOS prompt.
+  bus.register("permissions:showGuide", async (req) => {
+    if (!isKnownPermission(req.permission)) {
+      return err(
+        validationError(
+          "unknown_permission",
+          `permissions:showGuide: unknown permission (got ${JSON.stringify(req.permission)})`
+        )
+      );
+    }
+    if (!isPermissionGuideSupported() || req.permission === "microphone") {
+      return err(
+        permissionError(
+          "permission_guide_unsupported",
+          `PwrSnap has no permission guide for ${req.permission} on ${process.platform}.`
+        )
+      );
+    }
+    try {
+      await showPermissionGuide();
+      // The user has now been asked, PwrSnap's way. Startup routing and the
+      // System Permissions page read this to tell "blocked" from "never
+      // tried".
+      await markScreenCapturePrompted();
+      return ok(undefined);
+    } catch (cause) {
+      log.warn("permissions:showGuide failed", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err(
+        permissionError(
+          "open_settings_failed",
+          cause instanceof Error ? cause.message : String(cause)
+        )
+      );
+    }
+  });
+
+  bus.register("permissions:guideState", async () => ok(getPermissionGuideState()));
+
+  bus.register("permissions:guideResize", async (req) => {
+    if (typeof req?.height !== "number" || !Number.isFinite(req.height)) {
+      return err(validationError("invalid_height", "permissions:guideResize: height must be a finite number"));
+    }
+    resizePermissionGuide(req.height);
+    return ok(undefined);
+  });
+
+  bus.register("permissions:guideReopenSettings", async () => {
+    try {
+      await reopenPermissionGuideSettings();
+      return ok(undefined);
+    } catch (cause) {
+      return err(
+        permissionError(
+          "open_settings_failed",
+          cause instanceof Error ? cause.message : String(cause)
+        )
+      );
+    }
+  });
+
+  bus.register("permissions:guideResetGrant", async () => {
+    try {
+      await resetPermissionGuideGrant();
+      return ok(undefined);
+    } catch (cause) {
+      return err(
+        permissionError(
+          "permission_reset_failed",
+          cause instanceof Error ? cause.message : String(cause)
+        )
+      );
+    }
+  });
+
+  bus.register("permissions:guideRelaunch", async () => {
+    relaunchFromPermissionGuide();
+    return ok(undefined);
+  });
+
+  bus.register("permissions:guideClose", async () => {
+    closePermissionGuide();
+    return ok(undefined);
   });
 
   // ---- recording lifecycle ----

@@ -1879,6 +1879,7 @@ export function createRecordingControllerWindow(): BrowserWindow {
  */
 export function createPermissionGuideWindow(size: { width: number; height: number }): BrowserWindow {
   const window = new BrowserWindow({
+    ...linuxSquareCorners(),
     type: "panel",
     width: size.width,
     height: size.height,

@@ -134,8 +134,8 @@ export function buildApplicationMenuTemplate(
           {
             id: PASTE_FROM_CLIPBOARD_MENU_ID,
             label: "Paste from Clipboard",
-            // Enabled from the live pasteboard on `menu-will-show`; see
-            // refreshPasteFromClipboardMenu in index.ts.
+            // Settled from the clipboard's type names, never its bytes;
+            // see refreshPasteFromClipboardMenu in index.ts.
             enabled: false,
             click: () => actions.onPasteFromClipboard()
           }

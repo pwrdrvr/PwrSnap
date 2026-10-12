@@ -88,11 +88,11 @@ import {
   resolveAppVersion
 } from "./handlers/app-handlers";
 import {
-  clipboardHasPasteableImage,
   librarySourceWindowIds,
   registerCaptureHandlers,
   registerCaptureSaveAsHandler
 } from "./handlers/capture-handlers";
+import { pasteFromClipboardMenuEnabled } from "./clipboard/paste-menu-hint";
 import { registerCaptureVideoHandler } from "./handlers/capture-video-handler";
 import { registerAcpHandlers } from "./handlers/acp-handlers";
 import { getToolRpcServer } from "./ai/mcp/pwrsnap-tool-rpc-server";
@@ -673,23 +673,27 @@ const applicationMenuActions: ApplicationMenuActions = {
 };
 
 /**
- * Electron 44 made every clipboard read async (clipboard/system-clipboard.ts),
- * so `menu-will-show` can no longer settle the item before the menu draws:
- * the read it starts lands after the menu is up. After a copy in another
- * app, the first open of File can show the previous answer; the next is
- * right. A late answer from an older read never overwrites a newer one.
+ * Settles File → New → Paste from Clipboard from the clipboard's type names
+ * alone (clipboard/paste-menu-hint.ts). It never reads a flavor's bytes: on
+ * macOS reading the bytes of a Universal Clipboard or remote-desktop item is
+ * what pulls it across the network, and this runs without the user asking
+ * to paste. Where no types-only listing exists (Windows, Linux) the item is
+ * simply enabled.
  *
- * Do not fix that by also refreshing on window focus or app activation. The
- * Electron 44 upgrade tried it: when no image type is listed, the probe reads
- * the clipboard's file URL and text, and on macOS reading the bytes of a
- * Universal Clipboard or remote-desktop item is what pulls it across the
- * network. It then ran on every click into PwrSnap.
+ * The listing is async, so the answer `menu-will-show` asks for lands after
+ * the menu draws. That is why macOS also refreshes on `did-become-active`:
+ * a copy made in another app is listed by the time the user can open File.
+ * Listing types was measured to fetch nothing, so a refresh per activation
+ * costs one short helper process. An early version of the Electron 44
+ * upgrade refreshed on focus with a probe that read bytes, and pulled the
+ * clipboard across the network on every click into PwrSnap. A late answer
+ * from an older listing never overwrites a newer one.
  */
 function refreshPasteFromClipboardMenu(): void {
   const item = pasteFromClipboardMenuItem;
   if (item === null) return;
   const seq = ++pasteFromClipboardRefreshSeq;
-  void clipboardHasPasteableImage().then(
+  void pasteFromClipboardMenuEnabled().then(
     (enabled) => {
       if (seq === pasteFromClipboardRefreshSeq) item.enabled = enabled;
     },
@@ -697,7 +701,7 @@ function refreshPasteFromClipboardMenu(): void {
       getMainLogger("pwrsnap:clipboard").warn("paste menu clipboard probe failed", {
         message: cause instanceof Error ? cause.message : String(cause)
       });
-      // An unreadable clipboard must not leave the item stuck at an older
+      // An unlistable clipboard must not leave the item stuck at an older
       // answer. Enabled is the safe hint: the command reports "no image".
       if (seq === pasteFromClipboardRefreshSeq) item.enabled = true;
     }
@@ -2001,6 +2005,9 @@ export function bootstrapApp(): void {
     app.on("browser-window-created", (_event, window) => {
       trackWindowFrameState(window);
     });
+    // Another app's copy is listed by the time the user can open File.
+    // Types only; see refreshPasteFromClipboardMenu.
+    if (isMac) app.on("did-become-active", refreshPasteFromClipboardMenu);
     // Issue #139 — wire the menu refresh + renderer broadcast to OUR
     // clipboard writes. menu-will-show alone was insufficient on macOS;
     // the in-app "Copy MED" flow now updates the menu state at write

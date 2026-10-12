@@ -678,6 +678,42 @@ History + the `sample` recipe:
 §"Addendum (2026-08-22)". Pinned by
 [chat-thread-store-documents-access.test.ts](apps/desktop/src/main/ai/__tests__/chat-thread-store-documents-access.test.ts).
 
+## Clipboard bytes are read only for a paste or copy the user started
+
+**Only a command the user started to paste or copy may read a clipboard
+flavor's bytes. Everything else may list types and nothing more: menu
+enablement, focus or activation handlers, change listeners, polling.**
+Owners: [pasteboard-types.ts](apps/desktop/src/main/clipboard/pasteboard-types.ts)
+(the one types-only listing) and
+[paste-menu-hint.ts](apps/desktop/src/main/clipboard/paste-menu-hint.ts).
+Pinned by
+[paste-menu-hint.test.ts](apps/desktop/src/main/clipboard/__tests__/paste-menu-hint.test.ts),
+which traps every Electron clipboard method.
+
+- **Why.** A clipboard item from another device (Universal Clipboard) or a
+  remote-desktop client is promised data. macOS lists its types and fetches
+  a flavor's bytes, across the network, only when an app asks for them. The
+  File → New → Paste from Clipboard probe read bytes on every menu open, and
+  pulled images and files the user never pasted.
+- **Electron 44's `clipboard.read()` and `clipboard.has()` are not
+  types-only.** Measured on macOS 26, they fetch `public.url` and
+  `public.url-name` (Electron probes for a bookmark with Chromium's
+  `ReadURL`) and the W3C custom-format map. On Windows that probe is
+  `GetClipboardData(CFSTR_INETURLW)`, which renders a delay-rendered format.
+  So macOS lists types through AppKit (`NSPasteboard.types`, the
+  pasteboard helper's `--list-types`), measured to fetch nothing. Windows and
+  Linux have no measured types-only listing, so the paste item is always
+  enabled there and nothing is probed.
+- **A types-only hint is generous by design.** A web URL or a file URL to a
+  non-image file leaves the item enabled; `capture:pasteFromClipboard`
+  validates and reports "no image".
+- **The E2E bridge's readers (`__PWRSNAP_TEST__`) exist only under
+  `PWRSNAP_E2E`.** A copy's own readback (`writeMacFileToClipboard`) runs
+  inside the user's copy, against the item PwrSnap just wrote.
+
+Measurements and the promised-data probe recipe:
+[docs/solutions/2026-10-12-clipboard-types-only-paste-menu.md](docs/solutions/2026-10-12-clipboard-types-only-paste-menu.md).
+
 ## A screen grab must prove it is the display it claims to be
 
 **Nothing may treat `desktopCapturer` pixels as a given display without

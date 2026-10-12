@@ -686,6 +686,13 @@ export type PermissionGuideState = {
    * found or the panel could not sit beside it.
    */
   notch: { side: "left" | "right"; y: number } | null;
+  /**
+   * The running bundle's ID, or null when it could not be read. Reset needs
+   * it: macOS keeps one Screen Recording row per bundle ID, not per copy.
+   */
+  bundleId: string | null;
+  /** Outcome of the last `permissions:guideResetGrant` while open. */
+  reset: "none" | "done" | "failed";
 };
 
 /**
@@ -5336,7 +5343,19 @@ export type Commands = {
   "permissions:guideResize": { req: { height: number }; res: void };
   /** Re-open System Settings at the Screen Recording list. */
   "permissions:guideReopenSettings": { req: Record<string, never>; res: void };
-  /** Quit and relaunch PwrSnap, for a user who chose Later on macOS's sheet. */
+  /**
+   * Remove this bundle ID's Screen Recording row (`tccutil reset`) and
+   * re-open the list. macOS keeps ONE row per bundle ID, signed to whichever
+   * copy was added first, so dropping a second copy adds nothing and the
+   * row's switch can be on for a copy that is not this one. Resetting is
+   * the only way to get the row re-signed to the running copy.
+   */
+  "permissions:guideResetGrant": { req: Record<string, never>; res: void };
+  /**
+   * Quit and relaunch this exact executable (`app.relaunch`). Screen
+   * Recording applies to the next process; macOS's own Quit & Reopen goes
+   * by bundle ID and can open another copy.
+   */
   "permissions:guideRelaunch": { req: Record<string, never>; res: void };
   "permissions:guideClose": { req: Record<string, never>; res: void };
   /**

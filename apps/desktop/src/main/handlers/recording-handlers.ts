@@ -75,6 +75,7 @@ import {
   getPermissionGuideState,
   isPermissionGuideSupported,
   relaunchFromPermissionGuide,
+  resetPermissionGuideGrant,
   reopenPermissionGuideSettings,
   resizePermissionGuide,
   showPermissionGuide
@@ -830,6 +831,20 @@ export function registerRecordingHandlers(): void {
       return err(
         permissionError(
           "open_settings_failed",
+          cause instanceof Error ? cause.message : String(cause)
+        )
+      );
+    }
+  });
+
+  bus.register("permissions:guideResetGrant", async () => {
+    try {
+      await resetPermissionGuideGrant();
+      return ok(undefined);
+    } catch (cause) {
+      return err(
+        permissionError(
+          "permission_reset_failed",
           cause instanceof Error ? cause.message : String(cause)
         )
       );

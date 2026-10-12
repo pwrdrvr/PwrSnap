@@ -14,6 +14,7 @@ import { homedir } from "node:os";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const BUNDLE_ID_RE = /^[A-Za-z0-9.-]+$/;
 
 /**
  * `/Applications/PwrSnap.app/Contents/MacOS/PwrSnap` →
@@ -61,7 +62,7 @@ export function otherCopiesFromMdfind(stdout: string, ownRealPath: string): stri
 /** Spotlight lookup for other bundles with `bundleId`. Best-effort: any
  *  failure (Spotlight disabled, timeout) reports none. */
 export async function findOtherCopies(bundleId: string, ownBundlePath: string): Promise<string[]> {
-  if (!/^[A-Za-z0-9.-]+$/.test(bundleId)) return [];
+  if (!BUNDLE_ID_RE.test(bundleId)) return [];
   let own = ownBundlePath;
   try {
     own = await realpath(ownBundlePath);
@@ -89,4 +90,28 @@ export async function findOtherCopies(bundleId: string, ownBundlePath: string): 
   } catch {
     return [];
   }
+}
+
+/** `CFBundleIdentifier` of an app bundle, or null when it cannot be read. */
+export async function readBundleId(bundlePath: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      "/usr/libexec/PlistBuddy",
+      ["-c", "Print :CFBundleIdentifier", `${bundlePath}/Contents/Info.plist`],
+      { timeout: 2_000 }
+    );
+    const id = stdout.trim();
+    return BUNDLE_ID_RE.test(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Remove every Screen Recording row for `bundleId`. tccutil needs no admin
+ * rights to reset one service for one bundle ID. Throws on failure.
+ */
+export async function resetScreenCaptureGrant(bundleId: string): Promise<void> {
+  if (!BUNDLE_ID_RE.test(bundleId)) throw new Error(`Not a bundle ID: ${bundleId}`);
+  await execFileAsync("/usr/bin/tccutil", ["reset", "ScreenCapture", bundleId], { timeout: 5_000 });
 }

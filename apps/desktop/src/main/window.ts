@@ -1897,7 +1897,9 @@ export function createPermissionGuideWindow(size: { width: number; height: numbe
   // to be wherever it is, or the user is left looking at Settings alone.
   window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   window.setMenuBarVisibility(false);
-  window.setContentProtection(true);
+  // Deliberately NOT content-protected, unlike the recording HUD: this panel
+  // is up only while capture is blocked, so it can never land in our own
+  // take, and users need to screenshot it to ask for help.
   loadRenderer(window, rendererTarget("permission-guide"));
   window.webContents.setVisualZoomLevelLimits(1, 1);
   return window;

@@ -54,7 +54,9 @@ const h = vi.hoisted(() => ({
   listCalls: 0,
   openCalls: 0,
   relaunch: vi.fn(),
-  quit: vi.fn()
+  quit: vi.fn(),
+  resets: [] as string[],
+  resetFails: false
 }));
 
 vi.mock("electron", () => ({
@@ -105,6 +107,15 @@ vi.mock("../window-list", () => ({
   })
 }));
 
+vi.mock("../permission-guide-bundle", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../permission-guide-bundle")>()),
+  readBundleId: async () => "com.example.snap",
+  resetScreenCaptureGrant: async (bundleId: string) => {
+    if (h.resetFails) throw new Error("tccutil exited 1");
+    h.resets.push(bundleId);
+  }
+}));
+
 vi.mock("../../recording/recording-permissions", () => ({
   openSystemSettingsFor: vi.fn(async () => {
     h.openCalls += 1;
@@ -122,6 +133,8 @@ beforeEach(() => {
   h.screen = "denied";
   h.relaunch.mockClear();
   h.quit.mockClear();
+  h.resets = [];
+  h.resetFails = false;
   h.settingsOpen = true;
   h.listCalls = 0;
   h.openCalls = 0;
@@ -183,6 +196,26 @@ describe("permission guide", () => {
     expect(h.windows[0]!.isDestroyed()).toBe(true);
     expect(h.relaunch).toHaveBeenCalledTimes(1);
     expect(h.quit).toHaveBeenCalledTimes(1);
+  });
+
+  test("reset removes the row for the RUNNING bundle's ID and shows the list again", async () => {
+    // macOS keeps one row per bundle ID; a row signed to another copy looks
+    // switched on and does nothing for this one, and a drop does not replace it.
+    const guide = await load();
+    await guide.showPermissionGuide();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(guide.getPermissionGuideState()?.bundleId).toBe("com.example.snap");
+    const opensBefore = h.openCalls;
+
+    await guide.resetPermissionGuideGrant();
+    expect(h.resets).toEqual(["com.example.snap"]);
+    expect(h.openCalls).toBe(opensBefore + 1);
+    expect(guide.getPermissionGuideState()?.reset).toBe("done");
+
+    h.resetFails = true;
+    await expect(guide.resetPermissionGuideGrant()).rejects.toThrow("tccutil");
+    expect(guide.getPermissionGuideState()?.reset).toBe("failed");
+    guide.closePermissionGuide();
   });
 
   test("Settings closing after being seen → settings-closed, and the poll slows", async () => {

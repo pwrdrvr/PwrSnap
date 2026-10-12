@@ -44,13 +44,16 @@ import {
   abbreviateHome,
   appBundlePathFromExe,
   appNameFromBundlePath,
-  findOtherCopies
+  findOtherCopies,
+  readBundleId,
+  resetScreenCaptureGrant
 } from "./permission-guide-bundle";
 import { openSystemSettingsFor, readScreenStatus } from "../recording/recording-permissions";
 
 const log = getMainLogger("pwrsnap:permission-guide");
 
-/** electron-builder `appId`. Only used to find OTHER copies when packaged. */
+/** electron-builder `appId`: the fallback when the bundle's own ID cannot
+ *  be read, for finding OTHER copies when packaged. */
 const PACKAGED_BUNDLE_ID = "com.pwrdrvr.pwrsnap";
 const CARD_WIDTH_PX = 300;
 const WINDOW_WIDTH_PX = CARD_WIDTH_PX + 2 * GUIDE_NOTCH_MARGIN_PX;
@@ -144,7 +147,7 @@ async function showOrRefresh(): Promise<void> {
     // Asked again while open: re-arm, and treat Settings as freshly opened.
     settingsSeen = false;
     settingsMissing = 0;
-    update({ phase: "waiting" });
+    update({ phase: "waiting", reset: "none" });
     void tick();
     return;
   }
@@ -160,7 +163,9 @@ async function showOrRefresh(): Promise<void> {
     appIconDataUrl: icon?.toDataURL() ?? null,
     otherCopies: [],
     packaged: app.isPackaged,
-    notch: null
+    notch: null,
+    bundleId: null,
+    reset: "none"
   };
   log.info("showing permission guide", { bundlePath, packaged: app.isPackaged });
 
@@ -191,14 +196,18 @@ async function showOrRefresh(): Promise<void> {
 
   schedulePoll(0);
 
-  if (app.isPackaged) {
-    const own = bundlePath;
-    void findOtherCopies(PACKAGED_BUNDLE_ID, own).then((copies) => {
-      if (copies.length === 0 || bundlePath !== own) return;
-      log.info("other copies of PwrSnap found", { count: copies.length });
-      update({ otherCopies: copies.map((p) => abbreviateHome(p)) });
-    });
-  }
+  const own = bundlePath;
+  void readBundleId(own).then(async (bundleId) => {
+    if (bundlePath !== own) return;
+    if (bundleId !== null) update({ bundleId });
+    // A dev Electron shares its bundle ID with every other Electron checkout
+    // on the machine; listing those would only be noise.
+    if (!app.isPackaged) return;
+    const copies = await findOtherCopies(bundleId ?? PACKAGED_BUNDLE_ID, own);
+    if (copies.length === 0 || bundlePath !== own) return;
+    log.info("other copies of PwrSnap found", { count: copies.length });
+    update({ otherCopies: copies.map((p) => abbreviateHome(p)) });
+  });
 }
 
 function maybeShow(): void {
@@ -296,6 +305,28 @@ export async function reopenPermissionGuideSettings(): Promise<void> {
   settingsMissing = 0;
   update({ phase: "waiting" });
   await openSystemSettingsFor("screen");
+}
+
+/**
+ * Remove this bundle ID's Screen Recording row, then show the list again so
+ * the user can drag the running copy back in. macOS keeps one row per
+ * bundle ID, signed to whichever copy was added first: dropping this copy
+ * onto an existing row changes nothing, and that row's switch can be on for
+ * a copy that is not this one.
+ */
+export async function resetPermissionGuideGrant(): Promise<void> {
+  const bundleId = state?.bundleId ?? null;
+  if (bundleId === null) throw new Error("The running app's bundle ID is not known.");
+  log.info("resetting the Screen Recording row", { bundleId });
+  try {
+    await resetScreenCaptureGrant(bundleId);
+  } catch (cause) {
+    log.warn("tccutil reset failed", { bundleId, message: String(cause) });
+    update({ reset: "failed" });
+    throw cause;
+  }
+  update({ reset: "done" });
+  await reopenPermissionGuideSettings();
 }
 
 export function relaunchFromPermissionGuide(): void {

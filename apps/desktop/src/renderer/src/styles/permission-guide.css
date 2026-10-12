@@ -234,6 +234,28 @@ body[data-stage="permission-guide"] {
   color: var(--text-muted);
 }
 
+.pgd__fix {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font: 400 11px/1.4 var(--font-sans);
+  color: var(--text-muted);
+}
+.pgd__fix-row {
+  display: flex;
+  gap: 6px;
+}
+.pgd__btn.is-sm {
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+.pgd__btn.is-armed {
+  border-color: var(--warn-border);
+  background: var(--warn-soft);
+  color: var(--text-primary);
+}
+
 .pgd__ft {
   display: flex;
   align-items: center;

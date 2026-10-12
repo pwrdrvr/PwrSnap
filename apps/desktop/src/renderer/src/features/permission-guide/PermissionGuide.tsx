@@ -20,6 +20,9 @@ import { PwrSnapMark } from "../shared/BrandMark";
 /** How long the handle reads as "lifted" after a drag starts. A drag handed
  *  to the OS fires no dragend in the page, so this is a timer, not an event. */
 const LIFTED_MS = 4_000;
+/** Reset takes two clicks; the first one arms it for this long. The window
+ *  takes no focus, so a native confirm dialog is not an option. */
+const RESET_ARM_MS = 4_000;
 
 type Step = { key: string; body: ReactElement };
 
@@ -34,8 +37,10 @@ function steps(appName: string): Step[] {
 export function PermissionGuide(): ReactElement | null {
   const [state, setState] = useState<PermissionGuideState | null>(null);
   const [lifted, setLifted] = useState(false);
+  const [resetArmed, setResetArmed] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const liftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Subscribe, THEN ask: main may have published before this mounted.
   useEffect(() => {
@@ -56,6 +61,7 @@ export function PermissionGuide(): ReactElement | null {
 
   useEffect(() => () => {
     if (liftTimer.current !== null) clearTimeout(liftTimer.current);
+    if (armTimer.current !== null) clearTimeout(armTimer.current);
   }, []);
 
   useLayoutEffect(() => {
@@ -83,6 +89,18 @@ export function PermissionGuide(): ReactElement | null {
     setLifted(true);
     if (liftTimer.current !== null) clearTimeout(liftTimer.current);
     liftTimer.current = setTimeout(() => setLifted(false), LIFTED_MS);
+  };
+
+  const onReset = (): void => {
+    if (armTimer.current !== null) clearTimeout(armTimer.current);
+    armTimer.current = null;
+    if (!resetArmed) {
+      setResetArmed(true);
+      armTimer.current = setTimeout(() => setResetArmed(false), RESET_ARM_MS);
+      return;
+    }
+    setResetArmed(false);
+    void dispatch("permissions:guideResetGrant", {});
   };
 
   const { phase, notch } = state;
@@ -147,9 +165,8 @@ export function PermissionGuide(): ReactElement | null {
             {state.otherCopies.slice(0, 3).map((p) => (
               <code key={p} title={p}>{p}</code>
             ))}
-            The list names every copy “{state.appName}”. Drag this one in. If one is already listed and
-            capture still fails, select it, remove it with −, then drag again. Relaunch from here
-            rather than macOS's Quit &amp; Reopen, which can open the other copy.
+            The list names every copy “{state.appName}”. Drag this one in, and relaunch from here rather
+            than macOS's Quit &amp; Reopen, which can open the other copy.
           </div>
         ) : null}
 
@@ -176,6 +193,42 @@ export function PermissionGuide(): ReactElement | null {
               ))}
             </ol>
             <p className="pgd__fine">{state.appName} only records the screen when you start a capture.</p>
+            {state.reset === "done" ? (
+              <div className="pgd__note is-ok">
+                <b>Old entry removed.</b> Drag {state.appName} into the list again.
+              </div>
+            ) : state.reset === "failed" ? (
+              <div className="pgd__note is-warn">
+                <b>Couldn't reset the entry.</b> Select {state.appName} in the list, remove it with −,
+                then drag it in again.
+              </div>
+            ) : null}
+            {phase === "waiting" ? (
+              <div className="pgd__fix">
+                <span>
+                  Settings on another page, or {state.appName} already listed and still blocked?
+                </span>
+                <div className="pgd__fix-row">
+                  <button
+                    type="button"
+                    className="pgd__btn is-sm"
+                    onClick={() => void dispatch("permissions:guideReopenSettings", {})}
+                  >
+                    Show the list
+                  </button>
+                  {state.bundleId === null ? null : (
+                    <button
+                      type="button"
+                      className={"pgd__btn is-sm" + (resetArmed ? " is-armed" : "")}
+                      data-tip={`Removes the Screen Recording entry for ${state.bundleId}`}
+                      onClick={onReset}
+                    >
+                      {resetArmed ? "Click again to reset" : "Reset the entry"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : null}
           </>
         )}
 

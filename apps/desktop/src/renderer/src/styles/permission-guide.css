@@ -1,5 +1,6 @@
 /* The macOS permission guide panel (features/permission-guide). Design:
-   Claude Design → PwrSnap → "PwrSnap Permission Guide.html", option 1a.
+   Claude Design → PwrSnap → "PwrSnap Permission Guide v2.html" (the v1 file
+   holds the original option 1a boards).
 
    The BrowserWindow is transparent and GUIDE_NOTCH_MARGIN_PX (8) wider than
    the card on each side, so the notch can poke out toward System Settings.
@@ -234,28 +235,6 @@ body[data-stage="permission-guide"] {
   color: var(--text-muted);
 }
 
-.pgd__fix {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  font: 400 11px/1.4 var(--font-sans);
-  color: var(--text-muted);
-}
-.pgd__fix-row {
-  display: flex;
-  gap: 6px;
-}
-.pgd__btn.is-sm {
-  height: 22px;
-  padding: 0 8px;
-  font-size: 11px;
-}
-.pgd__btn.is-armed {
-  border-color: var(--warn-border);
-  background: var(--warn-soft);
-  color: var(--text-primary);
-}
-
 .pgd__ft {
   display: flex;
   align-items: center;
@@ -298,35 +277,270 @@ body[data-stage="permission-guide"] {
   }
 }
 
+/* Buttons: Settings' key button (.pss__key-btn), sized for the panel. Every
+   one shows its state: hover warms the border, pressed sinks a pixel, work in
+   flight shows a spinner and a verb (aria-busy), and a finished action says
+   so briefly (.is-done). */
 .pgd__btn {
   height: 26px;
   padding: 0 10px;
-  border-radius: 7px;
+  border-radius: 6px;
   border: 1px solid var(--border-default);
-  background: var(--bg-panel-elevated);
+  background: var(--bg-panel);
   color: var(--text-primary);
-  font: 500 12px/1 var(--font-sans);
+  font: 600 11px/1 var(--font-sans);
   white-space: nowrap;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   cursor: default;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out),
+    transform 60ms linear;
 }
 .pgd__btn:hover {
-  background: var(--bg-panel-hover);
+  border-color: var(--accent-border);
 }
-.pgd__btn.is-ghost {
-  background: transparent;
-  border-color: transparent;
-  color: var(--text-secondary);
-}
-.pgd__btn.is-ghost:hover {
-  color: var(--text-primary);
+.pgd__btn:active {
+  border-color: var(--accent-border);
   background: var(--bg-panel-hover);
+  transform: translateY(1px);
+}
+.pgd__btn[aria-busy="true"] {
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.pgd__btn:disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+.pgd__btn.is-done {
+  color: var(--success-text);
+  border-color: var(--success-border);
+  background: var(--success-soft);
 }
 .pgd__btn.is-pri {
+  color: var(--button-text-on-accent);
   background: var(--accent);
   border-color: var(--accent);
-  color: var(--button-text-on-accent);
-  font-weight: 600;
 }
 .pgd__btn.is-pri:hover {
   background: var(--accent-bright);
+  border-color: var(--accent-bright);
+}
+.pgd__btn.is-pri:active {
+  background: var(--accent);
+}
+.pgd__btn.is-pri[aria-busy="true"] {
+  color: var(--button-text-on-accent);
+  opacity: 0.8;
+}
+.pgd__btn.is-quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-secondary);
+}
+.pgd__btn.is-quiet:hover {
+  background: var(--bg-panel-hover);
+  color: var(--text-primary);
+}
+.pgd__btn.is-danger {
+  color: var(--danger-text);
+}
+.pgd__btn.is-danger:hover,
+.pgd__btn.is-danger.is-open {
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+}
+.pgd__btn.is-danger-solid {
+  color: var(--bg-app);
+  background: var(--danger-text);
+  border-color: var(--danger-text);
+}
+.pgd__btn.is-danger-solid:active {
+  filter: brightness(0.92);
+}
+.pgd__btn.is-danger-solid[aria-busy="true"] {
+  color: var(--bg-app);
+  opacity: 0.8;
+}
+.pgd__spin {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  animation: pgd-spin 0.8s linear infinite;
+}
+@keyframes pgd-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* "If it isn't working": one labelled row per problem, each with its own
+   action, like a Settings row. Reset confirms inline, under its row. */
+.pgd__fix {
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  overflow: hidden;
+}
+.pgd__fix-hd {
+  padding: 9px 10px 2px;
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.pgd__fix-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+}
+.pgd__fix-row + .pgd__fix-row {
+  border-top: 1px solid var(--border-subtle);
+}
+.pgd__fix-txt {
+  flex: 1;
+  min-width: 0;
+  font: 400 11px/1.35 var(--font-sans);
+  color: var(--text-muted);
+  text-wrap: pretty;
+}
+.pgd__fix-txt > b {
+  display: block;
+  font: 600 11.5px/1.3 var(--font-sans);
+  color: var(--text-primary);
+}
+.pgd__confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid var(--danger-border);
+  background: var(--danger-soft);
+  font: 400 11px/1.4 var(--font-sans);
+  color: var(--text-secondary);
+  text-wrap: pretty;
+}
+.pgd__confirm > b {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.pgd__confirm-btns {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+/* The drag, demonstrated: a ghost of the icon is grabbed (dips, lifts) and
+   glides toward the notch, which lights; the real icon dims underneath, as it
+   does in a live drag. It plays --pgd-hint-loops times, then stops.
+   The window ends GUIDE_NOTCH_MARGIN_PX past the card, so the ghost is fully
+   faded before it gets there. Toward the right when Settings is on the right. */
+.pgd {
+  --pgd-glide-mid: -24px;
+  --pgd-glide-end: -40px;
+}
+.pgd[data-notch="right"] {
+  --pgd-glide-mid: 150px;
+  --pgd-glide-end: 206px;
+}
+.pgd__handle {
+  position: relative;
+}
+.pgd__ghost {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  width: 52px;
+  height: 52px;
+  pointer-events: none;
+  animation: pgd-glide 3.4s var(--ease-in-out) var(--pgd-hint-loops, 0) both;
+}
+.pgd__ghost > img {
+  width: 52px;
+  height: 52px;
+  display: block;
+  filter: drop-shadow(0 12px 18px rgba(0, 0, 0, 0.65));
+}
+.pgd__cursor {
+  position: absolute;
+  left: 30px;
+  top: 28px;
+  width: 0;
+  height: 0;
+  border-left: 8px solid #fff;
+  border-top: 8px solid transparent;
+  border-bottom: 8px solid transparent;
+  transform: rotate(-35deg);
+  filter: drop-shadow(0 1px 1.5px #000);
+}
+@keyframes pgd-glide {
+  0%,
+  8% {
+    transform: translate(0, 0) scale(1);
+    opacity: 0;
+  }
+  18% {
+    transform: translate(0, 0) scale(0.94);
+    opacity: 1;
+  }
+  30% {
+    transform: translate(0, -2px) scale(1.06);
+    opacity: 1;
+  }
+  58% {
+    transform: translate(var(--pgd-glide-mid), -6px) scale(0.95);
+    opacity: 0.9;
+  }
+  74%,
+  100% {
+    transform: translate(var(--pgd-glide-end), -8px) scale(0.85);
+    opacity: 0;
+  }
+}
+.pgd.is-hinting .pgd__icon {
+  animation: pgd-dim 3.4s var(--ease-in-out) var(--pgd-hint-loops, 0);
+}
+@keyframes pgd-dim {
+  0%,
+  26%,
+  86%,
+  100% {
+    opacity: 1;
+  }
+  34%,
+  78% {
+    opacity: 0.3;
+  }
+}
+.pgd.is-hinting::before {
+  animation: pgd-notch 3.4s var(--ease-in-out) var(--pgd-hint-loops, 0);
+}
+@keyframes pgd-notch {
+  0%,
+  28%,
+  88%,
+  100% {
+    background: var(--bg-panel);
+  }
+  44%,
+  74% {
+    background: var(--accent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pgd__ghost {
+    display: none;
+  }
+  .pgd.is-hinting .pgd__icon,
+  .pgd.is-hinting::before {
+    animation: none;
+  }
 }

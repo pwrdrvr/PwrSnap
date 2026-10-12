@@ -67,6 +67,7 @@ import {
   type OpenWindowEntry
 } from "./application-menu";
 import { formatDiagnosticsInfo } from "./diagnostics-info";
+import { pickExportDestination } from "./export-destination-picker";
 import { isAllowedExternalUrl } from "./external-url-allowlist";
 import { installTerminalSignalShutdown } from "./terminal-signal-shutdown";
 import { installSystemShutdown } from "./system-shutdown";
@@ -983,12 +984,8 @@ async function wireHotkeyRegistrations(): Promise<void> {
 
 async function runExportLibrary(): Promise<void> {
   const log = getMainLogger("pwrsnap:export");
-  const result = await dialog.showOpenDialog({
-    title: "Choose a destination for the PwrSnap export",
-    properties: ["openDirectory", "createDirectory"]
-  });
-  if (result.canceled || result.filePaths.length === 0) return;
-  const destDir = result.filePaths[0]!;
+  const destDir = await pickExportDestination();
+  if (destDir === null) return;
   const dispatched = await bus.dispatch("library:export", { destDir }, { principal: "ipc" });
   if (!dispatched.ok) {
     log.warn("export library failed", { code: dispatched.error.code, message: dispatched.error.message });

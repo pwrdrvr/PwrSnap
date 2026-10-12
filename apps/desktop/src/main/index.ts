@@ -691,6 +691,9 @@ function refreshPasteFromClipboardMenu(): void {
       getMainLogger("pwrsnap:clipboard").warn("paste menu clipboard probe failed", {
         message: cause instanceof Error ? cause.message : String(cause)
       });
+      // An unreadable clipboard must not leave the item stuck at an older
+      // answer. Enabled is the safe hint: the command reports "no image".
+      if (seq === pasteFromClipboardRefreshSeq) item.enabled = true;
     }
   );
 }

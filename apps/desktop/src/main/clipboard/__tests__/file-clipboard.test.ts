@@ -89,6 +89,19 @@ describe("native file clipboard contracts", () => {
     );
   });
 
+  test("macOS accepts the file URL however Chromium spells it in text/uri-list", async () => {
+    // The list is Chromium's rendering of the pasteboard URL: it may carry a
+    // comment, a CRLF terminator, or escape characters Node leaves bare.
+    const filePath = "/tmp/PwrSnap roadmap & notes.gif";
+    const respelled = pathToFileURL(filePath).toString().replace("&", "%26");
+    await expect(
+      writeMacFileToClipboard(filePath, {
+        writeRaw: async () => undefined,
+        readBuffer: async () => Buffer.from(`# copied by PwrSnap\r\n${respelled}\r\n`)
+      })
+    ).resolves.toBeUndefined();
+  });
+
   test("macOS rejects an API call that leaves an empty clipboard", async () => {
     await expect(
       writeMacFileToClipboard("/tmp/export.mp4", {

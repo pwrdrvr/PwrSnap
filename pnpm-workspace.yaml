@@ -27,7 +27,8 @@ allowBuilds:
   # needed Python and a C++ toolchain; pnpm 12 honors it. This keeps it that
   # way. See AGENTS.md.
   better-sqlite3: false
-  electron: true
+  # No `electron` entry: since Electron 42 the package has no install script.
+  # The desktop postinstall runs its `install-electron` bin instead.
   electron-winstaller: true
   esbuild: true
   sharp: true

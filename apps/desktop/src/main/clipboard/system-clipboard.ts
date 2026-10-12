@@ -116,9 +116,17 @@ export async function readClipboard(): Promise<ClipboardSnapshot> {
     has: (format) => listed.has(format.toLowerCase()),
     readBuffer,
     readImage: async () => {
-      const imageFormat = formats.find((format) => format.toLowerCase().startsWith("image/"));
-      if (imageFormat === undefined) return nativeImage.createEmpty();
-      return nativeImage.createFromBuffer(await readBuffer(imageFormat));
+      // `image/png` first, then any other `image/*` flavor that decodes. On
+      // Linux a raw X11 target such as `image/bmp` is listed under its own
+      // name too, and `createFromBuffer` decodes only some of them.
+      const imageFormats = formats
+        .filter((format) => format.toLowerCase().startsWith("image/"))
+        .sort((a, b) => Number(b.toLowerCase() === "image/png") - Number(a.toLowerCase() === "image/png"));
+      for (const format of imageFormats) {
+        const image = nativeImage.createFromBuffer(await readBuffer(format));
+        if (!image.isEmpty()) return image;
+      }
+      return nativeImage.createEmpty();
     },
     readBookmark: async () => {
       const entry = listed.get(BOOKMARK_TYPE);

@@ -139,6 +139,16 @@ describe("readClipboard", () => {
     expect(await snapshot.readBookmark()).toEqual({ title: "T", url: "file:///tmp/y.png" });
   });
 
+  test("decodes image/png even when another image flavor is listed first", async () => {
+    // A raw X11 target is listed under its own MIME-like name on Linux; one
+    // that does not decode must not hide the PNG beside it.
+    fake.items = [{ [raw("image/bmp")]: Buffer.alloc(0) }, { "image/png": Buffer.from("png bytes") }];
+    const snapshot = await readClipboard();
+    expect(snapshot.formats).toEqual(["image/bmp", "image/png"]);
+    const image = (await snapshot.readImage()) as unknown as { bytes: Buffer };
+    expect(image.bytes.toString()).toBe("png bytes");
+  });
+
   test("an emptied clipboard reads as one item with nothing in it", async () => {
     fake.items = [{}];
     const snapshot = await readClipboard();

@@ -4293,10 +4293,12 @@ export type EnrichmentRepairJob = {
   concurrency: number;
   /** The captures being read right now, with when each run started (ISO). */
   inFlight: Array<{ captureId: string; startedAt: string }>;
-  /** Non-null while the job holds back to leave enrichment budget for new
-   *  captures: when it expects to continue (ISO). */
+  /** Non-null while the job waits out its own pace between run starts:
+   *  when it expects to continue (ISO). The job never draws on the live
+   *  enrichment budget. */
   waitingUntil: string | null;
-  /** Why a `stopped` job stopped (AI turned off, budget safety, …). */
+  /** Why a `stopped` job stopped (AI turned off, the cost-safety breaker
+   *  tripped by live captures, …). */
   stopReason: string | null;
   startedAt: string;
   finishedAt: string | null;

@@ -4,7 +4,10 @@
 //
 // The `codex:` prefix is deliberate: it routes these verbs to the process
 // that owns `codex:enrich` (the agent, under the process split), so the
-// job runs beside the enrichment it dispatches.
+// job runs beside the enrichment it dispatches. It has to: the job enqueues
+// through the in-process `EnrichmentRepairDispatcher` that
+// `registerCodexHandlers` returns, which skips the live budget and has no
+// bus verb anyone else could call.
 
 import { nanoid } from "nanoid";
 import {
@@ -25,6 +28,7 @@ import {
   type EnrichmentRepairDeps
 } from "../ai/enrichment-repair-job";
 import { bus } from "../command-bus";
+import type { EnrichmentRepairDispatcher } from "./codex-handlers";
 import { broadcastRendererEventToLocalWindows } from "../events";
 import { getMainLogger } from "../log";
 import { getAiRun } from "../persistence/ai-runs-repo";
@@ -146,26 +150,23 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-const productionDeps: EnrichmentRepairDeps = {
-  listCaptureIds: listEnrichmentRepairCaptureIds,
-  statusOf: enrichmentRepairStatusOf,
-  budgetStatus: () => bus.dispatch("codex:budgetStatus", {}, { principal: "ipc" }),
-  enrich: (captureId) =>
-    bus.dispatch(
-      "codex:enrich",
-      { captureId, triggerSource: "library-repair" },
-      { principal: "ipc", cancellationKey: captureId }
-    ),
-  cancelRun: async (runId) => {
-    const result = await bus.dispatch("codex:cancel", { runId }, { principal: "ipc" });
-    if (!result.ok) log.warn("repair could not cancel its run", { runId, code: result.error.code });
-  },
-  waitForRun,
-  publish: publishJob,
-  sleep,
-  now: () => Date.now(),
-  newId: () => nanoid()
-};
+export function productionRepairDeps(dispatcher: EnrichmentRepairDispatcher): EnrichmentRepairDeps {
+  return {
+    listCaptureIds: listEnrichmentRepairCaptureIds,
+    statusOf: enrichmentRepairStatusOf,
+    dispatchIntervalMs: dispatcher.dispatchIntervalMs,
+    enrich: dispatcher.enrich,
+    cancelRun: async (runId) => {
+      const result = await bus.dispatch("codex:cancel", { runId }, { principal: "ipc" });
+      if (!result.ok) log.warn("repair could not cancel its run", { runId, code: result.error.code });
+    },
+    waitForRun,
+    publish: publishJob,
+    sleep,
+    now: () => Date.now(),
+    newId: () => nanoid()
+  };
+}
 
 /** Snaps in flight at once; omitted means one. Null when out of range. */
 export function parseRepairConcurrency(raw: unknown): number | null {
@@ -174,7 +175,7 @@ export function parseRepairConcurrency(raw: unknown): number | null {
   return raw >= 1 && raw <= MAX_REPAIR_CONCURRENCY ? raw : null;
 }
 
-export function registerEnrichmentRepairHandlers(deps: EnrichmentRepairDeps = productionDeps): void {
+export function registerEnrichmentRepairHandlers(deps: EnrichmentRepairDeps): void {
   const runner = new EnrichmentRepairRunner(deps);
 
   bus.register("codex:repair:preview", async (req) => {

@@ -1321,6 +1321,140 @@ describe("Codex handlers", () => {
     expect(writes[0]?.ai.budgetSafetyDisabledAt).toMatch(/^20/);
   });
 
+  describe("operator-started re-runs (library repair)", () => {
+    const enabledAi = (patch?: Partial<Settings["ai"]>): Settings =>
+      testSettings({
+        ai: {
+          ...defaultSettings().ai,
+          enabled: true,
+          consentAcceptedAt: "2026-05-12T12:00:00.000Z",
+          budgetSafetyDisabledAt: null,
+          autoAcceptSuggestions: false,
+          ...patch
+        }
+      });
+    // Background turns write to the database; let each finish before the
+    // test's database closes.
+    const waitForRunToEnd = (runId: string | undefined): Promise<void> =>
+      waitFor(() => ["completed", "failed", "cancelled"].includes(getAiRun(runId ?? "")?.status ?? ""));
+
+    test("never spend a live token and never record a limited attempt", async () => {
+      // An empty bucket whose breaker would trip on the second refusal.
+      const budget = new AiEnrichmentBudget({ capacity: 0, disableThreshold: 2 });
+      const writes: unknown[] = [];
+      const settings = enabledAi();
+      const repair = registerCodexHandlers({
+        clientFactory: () => new FakeCodexClient() as never,
+        budget,
+        settingsReader: async () => settings,
+        settingsWriter: async (patch) => {
+          writes.push(patch);
+          return settings;
+        }
+      });
+
+      const runIds: string[] = [];
+      for (let i = 0; i < 4; i += 1) {
+        const result = await repair.enrich("cap_1");
+        expect(result.ok).toBe(true);
+        if (result.ok) runIds.push(result.value.runId);
+        await waitForRunToEnd(runIds.at(-1));
+      }
+
+      expect(budget.status(settings)).toMatchObject({ limitedAttemptsLastHour: 0, mode: "slow" });
+      expect(writes).toEqual([]);
+      expect(runIds.map((id) => getAiRun(id)?.triggerSource)).toEqual(Array(4).fill("library-repair"));
+      expect(electronMock.sentEvents.some((event) => event.channel === EVENT_CHANNELS.aiBudgetUpdated)).toBe(false);
+    });
+
+    test("a full bucket stays full while a re-run enqueues", async () => {
+      const budget = new AiEnrichmentBudget({ capacity: 3 });
+      const settings = enabledAi();
+      const repair = registerCodexHandlers({
+        clientFactory: () => new FakeCodexClient() as never,
+        budget,
+        settingsReader: async () => settings
+      });
+
+      const result = await repair.enrich("cap_1");
+      expect(result.ok).toBe(true);
+      expect(budget.status(settings).tokensAvailable).toBe(3);
+      await waitForRunToEnd(result.ok ? result.value.runId : undefined);
+    });
+
+    test("a bus caller naming the library-repair trigger still spends a token", async () => {
+      // The exemption is keyed on the in-process dispatcher, not on a
+      // request field a renderer, HTTP or MCP caller could set.
+      const budget = new AiEnrichmentBudget({ capacity: 0, disableThreshold: 10 });
+      const settings = enabledAi();
+      registerCodexHandlers({
+        clientFactory: () => new FakeCodexClient() as never,
+        budget,
+        settingsReader: async () => settings
+      });
+
+      const result = await bus.dispatch(
+        "codex:enrich",
+        { captureId: "cap_1", triggerSource: "library-repair" },
+        { principal: "ipc", cancellationKey: "cap_1" }
+      );
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.code).toBe("ai_budget_limited");
+      expect(budget.status(settings).limitedAttemptsLastHour).toBe(1);
+    });
+
+    test("still refuse when the breaker has tripped, AI is off, or consent is missing", async () => {
+      const cases: Array<[Partial<Settings["ai"]>, string]> = [
+        [{ budgetSafetyDisabledAt: "2026-05-20T12:00:00.000Z" }, "ai_budget_safety_disabled"],
+        [{ enabled: false }, "ai_disabled"],
+        [{ consentAcceptedAt: null }, "ai_consent_required"]
+      ];
+      for (const [patch, code] of cases) {
+        let clientCreated = false;
+        const repair = registerCodexHandlers({
+          clientFactory: () => {
+            clientCreated = true;
+            return new FakeCodexClient() as never;
+          },
+          budget: new AiEnrichmentBudget(),
+          settingsReader: async () => enabledAi(patch)
+        });
+        const result = await repair.enrich("cap_1");
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.error.code).toBe(code);
+        expect(clientCreated).toBe(false);
+        unregisterCodexHandlers();
+      }
+      expect(testDb.prepare("SELECT COUNT(*) AS n FROM ai_runs").get()).toEqual({ n: 0 });
+    });
+
+    test("deleting the capture aborts a re-run's turn, as it does a bus dispatch's", async () => {
+      const client = new HangingCodexClient();
+      const repair = registerCodexHandlers({
+        clientFactory: () => client as never,
+        budget: new AiEnrichmentBudget(),
+        settingsReader: async () => enabledAi()
+      });
+
+      const started = await repair.enrich("cap_1");
+      expect(started.ok).toBe(true);
+      await waitFor(() => client.started);
+      bus.cancel("cap_1");
+      await waitFor(() => client.aborted);
+      await waitForRunToEnd(started.ok ? started.value.runId : undefined);
+      expect(started.ok && getAiRun(started.value.runId)?.status).toBe("cancelled");
+    });
+
+    test("pace one start per refill interval of the rate limit in force", async () => {
+      let settings = enabledAi();
+      const repair = registerCodexHandlers({ settingsReader: async () => settings });
+      expect(await repair.dispatchIntervalMs()).toBe(6_000);
+      settings = enabledAi({ enrichmentRateLimit: { burst: 5, perMinute: 30 } });
+      expect(await repair.dispatchIntervalMs()).toBe(2_000);
+    });
+  });
+
   test("codex:cancel aborts an active background run", async () => {
     const client = new HangingCodexClient();
     registerCodexHandlers({

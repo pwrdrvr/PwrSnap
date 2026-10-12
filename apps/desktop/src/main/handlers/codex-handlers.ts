@@ -1336,7 +1336,8 @@ async function runCaptureEnrichment(params: {
   };
   const resolveFallback = params.resolveFallback;
   const health = params.primaryHealth;
-  // The primary answered: if runs could not reach it before, say so once.
+  // The primary returned a caption: if runs could not reach it before, say
+  // so once.
   const endPrimaryOutage = (primaryProvider: string): void => {
     const outage = health.endOutage(primaryProvider);
     if (outage === null) return;
@@ -1489,7 +1490,9 @@ async function runCaptureEnrichment(params: {
           if (!aborted && health.markUp(active.provider)) {
             log.info("capture enrichment primary reachable again", { runId: params.runId, provider });
           }
-          if (!aborted) endPrimaryOutage(active.provider);
+          // Not the end of the outage, though: a re-run offered now would
+          // fail the same way (a 401 from a model that came back is still a
+          // failure). The outage ends on the first caption it returns.
           throw primaryError;
         }
         // Nothing answered. Recorded with or without a fallback: without

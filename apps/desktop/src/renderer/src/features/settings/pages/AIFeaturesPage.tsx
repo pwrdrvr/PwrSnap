@@ -922,7 +922,7 @@ function EnrichmentRepairRow(): ReactElement {
   const sub =
     error ??
     (counts === null
-      ? "Counting snaps AI failed on or never read…"
+      ? "Re-run AI on snaps it failed on or never read. Opens in the Library."
       : failed + never === 0
         ? "AI has read every snap. Nothing to re-run."
         : `${failed.toLocaleString()} failed · ${never.toLocaleString()} never ran. Opens in the Library.`);
@@ -932,7 +932,9 @@ function EnrichmentRepairRow(): ReactElement {
         className="pss__key-btn"
         type="button"
         aria-haspopup="dialog"
-        disabled={counts === null || failed + never === 0}
+        // Still counting (or the count could not be read) is not "nothing
+        // to re-run": the dialog counts for itself.
+        disabled={counts !== null && failed + never === 0}
         onClick={() => {
           setError(null);
           void dispatch("library:openEnrichmentRepair", {

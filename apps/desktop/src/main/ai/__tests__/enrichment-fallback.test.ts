@@ -129,4 +129,14 @@ describe("EnrichmentPrimaryHealth", () => {
     expect(health.endOutage(CUSTOM)).toEqual({ downSince: 1_000, upAt: 90_000 });
     expect(health.endOutage(CUSTOM)).toBeNull();
   });
+
+  test("an outage left by a provider the user moved off ends when the new one answers", () => {
+    let now = 1_000;
+    const health = new EnrichmentPrimaryHealth(() => now, 60_000);
+    health.noteUnreachable(CUSTOM);
+    now = 2_000;
+    expect(health.endOutage("codex")).toBeNull();
+    now = 9_000_000;
+    expect(health.endOutage(CUSTOM)).toBeNull();
+  });
 });

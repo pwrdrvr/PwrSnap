@@ -27,9 +27,7 @@ import type {
   ShortcutPlatform,
   AcpAgentDiscovery,
   DesktopCodexDiscoverySnapshot,
-  EnrichmentPrimaryRecovery,
-  EnrichmentRepairOpenRequest,
-  EnrichmentRepairPreview
+  EnrichmentRepairOpenRequest
 } from "@pwrsnap/shared";
 import {
   EVENT_CHANNELS,
@@ -93,6 +91,7 @@ import {
 import { repairWindowToken } from "./enrichment-repair/enrichment-repair-model";
 import { useEnrichmentRepairCounts } from "./enrichment-repair/use-enrichment-repair-counts";
 import { useEnrichmentRepairJob } from "./enrichment-repair/use-enrichment-repair-job";
+import { useEnrichmentRecoveryOffer } from "./enrichment-repair/use-enrichment-recovery-offer";
 import { GridCopyPalette } from "./GridCopyPalette";
 import { closeWhenFocusLeaves } from "../shared/close-when-focus-leaves";
 import { primeEditToolbarDock } from "./useEditToolbarDock";
@@ -195,11 +194,6 @@ const ACTION_ERROR_MS = 10_000;
  *  capture ids (a few bytes each), so this is generous — it only exists so a
  *  marathon session can't grow the arrays without bound. */
 const MAX_DELETE_UNDO = 200;
-
-/** How far before a caption model's first failed attempt the back-online
- *  toast looks for failed snaps: a capture is taken a little before its
- *  enrichment starts, and a queue can hold it longer. */
-const RECOVERY_LOOKBACK_MS = 2 * 60_000;
 
 type CaptureMutationCommand = "library:delete" | "library:restore" | "library:purge";
 
@@ -1561,31 +1555,8 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
       }),
     [openEnrichmentRepairWith]
   );
-  // The caption model answered again after captures failed to reach it:
-  // offer to re-run what failed in that span, if anything did.
-  const [enrichmentRecovery, setEnrichmentRecovery] = useState<{
-    since: string;
-    until: string;
-    failed: number;
-  } | null>(null);
-  useEffect(
-    () =>
-      subscribe(EVENT_CHANNELS.enrichmentPrimaryRecovered, (payload) => {
-        const recovery = payload as Partial<EnrichmentPrimaryRecovery> | null;
-        if (typeof recovery?.downSince !== "string" || typeof recovery.upAt !== "string") return;
-        // `downSince` is the first failed attempt, which lands after its
-        // capture by however long enrichment took to start on it.
-        const since = new Date(Date.parse(recovery.downSince) - RECOVERY_LOOKBACK_MS).toISOString();
-        const until = recovery.upAt;
-        void dispatch("codex:repair:preview", {
-          criteria: { statuses: ["failed"], since, until, apps: { mode: "include", appIds: [] } }
-        }).then((result) => {
-          const failed = result.ok ? (result.value as Partial<EnrichmentRepairPreview> | undefined)?.total : undefined;
-          if (failed !== undefined && failed > 0) setEnrichmentRecovery({ since, until, failed });
-        });
-      }),
-    []
-  );
+  // The caption model answered again after captures failed to reach it.
+  const { offer: enrichmentRecovery, dismiss: dismissEnrichmentRecovery } = useEnrichmentRecoveryOffer();
   const storagePanelRef = useRef<HTMLDivElement | null>(null);
   const storageTriggerRef = useRef<HTMLButtonElement | null>(null);
   const storagePopoverRef = useRef<HTMLDivElement | null>(null);
@@ -5575,7 +5546,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           providerLabel={enrichmentProviderLabel}
           failed={enrichmentRecovery.failed}
           windowLabel={repairWindowToken(
-            { kind: "range", since: enrichmentRecovery.since, until: enrichmentRecovery.until },
+            { kind: "range", since: enrichmentRecovery.downSince, until: enrichmentRecovery.upAt },
             Date.now()
           )}
           onRerun={() => {
@@ -5583,9 +5554,9 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               statuses: ["failed"],
               window: { since: enrichmentRecovery.since, until: enrichmentRecovery.until }
             });
-            setEnrichmentRecovery(null);
+            dismissEnrichmentRecovery();
           }}
-          onDismiss={() => setEnrichmentRecovery(null)}
+          onDismiss={dismissEnrichmentRecovery}
         />
       ) : null}
 

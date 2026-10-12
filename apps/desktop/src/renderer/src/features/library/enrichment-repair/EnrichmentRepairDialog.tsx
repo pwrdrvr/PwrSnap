@@ -106,6 +106,19 @@ export function EnrichmentRepairDialog({
   const closeRef = useRef<HTMLButtonElement | null>(null);
   const dialogRef = useModal<HTMLElement>({ onClose, initialFocusRef: closeRef });
 
+  // A job that runs while the dialog is open ends on its outcome, even when
+  // the dialog was opened to set up a new one.
+  useEffect(() => {
+    if (running) setWantSetup(false);
+  }, [running]);
+
+  // Each view replaces the last, taking the focused control with it (Start,
+  // Stop, a follow-up): put focus somewhere a keyboard user can go on from.
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (dialog !== null && !dialog.contains(document.activeElement)) closeRef.current?.focus();
+  }, [view, dialogRef]);
+
   const startJob = useCallback(
     async (criteria: EnrichmentRepairCriteria, concurrency: number): Promise<string | null> => {
       const result = await dispatch("codex:repair:start", { criteria, concurrency });
@@ -256,6 +269,8 @@ function RepairSetup({
   // The window popover shows what each preset would run.
   useEffect(() => {
     if (popover !== "when") return undefined;
+    // Counts for other tiles or apps would label the wrong batch.
+    setWindowCounts(null);
     let cancelled = false;
     const stamp = Date.now();
     void Promise.all(

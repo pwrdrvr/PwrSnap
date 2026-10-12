@@ -1,8 +1,8 @@
 // How many snaps, across all time, AI failed on and never read: the numbers
 // the ways into the re-run dialog show (the Library status bar, the detail
 // rail, Settings → AI Features). Read once, then re-read shortly after any
-// AI run, capture, or repair job change settles, so a burst of broadcasts
-// costs one preview.
+// AI run, capture, or repair job change, at most once per interval, so a
+// burst of broadcasts costs one preview.
 
 import { useEffect, useState } from "react";
 import { EVENT_CHANNELS, type EnrichmentRepairCriteria, type EnrichmentRepairPreview } from "@pwrsnap/shared";
@@ -37,8 +37,11 @@ export function useEnrichmentRepairCounts(active = true): EnrichmentRepairCounts
         setCounts({ failed: byStatus.failed, never: byStatus.never });
       });
     };
+    // At most one read per interval. Not a debounce: a repair broadcasts
+    // steadily, and a timer that restarts on every event would hold the
+    // counts still for the whole run.
     const schedule = (): void => {
-      if (timer !== null) clearTimeout(timer);
+      if (timer !== null) return;
       timer = setTimeout(() => {
         timer = null;
         read();

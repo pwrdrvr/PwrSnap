@@ -340,6 +340,55 @@ describe("EnrichmentRepairDialog — running", () => {
   });
 });
 
+describe("EnrichmentRepairDialog — between views", () => {
+  test("Start moves focus to the dialog's close button, not to the page", async () => {
+    await mount();
+    const start = button("Re-run 12 snaps");
+    start.focus();
+    await act(async () => start.click());
+    await act(async () => {
+      root.render(
+        createElement(EnrichmentRepairDialog, {
+          job: job(ALL_FAILED),
+          providerLabel: "Codex",
+          aiEnabled: true,
+          altModifierLabel: "⌥",
+          onJobChange,
+          onEnableAi,
+          onClose
+        })
+      );
+    });
+    expect(container.querySelector("#ps-repair-title")?.textContent).toBe("Re-running AI");
+    expect(document.activeElement).toBe(container.querySelector(".ps-repair__x"));
+  });
+
+  test("opened to set up while a job runs, it ends on that job's outcome", async () => {
+    const render = async (current: EnrichmentRepairJob): Promise<void> => {
+      await act(async () => {
+        root.render(
+          createElement(EnrichmentRepairDialog, {
+            job: current,
+            request: { statuses: ["failed"], window: "all" },
+            providerLabel: "Codex",
+            aiEnabled: true,
+            altModifierLabel: "⌥",
+            onJobChange,
+            onEnableAi,
+            onClose
+          })
+        );
+      });
+    };
+    await render(job(ALL_FAILED));
+    expect(container.querySelector("#ps-repair-title")?.textContent).toBe("Re-running AI");
+    await render(
+      job(ALL_FAILED, { state: "completed", processed: 12, succeeded: 12, finishedAt: "2026-10-07T12:02:00.000Z" })
+    );
+    expect(container.querySelector(".ps-repair-out__t")?.textContent).toBe("All 12 fixed");
+  });
+});
+
 describe("EnrichmentRepairDialog — outcome", () => {
   const finished = {
     total: 42,

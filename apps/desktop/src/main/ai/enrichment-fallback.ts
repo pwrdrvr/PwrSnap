@@ -121,11 +121,13 @@ export class EnrichmentPrimaryHealth {
     if (!this.unreachableSince.has(provider)) this.unreachableSince.set(provider, this.nowMs());
   }
 
-  /** The provider answered: the outage that ends, or null if there was none. */
+  /** The provider answered: the outage that ends, or null if there was none.
+   *  Outages of any other provider end with it: only one primary is in use,
+   *  so one left behind by a provider the user moved off would otherwise
+   *  surface weeks later as a "down since" covering everything between. */
   endOutage(provider: string): { downSince: number; upAt: number } | null {
     const downSince = this.unreachableSince.get(provider);
-    if (downSince === undefined) return null;
-    this.unreachableSince.delete(provider);
-    return { downSince, upAt: this.nowMs() };
+    this.unreachableSince.clear();
+    return downSince === undefined ? null : { downSince, upAt: this.nowMs() };
   }
 }

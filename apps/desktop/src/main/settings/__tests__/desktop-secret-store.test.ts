@@ -25,7 +25,7 @@
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const safeStorageMock = vi.hoisted(() => {
@@ -694,4 +694,24 @@ describe("DesktopSecretStore Linux fallback key", () => {
       });
     }
   );
+});
+
+describe("DesktopSecretStore is one instance per process", () => {
+  test("production code constructs it only in getDesktopSecretStore", async () => {
+    // The write queue serializes within an instance, and getValue() can write
+    // (re-encryption). A second instance on the same file would interleave
+    // its read-modify-write with the shared one's.
+    const { readdirSync, readFileSync: read } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const mainRoot = fileURLToPath(new URL("../../", import.meta.url));
+    const constructors: string[] = [];
+    for (const entry of readdirSync(mainRoot, { recursive: true, withFileTypes: true })) {
+      const path = join(entry.parentPath, entry.name);
+      if (!entry.isFile() || !entry.name.endsWith(".ts") || path.includes("__tests__")) continue;
+      if (read(path, "utf8").includes("new DesktopSecretStore(")) {
+        constructors.push(relative(mainRoot, path).split(sep).join("/"));
+      }
+    }
+    expect(constructors).toEqual(["settings/desktop-secret-store.ts"]);
+  });
 });

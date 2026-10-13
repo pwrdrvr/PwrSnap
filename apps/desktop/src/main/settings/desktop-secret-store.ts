@@ -47,8 +47,8 @@
 //   (`queueReEncrypt`).
 
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
-import { safeStorage } from "electron";
+import { dirname, join } from "node:path";
+import { app, safeStorage } from "electron";
 import type { DesktopSettingsSecretName, SecretStatus } from "@pwrsnap/shared";
 import { getMainLogger } from "../log";
 
@@ -473,6 +473,20 @@ export class DesktopSecretStore {
     this.writeQueue = next.catch(() => undefined);
     return next;
   }
+}
+
+let sharedStore: DesktopSecretStore | null = null;
+
+/** The process's one store for `pwrsnap-secrets.bin`. Every caller must use
+ *  it: the write queue serializes only within an instance, and two
+ *  instances on one file would interleave their read-modify-write cycles
+ *  and share one `.tmp` path. `getValue()` can write too (`queueReEncrypt`),
+ *  so even a read-only caller needs the shared queue. */
+export function getDesktopSecretStore(): DesktopSecretStore {
+  sharedStore ??= new DesktopSecretStore({
+    filePath: join(app.getPath("userData"), "pwrsnap-secrets.bin")
+  });
+  return sharedStore;
 }
 
 export class SecretUnavailableError extends Error {

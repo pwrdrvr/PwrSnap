@@ -76,7 +76,7 @@ import {
   positionSizzleWindowForSource
 } from "../window";
 import {
-  DesktopSecretStore,
+  getDesktopSecretStore,
   SecretUnavailableError
 } from "../settings/desktop-secret-store";
 import { resolveCacheFile } from "../render/coordinator";
@@ -94,16 +94,8 @@ import {
 
 const log = getMainLogger("pwrsnap:sizzle-handlers");
 
-let secretStore: DesktopSecretStore | null = null;
-
-function getSecrets(): DesktopSecretStore {
-  if (secretStore === null) {
-    secretStore = new DesktopSecretStore({
-      filePath: join(app.getPath("userData"), "pwrsnap-secrets.bin")
-    });
-  }
-  return secretStore;
-}
+/** The shared store: see `getDesktopSecretStore`. */
+const getSecrets = getDesktopSecretStore;
 
 function broadcastRenderProgress(event: SizzleRenderProgressEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {

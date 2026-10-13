@@ -116,7 +116,11 @@ const GITHUB_RELEASES_URL = "https://api.github.com/repos/pwrdrvr/PwrSnap/releas
 const GITHUB_LATEST_RELEASE_URL = `${GITHUB_RELEASES_URL}/latest`;
 const RELEASE_PAGE_SIZE = 100;
 const RELEASE_MAX_PAGES = 10;
-const RELEASE_FETCH_TIMEOUT_MS = 5_000;
+// This covers headers AND the full JSON body (up to 100 releases per page).
+// A short deadline can abort healthy transfers on weak connections before
+// download even starts. Keep a bounded deadline without retrying requests
+// against the shared GitHub API quota.
+const RELEASE_FETCH_TIMEOUT_MS = 60_000;
 
 // The GitHub REST API allows 60 anonymous requests per hour per IP, shared by
 // every process on the machine, and one release read here costs at least two
@@ -1667,23 +1671,54 @@ async function fetchGitHubJson(
   // Each gets its own budget, including body consumption: a stalled optional
   // /latest lookup must not hand the release-list fallback an aborted signal.
   const controller = new AbortController();
+  const startedAt = Date.now();
+  let phase: "headers" | "body" = "headers";
+  let status: number | undefined;
   const timeout = setTimeout(() => controller.abort(), RELEASE_FETCH_TIMEOUT_MS);
   try {
     const response = await fetch(url, {
       headers: githubReleaseHeaders(etag),
       signal: controller.signal
     });
+    status = response.status;
     if (response.status === 304) {
       return { notModified: true };
     }
     if (!response.ok) {
       throw releaseRequestError(response);
     }
+    phase = "body";
     return {
       etag: readResponseHeader(response, "etag"),
       notModified: false,
       payload: await response.json()
     };
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    const cause = error.cause instanceof Error ? error.cause : undefined;
+    const timedOut = controller.signal.aborted;
+    // Log here: /latest is optional, so its caller intentionally swallows
+    // failures. Keep its endpoint and underlying transport cause observable.
+    log.warn("GitHub release request failed", {
+      url,
+      phase,
+      status,
+      elapsedMs: Date.now() - startedAt,
+      timeoutMs: RELEASE_FETCH_TIMEOUT_MS,
+      timedOut,
+      errorName: error.name,
+      message: error.message,
+      cause: cause?.message,
+      code: cause && "code" in cause ? cause.code : "code" in error ? error.code : undefined
+    });
+    if (timedOut) {
+      throw new Error(
+        `Checking for updates timed out after ${RELEASE_FETCH_TIMEOUT_MS / 1_000} seconds. ` +
+        "Check your connection and try again.",
+        { cause: err }
+      );
+    }
+    throw err;
   } finally {
     clearTimeout(timeout);
   }

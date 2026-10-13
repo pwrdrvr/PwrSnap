@@ -62,21 +62,21 @@ type BusTool = {
   activatableArgs: readonly string[];
 };
 
-/** Tried in order; a missing binary falls through to the next. */
-const BUS_TOOLS: readonly BusTool[] = [
-  {
-    command: "busctl",
-    listArgs: ["--user", "--no-pager", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "ListNames"],
-    activatableArgs: [
-      "--user",
-      "--no-pager",
-      "call",
-      "org.freedesktop.DBus",
-      "/org/freedesktop/DBus",
-      "org.freedesktop.DBus",
-      "ListActivatableNames"
-    ]
-  },
+/** Tried in order; a missing binary falls through to the next.
+ *
+ *  Chromium reaches the keyring over the SESSION bus
+ *  (`DBUS_SESSION_BUS_ADDRESS`). `busctl --user` is the systemd user bus,
+ *  which is a different bus when the session was started with
+ *  `dbus-run-session`, so busctl is pointed at the session address when one
+ *  is set. dbus-send and gdbus read it themselves. */
+function busTools(env: NodeJS.ProcessEnv): readonly BusTool[] {
+  const sessionAddress = env.DBUS_SESSION_BUS_ADDRESS?.trim();
+  const busctlBus = sessionAddress ? `--address=${sessionAddress}` : "--user";
+  const busctlCall = [busctlBus, "--no-pager", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus"];
+  return [{ command: "busctl", listArgs: [...busctlCall, "ListNames"], activatableArgs: [...busctlCall, "ListActivatableNames"] }, ...SESSION_BUS_TOOLS];
+}
+
+const SESSION_BUS_TOOLS: readonly BusTool[] = [
   {
     command: "dbus-send",
     listArgs: ["--session", "--print-reply", "--dest=org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus.ListNames"],
@@ -209,6 +209,9 @@ function defaultExec(command: string, args: readonly string[]): CommandResult {
       stdout: execFileSync(command, args, {
         encoding: "utf8",
         timeout: BUS_TIMEOUT_MS,
+        // spawnSync waits for the child to exit after its timeout signal, so
+        // a client that ignores SIGTERM would hold startup indefinitely.
+        killSignal: "SIGKILL",
         stdio: ["ignore", "pipe", "pipe"]
       })
     };
@@ -226,9 +229,10 @@ function defaultExec(command: string, args: readonly string[]): CommandResult {
 /** List the session bus's owned and activatable names with the first dbus
  *  client that is installed. A client that runs and fails is a probe
  *  failure, not a reason to try the next one. */
-export function probeSecretServices(exec: CommandExec = defaultExec): SecretServiceProbe {
+export function probeSecretServices(exec: CommandExec = defaultExec, env: NodeJS.ProcessEnv = process.env): SecretServiceProbe {
+  const tools = busTools(env);
   let missingTools = 0;
-  for (const tool of BUS_TOOLS) {
+  for (const tool of tools) {
     const listed = exec(tool.command, tool.listArgs);
     if ("missing" in listed) {
       missingTools += 1;
@@ -245,7 +249,7 @@ export function probeSecretServices(exec: CommandExec = defaultExec): SecretServ
   }
   return {
     status: "unavailable",
-    reason: missingTools === BUS_TOOLS.length ? "no dbus client (busctl, dbus-send, gdbus)" : "session bus name list failed"
+    reason: missingTools === tools.length ? "no dbus client (busctl, dbus-send, gdbus)" : "session bus name list failed"
   };
 }
 
@@ -312,9 +316,19 @@ export function relaunchForLinuxSecretStore(input: RelaunchForLinuxSecretStoreIn
 
   const forced = forcedStore(input.env);
   if (forced !== undefined && forced !== "auto") return false;
+  const rawOverride = input.env[LINUX_PASSWORD_STORE_ENV]?.trim();
+  if (forced === undefined && rawOverride !== undefined && rawOverride !== "") {
+    // Not a spelling Chromium accepts (`gnome` is the common one), so it
+    // forced nothing. Say so rather than act as if no override were set.
+    input.warn("linux secret store: ignoring unrecognized override", {
+      env: LINUX_PASSWORD_STORE_ENV,
+      value: rawOverride,
+      accepted: [...LINUX_SECRET_STORES, "basic", "auto"]
+    });
+  }
   if (input.backend !== "basic_text") return false;
 
-  const probe = input.probe ?? probeSecretServices(input.exec);
+  const probe = input.probe ?? probeSecretServices(input.exec, input.env);
   if (probe.status === "unavailable") {
     input.warn("linux secret store: session bus probe failed; staying on basic_text", { reason: probe.reason });
     return false;

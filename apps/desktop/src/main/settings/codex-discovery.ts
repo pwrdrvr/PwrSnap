@@ -43,10 +43,12 @@ import path from "node:path";
 import {
   compareCodexCliVersions as kitCompareCodexCliVersions,
   discoverCommands,
+  readCommandVersion,
   pathIsExecutable as kitPathIsExecutable,
   type CommandDiscoveryCandidate,
   type CommandDiscoverySnapshot
 } from "@pwrdrvr/codex-discovery";
+import { prependCommandDirToPath } from "@pwrdrvr/agent-transport";
 
 import { PWRSNAP_CODEX_COMMAND_ENV } from "./env";
 import { execAgentCommand } from "../ai/agent-command";
@@ -410,7 +412,24 @@ export async function discoverCodexCommands(params?: {
     autoCandidates: await buildCodexAutoCandidates(env),
     parseVersion: parseCodexVersion,
     compareVersions: kitCompareCodexCliVersions,
-    validateVersion: validateCodexCliVersion
+    validateVersion: validateCodexCliVersion,
+    // The kit's ordinary version probe uses the inherited env verbatim.
+    // Match execAgentCommand and the App Server transport: an npm launcher
+    // with an `env node` shebang needs its sibling node on a GUI's sparse PATH.
+    // Use the kit's bounded probe and skip its ordinary probe, so this remains
+    // one spawn per candidate and never invokes a login shell.
+    preflightCandidate: async ({ command, env: candidateEnv, platform, signal }) => {
+      const probeEnv = prependCommandDirToPath(command, candidateEnv);
+      if (probeEnv === candidateEnv) return undefined;
+      const result = await readCommandVersion({
+        command, env: probeEnv, platform, signal, parseVersion: parseCodexVersion
+      });
+      return {
+        skipVersionProbe: true,
+        version: result.version,
+        versionFailureReason: result.failureReason
+      };
+    }
   });
 
   const candidates = snapshot.candidates.map(toDesktopCandidate);

@@ -185,7 +185,7 @@ encryptor exists, key or no key. On Linux with no keyring, the async
 encryptor quietly seals with Chromium's built-in `v10` key, so the store
 refuses that tag itself. Second, `decryptStringAsync` reports
 `shouldReEncrypt`, and `getValue()` answers it with one queued rewrite.
-[Settings substrate rules](../agents/settings.md) describes the current behavior.
+See the [settings substrate rules](../agents/settings.md) for the current behavior.
 
 ## Installed-agent discovery — store-owned, targeted, single-flight
 

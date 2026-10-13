@@ -18,7 +18,7 @@ import {
   getDataRoot
 } from "../persistence/paths";
 import { runGatedCacheWrite } from "../persistence/derived-cache-gate";
-import { DesktopSecretStore } from "../settings/desktop-secret-store";
+import { getDesktopSecretStore } from "../settings/desktop-secret-store";
 import { resolveFfmpegPath } from "../recording/ffmpeg-resolver";
 import { assertSizzleRenderPlatform } from "../sizzle/composer";
 import {
@@ -55,9 +55,7 @@ export function registerSizzleTimelineRenderHandlers(): void {
         "sizzle-narration-preparation",
         key,
         async (signal) => {
-          const apiKey = await new DesktopSecretStore({
-            filePath: join(getDataRoot(), "pwrsnap-secrets.bin")
-          }).getValue("openaiApiKey");
+          const apiKey = await getDesktopSecretStore(getDataRoot()).getValue("openaiApiKey");
           const prepared = await prepareTimelineNarration({
             timeline,
             assets,
@@ -125,9 +123,7 @@ export function registerSizzleTimelineRenderHandlers(): void {
         "sizzle-narration-alignment",
         key,
         async (signal) => {
-          const apiKey = await new DesktopSecretStore({
-            filePath: join(getDataRoot(), "pwrsnap-secrets.bin")
-          }).getValue("openaiApiKey");
+          const apiKey = await getDesktopSecretStore(getDataRoot()).getValue("openaiApiKey");
           return ok(
             await alignTimelineNarration({
               timeline,
@@ -177,9 +173,7 @@ export function registerSizzleTimelineRenderHandlers(): void {
         "sizzle-audio-qa",
         key,
         async (signal) => {
-          const apiKey = await new DesktopSecretStore({
-            filePath: join(getDataRoot(), "pwrsnap-secrets.bin")
-          }).getValue("openaiApiKey");
+          const apiKey = await getDesktopSecretStore(getDataRoot()).getValue("openaiApiKey");
           if (!apiKey)
             throw new Error(
               "Set an OpenAI API key before transcribing the mixed audio"
@@ -283,9 +277,7 @@ export function registerSizzleTimelineRenderHandlers(): void {
               (a) => a.source.kind === "speech" || a.expectedText
             )
           )
-            apiKey = await new DesktopSecretStore({
-              filePath: join(getDataRoot(), "pwrsnap-secrets.bin")
-            }).getValue("openaiApiKey");
+            apiKey = await getDesktopSecretStore(getDataRoot()).getValue("openaiApiKey");
           const audio = req.frames
             ? { reports: [] }
             : await prepareTimelineAudio({

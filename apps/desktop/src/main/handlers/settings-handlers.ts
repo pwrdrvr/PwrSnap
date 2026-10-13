@@ -6,8 +6,7 @@ import { registerAppleFmHandlers } from "./apple-fm-handlers";
 // instance, production hasn't fired `app.whenReady()` yet). Every
 // write broadcasts `events:settings:changed` to every BrowserWindow.
 
-import { BrowserWindow, app } from "electron";
-import { join } from "node:path";
+import { BrowserWindow } from "electron";
 import {
   ok,
   err,
@@ -61,6 +60,7 @@ import {
 } from "../settings/desktop-settings-store";
 import {
   DesktopSecretStore,
+  getDesktopSecretStore,
   SecretUnavailableError
 } from "../settings/desktop-secret-store";
 import {
@@ -104,10 +104,7 @@ function ensureServices(): {
     settingsService = getDesktopSettingsStore();
   }
   if (secretStore === null) {
-    const userData = app.getPath("userData");
-    secretStore = new DesktopSecretStore({
-      filePath: join(userData, "pwrsnap-secrets.bin")
-    });
+    secretStore = getDesktopSecretStore();
   }
   return { service: settingsService, secrets: secretStore };
 }

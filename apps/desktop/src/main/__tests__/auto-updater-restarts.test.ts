@@ -119,8 +119,8 @@ afterEach(async () => {
 
 describe("production release requests across process restarts", () => {
   test.each([
-    { name: "a stalled latest lookup", latestDelay: null, pageDelay: 4_000, status: "no-update" },
-    { name: "two individually slow requests", latestDelay: 4_000, pageDelay: 4_000, status: "no-update" },
+    { name: "a stalled latest lookup", latestDelay: null, pageDelay: 40_000, status: "no-update" },
+    { name: "two individually slow requests", latestDelay: 40_000, pageDelay: 40_000, status: "no-update" },
     { name: "a stalled release page", latestDelay: 0, pageDelay: null, status: "error" }
   ])("gives each sequential request its own timeout for $name", async ({ latestDelay, pageDelay, status }) => {
     let firstRequestStarted!: () => void;
@@ -150,7 +150,7 @@ describe("production release requests across process restarts", () => {
 
     const check = updater.checkForAppUpdatesNow("manual");
     await started;
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(120_000);
     expect((await check).status).toBe(status);
     expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([latestURL, pageURL]);
     expect(signals[0]).not.toBe(signals[1]);

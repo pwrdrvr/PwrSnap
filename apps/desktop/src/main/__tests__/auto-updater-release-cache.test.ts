@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => {
   const handlers = new Map<string, Set<UpdateEventHandler>>();
   return {
     handlers,
+    logWarn: vi.fn(),
     autoUpdater: {
       allowDowngrade: false,
       allowPrerelease: false,
@@ -68,6 +69,10 @@ vi.mock("../process-split/event-relay", () => ({
   relayRendererEventToPeer: vi.fn()
 }));
 
+vi.mock("../log", () => ({
+  getMainLogger: () => ({ info: vi.fn(), warn: mocks.logWarn, error: vi.fn() })
+}));
+
 const fetchMock = vi.fn();
 
 const STABLE_TAG = "v1.0.0";
@@ -114,6 +119,22 @@ function mockGitHubReleases(releases = [githubRelease(STABLE_TAG)]): void {
 
 function mockNotModified(): void {
   fetchMock.mockImplementation(async () => githubResponse(undefined, { status: 304 }));
+}
+
+/** Model fetch/body consumption honoring the request's abort signal. */
+function delayedResponse<T>(value: T, signal: AbortSignal, delayMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    signal.throwIfAborted();
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", abort);
+      resolve(value);
+    }, delayMs);
+    function abort(): void {
+      clearTimeout(timer);
+      reject(signal.reason);
+    }
+    signal.addEventListener("abort", abort, { once: true });
+  });
 }
 
 function mockRateLimited(resetAtMs: number): void {
@@ -166,6 +187,7 @@ describe("auto updater release cache", () => {
     process.env.NODE_ENV = "production";
     delete process.env.PWRSNAP_E2E;
     mocks.handlers.clear();
+    mocks.logWarn.mockClear();
     mocks.autoUpdater.checkForUpdates.mockReset();
     mocks.autoUpdater.checkForUpdates.mockResolvedValue({
       updateInfo: { version: STABLE_TAG.slice(1) }
@@ -221,6 +243,113 @@ describe("auto updater release cache", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(versions.stable.latest.version).toBe(STABLE_TAG);
     expect(check.status).not.toBe("error");
+  });
+
+  test.each(["headers", "body"] as const)("allows slow release %s beyond five seconds", async (phase) => {
+    const updater = await importAutoUpdater();
+    let pageSignal: AbortSignal | undefined;
+    fetchMock.mockImplementation(async (input: string, { signal }: { signal: AbortSignal }) => {
+      if (input.includes("/releases/latest")) return githubResponse(githubRelease(STABLE_TAG));
+      pageSignal = signal;
+      const releases = [githubRelease(STABLE_TAG)];
+      return phase === "headers"
+        ? delayedResponse(githubResponse(releases), signal, 10_000)
+        : { ...githubResponse(releases), json: () => delayedResponse(releases, signal, 10_000) };
+    });
+
+    const check = updater.checkForAppUpdatesNow("menu");
+    await vi.advanceTimersByTimeAsync(5_001);
+    expect(pageSignal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(4_999);
+
+    expect(await check).toEqual({ status: "available", version: STABLE_TAG.slice(1) });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(mocks.logWarn).not.toHaveBeenCalled();
+    // Finishing the body must dispose the deadline, too.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(pageSignal?.aborted).toBe(false);
+  });
+
+  test.each(["headers", "body"] as const)("reports a stalled release %s request with its deadline and endpoint", async (phase) => {
+    const updater = await importAutoUpdater();
+    let pageSignal: AbortSignal | undefined;
+    fetchMock.mockImplementation(async (input: string, { signal }: { signal: AbortSignal }) => {
+      if (input.includes("/releases/latest")) return githubResponse(githubRelease(STABLE_TAG));
+      pageSignal = signal;
+      const releases = [githubRelease(STABLE_TAG)];
+      return phase === "headers"
+        ? delayedResponse(githubResponse(releases), signal, 120_000)
+        : { ...githubResponse(releases), json: () => delayedResponse(releases, signal, 120_000) };
+    });
+
+    const check = updater.checkForAppUpdatesNow("menu");
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(pageSignal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+
+    const result = await check;
+    expect(result).toEqual({
+      status: "error",
+      message: "Checking for updates timed out after 60 seconds. Check your connection and try again."
+    });
+    expect(updater.readAppUpdateStatus()).toEqual(result);
+    expect(pageSignal?.aborted).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(mocks.autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+    expect(mocks.logWarn).toHaveBeenCalledWith("GitHub release request failed", expect.objectContaining({
+      url: "https://api.github.com/repos/pwrdrvr/PwrSnap/releases?per_page=100&page=1",
+      elapsedMs: 60_000,
+      timeoutMs: 60_000,
+      timedOut: true,
+      phase,
+      status: phase === "body" ? 200 : undefined,
+      errorName: "AbortError"
+    }));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("keeps the release-list deadline independent of a timed-out optional latest lookup", async () => {
+    const updater = await importAutoUpdater();
+    const signals: AbortSignal[] = [];
+    fetchMock.mockImplementation(async (input: string, { signal }: { signal: AbortSignal }) => {
+      signals.push(signal);
+      return input.includes("/releases/latest")
+        ? delayedResponse(githubResponse(githubRelease(STABLE_TAG)), signal, 120_000)
+        : delayedResponse(githubResponse([githubRelease(STABLE_TAG)]), signal, 10_000);
+    });
+
+    const versions = updater.readAppUpdateReleaseVersions();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(signals).toHaveLength(2);
+    expect(signals[0]?.aborted).toBe(true);
+    expect(signals[1]?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect((await versions).stable.latest.version).toBe(STABLE_TAG);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(mocks.logWarn).toHaveBeenCalledWith("GitHub release request failed", expect.objectContaining({
+      url: "https://api.github.com/repos/pwrdrvr/PwrSnap/releases/latest",
+      timedOut: true
+    }));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("logs transport causes without misreporting them as request deadlines", async () => {
+    const updater = await importAutoUpdater();
+    const cause = Object.assign(new Error("getaddrinfo ENOTFOUND api.github.com"), { code: "ENOTFOUND" });
+    fetchMock.mockRejectedValue(new TypeError("fetch failed", { cause }));
+
+    const versions = await updater.readAppUpdateReleaseVersions();
+
+    expect(versions.stable.latest.unavailableReason).toBe("fetch failed");
+    expect(mocks.logWarn).toHaveBeenCalledWith("GitHub release request failed", expect.objectContaining({
+      timedOut: false,
+      errorName: "TypeError",
+      message: "fetch failed",
+      cause: "getaddrinfo ENOTFOUND api.github.com",
+      code: "ENOTFOUND"
+    }));
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   test("refetches once the cache entry expires", async () => {

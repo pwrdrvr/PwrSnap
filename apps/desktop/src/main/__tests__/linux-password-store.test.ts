@@ -68,7 +68,7 @@ describe("probeSecretServices", () => {
       return { status: 0, stdout: activatable ? 'string "org.freedesktop.secrets"' : 'string "org.kde.kwalletd6"' };
     });
 
-    expect(probeSecretServices(exec)).toEqual({
+    expect(probeSecretServices(exec, {})).toEqual({
       status: "ok",
       owned: ["org.kde.kwalletd6"],
       activatable: ["org.freedesktop.secrets"]
@@ -81,15 +81,31 @@ describe("probeSecretServices", () => {
       command === "busctl" ? { status: 1, stdout: "", stderr: "Failed to connect to bus" } : { missing: true }
     );
 
-    expect(probeSecretServices(exec)).toEqual({ status: "unavailable", reason: "busctl ListNames exited 1" });
+    expect(probeSecretServices(exec, {})).toEqual({ status: "unavailable", reason: "busctl ListNames exited 1" });
     expect(exec).toHaveBeenCalledTimes(1);
   });
 
   test("reports when no dbus client is installed", () => {
-    expect(probeSecretServices(() => ({ missing: true }))).toEqual({
+    expect(probeSecretServices(() => ({ missing: true }), {})).toEqual({
       status: "unavailable",
       reason: "no dbus client (busctl, dbus-send, gdbus)"
     });
+  });
+
+  test("points busctl at the session bus Chromium uses, not the systemd user bus", () => {
+    const calls: (readonly string[])[] = [];
+    const exec: CommandExec = (command, args) => {
+      if (command === "busctl") calls.push(args);
+      return { status: 0, stdout: 'as 1 "org.freedesktop.secrets"' };
+    };
+
+    probeSecretServices(exec, { DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/dbus-session-fixture" });
+    expect(calls.every((args) => args[0] === "--address=unix:path=/run/user/1000/dbus-session-fixture")).toBe(true);
+
+    calls.length = 0;
+    probeSecretServices(exec, {});
+    expect(calls.every((args) => args[0] === "--user")).toBe(true);
+    expect(calls).toHaveLength(2);
   });
 
   test("a failed activatable list still returns the owned names", () => {
@@ -98,7 +114,7 @@ describe("probeSecretServices", () => {
         ? { status: 1, stdout: "", stderr: "denied" }
         : { status: 0, stdout: 'as 1 "org.freedesktop.secrets"' };
 
-    expect(probeSecretServices(exec)).toEqual({ status: "ok", owned: ["org.freedesktop.secrets"], activatable: [] });
+    expect(probeSecretServices(exec, {})).toEqual({ status: "ok", owned: ["org.freedesktop.secrets"], activatable: [] });
   });
 });
 
@@ -280,6 +296,17 @@ describe("relaunchForLinuxSecretStore", () => {
       expect(result.exited).toBe(false);
       expect(result.relaunch).not.toHaveBeenCalled();
     }
+  });
+
+  test("says so when the override is not a store Chromium accepts", () => {
+    const result = relaunchWith({ env: { PWRSNAP_LINUX_PASSWORD_STORE: "gnome" } });
+
+    expect(result.warn).toHaveBeenCalledWith(
+      "linux secret store: ignoring unrecognized override",
+      expect.objectContaining({ value: "gnome" })
+    );
+    // It forced nothing, so the default behavior still runs.
+    expect(result.exited).toBe(true);
   });
 
   test("`auto` behaves like no override", () => {

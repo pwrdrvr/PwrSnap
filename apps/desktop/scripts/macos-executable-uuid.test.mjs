@@ -6,6 +6,39 @@ import { execFileSync } from "node:child_process";
 import { macExecutableIdentity, personalizeMacExecutableUuid, personalizeMacExecutableFile } from "./macos-executable-uuid.mjs";
 import afterPack from "./afterpack-sign-appex.mjs";
 
+// Native tool startup/linking can exceed Vitest's 5s unit-test default on a
+// loaded/cold CI runner. Bound each command AND the whole native sequence;
+// leave the outer test time for file I/O, assertions, diagnostics and cleanup.
+const NATIVE_COMMAND_TIMEOUT_MS = 15_000;
+const NATIVE_SEQUENCE_TIMEOUT_MS = 60_000;
+const NATIVE_TEST_TIMEOUT_MS = 90_000;
+
+function nativeRunner({ commandTimeoutMs = NATIVE_COMMAND_TIMEOUT_MS,
+  sequenceTimeoutMs = NATIVE_SEQUENCE_TIMEOUT_MS } = {}) {
+  const started = performance.now();
+  const timings = [];
+  return (file, args) => {
+    const command = [file, ...args].map((arg) => JSON.stringify(arg)).join(" ");
+    const remaining = Math.floor(sequenceTimeoutMs - (performance.now() - started));
+    if (remaining <= 0) {
+      throw new Error(`Native fixture exceeded ${sequenceTimeoutMs}ms before ${command}\n${timings.join("\n")}`);
+    }
+    const timeout = Math.min(commandTimeoutMs, remaining);
+    const commandStarted = performance.now();
+    try {
+      return execFileSync(file, args, { encoding: "utf8", timeout, killSignal: "SIGKILL", stdio: "pipe" });
+    } catch (cause) {
+      throw new Error(`Native command failed after ${Math.round(performance.now() - commandStarted)}ms ` +
+        `(limit ${timeout}ms): ${command}\n` +
+        `code=${cause.code} status=${cause.status} signal=${cause.signal}\n` +
+        `stdout: ${cause.stdout ?? ""}\nstderr: ${cause.stderr ?? ""}\n` +
+        `Previous commands:\n${timings.join("\n")}`, { cause });
+    } finally {
+      timings.push(`${Math.round(performance.now() - commandStarted)}ms: ${command}`);
+    }
+  };
+}
+
 const packager = {
   appInfo: { id: "com.pwrdrvr.pwrsnap", version: "1.1.6", productFilename: "PwrSnap" },
   config: { electronVersion: "41.10.7" }
@@ -39,6 +72,33 @@ function fat(wide = false, slices = [thin(), thin(0x1000007, 3)]) {
   return bytes;
 }
 const uuid = (bytes) => bytes.subarray(40, 56).toString("hex");
+
+describe("bounded native fixture commands", () => {
+  test("includes failed command, exit status and both output streams", () => {
+    const run = nativeRunner();
+    run(process.execPath, ["-e", "process.stdout.write('ok')"]);
+    expect(() => run(process.execPath, ["-e",
+      "process.stdout.write('fixture output'); process.stderr.write('fixture error'); process.exit(7)"]))
+      .toThrow(/status=7[\s\S]*stdout: fixture output[\s\S]*stderr: fixture error[\s\S]*Previous commands:[\s\S]*process.stdout.write/);
+  });
+  test("kills a stalled child and reports the timeout", () => {
+    const run = nativeRunner({ commandTimeoutMs: 250 });
+    let failure;
+    try {
+      run(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"]);
+    } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure.message).toMatch(/limit 250ms/);
+    expect(failure.cause.code).toBe("ETIMEDOUT");
+    expect(failure.cause.signal).toBe("SIGKILL");
+  });
+  test("refuses to launch commands after the sequence budget expires", async () => {
+    const run = nativeRunner({ sequenceTimeoutMs: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(() => run(process.execPath, ["-e", "process.exit(7)"]))
+      .toThrow(/Native fixture exceeded 1ms before/);
+  });
+});
 
 describe("macOS main executable UUID", () => {
   test("changes only LC_UUID, leaves input untouched, and is idempotent", () => {
@@ -127,32 +187,33 @@ describe("macOS main executable UUID", () => {
   });
   test.skipIf(process.platform !== "darwin")("real thin/universal Mach-O stays signable and Apple tools read the new UUID", async () => {
     const root = await mkdtemp(join(tmpdir(), "pwrsnap-uuid-native-"));
+    const run = nativeRunner();
     try {
       const source = join(root, "main.c");
       await writeFile(source, "int main(void) { return 0; }\n");
       const outputs = [];
       for (const arch of ["arm64", "x86_64"]) {
         const binary = join(root, arch);
-        execFileSync("xcrun", ["clang", "-arch", arch, source, "-o", binary]);
+        run("xcrun", ["clang", "-arch", arch, source, "-o", binary]);
         outputs.push(binary);
       }
       const universal = join(root, "universal");
-      execFileSync("xcrun", ["lipo", "-create", ...outputs, "-output", universal]);
-      const old = execFileSync("xcrun", ["dwarfdump", "--uuid", universal], { encoding: "utf8" });
+      run("xcrun", ["lipo", "-create", ...outputs, "-output", universal]);
+      const old = run("xcrun", ["dwarfdump", "--uuid", universal]);
       for (const binary of [...outputs, universal]) {
         await personalizeMacExecutableFile(binary, identity);
-        execFileSync("codesign", ["--force", "--sign", "-", binary]);
-        execFileSync("codesign", ["--verify", "--strict", binary]);
+        run("codesign", ["--force", "--sign", "-", binary]);
+        run("codesign", ["--verify", "--strict", binary]);
         // Idempotency must also preserve a newly applied signature.
         await personalizeMacExecutableFile(binary, identity);
-        execFileSync("codesign", ["--verify", "--strict", binary]);
+        run("codesign", ["--verify", "--strict", binary]);
       }
-      const current = execFileSync("xcrun", ["dwarfdump", "--uuid", universal], { encoding: "utf8" });
+      const current = run("xcrun", ["dwarfdump", "--uuid", universal]);
       expect(current).not.toBe(old);
       for (const binary of outputs) {
-        const line = execFileSync("xcrun", ["dwarfdump", "--uuid", binary], { encoding: "utf8" });
+        const line = run("xcrun", ["dwarfdump", "--uuid", binary]);
         expect(current).toContain(line.split(" ")[1]);
       }
     } finally { await rm(root, { recursive: true, force: true }); }
-  });
+  }, NATIVE_TEST_TIMEOUT_MS);
 });

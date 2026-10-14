@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.2.0 - 2026-10-14
+
+PwrSnap 1.2 moves to Electron 44.5.1, with more dependable clipboard,
+update checks, and Codex connection discovery.
+
+- Desktop Runtime - Improved runtime security with the move from Electron
+  41 to 44.5.1, including a newer Chromium browser engine.
+- Clipboard - Fixed opening menus fetching remote clipboard contents before
+  you choose Paste from Clipboard, avoiding unwanted Universal Clipboard transfers.
+- App Updates - Improved checks on slow connections with a longer request
+  deadline and a clear timeout message instead of an unexplained abort.
+- Codex Connection - Fixed discovering npm-installed Codex when PwrSnap
+  starts without Node on its inherited PATH, allowing compatible installs to connect.
+
 ## v1.2.0-prerelease.1 - 2026-10-13
 
 This first 1.2 candidate moves PwrSnap to Electron 44.5.1. It is a prerelease

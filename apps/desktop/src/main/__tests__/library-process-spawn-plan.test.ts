@@ -10,11 +10,17 @@ vi.mock("../log", () => ({
   getMainLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() })
 }));
 
-const { libraryProcessSpawnPlan, isLibraryWindowSpawnVerb } = await import(
-  "../process-split/library-process-supervisor"
-);
+const {
+  getLibraryProcessPid,
+  libraryProcessSpawnPlan,
+  isLibraryWindowSpawnVerb
+} = await import("../process-split/library-process-supervisor");
 
 describe("libraryProcessSpawnPlan", () => {
+  test("reports no peer pid before the on-demand Library is spawned", () => {
+    expect(getLibraryProcessPid()).toBeNull();
+  });
+
   test("packaged: relaunch our own binary with only the role flag", () => {
     expect(
       libraryProcessSpawnPlan({

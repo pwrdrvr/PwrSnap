@@ -37,6 +37,7 @@ export default defineConfig({
           server: { deps: { inline: ["@pwrdrvr/codex-discovery"] } },
           include: [
             "scripts/**/*.test.mjs",
+            "packages/pwrsnap/**/__tests__/**/*.test.mjs",
             "apps/desktop/scripts/**/*.test.mjs",
             "apps/desktop/src/main/**/__tests__/**/*.test.ts",
             "apps/desktop/src/preload/**/__tests__/**/*.test.ts",

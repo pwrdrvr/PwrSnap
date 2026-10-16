@@ -176,6 +176,17 @@ which forces every patch to include every leaf.
   = appending to the tuple + extending `DesktopSettingsSecretName` in
   shared protocol.
 
+**Addendum (2026-10-11).** The store now uses `safeStorage`'s async
+methods. Electron 45 deprecates `isEncryptionAvailable` / `encryptString`
+/ `decryptString`, and Electron 46 removes them. The async methods read the
+same key stores, so existing files decrypt unchanged. Two differences
+matter here. First, `isAsyncEncryptionAvailable()` resolves true once the
+encryptor exists, key or no key. On Linux with no keyring, the async
+encryptor quietly seals with Chromium's built-in `v10` key, so the store
+refuses that tag itself. Second, `decryptStringAsync` reports
+`shouldReEncrypt`, and `getValue()` answers it with one queued rewrite.
+AGENTS.md §"Settings substrate" has the current rules.
+
 ## Installed-agent discovery — store-owned, targeted, single-flight
 
 The store is also the sole production owner of

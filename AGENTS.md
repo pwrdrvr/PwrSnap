@@ -3008,11 +3008,18 @@ Rules:
 - **All secrets via `safeStorage`.** Plaintext credentials are never returned over IPC. A write-only API-key
   input may cross renderer → main once for secure persistence. The renderer only ever sees `SecretStatus = { configured,
   lastSetAt }`. `DesktopSecretStore.getValue()` is the only plaintext
-  accessor and is main-only — **never register it on the bus.** If
-  `safeStorage.isEncryptionAvailable() === false`, the store throws
-  `SecretUnavailableError`; the handler returns `Result.err` with
+  accessor and is main-only — **never register it on the bus.** The store
+  calls only the async methods (`isAsyncEncryptionAvailable`,
+  `encryptStringAsync`, `decryptStringAsync`): Electron 45 deprecates the
+  sync trio and Electron 46 removes it. If the Linux backend is
+  `basic_text` or `isAsyncEncryptionAvailable()` resolves false, the store
+  throws `SecretUnavailableError`; the handler returns `Result.err` with
   `kind: "settings", code: "secret_unavailable"`. **Never fall back to
-  plaintext.** A unit test grep-asserts the plaintext never appears in
+  plaintext.** `isAsyncEncryptionAvailable()` is true once the encryptor
+  exists, whether or not it has a key, so on Linux the store also refuses a
+  ciphertext tagged `v10`. That tag is Chromium's built-in key, which the
+  async encryptor uses without saying so when the keyring yields none. A
+  unit test grep-asserts the plaintext never appears in
   `pwrsnap-secrets.bin`.
 - **`getValue()` is the ONLY read allowed to decrypt.** On macOS the first
   `safeStorage` call in a process is what can raise the login-keychain
@@ -3032,6 +3039,12 @@ Rules:
   undecryptable v1 file is left alone rather than rewritten empty. A rewrite
   must stitch `lastSetAt` back from the index — the payload carries values
   only, so forgetting blanks every surviving timestamp.
+  `isAsyncEncryptionAvailable()` counts as a keychain touch: it initializes
+  the async encryptor, which is the key fetch. So a status read must not call
+  it either; `desktop-secret-store.test.ts` counts all three methods. When
+  `decryptStringAsync` answers `shouldReEncrypt: true`, `getValue()` queues
+  one rewrite under the current key through the write queue. Status reads
+  never do.
 - **E2E runs must not touch the real login keychain.**
   [darwin-keychain-startup-policy.ts](apps/desktop/src/main/darwin-keychain-startup-policy.ts)
   appends Chromium's `--use-mock-keychain` under `PWRSNAP_E2E`, so an unsigned

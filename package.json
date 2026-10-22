@@ -39,7 +39,7 @@
     "check:changed": "node ./scripts/check-changed.mjs"
   },
   "devDependencies": {
-    "@types/node": "24.19.1",
+    "@types/node": "24.19.2",
     "jsdom": "^29.0.2",
     "oxc-parser": "0.152.0",
     "oxlint": "1.86.0",

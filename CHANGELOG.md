@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.2.1 - 2026-10-23
+
+This security update moves PwrSnap to Electron 44.9.3. Updating is recommended.
+
+- Connection Security - Fixed trust in compromised eMudhra intermediate
+  certificates by updating the desktop runtime's certificate blocklist,
+  protecting both browser-engine and Node.js network connections.
+- Desktop Runtime - Improved security with the runtime fixes included
+  between Electron 44.5.1 and 44.9.3.
+
 ## v1.2.0 - 2026-10-14
 
 PwrSnap 1.2 moves to Electron 44.5.1, with more dependable clipboard,

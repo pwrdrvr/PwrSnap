@@ -3294,8 +3294,8 @@ caught this at tag time, which is the worst moment to find it.
 
 ## Dependencies and tooling
 
-- Node version pinned in `.nvmrc` (currently `v24.21.0`, the Node inside
-  Electron 44). Every GitHub Actions job asks for `^24.21.0`, the same range,
+- Node version pinned in `.nvmrc` (currently `v24.22.0`, the Node inside
+  Electron 44). Every GitHub Actions job asks for `^24.22.0`, the same range,
   so a runner uses the 24.x already in its tool cache. Move `.nvmrc` and the
   workflow pins together.
 - Package manager: `pnpm@12.9.1` (set in root `package.json`'s

@@ -99,6 +99,7 @@ import { getToolRpcServer } from "./ai/mcp/pwrsnap-tool-rpc-server";
 import { closeAcpAgentPool } from "./ai/acp-agent-pool";
 import { closeCodexAgentPool } from "./ai/codex-agent-pool";
 import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
+import { registerChatgptPlanHandlers } from "./handlers/chatgpt-plan-handlers";
 import { registerCodexHandlers } from "./handlers/codex-handlers";
 import {
   productionRepairDeps,
@@ -2069,6 +2070,7 @@ export function bootstrapApp(): void {
         }
       );
       registerCaptureStorageHandlers();
+      registerChatgptPlanHandlers();
       registerEnrichmentRepairHandlers(productionRepairDeps(registerCodexHandlers()));
       registerCodexProfileHandlers();
       registerAcpHandlers();

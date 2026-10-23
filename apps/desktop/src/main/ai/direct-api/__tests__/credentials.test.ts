@@ -5,9 +5,11 @@ import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { resolveCustomModel, type CustomConnection, type CustomModelInput, type ResolvedCustomModel } from "@pwrsnap/shared";
 const storage = vi.hoisted(() => ({
-  isEncryptionAvailable: vi.fn(() => true), getSelectedStorageBackend: vi.fn(() => "keychain"),
-  encryptString: vi.fn((s: string) => Buffer.from(`fixture-envelope:${Buffer.from(s).toString("base64")}`)),
-  decryptString: vi.fn((b: Buffer) => Buffer.from(b.toString().slice("fixture-envelope:".length), "base64").toString())
+  isAsyncEncryptionAvailable: vi.fn(async () => true), getSelectedStorageBackend: vi.fn(() => "keychain"),
+  encryptStringAsync: vi.fn(async (s: string) => Buffer.from(`fixture-envelope:${Buffer.from(s).toString("base64")}`)),
+  decryptStringAsync: vi.fn(async (b: Buffer) => ({
+    shouldReEncrypt: false, result: Buffer.from(b.toString().slice("fixture-envelope:".length), "base64").toString()
+  }))
 }));
 vi.mock("electron", () => ({ safeStorage: storage }));
 vi.mock("../../../log", () => ({ getMainLogger: () => ({ warn: vi.fn(), info: vi.fn() }) }));
@@ -17,7 +19,7 @@ import { CustomCredentials, credentialBinding, credentialName, endpointOf } from
 import { CustomModelService } from "../service";
 import { body, connection, json, server } from "./fixtures";
 const cleanup: (() => Promise<void>)[] = [];
-afterEach(async () => { await Promise.all(cleanup.splice(0).map((f) => f())); storage.isEncryptionAvailable.mockReturnValue(true); storage.getSelectedStorageBackend.mockReturnValue("keychain"); });
+afterEach(async () => { await Promise.all(cleanup.splice(0).map((f) => f())); storage.isAsyncEncryptionAvailable.mockResolvedValue(true); storage.getSelectedStorageBackend.mockReturnValue("keychain"); });
 async function fixture(openBrowser: (url: string) => Promise<void> = async () => undefined): Promise<{
   secrets: DesktopSecretStore; credentials: CustomCredentials; service: CustomModelService; settings: DesktopSettingsService; dir: string
 }> {
@@ -127,7 +129,7 @@ test("a stored credential no connection claims is swept before the next change",
 });
 test.each(["unavailable", "basic_text"])("refuses %s storage without plaintext fallback", async (failure) => {
   const f = await fixture(); const c = await f.service.saveConnection(connection(LOOPBACK));
-  if (failure === "basic_text") storage.getSelectedStorageBackend.mockReturnValue("basic_text"); else storage.isEncryptionAvailable.mockReturnValue(false);
+  if (failure === "basic_text") storage.getSelectedStorageBackend.mockReturnValue("basic_text"); else storage.isAsyncEncryptionAvailable.mockResolvedValue(false);
   await expect(f.service.setKey(c.id, "synthetic-never-written")).rejects.toThrow("safeStorage");
   await expect(readFile(join(f.dir, "secrets.bin"))).rejects.toMatchObject({ code: "ENOENT" });
 });
@@ -182,9 +184,9 @@ test("locked storage cannot disclose errors or overwrite another connection's cr
   const ma = await saved(f, a); const mb = await saved(f, b);
   await f.service.setKey(a.id, "synthetic-preserved-one"); await f.service.setKey(b.id, "synthetic-preserved-two");
   const before = await readFile(join(f.dir, "secrets.bin"), "utf8");
-  storage.decryptString.mockImplementationOnce(() => { throw new Error("synthetic-sensitive-error-text"); });
+  storage.decryptStringAsync.mockRejectedValueOnce(new Error("synthetic-sensitive-error-text"));
   await expect(f.credentials.headers(ma)).rejects.toThrow("Credentials are unavailable");
-  storage.decryptString.mockImplementationOnce(() => { throw new Error("synthetic-sensitive-error-text"); });
+  storage.decryptStringAsync.mockRejectedValueOnce(new Error("synthetic-sensitive-error-text"));
   await expect(f.service.setKey(a.id, "replacement")).rejects.toThrow("refusing to write");
   expect(await readFile(join(f.dir, "secrets.bin"), "utf8")).toBe(before);
   expect(await f.credentials.headers(mb)).toEqual({ Authorization: "Bearer synthetic-preserved-two" });

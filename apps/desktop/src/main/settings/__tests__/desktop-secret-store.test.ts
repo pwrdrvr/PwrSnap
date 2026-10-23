@@ -1,49 +1,77 @@
 // Unit tests for DesktopSecretStore. We can't call the real Electron
 // `safeStorage` API outside an Electron runtime (it requires the
-// system keychain to be initialized), so the test stubs encryptString
-// / decryptString with a reversible — but distinctive — wrapping that
-// makes the encrypted-at-rest assertion meaningful.
+// system keychain to be initialized), so the test stubs the async trio --
+// isAsyncEncryptionAvailable / encryptStringAsync / decryptStringAsync --
+// with a reversible, but distinctive, wrapping that makes the
+// encrypted-at-rest assertion meaningful. The stub has no synchronous
+// methods: Electron 46 removes them, so a call to one fails here first.
 //
-// The wrapping prepends "PWR-ENC|" before base64 so the test's grep
-// for the plaintext substring fails (the plaintext shows up b64-
-// encoded after the marker), and so the round-trip remains exact.
+// The wrapping is "PWR-ENC|<key>|" before base64, so the test's grep for
+// the plaintext substring fails (the plaintext shows up b64-encoded after
+// the marker) and the round-trip remains exact. `<key>` stands in for the
+// key provider that sealed the payload: like the real async encryptor, the
+// stub reports `shouldReEncrypt` for a payload sealed under any key other
+// than the one it currently encrypts with. And like the real one, it is
+// unusable until app `ready`: the availability check resolves false and
+// encrypt / decrypt reject.
 //
 // The stubs are also the instrument for the keychain-access assertions
 // below: on macOS the first safeStorage call in a process is what can make
-// the OS prompt for the login-keychain password, so "did this operation call
-// decryptString at all" is the property that matters, and counting mock calls
-// is how we pin it.
+// the OS prompt for the login-keychain password. The async API makes that
+// true of `isAsyncEncryptionAvailable()` as well, since it initializes the
+// encryptor. So "did this operation call safeStorage at all" is the
+// property that matters, and counting mock calls is how we pin it.
 
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const safeStorageMock = vi.hoisted(() => {
-  let available = true;
+  let ready = true;
   let failDecrypt = false;
+  let currentKey = "key-1";
+  const notReady = "safeStorage cannot be used before app is ready";
+  const seal = (s: string): Buffer => {
+    const b64 = Buffer.from(s, "utf8").toString("base64");
+    return Buffer.from(`PWR-ENC|${currentKey}|${b64}`, "utf8");
+  };
   return {
-    isEncryptionAvailable: vi.fn(() => available),
-    encryptString: vi.fn((s: string): Buffer => {
-      const b64 = Buffer.from(s, "utf8").toString("base64");
-      return Buffer.from(`PWR-ENC|${b64}`, "utf8");
+    isAsyncEncryptionAvailable: vi.fn(async (): Promise<boolean> => ready),
+    // Linux-only in Electron. Present on every host here so `basic_text` can
+    // be tested; the store calls it optionally.
+    getSelectedStorageBackend: vi.fn((): string => "gnome_libsecret"),
+    encryptStringAsync: vi.fn(async (s: string): Promise<Buffer> => {
+      if (!ready) throw new Error(notReady);
+      return seal(s);
     }),
-    decryptString: vi.fn((b: Buffer): string => {
-      // Simulates the keychain going away mid-session: a denied prompt, a
-      // rotated key, or a copy of the file from another machine.
-      if (failDecrypt) throw new Error("keychain access denied");
-      const text = b.toString("utf8");
-      if (!text.startsWith("PWR-ENC|")) {
-        throw new Error("not a PWR-ENC blob");
+    decryptStringAsync: vi.fn(
+      async (b: Buffer): Promise<{ shouldReEncrypt: boolean; result: string }> => {
+        if (!ready) throw new Error(notReady);
+        // Simulates the keychain going away mid-session: a denied prompt, or
+        // a copy of the file from another machine.
+        if (failDecrypt) throw new Error("keychain access denied");
+        const match = /^PWR-ENC\|([^|]+)\|(.*)$/s.exec(b.toString("utf8"));
+        if (match === null) throw new Error("not a PWR-ENC blob");
+        return {
+          shouldReEncrypt: match[1] !== currentKey,
+          result: Buffer.from(match[2] ?? "", "base64").toString("utf8")
+        };
       }
-      const b64 = text.slice("PWR-ENC|".length);
-      return Buffer.from(b64, "base64").toString("utf8");
-    }),
-    __setAvailable(value: boolean): void {
-      available = value;
+    ),
+    /** Seal without counting as an encrypt call: for writing fixtures. */
+    __seal: seal,
+    __setReady(value: boolean): void {
+      ready = value;
     },
     __setFailDecrypt(value: boolean): void {
       failDecrypt = value;
+    },
+    /** Switch the key encrypts use, as a rotated or upgraded key provider
+     *  would. Payloads sealed under the old one still decrypt. */
+    __setCurrentKey(value: string): void {
+      currentKey = value;
     }
   };
 });
@@ -61,16 +89,38 @@ let workDir = "";
 
 beforeEach(() => {
   workDir = mkdtempSync(join(tmpdir(), "pwrsnap-secret-store-"));
-  safeStorageMock.__setAvailable(true);
+  safeStorageMock.__setReady(true);
   safeStorageMock.__setFailDecrypt(false);
+  safeStorageMock.__setCurrentKey("key-1");
 });
 
 afterEach(() => {
   vi.clearAllMocks();
 });
 
-function makeStore(): DesktopSecretStore {
-  return new DesktopSecretStore({ filePath: join(workDir, "secrets.bin") });
+function makeStore(platform?: NodeJS.Platform): DesktopSecretStore {
+  return new DesktopSecretStore({
+    filePath: join(workDir, "secrets.bin"),
+    ...(platform !== undefined ? { platform } : {})
+  });
+}
+
+/** Calls to every safeStorage method the store uses. Each one can initialize
+ *  the async encryptor, which on macOS is the keychain read that prompts. */
+function safeStorageCalls(): number {
+  return (
+    safeStorageMock.isAsyncEncryptionAvailable.mock.calls.length +
+    safeStorageMock.encryptStringAsync.mock.calls.length +
+    safeStorageMock.decryptStringAsync.mock.calls.length
+  );
+}
+
+/** Wait for everything queued behind the store's write queue. `clear` of a
+ *  name that is not set runs through the same FIFO queue and writes nothing,
+ *  so awaiting it settles a background migration or re-encryption without
+ *  guessing at timers. */
+async function settleQueue(store: DesktopSecretStore): Promise<void> {
+  await store.clear("localAgentToken:settle-queue");
 }
 
 describe("DesktopSecretStore", () => {
@@ -119,8 +169,8 @@ describe("DesktopSecretStore", () => {
     const plaintext = "test-secret-value-1234";
     await store.replace("openaiApiKey", plaintext);
     const onDisk = readFileSync(join(workDir, "secrets.bin"));
-    // The encryptString stub base64-encodes the plaintext after a marker,
-    // so the raw plaintext substring MUST NOT appear in the file.
+    // The encryptStringAsync stub base64-encodes the plaintext after a
+    // marker, so the raw plaintext substring MUST NOT appear in the file.
     expect(onDisk.toString("utf8").includes(plaintext)).toBe(false);
   });
 
@@ -136,9 +186,22 @@ describe("DesktopSecretStore", () => {
   });
 
   test("replace throws SecretUnavailableError when safeStorage is unavailable", async () => {
-    safeStorageMock.__setAvailable(false);
+    safeStorageMock.__setReady(false);
     const store = makeStore();
     await expect(store.replace("openaiApiKey", "x")).rejects.toBeInstanceOf(
+      SecretUnavailableError
+    );
+    expect(safeStorageMock.encryptStringAsync).not.toHaveBeenCalled();
+    await expect(readFile(join(workDir, "secrets.bin"))).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+  });
+
+  test("getValue throws SecretUnavailableError when safeStorage is unavailable", async () => {
+    const store = makeStore();
+    await store.replace("openaiApiKey", "abc-123");
+    safeStorageMock.__setReady(false);
+    await expect(store.getValue("openaiApiKey")).rejects.toBeInstanceOf(
       SecretUnavailableError
     );
   });
@@ -160,10 +223,10 @@ describe("DesktopSecretStore", () => {
 // settings write — so a status read that decrypts turns "user toggled a
 // preference" into "macOS asked for your password".
 describe("DesktopSecretStore keychain access", () => {
-  test("status reads never decrypt, even with a secret configured", async () => {
+  test("status reads never touch safeStorage, even with a secret configured", async () => {
     const store = makeStore();
     await store.replace("openaiApiKey", "abc-123");
-    safeStorageMock.decryptString.mockClear();
+    vi.clearAllMocks();
 
     const status = await store.getStatus("openaiApiKey");
     const all = await store.getAllStatus();
@@ -171,57 +234,67 @@ describe("DesktopSecretStore keychain access", () => {
     expect(status.configured).toBe(true);
     expect(all.openaiApiKey.configured).toBe(true);
     expect(all.openaiApiKey.lastSetAt).toBe(status.lastSetAt);
-    expect(safeStorageMock.decryptString).not.toHaveBeenCalled();
+    // Not even the availability check: `isAsyncEncryptionAvailable()`
+    // initializes the encryptor, and on macOS that reads the keychain.
+    expect(safeStorageCalls()).toBe(0);
   });
 
-  test("status reads never decrypt after the secret is cleared", async () => {
+  test("status reads never touch safeStorage after the secret is cleared", async () => {
     // The pre-envelope regression: `clear` kept an encrypted file, so once any
     // secret had ever been set, every status read decrypted forever.
     const store = makeStore();
     await store.replace("openaiApiKey", "abc-123");
     await store.clear("openaiApiKey");
-    safeStorageMock.decryptString.mockClear();
+    vi.clearAllMocks();
 
     await store.getAllStatus();
-    expect(safeStorageMock.decryptString).not.toHaveBeenCalled();
+    expect(safeStorageCalls()).toBe(0);
   });
 
-  test("clearing the last secret needs neither decrypt nor encrypt", async () => {
+  test("status reads work before app ready, when safeStorage cannot", async () => {
     const store = makeStore();
     await store.replace("openaiApiKey", "abc-123");
-    safeStorageMock.decryptString.mockClear();
-    safeStorageMock.encryptString.mockClear();
+    safeStorageMock.__setReady(false);
+    vi.clearAllMocks();
+
+    expect((await store.getAllStatus()).openaiApiKey.configured).toBe(true);
+    expect(safeStorageCalls()).toBe(0);
+  });
+
+  test("clearing the last secret touches no safeStorage method", async () => {
+    const store = makeStore();
+    await store.replace("openaiApiKey", "abc-123");
+    vi.clearAllMocks();
 
     await store.clear("openaiApiKey");
 
-    expect(safeStorageMock.decryptString).not.toHaveBeenCalled();
-    expect(safeStorageMock.encryptString).not.toHaveBeenCalled();
+    expect(safeStorageCalls()).toBe(0);
   });
 
   test("writing the first secret does not decrypt", async () => {
     const store = makeStore();
     await store.replace("openaiApiKey", "abc-123");
-    expect(safeStorageMock.decryptString).not.toHaveBeenCalled();
+    expect(safeStorageMock.decryptStringAsync).not.toHaveBeenCalled();
   });
 
   test("overwriting the only secret does not decrypt", async () => {
     const store = makeStore();
     await store.replace("openaiApiKey", "first");
-    safeStorageMock.decryptString.mockClear();
+    vi.clearAllMocks();
 
     await store.replace("openaiApiKey", "second");
 
-    expect(safeStorageMock.decryptString).not.toHaveBeenCalled();
+    expect(safeStorageMock.decryptStringAsync).not.toHaveBeenCalled();
     expect(await store.getValue("openaiApiKey")).toBe("second");
   });
 
   test("getValue DOES decrypt — it is the one accessor that may reach the keychain", async () => {
     const store = makeStore();
     await store.replace("openaiApiKey", "abc-123");
-    safeStorageMock.decryptString.mockClear();
+    vi.clearAllMocks();
 
     expect(await store.getValue("openaiApiKey")).toBe("abc-123");
-    expect(safeStorageMock.decryptString).toHaveBeenCalled();
+    expect(safeStorageMock.decryptStringAsync).toHaveBeenCalled();
   });
 });
 
@@ -282,10 +355,7 @@ describe("DesktopSecretStore envelope format", () => {
 describe("DesktopSecretStore v1 migration", () => {
   /** Writes a pre-envelope file: the whole blob as one ciphertext buffer. */
   function writeLegacyFile(blob: Record<string, { value: string; lastSetAt: string }>): void {
-    writeFileSync(
-      join(workDir, "secrets.bin"),
-      safeStorageMock.encryptString(JSON.stringify(blob))
-    );
+    writeFileSync(join(workDir, "secrets.bin"), safeStorageMock.__seal(JSON.stringify(blob)));
   }
 
   const LEGACY_SET_AT = "2026-05-06T17:16:00.000Z";
@@ -314,14 +384,14 @@ describe("DesktopSecretStore v1 migration", () => {
     // First status read on a v1 file has no choice: the names live inside the
     // ciphertext. This is the one-off cost an upgrading install pays.
     await store.getAllStatus();
-    expect(safeStorageMock.decryptString).toHaveBeenCalled();
+    expect(safeStorageMock.decryptStringAsync).toHaveBeenCalled();
 
     await store.replace("localAgentToken:client-a", "token"); // settles the queue
-    safeStorageMock.decryptString.mockClear();
+    vi.clearAllMocks();
 
     const all = await makeStore().getAllStatus();
     expect(all.openaiApiKey.configured).toBe(true);
-    expect(safeStorageMock.decryptString).not.toHaveBeenCalled();
+    expect(safeStorageCalls()).toBe(0);
   });
 
   test("an undecryptable v1 file is left alone rather than rewritten as empty", async () => {
@@ -378,7 +448,7 @@ describe("DesktopSecretStore envelope consistency", () => {
     // need: the resulting envelope has nothing left to encrypt.
     const store = makeStore();
     await store.replace("openaiApiKey", "abc");
-    safeStorageMock.__setAvailable(false);
+    safeStorageMock.__setReady(false);
 
     const cleared = await store.clear("openaiApiKey");
 
@@ -462,5 +532,186 @@ describe("DesktopSecretStore undecryptable payload", () => {
     await expect(store.clear("openaiApiKey")).resolves.toMatchObject({
       configured: false
     });
+  });
+});
+
+// `decryptStringAsync` reports `shouldReEncrypt` when a payload was sealed
+// with a key provider other than the one it now encrypts with (a rotated key,
+// or a stronger provider that came online). The store answers by rewriting
+// the payload under the current key, through the same queued atomic write as
+// every other write.
+describe("DesktopSecretStore re-encryption", () => {
+  function readEnvelope(): { index: Record<string, { lastSetAt: string }>; ciphertext: string | null } {
+    return JSON.parse(readFileSync(join(workDir, "secrets.bin"), "utf8"));
+  }
+
+  function sealedUnder(): string {
+    const { ciphertext } = readEnvelope();
+    if (ciphertext === null) throw new Error("expected a payload");
+    return Buffer.from(ciphertext, "base64").toString("utf8").split("|")[1] ?? "";
+  }
+
+  test("getValue rewrites a payload sealed under a superseded key, keeping values and timestamps", async () => {
+    const store = makeStore();
+    const first = await store.replace("openaiApiKey", "keep-me");
+    const second = await store.replace("localAgentToken:client-a", "token-a");
+    expect(sealedUnder()).toBe("key-1");
+
+    safeStorageMock.__setCurrentKey("key-2");
+    expect(await store.getValue("openaiApiKey")).toBe("keep-me");
+    await settleQueue(store);
+
+    expect(sealedUnder()).toBe("key-2");
+    const envelope = readEnvelope();
+    expect(envelope.index.openaiApiKey?.lastSetAt).toBe(first.lastSetAt);
+    expect(envelope.index["localAgentToken:client-a"]?.lastSetAt).toBe(second.lastSetAt);
+    expect(JSON.stringify(envelope).includes("keep-me")).toBe(false);
+    expect(await store.getValue("localAgentToken:client-a")).toBe("token-a");
+
+    // Sealed under the current key now, so reads stop asking.
+    vi.clearAllMocks();
+    expect(await store.getValue("openaiApiKey")).toBe("keep-me");
+    await settleQueue(store);
+    expect(safeStorageMock.encryptStringAsync).not.toHaveBeenCalled();
+  });
+
+  test("a burst of reads queues one rewrite", async () => {
+    const store = makeStore();
+    await store.replace("openaiApiKey", "keep-me");
+    safeStorageMock.__setCurrentKey("key-2");
+    vi.clearAllMocks();
+
+    await Promise.all([
+      store.getValue("openaiApiKey"),
+      store.getValue("openaiApiKey"),
+      store.getValue("openaiApiKey")
+    ]);
+    await settleQueue(store);
+
+    expect(safeStorageMock.encryptStringAsync).toHaveBeenCalledTimes(1);
+    expect(sealedUnder()).toBe("key-2");
+  });
+
+  test("status reads never re-encrypt", async () => {
+    const store = makeStore();
+    await store.replace("openaiApiKey", "keep-me");
+    safeStorageMock.__setCurrentKey("key-2");
+    vi.clearAllMocks();
+
+    await store.getAllStatus();
+    await settleQueue(store);
+
+    expect(safeStorageCalls()).toBe(0);
+    expect(sealedUnder()).toBe("key-1");
+  });
+
+  test("the rewrite re-reads, and never rewrites a payload it can no longer decrypt", async () => {
+    const store = makeStore();
+    await store.replace("openaiApiKey", "keep-me");
+    safeStorageMock.__setCurrentKey("key-2");
+    const before = readFileSync(join(workDir, "secrets.bin"), "utf8");
+
+    expect(await store.getValue("openaiApiKey")).toBe("keep-me");
+    // The queued task has not read the file yet: it waits on fs I/O, and
+    // this continuation is a microtask. Lose the keychain in between.
+    safeStorageMock.__setFailDecrypt(true);
+    await settleQueue(store);
+
+    expect(readFileSync(join(workDir, "secrets.bin"), "utf8")).toBe(before);
+  });
+
+  test("a failed rewrite leaves the readable payload and is not retried in the same process", async () => {
+    const store = makeStore();
+    await store.replace("openaiApiKey", "keep-me");
+    safeStorageMock.__setCurrentKey("key-2");
+    const before = readFileSync(join(workDir, "secrets.bin"), "utf8");
+    vi.clearAllMocks();
+    safeStorageMock.encryptStringAsync.mockRejectedValueOnce(new Error("encryption failed"));
+
+    expect(await store.getValue("openaiApiKey")).toBe("keep-me");
+    await settleQueue(store);
+    expect(readFileSync(join(workDir, "secrets.bin"), "utf8")).toBe(before);
+
+    // safeStorage settles its key providers once per process, so a retry
+    // would fail the same way on every read. The next launch tries again.
+    expect(await store.getValue("openaiApiKey")).toBe("keep-me");
+    await settleQueue(store);
+    expect(safeStorageMock.encryptStringAsync).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The sync `isEncryptionAvailable()` refused a Linux system with no keyring.
+// Its async replacement does not: the async encryptor falls back to a key
+// compiled into Chromium, tagged `v10`, and resolves availability true. The
+// store refuses that ciphertext itself, so "never fall back to plaintext"
+// still holds.
+describe("DesktopSecretStore Linux fallback key", () => {
+  const FALLBACK_SEALED = Buffer.from("v10-fixture-sealed-with-the-built-in-key");
+  const KEYRING_SEALED = Buffer.from("v11-fixture-sealed-with-the-keyring-key");
+
+  test("refuses to write a payload sealed with Chromium's built-in key", async () => {
+    const store = makeStore("linux");
+    safeStorageMock.encryptStringAsync.mockResolvedValueOnce(FALLBACK_SEALED);
+
+    await expect(store.replace("openaiApiKey", "never-written")).rejects.toBeInstanceOf(
+      SecretUnavailableError
+    );
+    await expect(readFile(join(workDir, "secrets.bin"))).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+  });
+
+  test("refuses basic_text before initializing the encryptor", async () => {
+    const store = makeStore("linux");
+    safeStorageMock.getSelectedStorageBackend.mockReturnValueOnce("basic_text");
+
+    await expect(store.replace("openaiApiKey", "never-written")).rejects.toBeInstanceOf(
+      SecretUnavailableError
+    );
+    expect(safeStorageCalls()).toBe(0);
+    await expect(readFile(join(workDir, "secrets.bin"))).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+  });
+
+  test("accepts a payload sealed with the keyring's key", async () => {
+    const store = makeStore("linux");
+    safeStorageMock.encryptStringAsync.mockResolvedValueOnce(KEYRING_SEALED);
+
+    await expect(store.replace("openaiApiKey", "written")).resolves.toMatchObject({
+      configured: true
+    });
+  });
+
+  test.each(["darwin", "win32"] as const)(
+    "accepts v10 on %s, where it tags the OS-backed key",
+    async (platform) => {
+      const store = makeStore(platform);
+      safeStorageMock.encryptStringAsync.mockResolvedValueOnce(FALLBACK_SEALED);
+
+      await expect(store.replace("openaiApiKey", "written")).resolves.toMatchObject({
+        configured: true
+      });
+    }
+  );
+});
+
+describe("DesktopSecretStore is one instance per process", () => {
+  test("production code constructs it only in getDesktopSecretStore", async () => {
+    // The write queue serializes within an instance, and getValue() can write
+    // (re-encryption). A second instance on the same file would interleave
+    // its read-modify-write with the shared one's.
+    const { readdirSync, readFileSync: read } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const mainRoot = fileURLToPath(new URL("../../", import.meta.url));
+    const constructors: string[] = [];
+    for (const entry of readdirSync(mainRoot, { recursive: true, withFileTypes: true })) {
+      const path = join(entry.parentPath, entry.name);
+      if (!entry.isFile() || !entry.name.endsWith(".ts") || path.includes("__tests__")) continue;
+      if (read(path, "utf8").includes("new DesktopSecretStore(")) {
+        constructors.push(relative(mainRoot, path).split(sep).join("/"));
+      }
+    }
+    expect(constructors).toEqual(["settings/desktop-secret-store.ts"]);
   });
 });

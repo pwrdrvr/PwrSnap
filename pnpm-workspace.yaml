@@ -39,6 +39,8 @@ minimumReleaseAgeExclude:
   # Exempt only these pinned releases; future versions retain the age gate.
   - "hono@4.13.12"
   - "ip-address@10.7.3"
+  # GHSA-jr5w-w6x2-84p9 eMudhra fix; npm published 2026-10-21T03:31:39.419Z.
+  - "electron@44.9.3"
   # The @pwrdrvr/agent-kit packages are PwrDrvr's own, freshly published, and
   # pinned — exempt them from the 7-day minimumReleaseAge gate (which targets
   # untrusted third-party releases) so PwrSnap can consume 0.1.0 immediately.

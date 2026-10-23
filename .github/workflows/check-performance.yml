@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: pwrdrvr/configure-nodejs@v1
         with:
-          node-version: "24.14.1"
+          node-version: "^24.22.0"
       - name: Compare compilers and assert coverage
         run: pnpm check:benchmark
       - name: Save measurements

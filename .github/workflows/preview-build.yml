@@ -29,7 +29,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:
-          node-version: "^24.21.0"
+          node-version: "^24.22.0"
 
       - name: Compute preview version
         id: version
@@ -191,7 +191,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:
-          node-version: "^24.21.0"
+          node-version: "^24.22.0"
 
       # Pull-request code receives no build-repo or signing secrets. Instead,
       # extract the exact FFmpeg binary already shipped inside the public,

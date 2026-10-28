@@ -49,7 +49,7 @@
     "@pwrdrvr/codex-discovery": "^0.4.0",
     "@pwrsnap/shared": "workspace:*",
     "@shutterstock/p-map-iterable": "^1.1.2",
-    "@tanstack/react-virtual": "^3.14.14",
+    "@tanstack/react-virtual": "^3.14.21",
     "better-sqlite3": "^13.0.3",
     "electron-log": "^5.4.4",
     "electron-updater": "^6.8.9",

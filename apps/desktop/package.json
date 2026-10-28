@@ -52,7 +52,7 @@
     "@tanstack/react-virtual": "^3.14.21",
     "better-sqlite3": "^13.0.3",
     "electron-log": "^5.4.4",
-    "electron-updater": "^6.8.9",
+    "electron-updater": "^6.8.10",
     "express": "^5.3.0",
     "nanoid": "^5.1.16",
     "react": "^19.3.0",

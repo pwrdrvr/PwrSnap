@@ -27,7 +27,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@v1
+        uses: pwrdrvr/configure-nodejs@9bb6e786801cf822d57b2298e02ccefd05e8ef0f # v1.7.0
         with:
           node-version: "^24.22.0"
 
@@ -189,7 +189,7 @@ jobs:
       # No cache-priming gate job here (unlike ci.yml): this is a label-gated
       # one-off build, so there is no fan-out to prime for.
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@v1
+        uses: pwrdrvr/configure-nodejs@9bb6e786801cf822d57b2298e02ccefd05e8ef0f # v1.7.0
         with:
           node-version: "^24.22.0"
 

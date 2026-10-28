@@ -3298,7 +3298,7 @@ caught this at tag time, which is the worst moment to find it.
   Electron 44). Every GitHub Actions job asks for `^24.22.0`, the same range,
   so a runner uses the 24.x already in its tool cache. Move `.nvmrc` and the
   workflow pins together.
-- Package manager: `pnpm@12.9.1` (set in root `package.json`'s
+- Package manager: `pnpm@12.13.0` (set in root `package.json`'s
   `packageManager` field).
 - Electron + electron-vite versions pinned in `apps/desktop/package.json`,
   matching PwrAgnt for tool consistency.

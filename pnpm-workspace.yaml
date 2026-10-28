@@ -6,6 +6,8 @@ globalPnpmfile: ./.pnpmfile-global.cjs
 # Scripts consume the explicitly installed tree, including release stages and
 # the privileged metadata-only install that intentionally skips scripts.
 verifyDepsBeforeRun: false
+# Completed CI trees must contain portable files and relative workspace links.
+packageImportMethod: auto
 minimumReleaseAge: 10080
 # Release builds produce a universal macOS app and an x64 Windows installer.
 # Runtime packages like sharp publish OS+CPU-specific optional dependencies,

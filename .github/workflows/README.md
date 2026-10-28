@@ -11,6 +11,39 @@ with `ci:` when they start, skip, or narrow CI work.
 
 If another label changes workflow behavior, document it here in the same change.
 
+## Dependency caches
+
+`ci.yml` uses configure-nodejs completed pnpm trees: `install-deps` populates
+Linux, and `windows-install-deps` populates Windows. Their consumers require an
+exact restore and disable pnpm's implicit dependency verification. A missing or
+incompatible tree fails instead of installing. Each producer runs the normal
+frozen install, including Electron setup and lifecycle scripts. Native helpers
+under `apps/desktop/build/native` are outside the archive and are built by the
+Windows consumers (and by macOS's normal install/build steps).
+
+The action hashes lock bytes, workspace manifests/config, Node major, runner
+OS/architecture and image family, then validates the restored Node ABI. The CI
+policy also names the immutable action revision and lists the global pnpm hook,
+Node guard and lifecycle source files in `PWRSNAP_DEPENDENCY_CACHE_INPUTS`.
+Update that list when install scripts gain new inputs. Producer and consumer
+checkouts use the same workflow commit and repository layout. Keep
+`packageImportMethod: auto` portable; never share a live `node_modules` tree
+between jobs or checkouts.
+
+The fork-guarded macOS E2E and opt-in compiler benchmark jobs instead retain a
+pnpm store, Corepack and Electron downloads outside checkout, in
+`~/Library/Caches/pwrsnap-ci/${{ runner.name }}`. PwrSuiteLab owns runner disk
+lifetimes; reuse lasts only while that disk survives. Roots are separate per
+repository and runner, with the action's default 14-day reseed period. These
+jobs still frozen-install on every run and do not use completed-tree mode.
+Only same-repository code reaches these runners; release/signing jobs stay on
+hosted runners and do not consume this persistent state.
+
+Hosted preview/release jobs retain default store caching and normal lifecycle
+installation; their runner images and packaging environments differ from CI's
+completed-tree producers. The privileged Dependabot metadata job retains its
+uncached `--ignore-scripts` install and never reads or writes these trees.
+
 ## Public distribution-source audit
 
 `distribution-audit.yml` audits authoritative Winget/Homebrew sources and existing

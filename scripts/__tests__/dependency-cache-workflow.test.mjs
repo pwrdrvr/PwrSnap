@@ -13,6 +13,20 @@ const jobs = Object.fromEntries(
 );
 
 describe("CI dependency cache contract", () => {
+  test("the lockfile's package-manager document matches the integrity-pinned pnpm version", () => {
+    // pnpm 12 activation can rewrite this document before the frozen install.
+    // A stale manager resolution makes completed-tree population reject it.
+    const pin = JSON.parse(read("package.json")).packageManager;
+    const version = /^pnpm@(\d+\.\d+\.\d+)\+sha512\.[a-f0-9]+$/.exec(pin)?.[1];
+    expect(version).toBeDefined();
+    const managerDocument = read("pnpm-lock.yaml").split(/^---\s*$/m)[1];
+    const resolution = managerDocument.match(
+      /packageManagerDependencies:\n      pnpm:\n        specifier: (\S+)\n        version: (\S+)/
+    );
+    expect(resolution?.slice(1)).toEqual([version, version]);
+    expect(managerDocument).toContain(`  pnpm@${version}:`);
+  });
+
   test.each([
     ["install-deps", "lint", "build", "test", "desktop-e2e"],
     ["windows-install-deps", "windows", "windows-e2e"]

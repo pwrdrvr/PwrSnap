@@ -2113,7 +2113,15 @@ export async function installDownloadedAppUpdate(): Promise<AppUpdateInstallResu
     }
     log.info("installing downloaded update", { version });
     recordInstallAttempt(version, retrySelection ?? currentSelection);
-    await installWithQuitFlush(() => autoUpdater().quitAndInstall());
+    await installWithQuitFlush(() => {
+      if (process.platform === "win32") {
+        // NSIS defaults to its visible wizard. Install silently and
+        // have the installer relaunch the updated app when it finishes.
+        autoUpdater().quitAndInstall(true, true);
+      } else {
+        autoUpdater().quitAndInstall();
+      }
+    });
     return { status: "restarting" };
   } catch (err) {
     return {

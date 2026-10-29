@@ -80,11 +80,16 @@ function writeInstallAttempt(userData: string): void {
 
 describe("auto-updater failed install retry", () => {
   const originalNodeEnv = process.env.NODE_ENV;
+  const originalPlatform = process.platform;
   const originalFetch = globalThis.fetch;
   const roots: string[] = [];
 
   afterEach(async () => {
     process.env.NODE_ENV = originalNodeEnv;
+    Object.defineProperty(process, "platform", {
+      configurable: true,
+      value: originalPlatform
+    });
     globalThis.fetch = originalFetch;
     mocks.handlers.clear();
     mocks.autoUpdater.checkForUpdates.mockReset();
@@ -98,7 +103,11 @@ describe("auto-updater failed install retry", () => {
     }
   });
 
-  test("waits for the retry download event before installing", async () => {
+  test.each(["darwin", "win32"] as const)("waits for the retry download event and shutdown flush before installing on %s", async (platform) => {
+    Object.defineProperty(process, "platform", {
+      configurable: true,
+      value: platform
+    });
     process.env.NODE_ENV = "production";
     const root = mkdtempSync(join(tmpdir(), "pwrsnap-updater-retry-"));
     roots.push(root);
@@ -150,5 +159,8 @@ describe("auto-updater failed install retry", () => {
 
     await expect(installResult).resolves.toEqual({ status: "restarting" });
     expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);
+    expect(mocks.autoUpdater.quitAndInstall.mock.calls).toEqual([
+      platform === "win32" ? [true, true] : []
+    ]);
   });
 });

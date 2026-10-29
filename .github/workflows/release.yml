@@ -37,7 +37,7 @@ jobs:
     name: Test and prepare signing input
     if: ${{ github.event_name != 'pull_request' }}
     needs: distribution-audit
-    runs-on: macos-26 # Icon Composer's actool requires the matching macOS 26 host.
+    runs-on: [self-hosted, macOS, ARM64, pwrdrvr-macos]
     timeout-minutes: 75
     permissions:
       contents: read
@@ -55,6 +55,8 @@ jobs:
         uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
+          persistent-store-dir: ~/Library/Caches/pwrsnap-ci/${{ runner.name }}
+          cache-electron: "true"
 
       - name: Check release metadata
         env:
@@ -65,10 +67,10 @@ jobs:
         run: pnpm typecheck
 
       # electron-builder compiles build/icon.icon with actool 26+. The
-      # macos-26 runner's default Xcode matches the AssetCatalogAgent host;
-      # the action verifies it and returns its Developer directory. See
+      # self-hosted runner must provide macOS 26 and a stable Xcode 26+.
+      # Select the toolchain only for icon compilation/packaging. See
       # AGENTS.md "macOS app icon".
-      - name: Verify the macOS 26 runner actool
+      - name: Select Xcode for macOS 26 packaging
         id: xcode
         uses: ./.github/actions/select-xcode-for-actool
 
@@ -102,6 +104,7 @@ jobs:
             scripts/check-electron-fuses-policy.mjs \
             scripts/check-bundled-ffmpeg-notice.mjs \
             scripts/lib/cli-entrypoint.mjs \
+            scripts/release/cleanup-macos-signing.py \
             apps/desktop/package.json \
             apps/desktop/electron-builder.yml \
             apps/desktop/release-stage \
@@ -132,19 +135,35 @@ jobs:
 
   sign:
     name: Sign, notarize, package macOS
-    runs-on: macos-26
+    runs-on: [self-hosted, macOS, ARM64, pwrdrvr-macos]
     needs: prepare
     timeout-minutes: 120
     environment: apple-signing
+    defaults:
+      run:
+        working-directory: release-signing
     permissions:
       contents: read
       id-token: none
     steps:
+      # Persistent runners retain prior checkouts. Signing reads only this
+      # job's verified artifact in a fresh workspace, without a source checkout.
+      - name: Initialize isolated signing workspace
+        working-directory: .
+        run: |
+          set -euo pipefail
+          umask 077
+          rm -rf -- release-signing
+          mkdir release-signing
+          signing_temp="$(mktemp -d "$RUNNER_TEMP/pwrsnap-signing.XXXXXX")"
+          echo "PWRSNAP_SIGNING_TEMP_DIR=$signing_temp" >> "$GITHUB_ENV"
+          security list-keychains -d user > "$signing_temp/keychains-before.txt"
+
       - name: Download signing input
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: desktop-release-signing-input
-          path: .release-input
+          path: release-signing/.release-input
 
       - name: Verify signing input
         env:
@@ -285,12 +304,14 @@ jobs:
 
       # No checkout in this job: the action arrives inside the signing input
       # tarball the prepare job archived (see its tar list).
-      - name: Verify the macOS 26 runner actool
+      - name: Select Xcode for macOS 26 packaging
         id: xcode
-        uses: ./.github/actions/select-xcode-for-actool
+        uses: ./release-signing/.github/actions/select-xcode-for-actool
 
       - name: Sign, notarize, package macOS
         env:
+          # Confine decoded .p8/.p12 files and temporary keychains to this job.
+          TMPDIR: ${{ env.PWRSNAP_SIGNING_TEMP_DIR }}
           # electron-builder compiles build/icon.icon with this Xcode's actool.
           DEVELOPER_DIR: ${{ steps.xcode.outputs.developer-dir }}
 
@@ -314,6 +335,19 @@ jobs:
           node apps/desktop/scripts/release.mjs --sign-stage-only --no-publish
           node apps/desktop/scripts/release.mjs --sign-stage-only --no-publish --arch=arm64
 
+      - name: Remove temporary signing credentials
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -n "${PWRSNAP_SIGNING_TEMP_DIR:-}" ]; then
+            if [ -f scripts/release/cleanup-macos-signing.py ]; then
+              python3 scripts/release/cleanup-macos-signing.py "$PWRSNAP_SIGNING_TEMP_DIR"
+            else
+              # Expansion failed before the signing code could decode secrets.
+              rm -rf -- "$PWRSNAP_SIGNING_TEMP_DIR"
+            fi
+          fi
+
       - name: Validate paired macOS assets and assemble shared updater metadata
         # One writer preserves the universal legacy path while adding ARM64.
         # PwrSnap.dmg stays universal; the new alias is PwrSnap-arm64.dmg.
@@ -332,13 +366,18 @@ jobs:
         with:
           name: desktop-release-macos-artifacts
           path: |
-            apps/desktop/release-stage/dist/*.dmg
-            apps/desktop/release-stage/dist/*.zip
-            apps/desktop/release-stage/dist/*.blockmap
-            apps/desktop/release-stage/dist/latest-mac.yml
-            apps/desktop/release-stage/dist/macos-artifact-sizes.json
-            apps/desktop/release-stage/build/ffmpeg-source/*
+            release-signing/apps/desktop/release-stage/dist/*.dmg
+            release-signing/apps/desktop/release-stage/dist/*.zip
+            release-signing/apps/desktop/release-stage/dist/*.blockmap
+            release-signing/apps/desktop/release-stage/dist/latest-mac.yml
+            release-signing/apps/desktop/release-stage/dist/macos-artifact-sizes.json
+            release-signing/apps/desktop/release-stage/build/ffmpeg-source/*
           retention-days: 90
+
+      - name: Remove isolated signing workspace
+        if: always()
+        working-directory: .
+        run: rm -rf -- release-signing
 
   linux-build:
     name: Validate Linux desktop build

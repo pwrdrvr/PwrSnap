@@ -249,12 +249,12 @@ function restoreCodesignKeychains(originalKeychains, keychainPath) {
   try {
     runQuiet("security", ["list-keychains", "-d", "user", "-s", ...originalKeychains]);
   } catch {
-    // Process exit cleanup must not mask the original build result.
+    // The workflow cleanup handles interrupted processes on persistent runners.
   }
   try {
     runQuiet("security", ["delete-keychain", keychainPath]);
   } catch {
-    // Best effort only; GitHub-hosted runners are disposable.
+    // The workflow cleanup restores the search list and retries deletion.
   }
 }
 
@@ -351,13 +351,6 @@ function maybePrepareCodesignKeychain() {
     return false;
   }
 
-  const existingIdentity = findDeveloperIdIdentity(null);
-  if (existingIdentity !== null) {
-    process.env.PWRSNAP_APPEX_SIGN_IDENTITY ??= existingIdentity;
-    process.env.CSC_NAME ??= stripDeveloperIdApplicationPrefix(existingIdentity);
-    return true;
-  }
-
   const keychainPath = join(
     tmpdir(),
     `pwrsnap-codesign-${process.pid}-${Date.now()}.keychain-db`
@@ -368,6 +361,13 @@ function maybePrepareCodesignKeychain() {
   );
 
   runQuiet("security", ["create-keychain", "-p", keychainPassword, keychainPath]);
+  codesignKeychainCleanup = () => restoreCodesignKeychains(originalKeychains, keychainPath);
+  process.once("exit", () => {
+    if (codesignKeychainCleanup !== null) {
+      codesignKeychainCleanup();
+      codesignKeychainCleanup = null;
+    }
+  });
   runQuiet("security", ["set-keychain-settings", "-lut", "21600", keychainPath]);
   runQuiet("security", ["unlock-keychain", "-p", keychainPassword, keychainPath]);
   runQuiet("security", [
@@ -404,7 +404,6 @@ function maybePrepareCodesignKeychain() {
 
   const identity = findDeveloperIdIdentity(keychainPath);
   if (identity === null) {
-    restoreCodesignKeychains(originalKeychains, keychainPath);
     throw new Error(
       `imported ${pathToFileURL(certificatePath).href} into ${keychainPath}, ` +
       "but no Developer ID Application identity was found"
@@ -420,13 +419,6 @@ function maybePrepareCodesignKeychain() {
   // CSC_LINK keychain with the matching credentials.
   process.env.PWRSNAP_APPEX_SIGN_IDENTITY ??= identity;
   process.env.CSC_NAME ??= stripDeveloperIdApplicationPrefix(identity);
-  codesignKeychainCleanup = () => restoreCodesignKeychains(originalKeychains, keychainPath);
-  process.once("exit", () => {
-    if (codesignKeychainCleanup !== null) {
-      codesignKeychainCleanup();
-      codesignKeychainCleanup = null;
-    }
-  });
   console.log(`  imported CSC_LINK into temporary keychain for ${identity}`);
   return true;
 }

@@ -36,12 +36,16 @@ pnpm store, Corepack and Electron downloads outside checkout, in
 lifetimes; reuse lasts only while that disk survives. Roots are separate per
 repository and runner, with the action's default 14-day reseed period. These
 jobs still frozen-install on every run and do not use completed-tree mode.
-Only same-repository code reaches these runners; release/signing jobs stay on
-hosted runners and do not consume this persistent state.
+Only same-repository code reaches these runners. macOS release preparation and
+preview jobs use the same runner-scoped download roots; signing consumes only
+a verified artifact in a fresh private workspace and does not install or read
+the persistent dependency store. Its private signing material and keychains
+are cleaned in an `always()` step. The `apple-signing` environment retains its
+approval gate and tag policy.
 
-Hosted preview/release jobs retain default store caching and normal lifecycle
-installation; their runner images and packaging environments differ from CI's
-completed-tree producers. The privileged Dependabot metadata job retains its
+Windows preview/release and Linux release jobs retain default store caching and
+normal lifecycle installation; their runner images and packaging environments
+differ from CI's completed-tree producers. The privileged Dependabot metadata job retains its
 uncached `--ignore-scripts` install and never reads or writes these trees.
 
 ## Public distribution-source audit

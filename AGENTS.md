@@ -3191,13 +3191,14 @@ Rules:
 - **Every job that packages the mac app needs an actool 26 or newer.**
   electron-builder hard-fails below that, and its Icon Composer
   `AssetCatalogAgent` also requires the macOS 26 host frameworks. The macOS
-  packaging jobs therefore run on GitHub's `macos-26` image, not `macos-15`:
-  pointing any Xcode 26 installation at the macOS 15 host crashes the agent
-  with missing CoreMedia/MediaToolbox symbols.
+  packaging jobs therefore use the restricted self-hosted macOS 26 runners.
+  Pointing Xcode 26 at a macOS 15 host crashes the agent with missing
+  CoreMedia/MediaToolbox symbols.
   [select-xcode-for-actool](.github/actions/select-xcode-for-actool/action.yml)
-  verifies the `macos-26` runner's default actool and returns its Developer
-  directory. Do not override that directory with a side-by-side Xcode unless
-  the host/toolchain pair has passed a signed package end-to-end verification.
+  checks the host and selects the newest stable installed Xcode with actool
+  26 or newer. A Command Line Tools default is insufficient; beta/RC Xcodes
+  never package releases. Keep the selection scoped to icon compilation and
+  packaging, without changing the runner's global `xcode-select` state.
   [release.yml](.github/workflows/release.yml) (both macOS
   jobs) and [preview-build.yml](.github/workflows/preview-build.yml) set
   `DEVELOPER_DIR` from it on exactly the steps that run actool — the unit

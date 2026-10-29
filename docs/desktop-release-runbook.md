@@ -251,6 +251,22 @@ RELEASE_TAG=v<version> pnpm release:check
 git push origin v<version>
 ```
 
+The macOS preparation, signing and same-repository preview jobs use the
+restricted organization self-hosted macOS runner group managed by PwrSuiteLab.
+They require a macOS 26 host and a stable installed Xcode with actool 26+;
+the selector checks this without changing the global toolchain. Preparation
+and previews reuse a per-runner PwrSnap download store. Windows and Linux jobs
+continue on their hosted images.
+
+Signing never reuses checkout contents. It expands the verified artifact into
+a fresh `release-signing` directory and puts decoded certificates, App Store
+Connect keys and temporary keychains inside a private job directory. An
+`always()` cleanup restores the original keychain search list and removes that
+job's signing material, including when the Node process was interrupted. The
+workspace is removed after artifact upload. The `apple-signing` environment
+approval and tag restrictions still gate credentials; preview jobs exclude
+forks and receive no signing secrets.
+
 The release workflow separates preparation, signing, and publication:
 
 1. **`prepare`** installs dependencies without signing secrets, checks release

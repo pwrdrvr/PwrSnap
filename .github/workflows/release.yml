@@ -52,7 +52,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@9bb6e786801cf822d57b2298e02ccefd05e8ef0f # v1.7.0
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
 
@@ -356,7 +356,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@9bb6e786801cf822d57b2298e02ccefd05e8ef0f # v1.7.0
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
 
@@ -396,7 +396,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@9bb6e786801cf822d57b2298e02ccefd05e8ef0f # v1.7.0
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
           cache-electron: "true"

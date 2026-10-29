@@ -31,7 +31,7 @@ concurrency:
 # ImageOS, Node major/ABI and its own implementation. Hash lifecycle inputs too.
 # The policy suffix binds the reviewed action and portable pnpm import policy.
 env:
-  PWRSNAP_DEPENDENCY_CACHE_POLICY: pwrsnap-install-v1-9bb6e786801cf822d57b2298e02ccefd05e8ef0f
+  PWRSNAP_DEPENDENCY_CACHE_POLICY: pwrsnap-install-v1-d416c1c78119b25fe03ee3ef78b75af0d69b10a7
   PWRSNAP_DEPENDENCY_CACHE_INPUTS: |
     .nvmrc
     .pnpmfile-global.cjs
@@ -146,7 +146,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@9bb6e786801cf822d57b2298e02ccefd05e8ef0f # v1.7.0
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
           dependency-cache: node-modules
@@ -164,7 +164,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@9bb6e786801cf822d57b2298e02ccefd05e8ef0f # v1.7.0
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
           dependency-cache: node-modules
@@ -185,7 +185,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@9bb6e786801cf822d57b2298e02ccefd05e8ef0f # v1.7.0
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
           dependency-cache: node-modules
@@ -209,7 +209,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@9bb6e786801cf822d57b2298e02ccefd05e8ef0f # v1.7.0
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
           dependency-cache: node-modules
@@ -233,7 +233,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@9bb6e786801cf822d57b2298e02ccefd05e8ef0f # v1.7.0
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
           dependency-cache: node-modules
@@ -265,7 +265,7 @@ jobs:
           lfs: true
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@9bb6e786801cf822d57b2298e02ccefd05e8ef0f # v1.7.0
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
           dependency-cache: node-modules
@@ -335,7 +335,7 @@ jobs:
         run: git lfs pull
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@9bb6e786801cf822d57b2298e02ccefd05e8ef0f # v1.7.0
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
           # PwrSuiteLab owns the persistent runner disk. Never share a root
@@ -385,7 +385,7 @@ jobs:
       # `packageManager` field via Corepack, so there's no second pnpm pin to
       # drift on upgrade.
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@9bb6e786801cf822d57b2298e02ccefd05e8ef0f # v1.7.0
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
           dependency-cache: node-modules
@@ -433,7 +433,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@9bb6e786801cf822d57b2298e02ccefd05e8ef0f # v1.7.0
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
           dependency-cache: node-modules

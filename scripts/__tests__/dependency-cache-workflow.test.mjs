@@ -6,7 +6,7 @@ import { describe, expect, test } from "vitest";
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const read = (name) => readFileSync(resolve(root, name), "utf8");
 const ci = read(".github/workflows/ci.yml");
-const actionSha = "9bb6e786801cf822d57b2298e02ccefd05e8ef0f";
+const actionSha = "d416c1c78119b25fe03ee3ef78b75af0d69b10a7";
 const jobs = Object.fromEntries(
   [...ci.matchAll(/^  ([\w-]+):\n([\s\S]*?)(?=^  [\w-]+:\n|$(?![\s\S]))/gm)]
     .map((match) => [match[1], match[2]])

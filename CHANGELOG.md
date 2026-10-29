@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.2.2 - 2026-10-28
+
+This maintenance update improves automatic update downloads.
+
+- App Updates - Improved differential downloads from update servers,
+  avoiding unnecessary full downloads when a server returns multipart
+  responses the updater previously could not process.
+
 ## v1.2.1 - 2026-10-23
 
 This security update moves PwrSnap to Electron 44.9.3. Updating is recommended.

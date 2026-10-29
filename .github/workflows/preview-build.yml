@@ -17,19 +17,22 @@ jobs:
     name: Build preview DMG
     # Run when the just-applied label is build-preview (labeled event), OR when
     # build-preview is already on the PR (synchronize event).
-    if: |
-      (github.event.action == 'labeled' && github.event.label.name == 'build-preview') ||
-      (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'build-preview'))
-    runs-on: macos-26
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      ((github.event.action == 'labeled' && github.event.label.name == 'build-preview') ||
+       (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'build-preview')))
+    runs-on: [self-hosted, macOS, ARM64, pwrdrvr-macos]
     timeout-minutes: 30
     steps:
       - name: Checkout PR branch
         uses: actions/checkout@v5
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@v1
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
+          persistent-store-dir: ~/Library/Caches/pwrsnap-ci/${{ runner.name }}
+          cache-electron: "true"
 
       - name: Compute preview version
         id: version
@@ -146,10 +149,10 @@ jobs:
             --source-dir "$stage/build/ffmpeg-source"
 
       # electron-builder compiles build/icon.icon with actool 26+. The
-      # macos-26 runner's default Xcode matches the AssetCatalogAgent host.
+      # Select a stable Xcode 26+ on the self-hosted macOS 26 guest.
       # Native helpers were built during stage preparation above. See
       # AGENTS.md "macOS app icon".
-      - name: Verify the macOS 26 runner actool
+      - name: Select Xcode for macOS 26 packaging
         id: xcode
         uses: ./.github/actions/select-xcode-for-actool
 
@@ -189,7 +192,7 @@ jobs:
       # No cache-priming gate job here (unlike ci.yml): this is a label-gated
       # one-off build, so there is no fan-out to prime for.
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@v1
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
 

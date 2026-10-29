@@ -27,6 +27,35 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# configure-nodejs hashes lock bytes, workspace manifests/config, OS/arch,
+# ImageOS, Node major/ABI and its own implementation. Hash lifecycle inputs too.
+# The policy suffix binds the reviewed action and portable pnpm import policy.
+env:
+  PWRSNAP_DEPENDENCY_CACHE_POLICY: pwrsnap-install-v1-d416c1c78119b25fe03ee3ef78b75af0d69b10a7
+  PWRSNAP_DEPENDENCY_CACHE_INPUTS: |
+    .nvmrc
+    .pnpmfile-global.cjs
+    scripts/check-node-version.mjs
+    scripts/lib/cli-entrypoint.mjs
+    scripts/linux-sandbox.mjs
+    apps/desktop/scripts/build-native.mjs
+    apps/desktop/native/pasteboard-writer/main.swift
+    apps/desktop/native/preview-extension/Info.plist
+    apps/desktop/native/preview-extension/preview-provider.swift
+    apps/desktop/native/recorder/audio-level.swift
+    apps/desktop/native/recorder/main.swift
+    apps/desktop/native/recorder/microphone.swift
+    apps/desktop/native/recorder/tests/microphone-match.swift
+    apps/desktop/native/recorder/tests/microphone-roundtrip.swift
+    apps/desktop/native/recorder/tests/no-device-io.c
+    apps/desktop/native/screen-snapshot-win/main.cpp
+    apps/desktop/native/thumbnail-extension/Info.plist
+    apps/desktop/native/thumbnail-extension/cli.swift
+    apps/desktop/native/thumbnail-extension/zip-reader.swift
+    apps/desktop/native/verified-file-win/main.cpp
+    apps/desktop/native/window-list-win/main.cpp
+    apps/desktop/native/window-list/main.swift
+
 jobs:
   # Keep the pull_request trigger path-unfiltered so the required check jobs
   # exist on every PR. Documentation-only PRs skip those jobs below instead.
@@ -103,23 +132,10 @@ jobs:
               )
               .write();
 
-  # Cache-priming gate. `lookup-only` makes this ~1s on a hit; on a miss it
-  # pays one cold install and saves the cache inline (not in a post step), so
-  # the fan-out below restores instead of each job installing from scratch.
-  # The cache key includes runner OS and arch, so Windows needs its own gate —
-  # see `windows-install-deps`. Gate and consumers must agree on every
-  # key-forming input (`node-version` major, `working-directory`,
-  # `package-manager`, `cache-electron`, `cache-key-suffix`); a mismatch warms
-  # a key nobody reads, silently and with no error.
-  #
-  # Deliberate divergence from PwrAgnt: we do NOT set `cache-electron`, which
-  # PwrAgnt sets on every call site. Measured on PwrSnap (PR #429) it takes the
-  # Windows cache entry from 259 MB to 397 MB while saving ~0.23s — nothing
-  # in the install downloads an Electron-specific artifact (better-sqlite3's
-  # prebuilds ship inside its npm tarball), so there is no download for the
-  # flag to capture. PwrGit reached the same conclusion independently and
-  # backed the flag out. Revisit only if a dependency starts making a real
-  # runtime download on a warm pnpm store.
+  # One completed-tree producer per hosted OS/architecture/image family.
+  # Producers frozen-install with lifecycle scripts on a miss; consumers require
+  # an exact hit and never install or repair. Inputs and policy must agree.
+  # Only node_modules is archived: Windows consumers build native helpers below.
   install-deps:
     name: Install Dependencies
     runs-on: ubuntu-latest
@@ -130,10 +146,13 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@v1
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
-          lookup-only: "true"
+          dependency-cache: node-modules
+          cache-mode: populate
+          cache-key-suffix: ${{ env.PWRSNAP_DEPENDENCY_CACHE_POLICY }}
+          cache-inputs: ${{ env.PWRSNAP_DEPENDENCY_CACHE_INPUTS }}
 
   windows-install-deps:
     name: Install Dependencies (Windows)
@@ -145,24 +164,34 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@v1
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
-          lookup-only: "true"
+          dependency-cache: node-modules
+          cache-mode: populate
+          cache-key-suffix: ${{ env.PWRSNAP_DEPENDENCY_CACHE_POLICY }}
+          cache-inputs: ${{ env.PWRSNAP_DEPENDENCY_CACHE_INPUTS }}
 
   lint:
     name: Lint
     runs-on: ubuntu-latest
     needs: [changes, install-deps]
     if: needs.changes.outputs.code_impacting == 'true'
+    env:
+      # Prevent pnpm 12 run commands from implicitly repairing a restored tree.
+      PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: "false"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@v1
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
+          dependency-cache: node-modules
+          cache-mode: restore
+          cache-key-suffix: ${{ env.PWRSNAP_DEPENDENCY_CACHE_POLICY }}
+          cache-inputs: ${{ env.PWRSNAP_DEPENDENCY_CACHE_INPUTS }}
 
       - name: Lint
         run: pnpm run lint
@@ -172,14 +201,21 @@ jobs:
     runs-on: ubuntu-latest
     needs: [changes, install-deps]
     if: needs.changes.outputs.code_impacting == 'true'
+    env:
+      # Prevent pnpm 12 run commands from implicitly repairing a restored tree.
+      PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: "false"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@v1
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
+          dependency-cache: node-modules
+          cache-mode: restore
+          cache-key-suffix: ${{ env.PWRSNAP_DEPENDENCY_CACHE_POLICY }}
+          cache-inputs: ${{ env.PWRSNAP_DEPENDENCY_CACHE_INPUTS }}
 
       - name: Build
         run: pnpm run build
@@ -189,14 +225,21 @@ jobs:
     runs-on: ubuntu-latest
     needs: [changes, install-deps]
     if: needs.changes.outputs.code_impacting == 'true'
+    env:
+      # Prevent pnpm 12 run commands from implicitly repairing a restored tree.
+      PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: "false"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@v1
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
+          dependency-cache: node-modules
+          cache-mode: restore
+          cache-key-suffix: ${{ env.PWRSNAP_DEPENDENCY_CACHE_POLICY }}
+          cache-inputs: ${{ env.PWRSNAP_DEPENDENCY_CACHE_INPUTS }}
 
       - name: Test
         run: pnpm run test
@@ -210,6 +253,9 @@ jobs:
     needs: [changes, install-deps]
     if: needs.changes.outputs.code_impacting == 'true'
     timeout-minutes: 20
+    env:
+      # Prevent pnpm 12 run commands from implicitly repairing a restored tree.
+      PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: "false"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -219,9 +265,13 @@ jobs:
           lfs: true
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@v1
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
+          dependency-cache: node-modules
+          cache-mode: restore
+          cache-key-suffix: ${{ env.PWRSNAP_DEPENDENCY_CACHE_POLICY }}
+          cache-inputs: ${{ env.PWRSNAP_DEPENDENCY_CACHE_INPUTS }}
 
       - name: Run desktop Electron E2E specs
         # The macOS-only specs (screencapture-based) are gated via
@@ -269,7 +319,7 @@ jobs:
        (github.event_name == 'pull_request' &&
         github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: [self-hosted, macOS, ARM64, pwrdrvr-macos]
-    needs: [changes, install-deps]
+    needs: changes
     timeout-minutes: 30
     steps:
       # Visual-regression goldens are Git LFS objects. The runner setup puts
@@ -285,9 +335,13 @@ jobs:
         run: git lfs pull
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@v1
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
+          # PwrSuiteLab owns the persistent runner disk. Never share a root
+          # across repositories/runners or with completed-tree mode.
+          persistent-store-dir: ~/Library/Caches/pwrsnap-ci/${{ runner.name }}
+          cache-electron: "true"
 
       - name: Build native helpers
         run: pnpm rebuild:electron-native
@@ -319,6 +373,9 @@ jobs:
     needs: [changes, windows-install-deps]
     if: needs.changes.outputs.code_impacting == 'true'
     timeout-minutes: 20
+    env:
+      # Prevent pnpm 12 run commands from implicitly repairing a restored tree.
+      PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: "false"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -328,9 +385,13 @@ jobs:
       # `packageManager` field via Corepack, so there's no second pnpm pin to
       # drift on upgrade.
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@v1
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
+          dependency-cache: node-modules
+          cache-mode: restore
+          cache-key-suffix: ${{ env.PWRSNAP_DEPENDENCY_CACHE_POLICY }}
+          cache-inputs: ${{ env.PWRSNAP_DEPENDENCY_CACHE_INPUTS }}
 
       - name: Lint
         run: pnpm run lint
@@ -364,14 +425,25 @@ jobs:
     needs: [changes, windows-install-deps]
     if: needs.changes.outputs.code_impacting == 'true'
     timeout-minutes: 30
+    env:
+      # Prevent pnpm 12 run commands from implicitly repairing a restored tree.
+      PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: "false"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@v1
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         with:
           node-version: "^24.22.0"
+          dependency-cache: node-modules
+          cache-mode: restore
+          cache-key-suffix: ${{ env.PWRSNAP_DEPENDENCY_CACHE_POLICY }}
+          cache-inputs: ${{ env.PWRSNAP_DEPENDENCY_CACHE_INPUTS }}
+
+      # Completed trees exclude apps/desktop/build/native.
+      - name: Build native helpers
+        run: pnpm rebuild:electron-native
 
       - name: Run desktop Electron E2E specs (Windows)
         # windows-latest provides an interactive desktop session, so (unlike the

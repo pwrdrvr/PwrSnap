@@ -1,11 +1,14 @@
-name: Verify the macOS 26 runner actool
+name: Select an Xcode with actool 26
 description: >-
   electron-builder compiles build/icon.icon (an Icon Composer package) with
-  actool and hard-fails below actool 26. Its AssetCatalogAgent requires the
-  macOS 26 host frameworks, so callers run on GitHub's macos-26 image and this
-  verifies that image's default Xcode before returning its Developer directory.
-  Consumers set DEVELOPER_DIR from the output on exactly the steps that run
-  actool (the unit tests, electron-builder). See AGENTS.md "macOS app icon".
+  actool and hard-fails below actool 26. Its AssetCatalogAgent also requires a
+  macOS 26 host runtime: selecting Xcode 26 on macos-15 crashes during the
+  compile with missing CoreMedia symbols. This checks the host, finds the
+  newest stable Xcode whose actool is 26 or newer, and returns its Developer
+  directory. Consumers set DEVELOPER_DIR from the output on exactly the steps
+  that run actool (the unit tests, electron-builder), so the icon compile does
+  not move native helper builds onto a different SDK. See AGENTS.md "macOS app
+  icon".
 
 outputs:
   developer-dir:
@@ -15,26 +18,37 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Verify the default Xcode has actool 26 or newer
+    - name: Find the newest stable Xcode with actool 26 or newer
       id: select
       shell: bash
       run: |
         set -euo pipefail
-        # Do not override this with an Xcode installed alongside the default:
-        # Icon Composer's AssetCatalogAgent must match the macOS 26 host.
-        developer_dir="$(xcode-select -p)"
-        if [ ! -x "$developer_dir/usr/bin/actool" ]; then
-          echo "::error::the macOS 26 runner default Xcode must provide actool" >&2
+        host_version="$(sw_vers -productVersion)"
+        host_major="${host_version%%.*}"
+        if [ "$host_major" -lt 26 ]; then
+          echo "::error::actool 26 needs a macOS 26 host runtime; found macOS $host_version. Use a macOS 26+ runner for Icon Composer packaging." >&2
           exit 1
         fi
-        # actool prints a plist. plistlib.loads() reads a pipe; load() seeks
-        # to sniff the format and fails on stdin with "not seekable".
-        version="$(DEVELOPER_DIR="$developer_dir" xcrun actool --version \
-          | python3 -c 'import plistlib, sys; print(plistlib.loads(sys.stdin.buffer.read())["com.apple.actool.version"]["short-bundle-version"])')"
-        echo "$developer_dir: actool $version"
-        if [ "${version%%.*}" -lt 26 ]; then
-          echo "::error::the macOS 26 runner default actool must be 26 or newer; got $version" >&2
+        selected=""
+        # Newest first. Betas and release candidates never build a release,
+        # and `sort -V` would otherwise rank Xcode_26.4_beta above Xcode_26.3.
+        while IFS= read -r candidate; do
+          [ -n "$candidate" ] || continue
+          developer_dir="$candidate/Contents/Developer"
+          [ -x "$developer_dir/usr/bin/actool" ] || continue
+          # actool prints a plist. plistlib.loads() reads a pipe; load() seeks
+          # to sniff the format and fails on stdin with "not seekable".
+          version="$(DEVELOPER_DIR="$developer_dir" xcrun actool --version \
+            | python3 -c 'import plistlib, sys; print(plistlib.loads(sys.stdin.buffer.read())["com.apple.actool.version"]["short-bundle-version"])')"
+          echo "$candidate: actool $version"
+          if [ "${version%%.*}" -ge 26 ]; then
+            selected="$developer_dir"
+            break
+          fi
+        done < <(ls -d /Applications/Xcode*.app 2>/dev/null | grep -viE '[_-](beta|rc)' | sort -rV || true)
+        if [ -z "$selected" ]; then
+          echo "::error::no /Applications/Xcode*.app with actool 26 or newer on this runner; build/icon.icon cannot be compiled" >&2
           exit 1
         fi
-        echo "DEVELOPER_DIR=$developer_dir"
-        echo "developer-dir=$developer_dir" >> "$GITHUB_OUTPUT"
+        echo "DEVELOPER_DIR=$selected"
+        echo "developer-dir=$selected" >> "$GITHUB_OUTPUT"

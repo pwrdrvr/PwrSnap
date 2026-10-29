@@ -202,20 +202,39 @@ describe("Windows release configuration", () => {
     expect(script).not.toContain("process.env.CSC_KEYCHAIN");
   });
 
-  test("macOS Icon Composer packaging uses a macOS 26 runner with its default Xcode", () => {
+  test("macOS Icon Composer packaging selects stable Xcode on restricted macOS 26 runners", () => {
     const action = read(".github/actions/select-xcode-for-actool/action.yml");
     const releaseWorkflow = read(".github/workflows/release.yml");
     const previewWorkflow = read(".github/workflows/preview-build.yml");
 
-    // Any Xcode 26 actool crashes its AssetCatalogAgent against macos-15's
-    // host frameworks. Compile Icon Composer only where the host and selected
-    // default Xcode are from macOS 26; overriding DEVELOPER_DIR to another
-    // side-by-side Xcode recreates the mismatch.
-    expect(releaseWorkflow.match(/runs-on: macos-26/g)).toHaveLength(2);
-    expect(previewWorkflow).toContain("runs-on: macos-26");
-    expect(action).toContain('developer_dir="$(xcode-select -p)"');
-    expect(action).toContain("AssetCatalogAgent must match the macOS 26 host");
-    expect(action).not.toContain("/Applications/Xcode_");
+    expect(releaseWorkflow.match(/runs-on: \[self-hosted, macOS, ARM64, pwrdrvr-macos\]/g)).toHaveLength(2);
+    expect(previewWorkflow).toContain("runs-on: [self-hosted, macOS, ARM64, pwrdrvr-macos]");
+    expect(action).toContain('host_version="$(sw_vers -productVersion)"');
+    expect(action).toContain('if [ "$host_major" -lt 26 ]');
+    expect(action).toContain("/Applications/Xcode*.app");
+    expect(action).toContain("grep -viE '[_-](beta|rc)'");
+    expect(action).not.toContain("sudo xcode-select");
+  });
+
+  test("persistent macOS signing isolates the artifact and always removes credentials", () => {
+    const workflow = read(".github/workflows/release.yml");
+    const signing = workflow.split("  sign:\n")[1].split("  linux-build:\n")[0];
+    expect(signing).toContain("working-directory: release-signing");
+    expect(signing).toContain("umask 077");
+    expect(signing).toContain('mktemp -d "$RUNNER_TEMP/pwrsnap-signing.XXXXXX"');
+    expect(signing).toContain('security list-keychains -d user > "$signing_temp/keychains-before.txt"');
+    expect(signing).toContain("TMPDIR: ${{ env.PWRSNAP_SIGNING_TEMP_DIR }}");
+    expect(signing).toContain("path: release-signing/.release-input");
+    expect(signing).toContain("uses: ./release-signing/.github/actions/select-xcode-for-actool");
+    expect(signing).toContain("release-signing/apps/desktop/release-stage/dist/*.dmg");
+    expect(signing).toMatch(/name: Remove temporary signing credentials\n        if: always\(\)/);
+    expect(signing).toMatch(/name: Remove isolated signing workspace\n        if: always\(\)/);
+    expect(signing.indexOf("Remove temporary signing credentials")).toBeLessThan(signing.indexOf("Upload macOS release assets"));
+    expect(signing).not.toContain("uses: actions/checkout");
+    expect(signing).not.toContain("configure-nodejs@");
+    expect(workflow).toContain("scripts/release/cleanup-macos-signing.py");
+    const preview = read(".github/workflows/preview-build.yml").split("  preview-windows:")[0];
+    expect(preview).toContain("github.event.pull_request.head.repo.full_name == github.repository");
   });
 
   test("tagged release workflow gates publication on Linux, macOS, and Azure-signed Windows", () => {

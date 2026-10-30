@@ -29,6 +29,7 @@ jobs:
 
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
+        timeout-minutes: 10
         with:
           node-version: "^24.22.0"
           persistent-store-dir: ~/Library/Caches/pwrsnap-ci/${{ runner.name }}
@@ -193,6 +194,7 @@ jobs:
       # one-off build, so there is no fan-out to prime for.
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
+        timeout-minutes: 10
         with:
           node-version: "^24.22.0"
 

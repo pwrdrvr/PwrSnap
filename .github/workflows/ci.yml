@@ -62,6 +62,7 @@ jobs:
   changes:
     name: Classify Changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       code_impacting: ${{ steps.classify.outputs.code_impacting }}
       docs_only: ${{ steps.classify.outputs.docs_only }}
@@ -139,6 +140,7 @@ jobs:
   install-deps:
     name: Install Dependencies
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: changes
     if: needs.changes.outputs.code_impacting == 'true'
     steps:
@@ -147,6 +149,7 @@ jobs:
 
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
+        timeout-minutes: 10
         with:
           node-version: "^24.22.0"
           dependency-cache: node-modules
@@ -157,6 +160,7 @@ jobs:
   windows-install-deps:
     name: Install Dependencies (Windows)
     runs-on: windows-latest
+    timeout-minutes: 15
     needs: changes
     if: needs.changes.outputs.code_impacting == 'true'
     steps:
@@ -165,6 +169,7 @@ jobs:
 
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
+        timeout-minutes: 10
         with:
           node-version: "^24.22.0"
           dependency-cache: node-modules
@@ -175,6 +180,7 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [changes, install-deps]
     if: needs.changes.outputs.code_impacting == 'true'
     env:
@@ -186,6 +192,7 @@ jobs:
 
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
+        timeout-minutes: 10
         with:
           node-version: "^24.22.0"
           dependency-cache: node-modules
@@ -199,6 +206,7 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [changes, install-deps]
     if: needs.changes.outputs.code_impacting == 'true'
     env:
@@ -210,6 +218,7 @@ jobs:
 
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
+        timeout-minutes: 10
         with:
           node-version: "^24.22.0"
           dependency-cache: node-modules
@@ -223,6 +232,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [changes, install-deps]
     if: needs.changes.outputs.code_impacting == 'true'
     env:
@@ -234,6 +244,7 @@ jobs:
 
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
+        timeout-minutes: 10
         with:
           node-version: "^24.22.0"
           dependency-cache: node-modules
@@ -266,6 +277,7 @@ jobs:
 
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
+        timeout-minutes: 10
         with:
           node-version: "^24.22.0"
           dependency-cache: node-modules
@@ -336,6 +348,7 @@ jobs:
 
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
+        timeout-minutes: 10
         with:
           node-version: "^24.22.0"
           # PwrSuiteLab owns the persistent runner disk. Never share a root
@@ -386,6 +399,7 @@ jobs:
       # drift on upgrade.
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
+        timeout-minutes: 10
         with:
           node-version: "^24.22.0"
           dependency-cache: node-modules
@@ -434,6 +448,7 @@ jobs:
 
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
+        timeout-minutes: 10
         with:
           node-version: "^24.22.0"
           dependency-cache: node-modules

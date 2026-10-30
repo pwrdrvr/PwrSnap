@@ -17,6 +17,7 @@ import {
   Menu,
   nativeImage,
   nativeTheme,
+  safeStorage,
   shell,
   webContents
 } from "electron";
@@ -76,6 +77,10 @@ import {
   applyWindowsChromiumStartupFeaturePolicy
 } from "./windows-chromium-startup-policy";
 import { applyDarwinKeychainStartupPolicy } from "./darwin-keychain-startup-policy";
+import {
+  applyRememberedLinuxPasswordStore,
+  relaunchForLinuxSecretStore
+} from "./linux-password-store";
 // (showFloatOverForCapture is no longer called from the bootstrap;
 // the capture-handlers `capture:interactive` now drives the entire
 // float-over lifecycle. Kept as an export from float-over.ts for the
@@ -1813,8 +1818,55 @@ export function bootstrapApp(): void {
     app.setPath("sessionData", join(app.getPath("userData"), "library-session"));
   }
 
+  // Linux: a desktop Chromium does not recognize gets the `basic_text`
+  // secret store, where DesktopSecretStore refuses to write. Append the real
+  // store a previous launch found on the session bus. Chromium reads
+  // --password-store during early init, so this has to happen here, before
+  // ready, and after the userData override above. See linux-password-store.ts.
+  const rememberedLinuxPasswordStore = applyRememberedLinuxPasswordStore({
+    platform: process.platform,
+    isE2E,
+    argv: process.argv,
+    env: process.env,
+    userDataDir: app.getPath("userData"),
+    appendSwitch: (store) => {
+      app.commandLine.appendSwitch("password-store", store);
+    }
+  });
+  if (rememberedLinuxPasswordStore !== undefined) {
+    log.info("linux secret store selected before ready", { store: rememberedLinuxPasswordStore });
+  }
+
   app.whenReady().then(async () => {
     installSystemShutdown();
+    // Before anything is created: when this process came up on
+    // `basic_text` and the session bus has a real secret service, relaunch
+    // onto it once. Reads only the selected backend name, never the keyring.
+    if (
+      relaunchForLinuxSecretStore({
+        platform: process.platform,
+        isE2E,
+        argv: process.argv,
+        env: process.env,
+        userDataDir: app.getPath("userData"),
+        selectedStore: rememberedLinuxPasswordStore,
+        backend: process.platform === "linux" ? safeStorage.getSelectedStorageBackend() : null,
+        relaunch: (args) => {
+          app.relaunch({ args });
+        },
+        exit: (code) => {
+          app.exit(code);
+        },
+        info: (message, fields) => {
+          log.info(message, fields);
+        },
+        warn: (message, fields) => {
+          log.warn(message, fields);
+        }
+      })
+    ) {
+      return;
+    }
     // Before any window loads. Electron's no-handler default GRANTS
     // every permission a renderer asks for; this denies by default and
     // allows only `media` (the selector's level meter + camera preview)

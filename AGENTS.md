@@ -3040,6 +3040,24 @@ Rules:
   dialog. It is deliberately NOT applied to `pnpm dev`: `app.setName` is
   unconditional, so dev shares `userData` — and `pwrsnap-secrets.bin` — with
   the installed app and must share its key.
+- **Linux picks its secret store from the session bus, once.** Chromium gives
+  a desktop it does not recognize (Hyprland, sway, i3, LXQt) the `basic_text`
+  store, and the secret store refuses to write there.
+  [linux-password-store.ts](apps/desktop/src/main/linux-password-store.ts)
+  probes the session bus after ready, remembers the service it finds in
+  `<userData>/linux-password-store`, and relaunches once with
+  `--password-store`. Every later launch appends the remembered switch before
+  ready. This mirrors pwrdrvr/PwrAgent#2322; keep the two in step.
+  - Decide from `getSelectedStorageBackend()` alone. Never call
+    `isEncryptionAvailable()` or `isAsyncEncryptionAvailable()` at startup:
+    each one fetches the keyring key.
+  - Never replace a backend that is not `basic_text`, a remembered store, or
+    the operator's `--password-store` / `PWRSNAP_LINUX_PASSWORD_STORE`. A
+    different store is a different key, and the existing ciphertext would
+    stop decrypting.
+  - The remembered store is a plain file, not a Setting. Chromium needs it
+    before ready, and no renderer can change it.
+  - E2E never relaunches.
 - **Validate at the bus boundary.** Per-verb validators in
   [apps/desktop/src/main/handlers/settings-validators.ts](apps/desktop/src/main/handlers/settings-validators.ts)
   reject unknown secret names, oversize values (>64KB), unknown

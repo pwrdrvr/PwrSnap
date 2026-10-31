@@ -245,8 +245,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/shared
       '@shutterstock/p-map-iterable':
-        specifier: ^1.1.2
-        version: 1.1.2(aggregate-error@3.1.0)
+        specifier: ^1.2.0
+        version: 1.2.0(aggregate-error@3.1.0)
       '@tanstack/react-virtual':
         specifier: ^3.14.21
         version: 3.14.21(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
@@ -1583,10 +1583,10 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@shutterstock/p-map-iterable@1.1.2':
-    resolution: {integrity: sha512-zNPPB2cro7fr+gPsNPoEir6pzYfJngkik7EnsSD5uMqwzGB8qtMmausS5XO10KM5c1Hfw/hpe1oXf/UoHNZFlg==}
+  '@shutterstock/p-map-iterable@1.2.0':
+    resolution: {integrity: sha512-waqNJVOz35MaGZgxNl+kxDCxeBLOOVHL/XvgcZDAy9gazjRRkt9ZmUz48S3AoejC3EUJKjEYgjQW1UtRKJLb0g==}
     peerDependencies:
-      aggregate-error: ^3.0.0
+      aggregate-error: ^3.1.0
 
   '@sindresorhus/is@4.6.0':
     resolution: {integrity: sha512-t09vSN3MdfsyCHoFcTRCH/iUtG7OJ0CsjzB8cjAmKc/va/kIgeDI/TxsigdncE/4be734m0cvIYwNaV4i2XqAw==}
@@ -4576,7 +4576,7 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.62.2':
     optional: true
 
-  '@shutterstock/p-map-iterable@1.1.2(aggregate-error@3.1.0)':
+  '@shutterstock/p-map-iterable@1.2.0(aggregate-error@3.1.0)':
     dependencies:
       aggregate-error: 3.1.0
 

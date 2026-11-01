@@ -97,6 +97,10 @@ type RoleDraft = {
 
 export function LocalAgentsPage(): ReactElement {
   const [relayCommand, setRelayCommand] = useState("pwrsnap-mcp");
+  const [httpUrl, setHttpUrl] = useState<string | null>(null);
+  const [httpInputId, setHttpInputId] = useState("pwrsnap-http-token");
+  const [httpCredential, setHttpCredential] = useState<{ token: string; expiresAt: string } | null>(null);
+  const [bootstrappingHttp, setBootstrappingHttp] = useState(false);
   const recipes = connectRecipes(relayCommand);
   const { settings, patch } = useSettingsContext();
   const [grants, setGrants] = useState<LocalAgentClientGrant[]>([]);
@@ -130,6 +134,10 @@ export function LocalAgentsPage(): ReactElement {
   const nodeRefs = useRef(new Map<string, HTMLElement>());
   const [paths, setPaths] = useState<GraphPath[]>([]);
   const mcpEnabled = settings?.localAgents.enabled ?? false;
+  const httpConfiguration = JSON.stringify({
+    servers: { pwrsnap: { type: "http", url: httpUrl, headers: { Authorization: `Bearer \${input:${httpInputId}}` } } },
+    inputs: [{ type: "promptString", id: httpInputId, description: "PwrSnap HTTP Session credential", password: true }]
+  }, null, 2);
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -142,6 +150,7 @@ export function LocalAgentsPage(): ReactElement {
       setRoles(result.value.roles);
       setListenerStatus(result.value.listenerStatus);
       setRelayCommand(result.value.relayCommand ?? "pwrsnap-mcp");
+      setHttpUrl(result.value.httpUrl ?? null);
       setSelectedSessionId((current) =>
         current !== null && result.value.grants.some((grant) => grant.id === current)
           ? current
@@ -160,6 +169,28 @@ export function LocalAgentsPage(): ReactElement {
     }
     setLoading(false);
   }, []);
+
+  useEffect(() => {
+    if (httpCredential === null) return;
+    const timer = setTimeout(() => setHttpCredential(null), Math.max(0, Date.parse(httpCredential.expiresAt) - Date.now()));
+    return () => clearTimeout(timer);
+  }, [httpCredential]);
+  useEffect(() => { if (!mcpEnabled) setHttpCredential(null); }, [mcpEnabled]);
+  const bootstrapHttp = async (): Promise<void> => {
+    setBootstrappingHttp(true);
+    setHttpCredential(null);
+    const result = await dispatch("localAgents:httpBootstrap", {});
+    if (result.ok) {
+      setHttpCredential(result.value);
+      setHttpUrl(result.value.httpUrl);
+      // A fresh input reference prompts again instead of sending a host's
+      // cached credential from a closed Session. It contains no secret.
+      setHttpInputId(`pwrsnap-http-${Date.parse(result.value.expiresAt).toString(36)}`);
+      setError(null);
+    }
+    else setError(result.error.message);
+    setBootstrappingHttp(false);
+  };
 
   const setMcpEnabled = async (enabled: boolean): Promise<void> => {
     setTogglingAccess(true);
@@ -323,7 +354,7 @@ export function LocalAgentsPage(): ReactElement {
   const listenerCopy = !mcpEnabled
     ? { badge: "MCP off", tag: "off" }
     : listenerStatus.state === "listening"
-      ? { badge: "Local stdio MCP", tag: "listening on local IPC" }
+      ? { badge: "Local IPC MCP", tag: "stdio relay + IPC HTTP" }
       : listenerStatus.state === "starting"
         ? { badge: "MCP starting", tag: "starting" }
         : listenerStatus.state === "stopping"
@@ -526,8 +557,8 @@ export function LocalAgentsPage(): ReactElement {
               <p className="pss__row-sub">
                 Run one of these in a terminal. The agent opens PwrSnap's approval window; pick a
                 Session Name and role there. Keep PwrSnap running. After a disconnect, reconnect
-                manually in the host. Existing HTTP connections must be removed and added again with
-                stdio; approve a new Session.
+                manually in the host. Replace existing TCP HTTP connections with stdio or direct
+                IPC HTTP below; approve a new Session.
               </p>
               {recipes.map((recipe) => {
                 const feedback = copyFeedback?.id === recipe.id ? copyFeedback.status : null;
@@ -562,6 +593,32 @@ export function LocalAgentsPage(): ReactElement {
           ) : (
             <p className="pss__row-sub">{connectFallback}</p>
           )}
+        </div>
+      </Card>
+
+      <Card eyebrow="DIRECT IPC HTTP" title="VS Code">
+        <div className="pss__connect">
+          <p className="pss__row-sub">
+            VS Code can use HTTP over the same local socket or pipe. Create a Session here and
+            approve its role in PwrSnap's native window. Copy the fresh configuration, start the server,
+            and paste the credential into VS Code's secret input within two minutes. Keep PwrSnap
+            running. After disconnection, create a new Session and copy its new configuration manually.
+          </p>
+          {httpUrl !== null && listenerStatus.state === "listening" ? <>
+            <pre className="pss__pair-command">{httpConfiguration}</pre>
+            <div className="pss__pair-recipe-hdr"><button type="button" className="pss__key-btn" onClick={() => void copyRecipe("http-config", httpConfiguration)}>
+              {copyFeedback?.id === "http-config" && copyFeedback.status === "copied" ? "Copied VS Code configuration" : "Copy VS Code configuration"}
+            </button>
+            <button type="button" className="pss__key-btn" disabled={bootstrappingHttp} onClick={() => void bootstrapHttp()}>
+              {bootstrappingHttp ? "Waiting for native approval…" : "Create HTTP Session"}
+            </button></div>
+            {httpCredential !== null && <div role="status">
+              <p className="pss__row-sub">Credential ready to copy. It initializes one Session and cannot resume a closed Session.</p>
+              <div className="pss__pair-recipe-hdr"><button type="button" className="pss__key-btn" onClick={() => void copyRecipe("http-credential", httpCredential.token)}>{copyFeedback?.id === "http-credential" && copyFeedback.status === "copied" ? "Copied HTTP credential" : "Copy HTTP credential"}</button>
+              <button type="button" className="pss__key-btn" onClick={() => setHttpCredential(null)}>Hide credential</button></div>
+            </div>}
+          </> : <p className="pss__row-sub">Enable local-agent access to get the direct IPC URL.</p>}
+          <p className="pss__row-sub">Browser OAuth over IPC is unsupported. Old HTTP tokens and approvals do not migrate. Other hosts should use the stdio relay above.</p>
         </div>
       </Card>
 

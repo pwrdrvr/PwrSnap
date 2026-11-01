@@ -7,6 +7,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { ok, resolveLocalAgentPolicy } from "@pwrsnap/shared";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { z } from "zod";
+import { Agent, request } from "node:http";
 vi.mock("electron", () => ({
   app: { getVersion: () => "9.8.7" },
   safeStorage: {
@@ -34,6 +35,7 @@ let endpoint: string;
 let settingsPath: string;
 let decision: LocalAgentConsentDecision;
 const clients: Client[] = [];
+const agents: Agent[] = [];
 const consent = vi.fn();
 const dispatch = vi.fn(async (_input: unknown, ctx: { capabilities: readonly string[] }) =>
   ok({ caps: ctx.capabilities })
@@ -77,7 +79,7 @@ beforeEach(async () => {
       }),
       release: () => undefined
     },
-    bridgeFactory: (onConnection) => new NativeMcpBridge({ executable, endpoint, onConnection }),
+    bridgeFactory: (onConnection) => new NativeMcpBridge({ executable, endpoint, allowHttp: true, onConnection }),
     tools: [
       {
         name: "fixture_search",
@@ -93,8 +95,148 @@ beforeEach(async () => {
   await server.start();
 });
 afterEach(async () => {
+  for (const agent of agents.splice(0)) agent.destroy();
   await Promise.all(clients.splice(0).map((client) => client.close()));
   await server.stop();
+});
+
+function httpHost() {
+  const agent = new Agent({ keepAlive: true });
+  agents.push(agent);
+  return (body?: unknown, headers: Record<string, string> = {}, method = "POST") => new Promise<{ status: number; headers: Record<string, string | string[] | undefined>; text: string }>((resolve, reject) => {
+    const bytes = body === undefined ? "" : JSON.stringify(body);
+    const req = request({ socketPath: endpoint, path: "/mcp", method, agent,
+      headers: { host: "localhost", accept: "application/json, text/event-stream", "content-type": "application/json", "content-length": Buffer.byteLength(bytes), ...headers } }, (res) => {
+      let text = "";
+      res.setEncoding("utf8"); res.on("data", (chunk) => { text += chunk; });
+      res.on("end", () => resolve({ status: res.statusCode!, headers: res.headers, text }));
+      res.on("error", reject);
+    });
+    req.on("error", reject); req.end(bytes);
+  });
+}
+const initializeHttp = { jsonrpc: "2.0", id: 1, method: "initialize", params: {
+  protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "IPC HTTP host", version: "1" },
+  _meta: { approval: { policy: "native" } }, extension: { preserved: true }
+} };
+function httpMessage(text: string): Record<string, unknown> {
+  return JSON.parse(text.split("\n").find((line) => line.startsWith("data: "))!.slice(6));
+}
+test("HTTP over the same protected IPC endpoint uses native bootstrap and the desktop catalog and validation", async () => {
+  const send = httpHost();
+  expect((await send(initializeHttp)).status).toBe(401);
+  expect(consent).not.toHaveBeenCalled();
+  const credential = await server.bootstrapHttp(new AbortController().signal);
+  const headers: Record<string, string> = { authorization: `Bearer ${credential.token}` };
+  const initialized = await send(initializeHttp, headers);
+  expect(initialized.status).toBe(200);
+  expect(httpMessage(initialized.text)).toMatchObject({ result: { serverInfo: { name: "PwrSnap", version: "9.8.7" } } });
+  expect(initialized.text).toContain("direct IPC HTTP/1.x; no relay");
+  headers["mcp-session-id"] = initialized.headers["mcp-session-id"] as string;
+  headers["mcp-protocol-version"] = "2025-11-25";
+  expect((await send({ jsonrpc: "2.0", method: "notifications/initialized" }, headers)).status).toBe(202);
+  const tools = await send({ jsonrpc: "2.0", id: 2, method: "tools/list" }, headers);
+  expect(httpMessage(tools.text)).toMatchObject({ result: { tools: [{ name: "fixture_search", description: "Desktop-owned fixture description", annotations: { readOnlyHint: true }, inputSchema: { required: ["query"] } }] } });
+  const bad = await send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "fixture_search", arguments: { query: 4 } } }, headers);
+  expect(httpMessage(bad.text)).toMatchObject({ result: { isError: true } });
+  expect(dispatch).not.toHaveBeenCalled();
+  const good = await send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "fixture_search", arguments: { query: "hello" }, _meta: { progressToken: "preserved" } } }, headers);
+  expect(good.status).toBe(200);
+  expect(dispatch).toHaveBeenCalledOnce();
+  expect(consent).toHaveBeenCalledOnce();
+  const [grant] = await grants.list();
+  await grants.assignRole(grant.id, "builtin.full-access");
+  expect((await grants.authorizeClient(grant.id))?.capabilities).toEqual(["library.read"]);
+});
+test("HTTP session ids and old approvals never replace the bearer credential or authorize a second initialization", async () => {
+  const send = httpHost();
+  const { token } = await server.bootstrapHttp(new AbortController().signal);
+  const first = await send(initializeHttp, { authorization: `Bearer ${token}` });
+  const id = first.headers["mcp-session-id"] as string;
+  expect((await httpHost()(initializeHttp, { authorization: `Bearer ${token}`, "mcp-session-id": id })).status).toBe(409);
+  expect((await httpHost()(initializeHttp, { authorization: `Bearer ${token}` })).status).toBe(404);
+  expect((await httpHost()(undefined, { "mcp-session-id": id }, "GET")).status).toBe(401);
+  expect((await httpHost()(undefined, { authorization: `Bearer ${token}`, "mcp-session-id": "other" }, "GET")).status).toBe(404);
+  const [grant] = await grants.list();
+  await grants.revokeGrant(grant.id); await server.settingsChanged();
+  expect((await httpHost()(initializeHttp, { authorization: `Bearer ${token}` })).status).toBe(401);
+  expect(dispatch).not.toHaveBeenCalled();
+});
+test("HTTP DELETE delivers its terminal response and revokes all Session streams and the consumed credential", async () => {
+  const send = httpHost();
+  const { token } = await server.bootstrapHttp(new AbortController().signal);
+  const first = await send(initializeHttp, { authorization: `Bearer ${token}` });
+  const headers = { authorization: `Bearer ${token}`, "mcp-session-id": first.headers["mcp-session-id"] as string };
+  expect((await send(undefined, headers, "DELETE")).status).toBe(200);
+  await vi.waitFor(async () => expect((await grants.list())[0].revokedAt).not.toBeNull());
+  expect((await httpHost()(initializeHttp, { authorization: `Bearer ${token}` })).status).toBe(401);
+});
+test("persistent HTTP and SSE deliver discovery changes, and a closed SSE cannot resume or replay", async () => {
+  const send = httpHost();
+  const { token } = await server.bootstrapHttp(new AbortController().signal);
+  const initialized = await send(initializeHttp, { authorization: `Bearer ${token}` });
+  const headers = { host: "localhost", accept: "text/event-stream", authorization: `Bearer ${token}`,
+    "mcp-session-id": initialized.headers["mcp-session-id"] as string, "mcp-protocol-version": "2025-11-25" };
+  await send({ jsonrpc: "2.0", method: "notifications/initialized" }, headers);
+  let stream: import("node:http").IncomingMessage | undefined;
+  let events = "";
+  const opened = new Promise<void>((resolve, reject) => {
+    const req = request({ socketPath: endpoint, path: "/mcp", method: "GET", headers }, (res) => {
+      stream = res; res.setEncoding("utf8");
+      res.on("data", (chunk) => { events += chunk; resolve(); });
+      res.on("error", () => undefined);
+    });
+    req.on("error", reject); req.end();
+  });
+  const [grant] = await grants.list();
+  // Wait for the parser to establish GET before changing discovery. No
+  // resumption event store is present, so the first data is a real change.
+  let transition = 0;
+  await vi.waitFor(async () => {
+    const result = await httpHost()(undefined, { ...headers, "last-event-id": "never-replay" }, "GET");
+    expect(result.status).toBe(400);
+    await grants.assignRole(grant.id, ++transition % 2 ? "builtin.full-access" : "builtin.search");
+    await server.settingsChanged();
+    expect(events).toContain("notifications/tools/list_changed");
+  });
+  await opened;
+  expect(events).toContain("notifications/tools/list_changed");
+  expect(events).not.toContain("id:");
+  stream!.destroy();
+  await vi.waitFor(async () => expect((await grants.list())[0].revokedAt).not.toBeNull());
+  expect((await httpHost()(undefined, headers, "GET")).status).toBe(401);
+  expect(dispatch).not.toHaveBeenCalled();
+});
+test("HTTP bootstrap denial, cancellation and disconnect cannot leave an approval for replacement sessions", async () => {
+  decision = { decision: "deny", sessionName: "", roleId: null, capabilities: [] };
+  await expect(server.bootstrapHttp(new AbortController().signal)).rejects.toThrow();
+  expect(await grants.list()).toEqual([]);
+  decision = { decision: "allow", sessionName: "HTTP only", roleId: "builtin.search", capabilities: ["library.read"] };
+  const controller = new AbortController();
+  controller.abort();
+  await expect(server.bootstrapHttp(controller.signal)).rejects.toThrow();
+  expect(await grants.list()).toEqual([]);
+  const { token } = await server.bootstrapHttp(new AbortController().signal);
+  const initialized = await httpHost()(initializeHttp, { authorization: `Bearer ${token}` });
+  expect(initialized.status).toBe(200);
+  for (const agent of agents.splice(0)) agent.destroy();
+  await vi.waitFor(async () => expect((await grants.list())[0].revokedAt).not.toBeNull());
+  expect((await httpHost()(initializeHttp, { authorization: `Bearer ${token}` })).status).toBe(401);
+});
+test("HTTP and stdio share the Session cap, and concurrent replacements reclaim idle revoked HTTP sessions before admission", async () => {
+  let index = 0;
+  consent.mockImplementation(async () => ({ ...decision, sessionName: `HTTP Session ${++index}` }));
+  for (let i = 0; i < 31; i++) await server.bootstrapHttp(new AbortController().signal);
+  await connect();
+  await expect(server.bootstrapHttp(new AbortController().signal)).rejects.toThrow("limit");
+  expect(consent).toHaveBeenCalledTimes(32);
+  const [grant] = await grants.list();
+  await grants.revokeGrant(grant.id);
+  const attempts = await Promise.allSettled([server.bootstrapHttp(new AbortController().signal), server.bootstrapHttp(new AbortController().signal)]);
+  expect(attempts.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+  expect(attempts.filter((result) => result.status === "rejected")).toHaveLength(1);
+  expect(consent).toHaveBeenCalledTimes(33);
+  expect((await grants.list()).filter((grant) => grant.revokedAt === null)).toHaveLength(32);
 });
 async function connect(): Promise<Client> {
   const client = new Client({ name: "Fixture host", version: "0.0.2" }, { capabilities: {} });

@@ -1,5 +1,6 @@
 //! A byte relay, never an MCP server. The independently launched desktop
 //! owns MCP and authorization. No command execution or application launch.
+mod framing;
 mod link;
 #[cfg(windows)]
 mod windows;
@@ -17,11 +18,14 @@ const MAX_CONTROL: u64 = 128 * 1024;
 const MAX_PEERS: usize = 128;
 #[derive(Debug)]
 enum Frame {
-    Ready,
+    Ready {
+        endpoint: String,
+    },
     Open {
         id: u64,
         relay_version: String,
         identity: Option<String>,
+        framing: &'static str,
     },
     Data {
         id: u64,
@@ -35,12 +39,15 @@ impl Frame {
     fn encode(&self) -> io::Result<Vec<u8>> {
         use serde_json::json;
         let value = match self {
-            Self::Ready => json!({"type":"ready"}),
+            Self::Ready { endpoint } => json!({"type":"ready", "endpoint":endpoint}),
             Self::Open {
                 id,
                 relay_version,
                 identity,
-            } => json!({"type":"open","id":id,"relay_version":relay_version,"identity":identity}),
+                framing,
+            } => {
+                json!({"type":"open","id":id,"relay_version":relay_version,"identity":identity,"framing":framing})
+            }
             Self::Data { id, data } => json!({"type":"data","id":id,"data":data}),
             Self::Close { id } => json!({"type":"close","id":id}),
         };
@@ -100,17 +107,35 @@ fn error(message: impl Into<String>) -> io::Error {
 }
 async fn line<R: tokio::io::AsyncRead + Unpin>(
     reader: &mut BufReader<R>,
+    pending: &mut Vec<u8>,
     max: u64,
 ) -> io::Result<Option<String>> {
-    let mut out = String::new();
-    let count = reader.take(max).read_line(&mut out).await?;
-    if count == 0 {
-        return Ok(None);
+    // Retain partial frames outside the future: accept/completion can cancel
+    // this branch between reads. read_line into a local String loses bytes.
+    loop {
+        let bytes = reader.fill_buf().await?;
+        if bytes.is_empty() {
+            return if pending.is_empty() {
+                Ok(None)
+            } else {
+                Err(error("incomplete transport frame"))
+            };
+        }
+        let n = bytes
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(bytes.len(), |i| i + 1);
+        if pending.len() as u64 + n as u64 > max {
+            return Err(error("oversized transport frame"));
+        }
+        pending.extend_from_slice(&bytes[..n]);
+        reader.consume(n);
+        if pending.last() == Some(&b'\n') {
+            return String::from_utf8(std::mem::take(pending))
+                .map(Some)
+                .map_err(|_| error("invalid transport frame"));
+        }
     }
-    if !out.ends_with('\n') {
-        return Err(error("oversized or incomplete transport frame"));
-    }
-    Ok(Some(out))
 }
 async fn handshake(
     stream: &mut link::Stream,
@@ -187,11 +212,13 @@ async fn relay(path: &Path) -> io::Result<()> {
     // on Windows where a pipe cannot half-close. No lingering drain task.
     Ok(())
 }
-async fn serve(path: &Path) -> io::Result<()> {
+async fn serve(path: &Path, allow_http: bool) -> io::Result<()> {
     let mut listener = link::Listener::bind(path)?;
     let (events, mut rx) = mpsc::channel::<Frame>(128);
     events
-        .send(Frame::Ready)
+        .send(Frame::Ready {
+            endpoint: path.to_string_lossy().into_owned(),
+        })
         .await
         .map_err(|_| error("closed"))?;
     let mut writer = tokio::spawn(async move {
@@ -203,6 +230,7 @@ async fn serve(path: &Path) -> io::Result<()> {
         Ok::<(), io::Error>(())
     });
     let mut input = BufReader::new(tokio::io::stdin());
+    let mut pending = Vec::new();
     let mut peers = HashMap::<u64, (mpsc::Sender<Vec<u8>>, tokio::task::AbortHandle)>::new();
     let mut tasks = JoinSet::new();
     let mut next_id = 0;
@@ -216,7 +244,10 @@ async fn serve(path: &Path) -> io::Result<()> {
         };
         let event = select(
             select(&mut writer, joined),
-            select(line(&mut input, MAX_CONTROL), listener.accept()),
+            select(
+                line(&mut input, &mut pending, MAX_CONTROL),
+                listener.accept(),
+            ),
         )
         .await;
         match event {
@@ -270,15 +301,34 @@ async fn serve(path: &Path) -> io::Result<()> {
                 let events = events.clone();
                 let task = tasks.spawn(async move {
                     let exchange = async {
-                        let (version, identity) = handshake(&mut stream, true).await?;
+                        let greeting = framing::accept(&mut stream, allow_http).await?;
+                        let (version, identity, mode, prefetched) = match greeting {
+                            framing::Greeting::Raw { version, identity } => {
+                                stream
+                                    .write_all(format!("{WIRE} {VERSION}\n").as_bytes())
+                                    .await?;
+                                (version, identity, "raw", Vec::new())
+                            }
+                            framing::Greeting::Http(bytes) => (String::new(), None, "http", bytes),
+                        };
                         events
                             .send(Frame::Open {
                                 id,
                                 relay_version: version,
                                 identity,
+                                framing: mode,
                             })
                             .await
                             .map_err(|_| error("desktop closed"))?;
+                        if !prefetched.is_empty() {
+                            events
+                                .send(Frame::Data {
+                                    id,
+                                    data: STANDARD.encode(prefetched),
+                                })
+                                .await
+                                .map_err(|_| error("desktop closed"))?;
+                        }
                         let (mut read, mut write) = tokio::io::split(stream);
                         let up = async {
                             let mut buf = [0_u8; 16384];
@@ -330,6 +380,8 @@ fn main() -> std::process::ExitCode {
     }
     let listen = args.first().is_some_and(|s| s == "--desktop-listen");
     let rest = if listen { &args[1..] } else { &args[..] };
+    let allow_http = listen && rest.first().is_some_and(|s| s == "--allow-http");
+    let rest = if allow_http { &rest[1..] } else { rest };
     let path = match rest {
         [] => link::endpoint(),
         [flag, value] if flag == "--endpoint" => Ok(value.into()),
@@ -342,7 +394,7 @@ fn main() -> std::process::ExitCode {
     let result = runtime.block_on(async {
         let path = path?;
         if listen {
-            serve(&path).await
+            serve(&path, allow_http).await
         } else {
             relay(&path).await
         }
@@ -371,6 +423,26 @@ mod tests {
             .enable_all()
             .build()
             .unwrap()
+    }
+    #[test]
+    fn desktop_control_frame_survives_a_cancelled_partial_read() {
+        runtime().block_on(async {
+            let (read, mut write) = tokio::io::duplex(64);
+            let mut input = BufReader::new(read);
+            let mut pending = Vec::new();
+            write.write_all(b"{\"type\":").await.unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(1), line(&mut input, &mut pending, 64))
+                    .await
+                    .is_err()
+            );
+            write.write_all(b"\"close\",\"id\":7}\n").await.unwrap();
+            let frame = line(&mut input, &mut pending, 64).await.unwrap().unwrap();
+            assert!(matches!(
+                Frame::decode(&frame).unwrap(),
+                Frame::Close { id: 7 }
+            ));
+        });
     }
     #[test]
     fn mixed_releases_negotiate_transport_not_application_equality() {

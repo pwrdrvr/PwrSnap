@@ -5164,7 +5164,12 @@ export type Commands = {
       roles: LocalAgentRoleProfile[];
       listenerStatus: LocalAgentMcpListenerStatus;
       relayCommand?: string;
+      httpUrl?: string;
     };
+  };
+  "localAgents:httpBootstrap": {
+    req: Record<string, never>;
+    res: { token: string; expiresAt: string; httpUrl: string };
   };
   "localAgents:roleCreate": {
     req: Omit<LocalAgentRoleProfile, "id" | "builtIn">;

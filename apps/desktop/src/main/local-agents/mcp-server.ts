@@ -53,10 +53,11 @@ import {
 } from "./mcp-tool-registry";
 import {
   NativeMcpBridge,
-  type McpByteTransport,
   type McpConnection
 } from "../ai/mcp/native-mcp-bridge";
 import { McpSessionPool } from "../ai/mcp/mcp-session-pool";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { IpcHttpMcp } from "./ipc-http-mcp";
 const log = getMainLogger("pwrsnap:local-agent-mcp");
 type Policy = NonNullable<CommandContext["localAgent"]>;
 type GrantService = Pick<
@@ -66,7 +67,7 @@ type GrantService = Pick<
 type UsageService = Pick<LocalAgentUsageService, "reserve" | "release">;
 type Session = {
   id: number;
-  transport: McpByteTransport;
+  transport: Transport & { controller: AbortController };
   mcp: McpServer;
   grantId: string | null;
   relayVersion: string;
@@ -97,6 +98,8 @@ export class LocalAgentMcpServer {
   private readonly requestConsent: LocalAgentMcpServerOptions["requestConsent"];
   private readonly version: string;
   private readonly bridge: NativeMcpBridge;
+  private readonly http: IpcHttpMcp;
+  private nextHttpId = 0;
   private closed = false;
   private starting: Promise<void> | undefined;
   private reaper: ReturnType<typeof setInterval> | undefined;
@@ -120,9 +123,18 @@ export class LocalAgentMcpServer {
       options.captureCapturedAt ?? ((captureId) => getCaptureById(captureId)?.captured_at ?? null);
     this.requestConsent = options.requestConsent;
     this.version = options.version ?? app.getVersion();
+    this.http = new IpcHttpMcp(async (transport, message) => {
+      const session = this.makeSession(--this.nextHttpId, transport, "direct HTTP (no relay)");
+      try {
+        if (!(await this.pool.admit(session.id, session))) throw new Error("MCP Session limit reached");
+        await this.approve(session, message);
+        await session.mcp.connect(transport);
+      } catch (cause) { await transport.close(); throw cause; }
+    });
     this.bridge =
       options.bridgeFactory?.((input) => this.accept(input)) ??
-      new NativeMcpBridge({ onConnection: (input) => this.accept(input) });
+      new NativeMcpBridge({ allowHttp: true, onConnection: (input) => this.accept(input) });
+    this.bridge.onclose = () => { void this.http.close(); void this.pool.clear(); };
     this.grantService =
       options.grantService ??
       new LocalAgentGrantService({ settings: options.settings, secrets: options.secrets });
@@ -270,6 +282,7 @@ export class LocalAgentMcpServer {
   isConnected(): boolean {
     return this.bridge.isRunning();
   }
+  httpUrl(): string | undefined { return this.bridge.httpUrl(); }
   async start(): Promise<void> {
     if (this.closed) throw new Error("MCP server cannot restart; reconnect manually");
     if (this.starting !== undefined) return this.starting;
@@ -289,8 +302,13 @@ export class LocalAgentMcpServer {
   async stop(): Promise<void> {
     this.closed = true;
     clearInterval(this.reaper);
+    await this.http.close();
     await this.pool.clear();
     await this.bridge.stop();
+  }
+  async bootstrapHttp(signal: AbortSignal): Promise<{ token: string; expiresAt: string }> {
+    if (this.closed || !this.bridge.isRunning()) throw new Error("Open PwrSnap and enable Local agents before bootstrapping HTTP");
+    return this.http.bootstrap(signal);
   }
   async settingsChanged(): Promise<void> {
     await this.pool.prune();
@@ -306,6 +324,7 @@ export class LocalAgentMcpServer {
     }
   }
   private accept(input: McpConnection): void {
+    if (input.framing === "http") { this.http.accept(input.createStream()); return; }
     let session: Session;
     let admission: Promise<boolean>;
     const transport = input.createTransport(async (message) => {
@@ -318,23 +337,11 @@ export class LocalAgentMcpServer {
       void transport.close();
     }, 30_000);
     initializationTimer.unref();
-    session = {
-      id: input.id,
-      transport,
-      mcp: undefined as unknown as McpServer,
-      grantId: null,
-      relayVersion: input.relayVersion,
-      fingerprint: ""
-    };
-    session.mcp = this.createMcpServer(session);
+    session = this.makeSession(input.id, transport, input.relayVersion);
     transport.controller.signal.addEventListener(
       "abort",
       () => {
         clearTimeout(initializationTimer);
-        this.pool.remove(input.id);
-        if (session.grantId !== null)
-          void this.grantService.revokeGrant(session.grantId).catch(() => undefined);
-        void session.mcp.close();
       },
       { once: true }
     );
@@ -349,6 +356,16 @@ export class LocalAgentMcpServer {
     void session.mcp.connect(transport).catch(() => {
       void transport.close();
     });
+  }
+  private makeSession(id: number, transport: Session["transport"], relayVersion: string): Session {
+    const session: Session = { id, transport, relayVersion, grantId: null, fingerprint: "", mcp: undefined as unknown as McpServer };
+    session.mcp = this.createMcpServer(session);
+    transport.controller.signal.addEventListener("abort", () => {
+      this.pool.remove(id);
+      if (session.grantId !== null) void this.grantService.revokeGrant(session.grantId).catch(() => undefined);
+      void session.mcp.close();
+    }, { once: true });
+    return session;
   }
   private async approve(session: Session, message: JSONRPCMessage): Promise<void> {
     const signal = session.transport.controller.signal;
@@ -405,11 +422,14 @@ export class LocalAgentMcpServer {
     return this.grantService.authorizeClient(session.grantId);
   }
   private createMcpServer(session: Session): McpServer {
+    const connection = session.relayVersion === "direct HTTP (no relay)"
+      ? "direct IPC HTTP/1.x; no relay"
+      : `relay ${session.relayVersion}; local transport 1`;
     const mcp = new McpServer(
       { name: "PwrSnap", version: this.version },
       {
         instructions:
-          `Desktop ${this.version}; relay ${session.relayVersion}; local transport 1. The desktop owns this MCP interface. ` +
+          `Desktop ${this.version}; ${connection}. The desktop owns this MCP interface. ` +
           "Use PwrSnap tools only for captures and sizzle assets the user authorized for this local client. " +
           "Completed media tools attach capability-protected MCP resources. Read them with resources/read; no HTTP media URLs are served. " +
           "Use the returned resourceUri only in clients that explicitly support MCP resource reads."

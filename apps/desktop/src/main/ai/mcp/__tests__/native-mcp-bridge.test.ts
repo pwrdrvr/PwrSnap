@@ -2,7 +2,7 @@ import { once } from "node:events";
 import { expect, test, vi } from "vitest";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 vi.mock("electron", () => ({ app: { getVersion: () => "fixture" } }));
-import { McpByteTransport } from "../native-mcp-bridge";
+import { McpByteTransport, NativeIpcStream } from "../native-mcp-bridge";
 import { McpSessionPool } from "../mcp-session-pool";
 const initialize = {
   jsonrpc: "2.0",
@@ -82,6 +82,19 @@ test("closed or overflowed stdio tears down the underlying IPC and server exactl
     await expect(transport.send({ jsonrpc: "2.0", id: 2, result: {} })).rejects.toThrow(
       "manually reconnect"
     );
+  }
+});
+test("closed or overflowed HTTP byte streams tear down the native IPC exactly once", async () => {
+  for (const overflow of [true, false]) {
+    const disconnect = vi.fn();
+    const stream = new NativeIpcStream(() => { throw new Error("IPC output closed"); }, disconnect);
+    const closed = once(stream, "close").catch(() => undefined);
+    if (overflow) stream.receive(Buffer.alloc(4 * 1024 * 1024 + 1));
+    else stream.write("response");
+    await closed;
+    await stream.close();
+    expect(stream.destroyed).toBe(true);
+    expect(disconnect).toHaveBeenCalledOnce();
   }
 });
 test("idle revoked connections are reclaimed before the cap and concurrent replacement admissions share cleanup", async () => {

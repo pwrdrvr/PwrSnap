@@ -2043,6 +2043,11 @@ export function bootstrapApp(): void {
       registerSettingsDataHandlers({
         readLocalAgentMcpListenerStatus: () =>
           localAgentMcpLifecycle?.getStatus() ?? { state: "off" },
+        readLocalAgentHttpUrl: () => localAgentMcpLifecycle?.httpUrl(),
+        bootstrapLocalAgentHttp: async (signal) => {
+          if (!localAgentMcpLifecycle) throw new Error("Open PwrSnap and enable Local agents first");
+          return localAgentMcpLifecycle.bootstrapHttp(signal);
+        },
         shortcutPlatform,
         ...(!isE2E && !startupProfilingEnabled()
           ? { hotkeyRegistrationManager }

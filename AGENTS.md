@@ -1674,11 +1674,19 @@ execute commands, or expose a standalone fallback. The native listener is a
 transport child of the already running desktop. Keep the socket/pipe peer
 checks, protected endpoint ownership and bounded I/O on both native roles.
 
-- There is no external MCP HTTP, TCP or WebSocket listener, including media
-  delivery. Existing HTTP/OAuth clients must migrate to stdio and approve a
-  new Session in PwrSnap's own native consent window. Retained legacy
+- There is no MCP TCP or WebSocket listener, including media delivery. One
+  protected IPC endpoint accepts explicit versioned raw relay framing or
+  HTTP/1.x, classified once with a bounded preamble and deadline. Preserve
+  every prefetched HTTP byte. Electron owns the HTTP parser and both modes
+  use the same MCP server factory, handlers and authorization. The HTTP server
+  must never call listen(). Internal ACP endpoints remain raw-only.
+- Direct HTTP clients bootstrap in Settings through native consent, receive a
+  two-minute single-initialize bearer credential, and send it on every request
+  with the MCP Session id. Session ids and same-user IPC confer no authority.
+  Closing the last authenticated IPC connection or an unfinished request/SSE
+  stream revokes the Session. No SSE resumption or event replay. Retained legacy
   credentials are not accepted by this transport; never replay or transfer
-  their approvals. Same-user IPC is not authorization.
+  their approvals. Browser OAuth over IPC is unsupported; no TCP fallback.
 - `LocalAgentGrantService.openNativeSession` is called only after native
   consent in `mcp-server.ts`. Its connection ceiling is enforced by
   `authorizeClient` as well as the MCP boundary, so command-bus role

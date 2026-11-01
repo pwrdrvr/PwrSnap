@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
+import { Duplex } from "node:stream";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { mcpExecutablePath } from "./mcp-executable";
@@ -13,7 +14,9 @@ export type McpConnection = {
   id: number;
   relayVersion: string;
   identity: string | null;
+  framing: "raw" | "http";
   createTransport: (prepare?: (message: JSONRPCMessage) => Promise<void>) => McpByteTransport;
+  createStream: () => NativeIpcStream;
 };
 
 type Frame = {
@@ -22,7 +25,56 @@ type Frame = {
   data?: string;
   relay_version?: string;
   identity?: string | null;
+  framing?: "raw" | "http";
+  endpoint?: string;
 };
+
+/** A bounded byte stream for Electron's HTTP parser. This object never binds a
+ * socket; the protected native listener owns the only OS endpoint. */
+export class NativeIpcStream extends Duplex {
+  readonly remoteAddress = "local-ipc";
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private timeoutMs = 0;
+  constructor(private readonly writeBytes: (bytes: Buffer) => void, private readonly disconnect: () => void) {
+    super({ highWaterMark: 64 * 1024 });
+    this.on("error", () => undefined);
+  }
+  override _read(): void {}
+  override _write(bytes: Buffer, _encoding: BufferEncoding, done: (error?: Error | null) => void): void {
+    try { this.touch(); this.writeBytes(bytes); done(); }
+    catch (cause) { done(cause instanceof Error ? cause : new Error("IPC output closed")); }
+  }
+  override _destroy(error: Error | null, done: (error?: Error | null) => void): void {
+    clearTimeout(this.timer);
+    this.disconnect();
+    done(error);
+  }
+  receive(bytes: Buffer): void {
+    if (this.destroyed) return;
+    if (this.readableLength + bytes.length > MAX_PENDING) {
+      this.destroy(new Error("HTTP IPC input overflow"));
+      return;
+    }
+    this.touch();
+    this.push(bytes);
+  }
+  async close(): Promise<void> { this.destroy(); }
+  setTimeout(ms: number, callback?: () => void): this {
+    this.timeoutMs = ms;
+    if (callback) this.once("timeout", callback);
+    this.touch();
+    return this;
+  }
+  setNoDelay(): this { return this; }
+  setKeepAlive(): this { return this; }
+  private touch(): void {
+    clearTimeout(this.timer);
+    if (this.timeoutMs > 0) {
+      this.timer = setTimeout(() => this.emit("timeout"), this.timeoutMs);
+      this.timer.unref();
+    }
+  }
+}
 
 /** SDK transport owned by Electron. Decodes MCP framing without selecting or
  * rewriting message fields. Both requests and responses flow through it. */
@@ -134,12 +186,14 @@ export class McpByteTransport implements Transport {
 export class NativeMcpBridge {
   private child: ChildProcessWithoutNullStreams | undefined;
   private stopped: Promise<void> = Promise.resolve();
-  private readonly connections = new Map<number, McpByteTransport>();
+  private endpoint: string | undefined;
+  private readonly connections = new Map<number, McpByteTransport | NativeIpcStream>();
   onclose?: () => void;
   constructor(
     private readonly options: {
       endpoint?: string;
       executable?: string;
+      allowHttp?: boolean;
       onConnection: (input: McpConnection) => void;
     }
   ) {}
@@ -149,6 +203,7 @@ export class NativeMcpBridge {
       this.options.executable ?? mcpExecutablePath(),
       [
         "--desktop-listen",
+        ...(this.options.allowHttp ? ["--allow-http"] : []),
         ...(this.options.endpoint === undefined ? [] : ["--endpoint", this.options.endpoint])
       ],
       { stdio: "pipe", windowsHide: true }
@@ -187,6 +242,7 @@ export class NativeMcpBridge {
           try {
             const frame = JSON.parse(line) as Frame;
             if (frame.type === "ready") {
+              this.endpoint = frame.endpoint;
               clearTimeout(timer);
               resolve();
             } else this.receive(frame);
@@ -218,25 +274,20 @@ export class NativeMcpBridge {
       id: frame.id,
       relayVersion: frame.relay_version,
       identity: frame.identity ?? null,
+      framing: frame.framing ?? "raw",
+      createStream: () => {
+        if (frame.framing !== "http" || !this.options.allowHttp) throw new Error("HTTP IPC disabled");
+        if (this.connections.has(frame.id)) throw new Error("duplicate connection");
+        const stream = new NativeIpcStream((bytes) => this.sendBytes(frame.id, bytes), () => this.disconnect(frame.id));
+        this.connections.set(frame.id, stream);
+        return stream;
+      },
       createTransport: (prepare) => {
+        if (frame.framing === "http") throw new Error("HTTP bytes require the desktop HTTP parser");
         if (this.connections.has(frame.id)) throw new Error("duplicate connection");
         const transport = new McpByteTransport(
-          (bytes) => {
-            for (let offset = 0; offset < bytes.length; offset += 16384)
-              this.write({
-                type: "data",
-                id: frame.id,
-                data: bytes.subarray(offset, offset + 16384).toString("base64")
-              });
-          },
-          () => {
-            this.connections.delete(frame.id);
-            try {
-              this.write({ type: "close", id: frame.id });
-            } catch {
-              this.shutdown();
-            }
-          },
+          (bytes) => this.sendBytes(frame.id, bytes),
+          () => this.disconnect(frame.id),
           prepare
         );
         this.connections.set(frame.id, transport);
@@ -244,9 +295,18 @@ export class NativeMcpBridge {
       }
     });
   }
+  private sendBytes(id: number, bytes: Buffer): void {
+    for (let offset = 0; offset < bytes.length; offset += 16384)
+      this.write({ type: "data", id, data: bytes.subarray(offset, offset + 16384).toString("base64") });
+  }
+  private disconnect(id: number): void {
+    this.connections.delete(id);
+    try { this.write({ type: "close", id }); }
+    catch { this.shutdown(); }
+  }
   private write(frame: Frame): void {
     const input = this.child?.stdin;
-    if (input === undefined || input.destroyed) return;
+    if (input === undefined || input.destroyed) throw new Error(MANUAL_RECONNECT);
     if (input.writableLength > MAX_PENDING) {
       this.shutdown();
       throw new Error("MCP control output overflow");
@@ -275,6 +335,12 @@ export class NativeMcpBridge {
   }
   isRunning(): boolean {
     return this.child !== undefined;
+  }
+  httpUrl(): string | undefined {
+    if (!this.options.allowHttp || !this.isRunning() || this.endpoint === undefined) return undefined;
+    return this.endpoint.startsWith("\\\\.\\pipe\\")
+      ? `pipe:///pipe/${encodeURIComponent(this.endpoint.slice(9))}#/mcp`
+      : `unix://${this.endpoint.split("/").map(encodeURIComponent).join("/")}#/mcp`;
   }
   async stop(): Promise<void> {
     this.shutdown();

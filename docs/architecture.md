@@ -483,12 +483,17 @@ measured against a seeded large library rather than a handful of captures.
 - **Settings and secrets have exactly one substrate.** No sibling JSON
   files, no plaintext secrets, no second IPC channel. See AGENTS.md
   §"Settings substrate".
-- **Local MCP has no network listener.** Hosts launch the bundled Rust
+- **Local MCP has no network listener.** Most hosts launch the bundled Rust
   `pwrsnap-mcp` stdio byte relay. It connects once to the independently running
   desktop over a private Unix socket or a SID-protected local Windows pipe;
   it cannot launch the desktop. Electron launches the native listener as a
   transport child and owns the full MCP server, catalog, validation, command
   bus dispatch and native consent. No privileged handler runs in the relay.
+  The same protected IPC endpoint also accepts HTTP/1.x for hosts such as
+  VS Code. A bounded first-line classifier chooses HTTP or the explicit raw
+  relay preamble once per connection. HTTP bytes, including prefetched bytes,
+  reach Electron's HTTP parser without a second OS listener or TCP bind.
+  Both modes connect to the same desktop-owned MCP factory and authorization.
   Transport version 1 is negotiated independently of application releases;
   MCP initialization identifies the authoritative desktop interface.
 - **Native consent belongs to a live external connection.** Same-account IPC
@@ -500,11 +505,19 @@ measured against a seeded large library rather than a handful of captures.
   requires stdio configuration and new native consent; approvals are not
   transferred. Missing or disconnected desktops require a manual reconnect,
   with no reconnect, replay or handler fallback in the transport.
+  Direct IPC HTTP requires a Settings bootstrap and native approval. Its
+  in-memory bearer credential expires after two minutes unless initialized,
+  can initialize only one logical Session, and authenticates every subsequent
+  HTTP request alongside the MCP Session id. It cannot resume a closed
+  Session. The last authenticated IPC socket closing or an interrupted
+  request/SSE stream ends the Session. OAuth browser redirects over IPC are
+  unsupported; no authorization or token routes are reintroduced.
 - **Internal ACP chat uses the same byte transport with a separate endpoint.**
   App-minted per-chat, per-run tokens continue to select their own catalog and
   dispatcher. Catalog conversion now lives in Electron main; list requests
   read the current registration. Unregister closes its connections. Neither
-  the external role graph nor unrelated app services are widened.
+  the external role graph nor unrelated app services are widened. These
+  internal endpoints reject HTTP framing.
   See [mcp-third-party-agents.md](mcp-third-party-agents.md).
   Built-in role upgrades preserve existing sessions' approved permissions and
   limits in a retained custom profile; expanded roles require new approval.

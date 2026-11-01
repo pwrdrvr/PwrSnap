@@ -3,7 +3,9 @@
 PwrSnap must already be running with **Settings → Local agents → Enable
 local-agent access** on. The MCP host launches the small bundled Rust
 `pwrsnap-mcp` executable. It connects to the running desktop and forwards
-stdio bytes in both directions. It never launches PwrSnap.
+stdio bytes in both directions. It never launches PwrSnap. Hosts that explicitly
+support HTTP on Unix sockets or Windows named pipes can also connect directly
+to that same protected IPC endpoint, without the stdio relay or a TCP port.
 
 ## Install and connect
 
@@ -45,21 +47,84 @@ Command stdio is the portable local path documented by
 [Claude Code](https://code.claude.com/docs/en/mcp), and
 [Cursor](https://cursor.com/docs/mcp).
 [VS Code's socket/pipe URL configuration](https://code.visualstudio.com/docs/agents/reference/mcp-configuration)
-is HTTP over those endpoints, not raw MCP streams. Configure the stdio relay
-there too. Hosts without local command stdio cannot connect directly.
+supports HTTP over those endpoints. Use the direct setup below or the stdio
+relay. Native socket/pipe support is not universal: hosts need either command
+stdio or explicit HTTP-over-IPC support. Network-only hosts cannot connect.
+
+## Direct IPC HTTP in VS Code
+
+1. In PwrSnap Settings → Local agents → **Direct IPC HTTP → VS Code**, click
+   **Create HTTP Session** and approve a Session Name and role in the native
+   consent window. The credential must initialize its Session within two minutes.
+2. Copy the fresh VS Code configuration into `mcp.json`. It contains the actual
+   socket/pipe URL and a new secret input reference, never a token. Copy the
+   credential separately; it is available only in that Settings response.
+3. Start the MCP server in VS Code and paste the credential into its password
+   input. VS Code documents per-server `headers` and password `promptString`
+   inputs. Do not store the literal token in shared configuration or a URL.
+4. Keep PwrSnap and the host connected. To reconnect after disconnection,
+   create a new HTTP Session and copy its fresh configuration. The new password
+   input reference prompts for a fresh secret rather than reusing the cached
+   value. Explicitly start/reconnect the server.
+
+For a Unix account with effective UID 501, a complete example is:
+
+```json
+{
+  "servers": {
+    "pwrsnap": {
+      "type": "http",
+      "url": "unix:///tmp/pwrsnap-mcp-501/mcp.sock#/mcp",
+      "headers": { "Authorization": "Bearer ${input:pwrsnap-http-token}" }
+    }
+  },
+  "inputs": [{
+    "type": "promptString", "id": "pwrsnap-http-token",
+    "description": "PwrSnap HTTP Session credential", "password": true
+  }]
+}
+```
+
+Use Settings' actual URL instead of assuming UID 501. Windows uses
+`pipe:///pipe/pwrsnap-mcp-<account-SID>#/mcp`. The fragment is the HTTP request
+subpath, not part of the native endpoint name. This is Streamable HTTP at
+`/mcp`, including a persistent GET SSE stream for server messages; the old
+standalone SSE transport and WebSocket upgrade are not enabled.
+
+The credential is random, retained only as an in-memory hash, and binds one
+logical MCP Session to the native-consented scope ceiling. The bearer header
+is required on **every** request; `Mcp-Session-Id` alone grants no authority.
+Concurrent POST/GET requests may use several IPC connections within that
+Session. Each physical connection retains its framing for its entire lifetime.
+Closing its last authenticated IPC connection, interrupting a request/SSE
+stream, revoking it in Settings, disabling access, or closing the desktop ends
+the Session and invalidates the credential. Idle HTTP keep-alive connections
+expire after five minutes; SSE keep-alives preserve a connected host. A new
+initialize with a consumed credential fails. No SSE reconnect, Last-Event-ID
+replay or event history is supported.
+
+HTTP support does not establish OAuth support over IPC. PwrSnap does not
+advertise browser authorization, resource-metadata discovery or token endpoints
+on this path. Its supported bootstrap is the explicit desktop-native flow
+above. Existing OAuth bearers are not reused or accepted. The VS Code transport
+and header syntax is documented by VS Code; transport tests exercise it with
+Node HTTP clients, rather than claiming an end-to-end OAuth or editor login
+verification.
 
 ## Migrate an existing HTTP/OAuth connection
 
 1. Remove the host's old PwrSnap HTTP server entry and its cached OAuth login.
    For CLI hosts, use `claude mcp remove pwrsnap` or `codex mcp remove pwrsnap`.
 2. Install the updated desktop, open it yourself, and enable Local agents.
-3. Copy the new stdio command from Settings, then manually reconnect the MCP
-   server in the host. Approve a new Session in PwrSnap's native window.
+3. Copy the new stdio command or direct IPC HTTP configuration from Settings,
+   then manually reconnect the MCP server in the host. Approve a new Session
+   in PwrSnap's native window; HTTP clients use the bootstrap described above.
 4. Revoke obsolete HTTP Sessions in Settings when no longer needed.
 
 The former loopback listener on port 51729, its OAuth authorization/token
-routes and HTTP media delivery are removed. There is no HTTP/TCP/WebSocket
-fallback. Existing persisted credentials and roles are not deleted, reused or
+routes and HTTP media delivery are removed. There is no MCP TCP/WebSocket
+fallback. HTTP framing over protected IPC is supported explicitly. Existing
+persisted credentials and roles are not deleted, reused or
 upgraded into broader authority. No OAuth token or prior approval is accepted
 by the new IPC path. Migration neither restarts active agent turns nor replays
 requests. Changing a live Session's role may narrow access immediately;
@@ -84,6 +149,8 @@ initialization reports the desktop's actual application version, capabilities
 and instructions, including the connecting relay's version. The desktop is
 authoritative for tools, schemas, descriptions, annotations, resources,
 prompts and skills it supports. A relay update never adds tools by itself.
+Byte/framing preservation does not make an extension part of that interface:
+the desktop SDK still validates supported messages and advertised capabilities.
 
 The full MCP stream supports notifications, server requests, responses,
 cancellation, approval/elicitation metadata and extension fields. The byte
@@ -107,6 +174,14 @@ connection bytes over its desktop-owned stdin/stdout; it has no registry,
 filesystem tool or privileged application handler. Losing the desktop/control
 pipes closes all accepted streams.
 
+For the external endpoint only, the listener classifies one initial line in
+three seconds: a versioned `PWRSNAP-MCP/1` preamble of less than 128 bytes or a
+recognized HTTP/1.0 or HTTP/1.1 request line of at most 4096 bytes. Malformed,
+ambiguous, incomplete, oversized or unsupported prefixes close the connection.
+Every prefetched HTTP byte reaches Electron's HTTP parser unchanged. The
+parser consumes the bridged stream without calling `listen()`. Both modes
+use the same desktop MCP factory, tools, resources and per-call checks.
+
 On Unix, the default endpoint is `/tmp/pwrsnap-mcp-<effective-uid>/mcp.sock`.
 Its directory must be owned by the account, nonsymlinked and private (0700);
 the socket is 0600. Both peers check the effective UID. A retained ownership
@@ -126,6 +201,12 @@ protections deliberately avoid the broader
 [CreateNamedPipeW](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-createnamedpipew)
 documents the first-instance and remote-client controls.
 
+The Rust relay performs both client-side peer checks and the protected desktop
+listener's server-side checks. Direct IPC HTTP hosts implement their own native
+client connection; do not assume they perform the relay's server-owner/peer-UID
+verification. They still reach the protected listener, need the one-Session
+bearer credential and cannot obtain authority from account identity or HTTP.
+
 macOS privacy permissions remain associated with the independently launched
 desktop and the actual code performing operations. Do not describe TCC as
 universal permission inheritance: Apple's
@@ -136,13 +217,14 @@ OS account checks and native consent are distinct boundaries.
 
 ## Internal AI adapter inventory
 
-The internal ACP chat adapter uses the same byte transport on a separate,
+The internal ACP chat adapter uses the same raw byte transport on a separate,
 random endpoint. A fresh app-minted token selects one chat registration's
 catalog and dispatcher. It never authenticates an external Session. Catalog
 flattening and MCP conversion live in Electron main; every `tools/list` reads
 the current registration, and an explicit catalog update emits list-change.
 Unregister closes its streams. Tokens are per run, are not restored on restart,
-and never appear in connection commands, logs or renderer settings.
+and never appear in connection commands, logs or renderer settings. HTTP
+classification is disabled on those internal endpoints.
 
 The former Electron-as-Node MCP entry and snapshot-fetching callback client
 are removed. No MCP listener uses TCP or WebSockets. Direct API OAuth callback

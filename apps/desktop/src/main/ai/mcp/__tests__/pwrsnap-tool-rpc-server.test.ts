@@ -2,7 +2,7 @@ import { expect, test, vi } from "vitest";
 vi.mock("electron", () => ({
   app: {
     getVersion: () => "9.8.7",
-    getAppPath: () => new URL("../../../../../", import.meta.url).pathname,
+    getAppPath: () => fileURLToPath(new URL("../../../../../", import.meta.url)),
     isPackaged: false
   }
 }));

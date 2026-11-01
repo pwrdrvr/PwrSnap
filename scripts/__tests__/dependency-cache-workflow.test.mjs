@@ -110,6 +110,17 @@ describe("CI dependency cache contract", () => {
     }
   });
 
+  test("macOS bootstraps Rust before dependency lifecycle scripts build the relay", () => {
+    const mac = jobs["desktop-e2e-macos"];
+    expect(mac).toContain('RUSTUP_TOOLCHAIN: "1.94.1"');
+    expect(mac).toContain("https://sh.rustup.rs");
+    expect(mac).toContain('rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal');
+    expect(mac).toContain('echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"');
+    expect(mac.indexOf("- name: Install Rust toolchain")).toBeLessThan(
+      mac.indexOf("- name: Install Node.js and dependencies")
+    );
+  });
+
   test("privileged metadata installation remains uncached with scripts disabled", () => {
     const bot = read(".github/workflows/dependabot-licenses.yml");
     expect(bot).toContain("pnpm install --frozen-lockfile --ignore-scripts");

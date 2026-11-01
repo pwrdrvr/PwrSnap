@@ -1,0 +1,20 @@
+[package]
+name = "pwrsnap-mcp"
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.88"
+
+[dependencies]
+tokio = { version = "1", features = ["io-std", "io-util", "net", "rt", "sync", "time"] }
+serde_json = "1"
+base64 = "0.22"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["process", "fs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_IO", "Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+tempfile = "3"

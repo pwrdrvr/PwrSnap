@@ -228,6 +228,7 @@ function copyWindowsFfmpegIntoStage({ required }) {
 
 function assertRequiredWindowsResources() {
   const required = [
+    {label:"Rust MCP transport",path:join(stageDir,"build","mcp","pwrsnap-mcp.exe"),hint:"Run pnpm --filter @pwrsnap/desktop build:mcp on Windows before packaging."},
     {
       label: "Windows window-list helper",
       path: join(stageDir, "build", "native", "window-list.exe"),

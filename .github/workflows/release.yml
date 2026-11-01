@@ -683,7 +683,8 @@ jobs:
           $dist = "apps/desktop/release-stage/dist"
           $installer = Get-ChildItem $dist -File -Filter "*-setup.exe" | Select-Object -First 1
           $app = Get-ChildItem $dist -Recurse -File -Filter "PwrSnap.exe" | Select-Object -First 1
-          foreach ($target in @($installer, $app)) {
+          $relay = Get-ChildItem $dist -Recurse -File -Filter "pwrsnap-mcp.exe" | Select-Object -First 1
+          foreach ($target in @($installer, $app, $relay)) {
             if ($null -eq $target) {
               throw "Expected signed Windows executable is missing."
             }

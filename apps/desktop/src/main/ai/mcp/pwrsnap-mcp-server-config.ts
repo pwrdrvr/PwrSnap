@@ -1,35 +1,15 @@
-// Builds the `AcpMcpServerConfig` that tells an ACP chat agent (Gemini/Qwen)
-// how to spawn PwrSnap's MCP tool server, and registers the surface's tools
-// with the callback RPC server. One place that ties together:
-//
-//   PwrSnapToolRpcServer (UDS, this process)
-//     ← spawned MCP server (pwrsnap-mcp-server.js, Electron-as-Node)
-//        ← the ACP agent (spawns it from the returned config)
-//
-// The agent runs `command + args` with `env`, so we point `command` at the
-// PwrSnap binary itself (`process.execPath`) with `ELECTRON_RUN_AS_NODE=1`,
-// which runs the bundled MCP entry as plain Node — no separate `node` on the
-// user's PATH required, in dev or packaged.
-
-import { join } from "node:path";
-import { app } from "electron";
+// Per-chat stdio byte relay; all MCP handlers live in Electron main.
 import type { AcpMcpServerConfig } from "@pwrdrvr/agent-acp";
 import type {
   DynamicToolCallParams,
   DynamicToolCallResponse,
   DynamicToolSpec
 } from "@pwrdrvr/codex-app-server-protocol/v2";
+import { mcpExecutablePath } from "./mcp-executable";
 import { getToolRpcServer } from "./pwrsnap-tool-rpc-server";
 import { getMainLogger } from "../../log";
 
 const log = getMainLogger("pwrsnap:mcp-config");
-
-/** Absolute path to the built MCP server entry. `__dirname` is the compiled
- *  main bundle dir (`out/main`) in both dev and packaged builds — the entry is
- *  emitted there as `pwrsnap-mcp-server.js` (see electron.vite.config.ts). */
-function mcpServerEntryPath(): string {
-  return join(__dirname, "pwrsnap-mcp-server.js");
-}
 
 export type PwrSnapMcpServer = {
   /** The config to hand the ACP agent (`AcpAgentClient({ mcpServers })`). */
@@ -50,7 +30,7 @@ export async function buildPwrSnapMcpServer(input: {
   if (input.catalog.length === 0) return null;
 
   const server = getToolRpcServer();
-  await server.start(join(app.getPath("userData"), "mcp"));
+  await server.start();
   const registration = server.register({
     catalog: input.catalog,
     dispatchToolCall: input.dispatchToolCall,
@@ -59,11 +39,9 @@ export async function buildPwrSnapMcpServer(input: {
 
   const config: AcpMcpServerConfig = {
     name: "pwrsnap",
-    command: process.execPath,
-    args: [mcpServerEntryPath()],
+    command: mcpExecutablePath(),
+    args: ["--endpoint", registration.socketPath],
     env: {
-      ELECTRON_RUN_AS_NODE: "1",
-      PWRSNAP_MCP_SOCKET: registration.socketPath,
       PWRSNAP_MCP_TOKEN: registration.token
     }
   };

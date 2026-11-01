@@ -3,15 +3,8 @@ import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
-// AGENTS.md §"Loopback agent access — one door, one approval window": every
-// bearer that reaches /mcp is minted by the operator's decision in the
-// approval window, through the OAuth code exchange. That is a claim about
-// call sites, which the type system cannot make — `createGrant` compiles
-// from anywhere — so grep the production sources, in the shape
-// tray-instant-hide.test.ts uses for the tray's show/hide invariant.
-//
-// If you are adding a way to mint a credential, the answer is "don't": route
-// the client through the OAuth door. Do not widen these allowlists.
+// Every native session must originate in Electron's consent boundary.
+// Legacy credential minting has no production caller.
 
 const mainRoot = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -45,15 +38,17 @@ function filesCalling(pattern: RegExp): string[] {
     .sort();
 }
 
-describe("local-agent credential minting stays behind the OAuth door", () => {
+describe("local-agent sessions stay behind native consent", () => {
   test("createGrant (a direct mint) has no production caller", () => {
     expect(filesCalling(/\.createGrant\(/)).toEqual([]);
   });
 
-  test("issueOAuthGrant is called only from the authorization-code exchange", () => {
-    expect(filesCalling(/\.issueOAuthGrant\(/)).toEqual([
-      "local-agents/local-agent-oauth.ts"
-    ]);
+  test("retired OAuth minting has no production caller", () => {
+    expect(filesCalling(/\.issueOAuthGrant\(/)).toEqual([]);
+  });
+
+  test("native sessions are opened only by the desktop MCP consent boundary", () => {
+    expect(filesCalling(/\.openNativeSession\(/)).toEqual(["local-agents/mcp-server.ts"]);
   });
 
   test("makeToken is private to the grant service", () => {

@@ -198,7 +198,7 @@ describe("LocalAgentsPage", () => {
     installFakeApi(grant, [], { state: "listening" });
     const el = await renderPage(enabledSettings);
 
-    expect(el.textContent).toContain("http://127.0.0.1:51729/mcp");
+    expect(el.textContent).toContain("Local stdio MCP");
     expect(el.textContent).not.toContain("MCP off");
   });
 
@@ -214,11 +214,11 @@ describe("LocalAgentsPage", () => {
     // server. `--scope user`: without it Claude Code registers the server for
     // the terminal's current directory only.
     expect(el.textContent).toContain(
-      "claude mcp add --scope user --transport http pwrsnap http://127.0.0.1:51729/mcp"
+      "claude mcp add --scope user --transport stdio pwrsnap -- pwrsnap-mcp"
     );
-    expect(el.textContent).toContain("claude mcp login pwrsnap");
+    expect(el.textContent).not.toContain("claude mcp login pwrsnap");
     expect(el.textContent).toContain(
-      "codex mcp add pwrsnap --url http://127.0.0.1:51729/mcp --oauth-client-registration dcr"
+      "codex mcp add pwrsnap -- pwrsnap-mcp"
     );
 
     installFakeApi(grant, [], { state: "off" });
@@ -245,8 +245,7 @@ describe("LocalAgentsPage", () => {
     });
     expect(dispatch).toHaveBeenCalledWith("clipboard:copyText", {
       text:
-        "claude mcp add --scope user --transport http pwrsnap http://127.0.0.1:51729/mcp\n" +
-        "claude mcp login pwrsnap"
+        "claude mcp add --scope user --transport stdio pwrsnap -- pwrsnap-mcp"
     });
     // The visible label and the accessible name change together.
     expect(button?.textContent).toBe("Copied");
@@ -290,7 +289,7 @@ describe("LocalAgentsPage", () => {
 
     expect(el.textContent).toContain("MCP unavailable");
     expect(el.textContent).toContain("failed to start");
-    expect(el.textContent).not.toContain("http://127.0.0.1:51729/mcp");
+    expect(el.textContent).not.toContain("Local stdio MCP");
     expect(el.querySelector("button[role='switch']")?.getAttribute("aria-checked")).toBe("true");
     // The switch is already on, so the connect card must not say to turn it on.
     expect(el.textContent).not.toContain("Turn on local-agent access");
@@ -480,4 +479,16 @@ describe("LocalAgentsPage", () => {
     expect(el.textContent).toContain("cap_1");
     expect(el.textContent).toContain("success");
   });
+});
+
+test("the graph and live scope retain the native consent ceiling after a role is widened",async()=>{
+  const approved=roles[0];
+  installFakeApi({...grant,roleId:"builtin.full-access",nativeConsent:{capabilities:[...approved.permissions],maxCaptureAgeDays:7,budgets:approved.budgets}});
+  const el=await renderPage();
+  const scope=Array.from(el.querySelectorAll(".pss__card")).find((card)=>card.textContent?.includes("LIVE SCOPE"));
+  expect(scope?.textContent).toContain("Last 7 days");
+  expect(scope?.textContent).toContain("0 / 50");
+  expect(scope?.textContent).toContain("Reconnect and approve a new Session");
+  const allowed=el.querySelectorAll(".is-permission.is-allowed");
+  expect(allowed).toHaveLength(1);expect(allowed[0].textContent).toContain("Search library");
 });

@@ -483,14 +483,29 @@ measured against a seeded large library rather than a handful of captures.
 - **Settings and secrets have exactly one substrate.** No sibling JSON
   files, no plaintext secrets, no second IPC channel. See AGENTS.md
   §"Settings substrate".
-- **Local agents come in through one OAuth door.** PwrSnap serves MCP on
-  loopback and is the OAuth 2.1 authorization server for it — dynamic
-  client registration, PKCE, and its own native approval window. Third-
-  party agents (Claude Code, Codex CLI) connect with their built-in OAuth
-  clients; there is no second credential path and no helper to install.
-  Each approval is its own Session; revoking ends it, and removing a revoked
-  one deletes its entry while keeping the agent's registration so it can ask
-  again. See [mcp-third-party-agents.md](mcp-third-party-agents.md).
+- **Local MCP has no network listener.** Hosts launch the bundled Rust
+  `pwrsnap-mcp` stdio byte relay. It connects once to the independently running
+  desktop over a private Unix socket or a SID-protected local Windows pipe;
+  it cannot launch the desktop. Electron launches the native listener as a
+  transport child and owns the full MCP server, catalog, validation, command
+  bus dispatch and native consent. No privileged handler runs in the relay.
+  Transport version 1 is negotiated independently of application releases;
+  MCP initialization identifies the authoritative desktop interface.
+- **Native consent belongs to a live external connection.** Same-account IPC
+  identifies an OS account, never an authorized role. Each external session
+  needs the existing native approval window, has an immutable consent ceiling
+  applied by the grant service even when the command bus re-resolves a role,
+  and is revoked on disconnect. Existing OAuth credentials are retained for
+  explicit revocation but are not accepted by the new transport. Migration
+  requires stdio configuration and new native consent; approvals are not
+  transferred. Missing or disconnected desktops require a manual reconnect,
+  with no reconnect, replay or handler fallback in the transport.
+- **Internal ACP chat uses the same byte transport with a separate endpoint.**
+  App-minted per-chat, per-run tokens continue to select their own catalog and
+  dispatcher. Catalog conversion now lives in Electron main; list requests
+  read the current registration. Unregister closes its connections. Neither
+  the external role graph nor unrelated app services are widened.
+  See [mcp-third-party-agents.md](mcp-third-party-agents.md).
   Built-in role upgrades preserve existing sessions' approved permissions and
   limits in a retained custom profile; expanded roles require new approval.
   Arbitrary drift from a canonical built-in definition remains rejected.

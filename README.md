@@ -61,7 +61,7 @@ later.
   remove the stretches where nothing moved; export GIF or MP4 at three sizes.
 - **Sizzle reels.** Pick captures, write or generate a script, and render a
   narrated video from them.
-- **Agents can use it too.** A local, OAuth-protected MCP server lets an
+- **Agents can use it too.** A local MCP connection with native consent lets an
   agent you approve search your captures, read them, and export them. Each
   agent gets a named session and a role you can change or revoke in
   **Settings → Local Agents**.

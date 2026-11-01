@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readMcpRustLicenseRecords } from "./check-mcp-rust-licenses.mjs";
 import { isCliEntrypoint } from "./lib/cli-entrypoint.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -590,6 +591,8 @@ export function buildWeakCopyleftBundledBinaries(platformRecords = []) {
  */
 export function buildBundledBinaryRecords() {
   return [
+    ...readMcpRustLicenseRecords(),
+    {name:"PwrDisk Windows IPC reference",version:"MCP transport",declaredLicense:"MIT",source:"https://github.com/pwrdrvr/PwrDisk/pull/39",bundledBinary:true,licenseText:readFileSync(join(repoRoot,"crates/pwrsnap-mcp/LICENSE-PwrDisk"),"utf8")},
     {
       name: "MediaPipe Selfie Segmentation landscape model",
       version: "float16/1 (490e9ea734313e0de)",

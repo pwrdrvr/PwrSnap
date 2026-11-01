@@ -99,6 +99,8 @@ export function assertStagedSharpTarget(stage, arch) {
 }
 
 export function thinStagedHelpers(stage) {
+  const relay=join(stage,"build/mcp/pwrsnap-mcp");
+  if (existsSync(relay)) thinArm64(relay);
   for (const name of Object.keys(NATIVE_RESOURCES)) thinArm64(join(stage, "build/native", name));
   for (const name of EXTENSIONS) thinArm64(join(stage, "build/native", `${name}.appex/Contents/MacOS/${name}`));
 }
@@ -139,6 +141,7 @@ export function verifyPackagedArchitecture(app, arch) {
     "Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework",
     ...Object.values(NATIVE_RESOURCES).map((name) => `Contents/Resources/${name}`),
     "Contents/Resources/PwrSnapFFmpeg",
+    "Contents/Resources/pwrsnap-mcp",
     // better-sqlite3's N-API prebuilds are thin, one per arch, picked by
     // process.arch at runtime; the arm64 one is in every Mac app.
     "Contents/Resources/app.asar.unpacked/node_modules/better-sqlite3/prebuilds/darwin-arm64.node",

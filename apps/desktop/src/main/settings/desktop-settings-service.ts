@@ -1598,6 +1598,16 @@ function parseLocalAgentGrant(raw: unknown): LocalAgentClientGrant | null {
   if (raw.oauthClient !== undefined && oauthClient === null) {
     return null;
   }
+  let nativeConsent: LocalAgentClientGrant["nativeConsent"];
+  if (raw.nativeConsent !== undefined) {
+    const value = raw.nativeConsent;
+    if (!isRecord(value) || !Array.isArray(value.capabilities) || value.capabilities.length === 0 || !value.capabilities.every(isLocalAgentCapability)) return null;
+    const maxAge=value.maxCaptureAgeDays;
+    if (maxAge !== null && (typeof maxAge !== "number" || !Number.isInteger(maxAge) || maxAge < 1 || maxAge > 36500)) return null;
+    const budgets=parseLocalAgentBudgets(value.budgets);
+    if (budgets === null) return null;
+    nativeConsent={capabilities:parseLocalAgentCapabilities(value.capabilities), maxCaptureAgeDays:maxAge, budgets};
+  }
   return {
     id,
     name,
@@ -1607,7 +1617,8 @@ function parseLocalAgentGrant(raw: unknown): LocalAgentClientGrant | null {
     updatedAt,
     lastUsedAt,
     revokedAt,
-    ...(oauthClient !== null ? { oauthClient } : {})
+    ...(oauthClient !== null ? { oauthClient } : {}),
+    ...(nativeConsent === undefined ? {} : {nativeConsent})
   };
 }
 

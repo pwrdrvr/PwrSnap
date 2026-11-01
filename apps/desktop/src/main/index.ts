@@ -193,7 +193,6 @@ import {
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
 import {
-  LOCAL_AGENT_MCP_PORT,
   LocalAgentMcpServer
 } from "./local-agents/mcp-server";
 import { LocalAgentMcpLifecycle } from "./local-agents/local-agent-mcp-lifecycle";
@@ -448,14 +447,14 @@ async function wireLocalAgentMcpLifecycle(): Promise<void> {
       const message = cause instanceof Error ? cause.message : String(cause);
       getMainLogger("pwrsnap:local-agent-mcp").error(
         "local-agent MCP server failed to start",
-        { port: LOCAL_AGENT_MCP_PORT, message }
+        { transport: "local_ipc", message }
       );
       void dialog.showMessageBox({
         type: "error",
         title: "Local agent access unavailable",
-        message: `PwrSnap could not use local port ${LOCAL_AGENT_MCP_PORT}.`,
+        message: "PwrSnap could not start its local MCP connection.",
         detail:
-          "Another process may already be using PwrSnap's MCP port. " +
+          "Another desktop may own the local endpoint, or the bundled relay may be unavailable. " +
           "Resolve the conflict, then turn local-agent access off and back on.",
         buttons: ["OK"],
         defaultId: 0,

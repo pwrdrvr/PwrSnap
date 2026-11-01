@@ -3,6 +3,8 @@ import type { LocalAgentMcpListenerStatus } from "@pwrsnap/shared";
 export type ManagedLocalAgentMcpServer = {
   start(): Promise<unknown>;
   stop(): Promise<void>;
+  settingsChanged?(): Promise<void>;
+  isConnected?(): boolean;
 };
 
 /** Serializes the live MCP listener's start/stop transitions. Settings writes
@@ -34,6 +36,7 @@ export class LocalAgentMcpLifecycle {
   }
 
   getStatus(): LocalAgentMcpListenerStatus {
+    if (this.status.state === "listening" && this.server?.isConnected?.() === false) return {state:"failed"};
     return this.status;
   }
 
@@ -64,6 +67,7 @@ export class LocalAgentMcpLifecycle {
         this.status = { state: "off" };
       }
 
+      if (target && this.server !== null) await this.server.settingsChanged?.();
       if (target === this.desiredEnabled) return;
     }
   }

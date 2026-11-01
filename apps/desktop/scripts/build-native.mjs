@@ -27,7 +27,7 @@
  * CI keep working.
  */
 
-import { spawnSync } from "node:child_process";
+import { spawnSync, execFileSync } from "node:child_process";
 import {
   copyFileSync,
   existsSync,
@@ -42,6 +42,8 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const desktopRoot = resolve(__dirname, "..");
+// Release native staging always builds both macOS architectures.
+execFileSync(process.execPath, [join(__dirname, "build-mcp.mjs")], {stdio:"inherit"});
 const nativeRoot = join(desktopRoot, "native");
 const buildRoot = join(desktopRoot, "build", "native");
 

@@ -5,7 +5,7 @@
   "description": "Screen capture with a local-first library",
   "author": "PwrDrvr LLC",
   "license": "MIT",
-  "copyright": "Copyright © 2026 PwrDrvr LLC",
+  "copyright": "Copyright \u00a9 2026 PwrDrvr LLC",
   "packageManager": "pnpm@12.13.0+sha512.1e55719bf26e809dce5c5084fdebaa64efb3da9038ae5d68a9f8a68311f1a45841c8c3b76a37298c3b66f6bcc80409a9b7f33c78a7168a3e90fb65a5d8235ae4",
   "scripts": {
     "preinstall": "node ./scripts/check-node-version.mjs",
@@ -24,7 +24,7 @@
     "lint:colors": "node ./scripts/lint-renderer-colors.mjs",
     "settings-store:check": "node ./scripts/check-settings-store-boundary.mjs",
     "lint": "pnpm deps:check && pnpm metadata:check && pnpm fuses:check && pnpm typecheck && pnpm licenses:check && pnpm settings-store:check && pnpm lint:colors && pnpm lint:syntax && pnpm lint:typed",
-    "test": "vitest run --config vitest.workspace.ts",
+    "test": "node ./apps/desktop/scripts/build-mcp.mjs --host && vitest run --config vitest.workspace.ts",
     "test:watch": "vitest --config vitest.workspace.ts",
     "test:desktop-e2e": "pnpm --filter @pwrsnap/desktop build && pnpm --filter @pwrsnap/desktop test:e2e",
     "test:desktop-e2e:windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/e2e/run-windows.ps1",
@@ -36,7 +36,8 @@
     "lint:typed": "node ./scripts/lint-typed.mjs",
     "typecheck:legacy": "pnpm -r --if-present typecheck:legacy",
     "check:benchmark": "node ./scripts/benchmark-dev-checks.mjs",
-    "check:changed": "node ./scripts/check-changed.mjs"
+    "check:changed": "node ./scripts/check-changed.mjs",
+    "test:mcp": "cargo test --locked --manifest-path crates/pwrsnap-mcp/Cargo.toml"
   },
   "devDependencies": {
     "@types/node": "24.19.2",

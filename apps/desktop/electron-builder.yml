@@ -87,6 +87,9 @@ files:
 # a Windows build doesn't try to copy files that build-native.mjs
 # never produces off-darwin.
 extraResources:
+  - from: "build/mcp/"
+    to: "."
+    filter: ["pwrsnap-mcp", "pwrsnap-mcp.exe"]
   - from: "THIRD_PARTY_LICENSES"
     to: "THIRD_PARTY_LICENSES"
   - from: "CHANGELOG.md"

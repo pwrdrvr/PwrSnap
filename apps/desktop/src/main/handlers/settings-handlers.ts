@@ -1,3 +1,4 @@
+import { mcpExecutablePath, quoteMcpExecutable } from "../ai/mcp/mcp-executable";
 import { registerCustomModelHandlers } from "./custom-model-handlers";
 // Lazy module-level singletons because `app.getPath("userData")` is
 // unavailable at module load (tests mock `electron` without an app
@@ -653,6 +654,7 @@ export function registerSettingsDataHandlers(options: {
       return ok({
         grants,
         roles,
+        relayCommand: quoteMcpExecutable(mcpExecutablePath()),
         listenerStatus: options.readLocalAgentMcpListenerStatus?.() ?? { state: "off" }
       });
     } catch (cause) {

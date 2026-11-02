@@ -111,11 +111,13 @@ vi.mock("../../capture/capture-storage-gate", () => {
 });
 
 vi.mock("../../capture/window-list", () => ({
+  listWindows: vi.fn(async () => []),
   findWindowAt: () => null,
   resolveWindowListHelperPath: () => null
 }));
 
 vi.mock("../../capture/source-app", () => ({
+  resolveSelectedWindowTitle: () => null,
   resolveSelectionSourceApp: () => null,
   resolveSourceAppByRect: () => null
 }));

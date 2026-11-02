@@ -277,14 +277,33 @@ describe("packaged Windows smoke", () => {
   test("requires the loaded SQLite N-API prebuild, rejecting presence alone or foreign bindings", () => {
     const root = join(tmpdir(), "installed", "better-sqlite3");
     const expected = join(root, "prebuilds", "win32-x64.node");
-    expect(resolveLoadedSqliteBinding(root, [expected])).toBe(expected);
+    const loaded = (filename: string) => ({ loaded: true, filename });
+    expect(resolveLoadedSqliteBinding(root, [loaded(expected)])).toBe(expected);
     expect(() => resolveLoadedSqliteBinding(root, [])).toThrow(/did not load/);
-    expect(() => resolveLoadedSqliteBinding(root, [join(root, "prebuilds", "win32-arm64.node")]))
+    expect(() => resolveLoadedSqliteBinding(root, [{ loaded: false, filename: expected }]))
       .toThrow(/did not load/);
-    expect(() => resolveLoadedSqliteBinding(root, [join(tmpdir(), "foreign", "win32-x64.node")]))
+    expect(() => resolveLoadedSqliteBinding(root, [loaded(join(root, "prebuilds", "win32-arm64.node"))]))
       .toThrow(/did not load/);
-    expect(() => resolveLoadedSqliteBinding(root, [expected, join(root, "other.node")]))
+    expect(() => resolveLoadedSqliteBinding(root, [loaded(join(tmpdir(), "foreign", "win32-x64.node"))]))
       .toThrow(/did not load/);
+    expect(() => resolveLoadedSqliteBinding(root, [loaded(expected), loaded(join(root, "other.node"))]))
+      .toThrow(/did not load/);
+  });
+
+  test("ignores Electron synthetic cache entries without weakening loaded-binding evidence", () => {
+    const root = join(tmpdir(), "installed", "better-sqlite3");
+    const expected = join(root, "prebuilds", "win32-x64.node");
+    const syntheticEntries = [
+      undefined,
+      { loaded: true },
+      { loaded: true, filename: null },
+      { loaded: true, filename: 42 }
+    ];
+    expect(resolveLoadedSqliteBinding(root, [
+      ...syntheticEntries,
+      { loaded: true, filename: expected }
+    ])).toBe(expected);
+    expect(() => resolveLoadedSqliteBinding(root, syntheticEntries)).toThrow(/did not load/);
   });
   let layout: TestLayout;
 

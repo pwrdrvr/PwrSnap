@@ -693,10 +693,20 @@ function requireInstalledResource(resourcesPath: string, path: string, label: st
   return resolvedPath;
 }
 
-export function resolveLoadedSqliteBinding(packageRoot: string, loadedPaths: string[]): string {
+export function resolveLoadedSqliteBinding(
+  packageRoot: string,
+  loadedModules: ReadonlyArray<{ loaded?: unknown; filename?: unknown } | undefined>
+): string {
   const root = physicalUnpackedPath(packageRoot);
   const expected = join(root, "prebuilds", "win32-x64.node");
-  const bindings = loadedPaths.map(physicalUnpackedPath).filter((path) =>
+  // Electron caches synthetic modules (for example `electron`) without a
+  // filename. They cannot establish native provenance. Only completed loads
+  // with real paths participate; presence of an unloaded prebuild is insufficient.
+  const bindings = loadedModules.flatMap((entry) =>
+    entry?.loaded === true && typeof entry.filename === "string"
+      ? [physicalUnpackedPath(entry.filename)]
+      : []
+  ).filter((path) =>
     path.endsWith(".node") && pathIsWithin(root, path)
   );
   if (bindings.length !== 1 || !samePath(bindings[0]!, expected)) {
@@ -721,8 +731,6 @@ export function resolvePackagedNativeModuleProvenance(
     physicalUnpackedPath(resolveLoadedSqliteBinding(
       dirname(betterSqlite3PackagePath),
       Object.values(moduleRequire.cache)
-        .filter((entry) => entry?.loaded === true)
-        .map((entry) => entry!.filename)
     )),
     "better-sqlite3 N-API binding"
   );

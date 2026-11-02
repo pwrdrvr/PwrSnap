@@ -379,6 +379,8 @@ describe("Windows release configuration", () => {
       previewOrder("Upload Windows installer artifact"),
     );
     expect(previewWindowsJob).toContain("timeout-minutes: 40");
+    expect(previewWindowsJob.split("- name: Smoke installed Windows application")[1]
+      .split("\n      - name:")[0]).toContain("-RequireBundledFfmpeg");
 
     const protectedWindowsJob = workflow
       .split("\n  windows-sign:\n")[1]

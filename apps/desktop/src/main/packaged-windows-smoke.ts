@@ -693,14 +693,22 @@ function requireInstalledResource(resourcesPath: string, path: string, label: st
   return resolvedPath;
 }
 
+export function resolveLoadedSqliteBinding(packageRoot: string, loadedPaths: string[]): string {
+  const root = physicalUnpackedPath(packageRoot);
+  const expected = join(root, "prebuilds", "win32-x64.node");
+  const bindings = loadedPaths.map(physicalUnpackedPath).filter((path) =>
+    path.endsWith(".node") && pathIsWithin(root, path)
+  );
+  if (bindings.length !== 1 || !samePath(bindings[0]!, expected)) {
+    throw new Error("better-sqlite3 did not load exactly the installed win32-x64 N-API prebuild");
+  }
+  return bindings[0]!;
+}
+
 export function resolvePackagedNativeModuleProvenance(
-  resourcesPath: string,
-  betterSqlite3Binding: string | undefined
+  resourcesPath: string
 ): NativeModuleProvenance {
   const installedResources = resolve(resourcesPath);
-  if (betterSqlite3Binding === undefined) {
-    throw new Error("better-sqlite3 did not select the Electron-native sidecar");
-  }
 
   const moduleRequire = createRequire(import.meta.url);
   const betterSqlite3PackagePath = requireInstalledResource(
@@ -710,8 +718,13 @@ export function resolvePackagedNativeModuleProvenance(
   );
   const betterSqlite3BindingPath = requireInstalledResource(
     installedResources,
-    physicalUnpackedPath(betterSqlite3Binding),
-    "better-sqlite3 Electron binding"
+    physicalUnpackedPath(resolveLoadedSqliteBinding(
+      dirname(betterSqlite3PackagePath),
+      Object.values(moduleRequire.cache)
+        .filter((entry) => entry?.loaded === true)
+        .map((entry) => entry!.filename)
+    )),
+    "better-sqlite3 N-API binding"
   );
 
   const sharpEntryPath = moduleRequire.resolve("sharp");

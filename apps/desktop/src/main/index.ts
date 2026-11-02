@@ -243,7 +243,6 @@ import {
   openDatabase,
   PendingMigrationsError
 } from "./persistence/db";
-import { getNativeBinding } from "./persistence/native-binding";
 import {
   getCaptureById,
   listCaptures,
@@ -2528,7 +2527,7 @@ export function bootstrapApp(): void {
         };
       },
       getNativeModuleProvenance: () =>
-        resolvePackagedNativeModuleProvenance(process.resourcesPath, getNativeBinding()),
+        resolvePackagedNativeModuleProvenance(process.resourcesPath),
       logger: getMainLogger("pwrsnap:packaged-windows-smoke")
     });
     if (packagedSmokeOwnedLifecycle) return;

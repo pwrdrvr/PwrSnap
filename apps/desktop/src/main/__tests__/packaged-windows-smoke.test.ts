@@ -7,6 +7,7 @@ import {
   PACKAGED_WINDOWS_SMOKE_ENV,
   PACKAGED_WINDOWS_SMOKE_REQUIRE_FFMPEG_ENV,
   PACKAGED_WINDOWS_SMOKE_REPORT_NAME,
+  resolveLoadedSqliteBinding,
   parseBundledWindowListEvidence,
   parseBundledFfmpegCapabilities,
   packagedRendererProbeSource,
@@ -192,8 +193,8 @@ function makeDependencies(
         "app.asar.unpacked",
         "node_modules",
         "better-sqlite3",
-        "electron-native",
-        "better_sqlite3.node"
+        "prebuilds",
+        "win32-x64.node"
       ),
       sharpPackagePath: join(
         layout.resourcesPath,
@@ -273,6 +274,18 @@ function makeDependencies(
 }
 
 describe("packaged Windows smoke", () => {
+  test("requires the loaded SQLite N-API prebuild, rejecting presence alone or foreign bindings", () => {
+    const root = join(tmpdir(), "installed", "better-sqlite3");
+    const expected = join(root, "prebuilds", "win32-x64.node");
+    expect(resolveLoadedSqliteBinding(root, [expected])).toBe(expected);
+    expect(() => resolveLoadedSqliteBinding(root, [])).toThrow(/did not load/);
+    expect(() => resolveLoadedSqliteBinding(root, [join(root, "prebuilds", "win32-arm64.node")]))
+      .toThrow(/did not load/);
+    expect(() => resolveLoadedSqliteBinding(root, [join(tmpdir(), "foreign", "win32-x64.node")]))
+      .toThrow(/did not load/);
+    expect(() => resolveLoadedSqliteBinding(root, [expected, join(root, "other.node")]))
+      .toThrow(/did not load/);
+  });
   let layout: TestLayout;
 
   beforeEach(async () => {

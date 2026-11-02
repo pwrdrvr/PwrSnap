@@ -792,7 +792,7 @@ jobs:
           EXPECTED_PUBLISHER: PwrDrvr LLC
         run: |
           $ErrorActionPreference = "Stop"
-          $aliasName = "PwrSnap-windows-x64-setup.exe"
+          $aliasName = "PwrSnap.Setup.exe"
           $installers = @(
             Get-ChildItem -Path .installed-smoke/installer -Recurse -File -Filter "*-setup.exe" |
               Where-Object { $_.Name -ne $aliasName }

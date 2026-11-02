@@ -405,7 +405,8 @@ jobs:
             throw "Expected exactly one NSIS installer in $dist; found $($installers.Count)."
           }
           & ./scripts/release/smoke-installed-windows.ps1 `
-            -InstallerPath $installers[0].FullName
+            -InstallerPath $installers[0].FullName `
+            -RequireBundledFfmpeg
 
       - name: Upload installed-app smoke diagnostics
         if: failure()

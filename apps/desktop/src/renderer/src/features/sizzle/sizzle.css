@@ -1,6 +1,6 @@
 /* PwrSnap Sizzle Reels — composer window.
  *
- * Shell mirrors settings.css: 52px title bar row + content grid (rail +
+ * Shell mirrors settings.css: 41px title bar row + content grid (rail +
  * main). Title bar is the system drag region with left padding clearing
  * the macOS traffic lights (titleBarStyle: "hiddenInset" in
  * createSizzleWindow). All colors via tokens — never hardcoded.
@@ -12,30 +12,36 @@
   height: 100%;
   display: grid;
   grid-template-columns: 240px 1fr;
-  grid-template-rows: 52px 1fr;
+  /* 41px title strip: 40px fill + 1px divider below (Pwr-family strip). */
+  grid-template-rows: 41px 1fr;
   background: var(--bg-app);
   color: var(--text-primary);
   font-family: var(--font-sans);
   overflow: hidden;
 }
 
-/* Title bar — drag region, traffic-light padding, brand + crumb.
-   Matches .pss__titlebar so the two surfaces read as the same app. */
+/* Title bar — drag region, brand + crumb, platform chrome reservations.
+   Matches .pss__titlebar so the two surfaces read as the same app: the base
+   rule clears nothing (Linux has an ordinary frame), macOS / Windows opt in. */
 .szl__titlebar {
   grid-column: 1 / -1;
   grid-row: 1;
   display: flex;
   align-items: center;
-  padding: 0 16px 0 92px;
+  padding: 0 16px;
   background: var(--bg-sidebar);
   border-bottom: 1px solid var(--border-subtle);
   gap: 14px;
   -webkit-app-region: drag;
 }
+/* macOS: `titleBarStyle: "hiddenInset"` draws the real traffic lights inside
+   this bar — left pad clears them. */
+:root[data-platform="darwin"] .szl__titlebar {
+  padding-left: var(--mac-traffic-light-reserve);
+}
 /* Windows: no macOS stoplights on the left; native caption buttons drawn
    top-right via titleBarOverlay (menu hidden on this window) — reserve right. */
 :root[data-platform="win32"] .szl__titlebar {
-  padding-left: 16px;
   padding-right: var(--win-caption-reserve);
 }
 
@@ -49,19 +55,17 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font: 700 14px/1 var(--font-display);
+  font: 700 17px/1 var(--font-display);
   letter-spacing: -0.01em;
 }
 
+/* Bare, like every other window's strip: the Pwr-family mark is the 20px
+   glyph itself at x=96. A tile around it pushed the glyph 2px right and put
+   a box in the one strip that has none elsewhere. */
 .szl__title-mark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  background: var(--bg-panel-elevated);
-  border: 1px solid var(--accent-border);
 }
 
 .szl__title-crumb {
@@ -77,6 +81,27 @@
 
 .szl__title-sep {
   opacity: 0.5;
+}
+
+/* Strip text centres by its cap height (Pwr-family strip): flex centres a
+   text element's line box, and Geist's ascent/descent put the capitals off
+   the middle of it. `text-box` trimming (Chromium 133+) centres the ink that
+   is actually drawn instead, at any size, so the capitals share the y=20
+   line with the stoplights, the mark and the controls — no pixel nudges.
+
+   The chevron centres by its x-height band instead, and the reel name —
+   which clips its overflow for the ellipsis — gets `padding-block` back so
+   the trim does not cut its descenders off. */
+.szl__title-brand .pwrsnap-wordmark,
+.szl__title-label,
+.szl__title-here {
+  text-box: trim-both cap alphabetic;
+}
+.szl__title-here {
+  padding-block: 4px;
+}
+.szl__title-sep {
+  text-box: trim-both ex alphabetic;
 }
 
 /* With a reel open the crumb is a button that drops the project rail
@@ -104,7 +129,7 @@
   border-color: var(--border-subtle);
 }
 .szl__title-crumb-btn:focus-visible {
-  outline: 2px solid var(--accent-border);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .szl__title-caret {
@@ -126,7 +151,7 @@
 .szl__failure-stack {
   position: absolute;
   z-index: 20;
-  top: 60px;
+  top: 49px; /* 8px under the 41px title strip */
   left: 50%;
   width: min(680px, calc(100% - 32px));
   transform: translateX(-50%);
@@ -196,7 +221,7 @@
 }
 .szl--rail-popover .szl__rail {
   position: absolute;
-  top: 52px;
+  top: 41px;
   left: 0;
   bottom: 0;
   width: 280px;
@@ -437,15 +462,40 @@
   outline: 0;
 }
 
-/* Main pane — empty state OR active editor. */
+/* As `.psl__context-menu-row`: focus was the hover paint alone. Inset,
+   because the rows stack 2px apart. */
+.szl__context-menu-row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+/* Main pane — empty state OR active editor.
+
+   `overflow: clip`, not `hidden`. A `hidden` box is still a scroll
+   container: nothing can scroll it with a wheel or a scrollbar, but focus
+   and scrollIntoView can. Tabbing into a scene control on a short window
+   used to scroll this pane 77px, lifting the whole workspace — editor head,
+   Duplicate, Delete — out of view, where a mouse user had no way to scroll
+   it back. `clip` paints the same and cannot be scrolled at all. The
+   editor column below is the scroller that should move; this pane never
+   should.
+
+   `min-height: 0` has to come with it. A scroll container's automatic
+   minimum size is zero; a clipped box's is its content height, so without
+   this the grid's `1fr` row would grow to fit a tall editor and push the
+   pane off the bottom of the window.
+
+   No sticky descendant binds to this box: the chat's message list is its
+   own scroller. */
 .szl__main {
   grid-column: 2;
   grid-row: 2;
   position: relative;
-  overflow: hidden;
+  overflow: clip;
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   background: var(--bg-app);
 }
 
@@ -482,12 +532,28 @@
   color: var(--text-muted);
 }
 
+/* On a tall window the scene list is the only thing that scrolls: head,
+   reel player, timeline and footer stay put and the list takes whatever
+   height is left. On a short one there is not enough left. At the minimum
+   window (880×560, chat open) the head, player, timeline and footer alone
+   measure ~540px against a 508px pane, so the list got 28px (or nothing)
+   and no scene control could be seen whole.
+
+   So the scene list keeps a floor (see `.szl__scenes`), and once the column
+   cannot fit that floor, the column scrolls as a whole. Nothing else has to
+   give, and focus moving into a scene scrolls a box the user can scroll back.
+
+   The x axis computes to `auto` with this. Leave it that way: `hidden`
+   would let focus shift the column sideways with no way back, the same
+   trap `.szl__main` had vertically. Nothing overflows at the minimum window
+   with the default chat width, so no scrollbar shows. */
 .szl__editor {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
   min-width: 0;
+  overflow-y: auto;
 }
 
 .szl__editor-head {
@@ -513,6 +579,14 @@
 
 .szl__editor-title:focus {
   border-bottom-color: var(--accent-border);
+}
+
+/* The title field is borderless, and that 42% underline measured 2.2:1.
+   It keeps the underline and rings 2px off the text. */
+.szl__editor-title:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
 }
 
 .szl__editor-meta {
@@ -589,7 +663,7 @@
   border-color: var(--border-default);
 }
 .szl__reel-settings:focus-visible {
-  outline: 2px solid var(--accent-border);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .szl__reel-settings-label {
@@ -674,17 +748,33 @@
   border-color: var(--accent-border);
 }
 
+/* The floor: one scene card whole, plus the list's padding. At the narrowest
+   editor (880px window, 400px chat) cards measure 154–171px, and
+   171 + 2 × 14 = 199. Below this the column scrolls instead (see
+   `.szl__editor`). A card whose narration has grown taller than that still
+   scrolls inside the list.
+
+   `scroll-padding-block` matches the padding, so a control that focus scrolls
+   into view stops the same 14px from the edge as it does at rest. Without it,
+   the control lands flush against the edge and its focus ring is cut. */
 .szl__scenes {
   list-style: none;
   margin: 0;
   padding: 14px 24px;
+  scroll-padding-block: 14px;
   display: flex;
   flex-direction: column;
   gap: 10px;
   overflow-y: auto;
   flex: 1;
-  min-height: 0;
+  min-height: 200px;
   background: var(--bg-app);
+  /* Container for the narrow simple card below. It is the list's width that
+     matters, not the window's: the chat beside the editor is 320–720px
+     wide, or closed. Nothing inside the list is `position: fixed` (the
+     phrase popover lives in the inspector, portaled to the rail), so the
+     layout containment this brings changes no containing block. */
+  container: szl-scenes / inline-size;
 }
 
 .szl__scene {
@@ -732,6 +822,28 @@
   display: block;
 }
 
+/* With the chat open on the minimum window the list is 432px wide inside
+   its padding, which left a simple card's body 170px beside a 180px
+   thumbnail. The action row (Convert to clips, ▶ ↑ ↓ ✕) needs 241px even on
+   a line of its own, so it ran off the card's right edge, reachable only by
+   scrolling the list sideways. Below the width where a full thumbnail still
+   leaves 241px (82px of card chrome + 180 + 241 = 503), the thumbnail
+   yields. The same capture is on the timeline right above the list.
+
+   The selectors carry an extra class on purpose: a container query adds no
+   specificity, so a bare `.szl__scene-thumb` here loses to the base rule
+   whenever the base rule comes later, and the thumbnail stays 180px wide
+   in a 96px column, painted over the narration. */
+@container szl-scenes (max-width: 503px) {
+  .szl__scene:not(.szl__scene--sequence) {
+    grid-template-columns: 28px 96px 1fr;
+  }
+  .szl__scene .szl__scene-thumb {
+    width: 96px;
+    height: 54px;
+  }
+}
+
 .szl__scene-missing {
   color: var(--text-muted);
   font: 500 11px/1 var(--font-mono);
@@ -770,10 +882,33 @@
   border-color: var(--accent-border);
 }
 
+/* The 2.2:1 border tint stays; the field draws the house ring too. */
+.szl__scene-script:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  scroll-margin: 4px;
+}
+
 .szl__scene-row {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* A simple card's row wraps rather than overflowing a narrow card. Whatever
+   follows the spacer (the scene's actions) is the group that moves to the
+   next line, and the auto margin keeps it right-aligned there, as it is on
+   one line. On one line the spacer's flex-grow takes all the free space
+   first, so the margin resolves to 0.
+
+   Not the sequence card: its rows already fit by wrapping the label's text
+   inside the row, and a wrapping row breaks between its two buttons instead,
+   leaving "+ Clip" alone on a line of its own. */
+.szl__scene:not(.szl__scene--sequence) .szl__scene-row {
+  flex-wrap: wrap;
+}
+.szl__scene:not(.szl__scene--sequence) .szl__scene-row > .szl__spacer + * {
+  margin-left: auto;
 }
 
 .szl__scene-dur {
@@ -857,10 +992,16 @@
   cursor: not-allowed;
 }
 
+/* `max-height` is the ceiling (PHRASE_POPOVER_MAX_HEIGHT_PX in
+   TranscriptPhrasePicker.tsx); the picker lowers it inline to the room on
+   the side it opens toward. A flex column so a lowered cap shrinks the
+   LIST, which scrolls, instead of spilling the popover past its box. */
 .szl__sequence-phrase-popover {
   position: fixed;
   z-index: 20;
   max-height: 320px;
+  display: flex;
+  flex-direction: column;
   padding: 8px;
   background: var(--bg-panel-elevated);
   border: 1px solid var(--border-strong);
@@ -869,11 +1010,14 @@
 }
 
 .szl__sequence-phrase-search {
+  flex: 0 0 auto;
   width: 100%;
   margin-bottom: 6px;
 }
 
 .szl__sequence-phrase-list {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -1444,6 +1588,13 @@
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+/* The select is borderless inside the pill, so the pill is the field's
+   box and rings while the select has focus. The underline alone was too
+   slight to find. */
+.szl__transition-chip:has(select:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
 .szl__transition-chip select option {
   text-transform: none;
   letter-spacing: 0;
@@ -1499,7 +1650,8 @@
 }
 
 /* The agent chat as a right rail next to the editor. Width is the
-   inline `flex-basis` (dragged via .szl__chat-resizer, 320–720px). */
+   inline `flex-basis` (dragged via .szl__chat-resizer, 320–720px), capped
+   in SizzleApp so the editor keeps EDITOR_MIN_WIDTH (480px) beside it. */
 .szl__chat {
   position: relative;
   flex: 0 0 400px;
@@ -1539,10 +1691,22 @@
 /* ── Right rail: chat above, the clip inspector as a bottom drawer ──────
    (plan §4.6) Both visible; the drawer collapses when nothing is selected.
    Below RAIL_NARROW_PX (SizzleApp) the inspector takes the rail and the
-   chat folds to a one-line bar — still mounted, its state survives. */
+   chat folds to a one-line bar — still mounted, its state survives.
+
+   How the two split the height: the inspector drawer is content-sized and
+   the chat takes whatever is left, down to a floor that keeps the thread
+   bar, the composer and a few lines of messages usable.
+
+   The chat's flex-basis MUST be 0, not auto. `auto` resolves to the
+   conversation's full content height (the message list's scroller only
+   limits what is painted, not the flex base size), and flex-shrink divides
+   a shortfall in proportion to base size. So a long thread claimed the
+   rail and crushed the inspector to a sliver — 49 px, 20 of them body,
+   under a 4000 px thread in a 768 px rail, with Transition and Structure
+   hidden and no visible scrollbar to say so. */
 .szl__chat-pane {
-  flex: 1 1 auto;
-  min-height: 0;
+  flex: 1 1 0;
+  min-height: 200px;
   display: flex;
   flex-direction: column;
 }
@@ -1568,23 +1732,28 @@
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+/* No percentage cap: the chat pane's floor is what bounds the drawer, and
+   past that the drawer's own body scrolls. */
 .szl__inspector-host {
   flex: 0 1 auto;
   min-height: 0;
-  max-height: 58%;
   display: flex;
   flex-direction: column;
 }
 .szl__inspector-host:empty {
   display: none;
 }
-.szl__chat.is-narrow.has-inspector .szl__inspector-host {
+/* Chat hidden or folded: the inspector is the rail's only pane, so it
+   fills it and its footer sits at the bottom edge. */
+.szl__chat.is-inspector-only .szl__inspector-host {
   flex: 1 1 auto;
-  max-height: none;
 }
 
 /* ── Clip inspector ──────────────────────────────────────────────────── */
 .szl__insp {
+  /* grows to fill the host when the host fills the rail; content-sized
+     otherwise, because the host is */
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1635,6 +1804,19 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* Scroll shadows. macOS overlay scrollbars stay hidden until a scroll
+     starts, so a clipped body otherwise looks complete. The `scroll` shades
+     are pinned to the viewport edges; the `local` covers ride with the
+     content and hide a shade whenever that edge is already at its end.
+     Nothing shows when the body fits. Tinted from the text color so they
+     read on the dark panel as well as the light one. */
+  --szl-insp-shade: color-mix(in srgb, var(--text-primary) 14%, transparent);
+  background:
+    linear-gradient(var(--bg-panel) 40%, transparent) top / 100% 20px no-repeat local,
+    linear-gradient(transparent, var(--bg-panel) 60%) bottom / 100% 20px no-repeat local,
+    linear-gradient(var(--szl-insp-shade), transparent) top / 100% 10px no-repeat scroll,
+    linear-gradient(transparent, var(--szl-insp-shade)) bottom / 100% 10px no-repeat scroll;
+  background-color: var(--bg-panel);
 }
 .szl__insp-cap {
   display: flex;
@@ -1827,7 +2009,9 @@
    Ken Burns on the same element); a video's still has no inline style, so it
    only needs the name plus the layer's own timing. */
 .szl__sequence-preview-layer.is-incoming.is-dip-black > video,
-.szl__sequence-preview-layer.is-incoming.is-dip-white > video {
+.szl__sequence-preview-layer.is-incoming.is-dip-white > video,
+.szl__sequence-preview-layer.is-incoming.is-dip-black > .pres-layer,
+.szl__sequence-preview-layer.is-incoming.is-dip-white > .pres-layer {
   animation-name: szl-xf-dip-media;
   animation-duration: inherit;
   animation-delay: inherit;
@@ -1999,7 +2183,7 @@
   cursor: not-allowed;
 }
 .szl__reel-play:focus-visible {
-  outline: 2px solid var(--accent-border);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 .szl__reel-mute {

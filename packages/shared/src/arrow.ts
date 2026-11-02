@@ -250,6 +250,20 @@ function resolveArrowStyleParams(version: number | undefined): ArrowStyleParams 
   return ARROW_STYLE_VERSIONS[resolved] ?? ARROW_STYLE_VERSIONS[ARROW_STYLE_VERSION_LEGACY]!;
 }
 
+/** Endpoints of the `bar` end style: a crossbar square to the stem,
+ *  the head's width long, centred ON `to`. (The `line` end draws the
+ *  same crossbar at the head's BASE instead, pulled back from the tip.)
+ *  For the tail of a double-ended arrow pass the tail geometry — the one
+ *  computed with `from` and `to` swapped. Normalized, like the geometry. */
+export function arrowBarEndpoints(geom: ArrowGeometry): { left: Point; right: Point } {
+  const dx = geom.baseLeft.x - geom.baseCenter.x;
+  const dy = geom.baseLeft.y - geom.baseCenter.y;
+  return {
+    left: { x: geom.to.x + dx, y: geom.to.y + dy },
+    right: { x: geom.to.x - dx, y: geom.to.y - dy }
+  };
+}
+
 /**
  * Compute the smart-arrow geometry for the given inputs. Pure
  * function — no globals, no allocation beyond the returned object.
@@ -376,6 +390,22 @@ export function computeArrowGeometry(input: ArrowInput): ArrowGeometry {
   };
 }
 
+/** Natural (unscaled) dash + gap lengths for a patterned stroke, in
+ *  the stroke's own pixel space. Every patterned annotation stroke —
+ *  an arrow stem (`computeStemDashArray`) and a shape outline
+ *  (`computeShapeStrokeDashArray`) — starts from these, so a dashed
+ *  arrow and a dashed box share one rhythm. Both are multiples of the
+ *  stroke width, and the stroke width comes off `annotationBasisPx`,
+ *  so the pattern scales with the annotation ladder. */
+export function naturalStrokeDash(
+  style: "dashed" | "dotted",
+  strokeWidthPx: number
+): { dash: number; gap: number } {
+  return style === "dotted"
+    ? { dash: strokeWidthPx * 0.01, gap: strokeWidthPx * 1.8 }
+    : { dash: strokeWidthPx * 4, gap: strokeWidthPx * 2 };
+}
+
 /**
  * Dash pattern for an arrow stem of a given pixel length, scaled so
  * the line starts and ends on a complete dash on both ends. Returns
@@ -425,8 +455,7 @@ export function computeStemDashArray(
 ): string | null {
   if (style === "solid") return null;
   // Natural dash/gap proportions — preserved through the scale.
-  const naturalDash = style === "dotted" ? strokeWidthPx * 0.01 : strokeWidthPx * 4;
-  const naturalGap = style === "dotted" ? strokeWidthPx * 1.8 : strokeWidthPx * 2;
+  const { dash: naturalDash, gap: naturalGap } = naturalStrokeDash(style, strokeWidthPx);
   const naturalCycle = naturalDash + naturalGap;
   // Degenerate: zero / sub-cycle stem. One dash spans the whole line
   // (effectively solid). Caller still gets a finite dasharray so the

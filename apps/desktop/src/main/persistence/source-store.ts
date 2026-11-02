@@ -1,3 +1,4 @@
+import { cameraDirectory, moveCameraDirectory } from "../recording/camera-track-store";
 // Source-store — the only writer of <userData>/captures/. Every
 // captured PNG flows through here. The plan §"Cross-cutting primitives"
 // names this as the single ownership seam for the source-immutability
@@ -15,9 +16,9 @@ import { lstat, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "no
 import { tmpdir } from "node:os";
 import { dirname, extname, join } from "node:path";
 import { nanoid } from "nanoid";
-import sharp from "sharp";
 
 import { deletePendingSourcesForCapture } from "./pending-source-store";
+import { moveFileWithExdevFallback } from "./cross-device-move";
 import {
   getCacheLayerSourcePath,
   getCacheRoot,
@@ -27,6 +28,10 @@ import {
 } from "./paths";
 import { getMainLogger } from "../log";
 import { TRASH_RETENTION_DAYS } from "./trash-retention";
+import {
+  forwardDerivedCacheCleanup,
+  withDerivedCacheCleanup
+} from "./derived-cache-gate";
 
 const log = getMainLogger("pwrsnap:source-store");
 
@@ -42,67 +47,12 @@ export type StoredSource = {
 };
 
 /**
- * Take a freshly-captured PNG (path to a temp file the screencapture
- * CLI wrote) and persist it under `<capturesRoot>/<id>.png`. By
- * default that's `~/Documents/PwrSnap/<id>.png` — see paths.ts for why.
- * Under `PWRSNAP_DATA_ROOT` override mode the same flat layout applies
- * relative to `<root>/captures/`. No yyyy/mm subdirectories: filenames
- * are nanoid-shaped, sort fine in Finder by mtime, and the DB indexes
- * captured_at — the file system is asked only "give me this exact
- * path", not "list everything from May 2026."
- *
- * Returns the immutable storage record. Hashes via SHA-256 so the
- * row carries a content-addressable identifier; identical bytes are
- * allowed to coexist as separate captures (see migration 0021).
- *
- * Uses sharp to read width/height in one pass while we already have
- * the buffer in flight; this saves a second decode in the capture hot
- * path (latency budget for ⌘⇧P is tight).
- */
-export async function putCaptureSource(tempPath: string): Promise<StoredSource> {
-  const id = nanoid(16);
-  const buf = await readFile(tempPath);
-
-  const sha256 = createHash("sha256").update(buf).digest("hex");
-  const meta = await sharp(buf).metadata();
-  const widthPx = meta.width ?? 0;
-  const heightPx = meta.height ?? 0;
-  if (widthPx === 0 || heightPx === 0) {
-    throw new Error(`source-store: failed to read PNG dimensions from ${tempPath}`);
-  }
-
-  const dir = getCapturesRoot();
-  await mkdir(dir, { recursive: true });
-  const srcPath = join(dir, `${id}.png`);
-
-  // This raw rename intentionally continues to surface EXDEV until the shared
-  // durable persistence-move helper is wired here. Node does not fall back to
-  // copy+unlink, and Windows temp/Documents commonly live on different drives.
-  await rename(tempPath, srcPath);
-
-  // debug-level: this fires once per capture, including 100k× under
-  // the dev seeder. Production can re-enable via the logger's level
-  // override; a single ⌘⇧P capture is logged elsewhere by the
-  // capture handlers' "capture persisted" line at info.
-  log.debug("stored capture source", { id, srcPath, byteSize: buf.length, widthPx, heightPx });
-
-  return {
-    id,
-    srcPath,
-    sha256,
-    byteSize: buf.length,
-    widthPx,
-    heightPx
-  };
-}
-
-/**
  * Take an existing file (a video container the recorder wrote, a copy
  * of an imported asset, …) and adopt it as a capture source. Image
- * captures keep going through `putCaptureSource` so the sharp-based
- * dim probe stays on the screenshot hot path; this variant is for
- * any source whose dimensions are known upstream (the recorder
- * reports the recording rect; importers read their own metadata).
+ * captures do not come through here: they are packed into v2 bundles by
+ * `persistCaptureFromTempV2` (bundle-store.ts). This is for any source
+ * whose dimensions are known upstream (the recorder reports the
+ * recording rect; importers read their own metadata).
  *
  * Extension is taken from `tempPath` so the on-disk name reflects
  * the actual container — `<id>.mp4` for video, `<id>.png` for image
@@ -118,10 +68,9 @@ export async function adoptExistingFileAsSource(
   const buf = await readFile(tempPath);
   const sha256 = createHash("sha256").update(buf).digest("hex");
 
-  // Width/height are video-context-only here. Image dim probing
-  // lives in `putCaptureSource`; for adopted files (video, future
-  // imports) the caller passes the right values when persisting the
-  // metadata row. Returning 0/0 makes any downstream code that
+  // Width/height are video-context-only here. For adopted files
+  // (video, future imports) the caller passes the right values when
+  // persisting the metadata row. Returning 0/0 makes any downstream code that
   // requires real dims fail loud.
   const byteSize = buf.length;
   const ext = extname(tempPath).toLowerCase() || ".bin";
@@ -129,7 +78,7 @@ export async function adoptExistingFileAsSource(
   const dir = outputDir;
   await mkdir(dir, { recursive: true });
   const srcPath = join(dir, `${id}${ext}`);
-  await rename(tempPath, srcPath);
+  await moveFileWithExdevFallback(tempPath, srcPath);
 
   log.debug("adopted source file", { id, srcPath, byteSize, extension: ext });
 
@@ -398,10 +347,13 @@ export async function moveSourceToTrash(srcPath: string, captureId: string): Pro
   await mkdir(trashRoot, { recursive: true });
   const trashPath = join(trashRoot, `${captureId}${extname(srcPath)}`);
   if (!existsSync(srcPath)) {
+    await moveCameraDirectory(srcPath, trashPath, captureId);
     log.warn("trash move: source missing, nothing to move", { srcPath, captureId });
     return;
   }
-  await rename(srcPath, trashPath);
+  await moveFileWithExdevFallback(srcPath, trashPath);
+  try { await moveCameraDirectory(srcPath, trashPath, captureId); }
+  catch (error) { await moveFileWithExdevFallback(trashPath, srcPath); throw error; }
 }
 
 /**
@@ -415,11 +367,14 @@ export async function restoreSourceFromTrash(captureId: string, srcPath: string)
   const trashRoot = getTrashRoot();
   const trashPath = join(trashRoot, `${captureId}${extname(srcPath)}`);
   if (!existsSync(trashPath)) {
+    await moveCameraDirectory(trashPath, srcPath, captureId);
     log.warn("trash restore: trash file missing", { trashPath, captureId });
     return;
   }
   await mkdir(dirname(srcPath), { recursive: true });
-  await rename(trashPath, srcPath);
+  await moveFileWithExdevFallback(trashPath, srcPath);
+  try { await moveCameraDirectory(trashPath, srcPath, captureId); }
+  catch (error) { await moveFileWithExdevFallback(srcPath, trashPath); throw error; }
 }
 
 /**
@@ -431,7 +386,7 @@ export async function restoreSourceFromTrash(captureId: string, srcPath: string)
 export async function purgeOneFromTrash(captureId: string, srcPath: string): Promise<void> {
   const trashRoot = getTrashRoot();
   const trashPath = join(trashRoot, `${captureId}${extname(srcPath)}`);
-  if (!existsSync(trashPath)) return;
+  await rm(cameraDirectory(trashPath, captureId), { recursive: true, force: true });
   await rm(trashPath, { force: true });
 }
 
@@ -449,14 +404,22 @@ export async function purgeOneFromTrash(captureId: string, srcPath: string): Pro
  * file itself.
  */
 export async function purgeCacheForCapture(captureId: string): Promise<void> {
-  const cacheRoot = getCacheRoot();
-  const imageDir = join(cacheRoot, captureId);
-  const videoDir = join(cacheRoot, "video", captureId);
-  await Promise.allSettled([
-    rm(imageDir, { recursive: true, force: true }),
-    rm(videoDir, { recursive: true, force: true }),
-    deletePendingSourcesForCapture(captureId)
-  ]);
+  const forwarded = forwardDerivedCacheCleanup({ operation: "purge", captureId });
+  if (forwarded !== null) return forwarded;
+  // Through the gate: a playback rendition being remuxed for this capture
+  // publishes by `rename`, which would otherwise land after these `rm`s and
+  // recreate the directory — an orphan no later purge can reach, because the
+  // capture row is gone by then.
+  await withDerivedCacheCleanup({ captureId }, async () => {
+    const cacheRoot = getCacheRoot();
+    const imageDir = join(cacheRoot, captureId);
+    const videoDir = join(cacheRoot, "video", captureId);
+    await Promise.allSettled([
+      rm(imageDir, { recursive: true, force: true }),
+      rm(videoDir, { recursive: true, force: true }),
+      deletePendingSourcesForCapture(captureId)
+    ]);
+  });
 }
 
 /**
@@ -491,7 +454,7 @@ export async function sweepTrash(expiredCaptureIds: string[]): Promise<{ removed
     try {
       const stat = statSync(trashPath);
       if (stat.mtimeMs < cutoffMs) {
-        await rm(trashPath, { force: true });
+        await rm(trashPath, { force: true, recursive: name.endsWith(".camera") });
         removed += 1;
       }
     } catch (err) {

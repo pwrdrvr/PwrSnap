@@ -14,9 +14,9 @@
 
   <!-- disable-library-validation: needed because of `sharp`, NOT because of
        `better-sqlite3`. PwrAgnt also ships better-sqlite3 and does NOT need
-       this entitlement — electron-builder rebuilds and re-signs the
-       better-sqlite3 .node file with our Developer ID during packaging, so
-       library validation is satisfied for the SQLite path.
+       this entitlement — electron-builder re-signs the better-sqlite3 .node
+       prebuilds with our Developer ID during packaging, so library
+       validation is satisfied for the SQLite path.
 
        Sharp is two-layer: the JS↔C++ bridge `sharp.node` (which DOES get
        re-signed by electron-builder), plus a libvips-cpp.42.x.dylib that
@@ -32,6 +32,32 @@
        buildout plan §"Bundle Layout & Signing" already specifies this as
        the long-term shape; we're only deferring it for v0.0.1 velocity. -->
   <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+
+  <!-- Resource access under the Hardened Runtime.
+
+       An Info.plist usage string alone is NOT enough for a hardened,
+       non-sandboxed app: the runtime denies the device before TCC is
+       ever consulted, so the user never sees a prompt and the capture
+       just yields silence. Both usage strings have shipped in
+       electron-builder.yml's `mac.extendInfo` since the Fast Video
+       Capture work (NSMicrophoneUsageDescription,
+       NSCameraUsageDescription) while these two entitlements did not,
+       which means microphone recording could not have worked in any
+       signed release build — only in unsigned local dev, where the
+       hardened runtime is not applied. That gap is why the audio work
+       kept being hard to verify.
+
+       audio-input covers BOTH consumers: the PwrSnapRecorder helper
+       (AVCaptureSession, native/recorder/main.swift) and the renderer's
+       getUserMedia level metering. `entitlementsInherit` points at this
+       same file, so helper binaries and renderer processes inherit it.
+
+       System audio is NOT here — it rides the Screen Recording grant
+       via ScreenCaptureKit and needs no device entitlement. -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+  <key>com.apple.security.device.camera</key>
   <true/>
 </dict>
 </plist>

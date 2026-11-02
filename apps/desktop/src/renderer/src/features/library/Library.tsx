@@ -1,4 +1,4 @@
-import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type { FocusEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import {
   createContext,
   memo,
@@ -26,7 +26,8 @@ import type {
   Settings,
   ShortcutPlatform,
   AcpAgentDiscovery,
-  DesktopCodexDiscoverySnapshot
+  DesktopCodexDiscoverySnapshot,
+  EnrichmentRepairOpenRequest
 } from "@pwrsnap/shared";
 import {
   EVENT_CHANNELS,
@@ -34,8 +35,10 @@ import {
   GRID_ZOOM_DEFAULT,
   GRID_ZOOM_MAX,
   GRID_ZOOM_MIN,
+  formatCaptureEditSummary,
   revealInFileManagerLabel,
   resolveSizzleProjectCoverCaptureId,
+  type CaptureEditSummary,
   type SettingsChangedEvent,
   type SizzleProject
 } from "@pwrsnap/shared";
@@ -51,9 +54,9 @@ import {
   appIdentifierDisplayLabel
 } from "../shared/AppIcons";
 import { DeleteConfirm } from "../shared/DeleteConfirm";
+import { PsIcon } from "../shared/PsIcon";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import type { CopyPreset } from "../shared/CopyButton";
-import type { Tool } from "../editor/editor-tools";
 import { useEditorToolState } from "../editor/useEditorToolState";
 import { DEFAULT_BLUR_STYLE, type BlurStyle } from "@pwrsnap/shared";
 import {
@@ -65,7 +68,33 @@ import {
 import type { Capture } from "./captures";
 import { APP_INFO, PROJECT_APP_KEY, groupByDay } from "./captures";
 import { DetailRail } from "./DetailRail";
+import { ContextMenuChoiceRow, ContextSubmenuRow } from "./ContextSubmenu";
+import {
+  captureEditSummaryFor,
+  duplicateChoiceLabels,
+  useCaptureDuplicate,
+  useCaptureFamilies,
+  useFamilyMembers,
+  type DuplicateMode
+} from "./useCaptureDuplicate";
+import {
+  DuplicateJobsContext,
+  DuplicateProgressToasts,
+  DuplicateTileProgress
+} from "./DuplicateProgress";
+import { EnrichmentRepairDialog } from "./enrichment-repair/EnrichmentRepairDialog";
+import {
+  EnrichmentRecoveryToast,
+  EnrichmentRepairToast,
+  RepairSplitBar
+} from "./enrichment-repair/EnrichmentRepairProgress";
+import { repairWindowToken } from "./enrichment-repair/enrichment-repair-model";
+import { useEnrichmentRepairCounts } from "./enrichment-repair/use-enrichment-repair-counts";
+import { useEnrichmentRepairJob } from "./enrichment-repair/use-enrichment-repair-job";
+import { useEnrichmentRecoveryOffer } from "./enrichment-repair/use-enrichment-recovery-offer";
 import { GridCopyPalette } from "./GridCopyPalette";
+import { closeWhenFocusLeaves } from "../shared/close-when-focus-leaves";
+import { primeEditToolbarDock } from "./useEditToolbarDock";
 import { resolveLibraryAiToggleAction } from "./library-ai-toggle";
 import { nextAfterDelete } from "./delete-nav";
 import { DeleteUndoStack } from "./delete-undo-stack";
@@ -122,9 +151,17 @@ import { useGridPinchZoom } from "../../lib/useGridPinchZoom";
 import { registerCaptureUndoFallback } from "../../lib/editMenuBridge";
 import { useStorageSnapshot } from "../../lib/useStorageSnapshot";
 import { useCapturesLocationDisplayState } from "../../lib/useCapturesLocationDisplayState";
+import { useDismissable } from "../../lib/useDismissable";
+import { useMenuNavigation } from "../../lib/useMenuNavigation";
 import { useHotkeys } from "../shared/useHotkeys";
 import { useVideoTrimRange } from "../shared/useVideoTrimRange";
 import { AppMenuBar } from "../shared/AppMenuBar";
+import { WindowControls } from "../shared/WindowControls";
+import {
+  menuBarIsInToolbar,
+  paintsOwnCaptionButtons,
+  rendererPlatform
+} from "../../lib/window-chrome";
 import { LayoutToggleButtons } from "../shared/LayoutToggleButtons";
 import "../shared/LayoutToggleButtons.css";
 import {
@@ -312,9 +349,24 @@ type CaptureContextMenuState = {
   recordId: string;
   isVideo: boolean;
   isTrashed: boolean;
+  /** What a with-edits copy would carry. `null` = unknown, so the
+   *  duplicate rows offer the choice rather than guess. */
+  editSummary: CaptureEditSummary | null;
   x: number;
   y: number;
 };
+
+/** An accelerator IPC this soon after the ⇧⌘D keydown is the same keypress
+ *  (same window as the edit-menu bridge's KEYBOARD_DEDUP_MS). */
+const DUPLICATE_KEY_DEDUP_MS = 250;
+
+/** Room the duplicate submenu needs beside the menu before it flips left. */
+const CAPTURE_CONTEXT_SUBMENU_WIDTH = 236;
+
+/** How long the pointer may sit on another row before an open submenu
+ *  closes. A path from the row to the submenu that clips a neighbouring
+ *  row is still on its way over; one that rests there has left. */
+const CAPTURE_CONTEXT_SUBMENU_CLOSE_DELAY_MS = 300;
 
 const PROJECT_CONTEXT_MENU_WIDTH = 188;
 const PROJECT_CONTEXT_MENU_HEIGHT = 70;
@@ -361,10 +413,11 @@ const INITIAL_COPY_PULSES: Record<CopyPreset, number> = {
  * Per-cell cart checkbox. Self-subscribes to the cart via context so a
  * cart toggle re-renders ONLY the checkboxes, not the enclosing cells
  * (thumbnail, app tag, etc.) or the whole virtualized grid. Dispatches
- * `cart:toggle` directly. The hover-reveal, the corner scrim that makes
- * the unchecked box legible on light thumbnails, and the collected-cell
- * accent ring are pure CSS (`.psl__cell:hover .psl__cell-cart`,
- * `.psl__cell-cart::before`, `.psl__cell:has(.psl__cell-cart.is-checked)`).
+ * `cart:toggle` directly. The hover-reveal, the dark-fill + hairline ring
+ * (`--psl-ov-*`, shared with every other control drawn over the thumbnail)
+ * that keeps the unchecked box legible on any capture, and the
+ * collected-cell accent ring are pure CSS (`.psl__cell:hover .psl__cell-cart`,
+ * `.psl__cell:has(.psl__cell-cart.is-checked)`).
  * "Selection mode" — every box visible at rest once anything is checked —
  * rides `data-selecting` on `.psl` instead, so it flips on the cart's
  * empty↔non-empty edge rather than on every toggle.
@@ -379,7 +432,7 @@ function CartCellCheckbox({ captureId }: { captureId: string }): React.ReactElem
       role="checkbox"
       aria-checked={inCart}
       aria-label={inCart ? "Remove from project draft" : "Add to project draft"}
-      title={inCart ? "Remove from project draft" : "Add to project draft"}
+      data-tip={inCart ? "Remove from project draft" : "Add to project draft"}
       onClick={(e) => {
         // Stop propagation so checking doesn't also fire the cell's
         // onSelectCell (which would open the capture in Focus mode).
@@ -544,6 +597,12 @@ function VideoCellThumb({
   record: CaptureRecord;
   showPlayButton?: boolean;
 }): React.ReactElement {
+  // Deliberately the capture's own URL, not a `video:playback` resolution.
+  // `PreviewVideoThumb` is `muted` with `pointerEvents: none` and no
+  // controls, so it has no way to become audible and cannot play the wrong
+  // track audibly. Resolving here would also be the one place it is most
+  // harmful: the verb can spawn a source-sized remux, and this renders once
+  // per video cell in a grid.
   return (
     <PreviewVideoThumb
       src={captureSrcUrl(record.id)}
@@ -824,6 +883,9 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
     useState<ProjectContextMenuState | null>(null);
   const [captureContextMenu, setCaptureContextMenu] =
     useState<CaptureContextMenuState | null>(null);
+  // Bumped on every open and close, so an edit-summary read that lands
+  // after the menu was dismissed (or reopened elsewhere) is dropped.
+  const captureContextMenuSeqRef = useRef(0);
   const openedRecordsRef = useRef(openedRecords);
   // `captures:changed` listeners read this ref synchronously. Update it
   // before Focus navigation too: an event can arrive before React commits
@@ -891,6 +953,72 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
     const timer = setTimeout(() => setActionError(null), ACTION_ERROR_MS);
     return () => clearTimeout(timer);
   }, [actionError]);
+  const {
+    prefs: duplicatePrefs,
+    duplicate: duplicateRecord,
+    jobStore: duplicateJobStore,
+    cancelJob: cancelDuplicateJob
+  } = useCaptureDuplicate({
+    onError: (message) => setActionError({ message })
+  });
+  const { families: captureFamilies, liveCountByFamily } = useCaptureFamilies();
+  // Grid filtered to one duplicate family (Family tab ▸ a family, or "Show
+  // in grid"). Not part of LibraryFilterState: it swaps the record source
+  // the way search does, and it clears itself when the sidebar filter or
+  // the search changes — it is a lens on one family, not a facet.
+  const [familyFilterId, setFamilyFilterId] = useState<string | null>(null);
+  const familyFilterMembers = useFamilyMembers(familyFilterId);
+  const familyFilterIdRef = useRef(familyFilterId);
+  familyFilterIdRef.current = familyFilterId;
+  // A sidebar filter change or a typed search is the user asking for a
+  // different slice; the family lens steps aside rather than compose.
+  useEffect(() => {
+    setFamilyFilterId(null);
+  }, [activeFilter]);
+  useEffect(() => {
+    if (searchQuery.trim().length > 0) setFamilyFilterId(null);
+  }, [searchQuery]);
+  /**
+   * ⇧⌘D and File ▸ Duplicate Snap / Edit a Copy act on the selected snap
+   * with the choice remembered from the last time the user was asked
+   * (`library.duplicateWithEdits`); the menus and the inspector's chooser
+   * are where it is asked. Held in a ref so the window keydown effect
+   * does not resubscribe as the preference changes.
+   */
+  const duplicateSelectedRef = useRef<(mode: DuplicateMode) => Promise<void>>(async () => {});
+  duplicateSelectedRef.current = async (mode) => {
+    if (activeFilterRef.current.scope === "trash") return;
+    const recordId = viewRef.current.selectedRecordId;
+    if (recordId === null) return;
+    const record =
+      recordsRef.current.find((candidate) => candidate.id === recordId) ??
+      openedRecordsRef.current.find((candidate) => candidate.id === recordId) ??
+      null;
+    if (record === null || record.deleted_at !== null) return;
+    const summary = await captureEditSummaryFor(record);
+    const offerChoice = summary === null || summary.hasEdits;
+    const withEdits = offerChoice
+      ? duplicatePrefs[record.kind === "video" ? "video" : "image"]
+      : true;
+    await duplicateRecord(record, { mode, withEdits });
+  };
+  const lastDuplicateKeyAtRef = useRef(Number.NEGATIVE_INFINITY);
+  useEffect(
+    () =>
+      subscribe(EVENT_CHANNELS.libraryDuplicate, (payload) => {
+        const evt = payload as { mode?: unknown; viaAccelerator?: unknown } | null;
+        const mode: DuplicateMode = evt?.mode === "edit-copy" ? "edit-copy" : "duplicate";
+        // The accelerator for the keypress the keydown above already handled.
+        if (
+          evt?.viaAccelerator === true &&
+          performance.now() - lastDuplicateKeyAtRef.current < DUPLICATE_KEY_DEDUP_MS
+        ) {
+          return;
+        }
+        void duplicateSelectedRef.current(mode);
+      }),
+    []
+  );
   // A captures-changed broadcast can beat the matching invoke Result back to
   // the renderer. Retain the selected record while its delete is pending so
   // that early broadcast cannot close/advance Focus and report success before
@@ -1013,6 +1141,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   // its "Configure AI" gating reflects the chosen backend's availability — not
   // just Codex's. Mirrors the float-over toast + detail rail, which derive the
   // same label from `enrichmentBackendLabel`.
+  const [customModels, setCustomModels] = useState<Settings["ai"]["customModels"]>([]);
   const [enrichmentProvider, setEnrichmentProvider] = useState<string>("");
   // ACP-agent install status, so an enabled+installed ACP enrichment backend
   // (Kimi/Gemini/Grok/Qwen) counts as "available" even when Codex is absent.
@@ -1026,24 +1155,25 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
     setAiEnabledState(settings.ai.enabled);
     setAiConsentAcceptedAtState(settings.ai.consentAcceptedAt);
     setEnrichmentProvider(settings.ai.defaults.enrichment.provider ?? "");
+    setCustomModels(settings.ai.customModels ?? []);
   }, []);
 
   // Short label ("Codex", "Kimi", "Gemini", …) derived from the selected
-  // provider. providerLabel depends only on the provider string, so the model
-  // half of `enrichmentBackendLabel`'s input is irrelevant here.
+  // provider. Custom selectors use their saved model name and update on rename.
   const enrichmentProviderLabel = useMemo(
-    () => enrichmentBackendLabel({ provider: enrichmentProvider }).providerLabel,
-    [enrichmentProvider]
+    () => enrichmentBackendLabel({ provider: enrichmentProvider }, { customModels }).providerLabel,
+    [enrichmentProvider, customModels]
   );
 
   const enrichmentProviderAvailable = useMemo(
     () =>
       isEnrichmentProviderAvailable({
         provider: enrichmentProvider,
+        customModels,
         codexAvailable,
         acpDiscovery
       }),
-    [enrichmentProvider, codexAvailable, acpDiscovery]
+    [enrichmentProvider, codexAvailable, acpDiscovery, customModels]
   );
 
   useEffect(() => {
@@ -1060,6 +1190,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
       }
       if (result.ok) {
         setConfirmBeforeTrash(result.value.library.confirmBeforeTrash);
+        primeEditToolbarDock(result.value.library.editToolbarDock);
         setCapturesLocationState(result.value.storage?.capturesLocation ?? "documents");
         // `??=` so a codex-change broadcast that raced this read wins.
         lastCodexSettingsRef.current ??= JSON.stringify(result.value.codex);
@@ -1394,7 +1525,53 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
         ? `${formatBytes(storage.summary.sourceCaptures.bytes)} snaps`
         : "calculating storage";
   const [storagePanelOpen, setStoragePanelOpen] = useState(false);
+  // AI repair: the dialog is ours, the job is main's. Closing the dialog
+  // while the job runs leaves its progress toast in the lower-left stack.
+  // A request (from the rail, Settings, or the back-online toast) opens it
+  // on set up, configured as asked; a new one re-mounts it.
+  const [enrichmentRepair, setEnrichmentRepair] = useState<{
+    key: number;
+    request: EnrichmentRepairOpenRequest | undefined;
+  } | null>(null);
+  const enrichmentRepairOpen = enrichmentRepair !== null;
+  const { job: enrichmentRepairJob, setJob: setEnrichmentRepairJob } = useEnrichmentRepairJob();
+  const enrichmentRepairCounts = useEnrichmentRepairCounts();
+  const openEnrichmentRepairWith = useCallback((request: EnrichmentRepairOpenRequest | undefined) => {
+    setEnrichmentRepair((current) => ({ key: (current?.key ?? 0) + 1, request }));
+  }, []);
+  const openEnrichmentRepair = useCallback(() => openEnrichmentRepairWith(undefined), [openEnrichmentRepairWith]);
+  const openFailedEnrichmentRepair = useCallback(
+    () => openEnrichmentRepairWith({ statuses: ["failed"], window: "all" }),
+    [openEnrichmentRepairWith]
+  );
+  // Settings → AI Features asks over a latched channel (main sends once,
+  // after load); this is its only subscriber.
+  useEffect(
+    () =>
+      subscribe(EVENT_CHANNELS.libraryOpenEnrichmentRepair, (payload) => {
+        openEnrichmentRepairWith(
+          typeof payload === "object" && payload !== null ? (payload as EnrichmentRepairOpenRequest) : undefined
+        );
+      }),
+    [openEnrichmentRepairWith]
+  );
+  // The caption model answered again after captures failed to reach it.
+  const { offer: enrichmentRecovery, dismiss: dismissEnrichmentRecovery } = useEnrichmentRecoveryOffer();
   const storagePanelRef = useRef<HTMLDivElement | null>(null);
+  const storageTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const storagePopoverRef = useRef<HTMLDivElement | null>(null);
+  // Escape closes the popover and ONLY the popover. Its old window-bubble
+  // listener did not stop the event, so the Library's own Escape handler
+  // (same target, same phase) ran as well and collapsed the pinned rail —
+  // or, in Focus, closed the editor. Focus goes back to the trigger, and Tab
+  // out past the popover's last button closes it.
+  useDismissable({
+    open: storagePanelOpen,
+    onDismiss: () => setStoragePanelOpen(false),
+    surfaceRef: storagePopoverRef,
+    triggerRef: storageTriggerRef,
+    dismissOnFocusLeave: true
+  });
   const appCacheBytes =
     (storage.snapshot?.chromiumHttpCache.bytes ?? 0) +
     (storage.snapshot?.chromiumCodeCache.bytes ?? 0);
@@ -1453,6 +1630,14 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   // (220) + a pinned rail (360) would otherwise leave the Stage near-zero
   // width. See `railEffectivePinned`.
   const isWindowVeryNarrow = isToolbarMinimal;
+  // Column-shedding added for the 480px minimum reads the SAME breakpoints
+  // against the content width alone. The Windows/Linux in-toolbar menu
+  // takes no width from the columns, so the toolbar tier would have parked
+  // Reel's nav at any window up to 1324px there.
+  const layoutTierRank = TOOLBAR_TIER_RANK[useToolbarTier({ for: "layout" })];
+  const isLayoutNarrow = layoutTierRank >= TOOLBAR_TIER_RANK.narrow;
+  const isLayoutSmall = layoutTierRank >= TOOLBAR_TIER_RANK.small;
+  const isLayoutVeryNarrow = layoutTierRank >= TOOLBAR_TIER_RANK.minimal;
 
   // Development instances identify their checkout branch in the footer;
   // packaged builds keep showing the app version. Both are stable at runtime,
@@ -1495,14 +1680,9 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
       if (root !== null && event.target instanceof Node && root.contains(event.target)) return;
       setStoragePanelOpen(false);
     }
-    function closeOnEscape(event: KeyboardEvent): void {
-      if (event.key === "Escape") setStoragePanelOpen(false);
-    }
     window.addEventListener("pointerdown", closeOnOutsidePointer);
-    window.addEventListener("keydown", closeOnEscape);
     return () => {
       window.removeEventListener("pointerdown", closeOnOutsidePointer);
-      window.removeEventListener("keydown", closeOnEscape);
     };
   }, [refreshStorage, storagePanelOpen]);
 
@@ -1864,8 +2044,24 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   // so search ∩ trash is empty by construction; the input is disabled in
   // trash to make that clear.
   const sourceAppState = includeFetchActive ? sourceAppRows[sourceAppFacetKey] : undefined;
+  const familyFilterActive = familyFilterId !== null && !isTrashView;
+  // The member list is re-read only when the family itself changes, so an
+  // edit to a member leaves its row stale. Prefer the copy the Library
+  // already keeps live (the paged window, or a retained opened record).
+  const familyFilterRows = useMemo(() => {
+    if (familyFilterMembers === null) return null;
+    const live = new Map<string, CaptureRecord>();
+    for (const record of records) live.set(record.id, record);
+    for (const record of openedRecords) live.set(record.id, record);
+    return familyFilterMembers
+      .map((member) => live.get(member.id) ?? member)
+      .filter((record) => record.deleted_at === null)
+      .sort((a, b) => b.captured_at.localeCompare(a.captured_at));
+  }, [familyFilterMembers, records, openedRecords]);
   const universeRecordsRaw = isTrashView
     ? trashRecords
+    : familyFilterActive && familyFilterRows !== null
+    ? familyFilterRows
     : isSearchActive
     ? searchState.rows
     : sourceAppState?.bundleKey === sourceAppBundleKey
@@ -1892,12 +2088,14 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   // The include-mode source-app fetch drains its own cursor to
   // completion, so there is nothing left to page. Exclude mode rides
   // the normal live keyset window and keeps paginating.
-  const gridHasMore = isSearchActive ? false : includeFetchActive ? false : hasMore;
+  const gridHasMore =
+    familyFilterActive || isSearchActive ? false : includeFetchActive ? false : hasMore;
   // Search never paginates (gridHasMore is false), so it must not drive
   // the grid's bottom "Loading more…" footer — that label would be a
   // lie (we're re-running a query, not fetching the next page). The
   // topbar count badge already shows "searching…" for search progress.
-  const gridIsLoadingMore = isSearchActive
+  const gridIsLoadingMore =
+    familyFilterActive || isSearchActive
     ? false
     : includeFetchActive
       ? sourceAppState?.loading ?? false
@@ -1920,7 +2118,9 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   const includeFacetActive = sourceAppFacet.mode === "include" && appFacetActive;
   const gridProjects = useMemo(
     () => {
-      if (!visibleTypes.projects || isTrashView || includeFacetActive) return [];
+      if (!visibleTypes.projects || isTrashView || includeFacetActive || familyFilterActive) {
+        return [];
+      }
       if (!isSearchActive) return sizzleProjects;
       return sizzleProjects.filter((project) =>
         sizzleProjectMatchesQuery(project, searchQuery)
@@ -1932,7 +2132,8 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
       includeFacetActive,
       isSearchActive,
       sizzleProjects,
-      searchQuery
+      searchQuery,
+      familyFilterActive
     ]
   );
   const fixtureBacking = useMemo(
@@ -2324,10 +2525,16 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   const videoTrim = useVideoTrimRange({
     captureId: selectedVideo === null ? null : selectedRecord!.id,
     durationSec: selectedVideo?.durationSec ?? 0,
-    persistedRange: selectedVideo?.defaultRange ?? null
+    persistedRange: selectedVideo?.defaultRange ?? null,
+    // The stage edits cuts, and an agent's cut (MCP or chat) arrives
+    // here through `events:captures:changed`.
+    persist: "edit",
+    persistedSegments: selectedVideo?.segments ?? null
   });
   const videoTrimRangeRef = useRef(videoTrim.range);
   videoTrimRangeRef.current = videoTrim.range;
+  const videoTrimSegmentsRef = useRef(videoTrim.exportSegments);
+  videoTrimSegmentsRef.current = videoTrim.exportSegments;
   // Auto-collapse the grid right rail to its hover-pop activity bar when the
   // window is narrow, so the grid keeps its width (the cart/inspector becomes
   // "on mouse over only"). Focus/reel normally keep the rail at the user's
@@ -2335,9 +2542,58 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   // point — but at a VERY narrow window even they collapse it, otherwise the
   // 360px rail + sidebar squeeze the Stage to near-nothing. The manual layout
   // toggle still wins whenever there's room.
+  //
+  // Reel sheds the rail one tier earlier than Focus. Its filmstrip eats
+  // ~145px of height, so at 641–720 even a nav-less stage beside a pinned
+  // 360px rail (~240px wide × 249px tall at the 480px minimum) cannot hold
+  // the compact edit toolbar without it covering the ←/→ buttons or being
+  // clipped. Reel sheds the nav before the rail — see `leftAutoCollapsed`.
   const railEffectivePinned =
     rightPinned &&
-    !((view.kind === "grid" && isToolbarNarrow) || isWindowVeryNarrow);
+    !(
+      (view.kind === "grid" && isToolbarNarrow) ||
+      (view.kind === "reel" && isLayoutSmall) ||
+      isWindowVeryNarrow
+    );
+  // The left filter nav yields to its 36px spine (hover still peeks it)
+  // when keeping it pinned would starve the mode's content. Layout-only,
+  // like `railEffectivePinned`: `leftPinned` keeps the user's intent and
+  // the nav returns as soon as the window widens.
+  //   • Reel at ≤1024 — the stage + rail are the point. With both pinned
+  //     the stage is `width − 582px`: 220px at an 800px window, where the
+  //     floating edit toolbar wrapped to 196×330 and was clipped out of a
+  //     249px-tall stage.
+  //   • Grid at ≤640 — a 480px window left a 220px pane, and the floating
+  //     copy palette's six video cards need ~330px across. No reflow of
+  //     the palette fits that pane: wrapped to one column it measured
+  //     583px tall in a 394px pane.
+  //   • Focus already hides the nav outright (CSS keyed on data-mode).
+  const leftAutoCollapsed =
+    (view.kind === "reel" && isLayoutNarrow) ||
+    (view.kind === "grid" && isLayoutVeryNarrow);
+  const leftEffectivePinned = leftPinned && !leftAutoCollapsed;
+  // A peek means nothing once the nav is pinned again, and the aside's
+  // mouseleave only hides an UNpinned nav — so a peek opened while
+  // auto-collapsed survived the widen and re-opened, unhovered, over the
+  // content on the next narrow. Drop it whenever the nav re-pins.
+  useEffect(() => {
+    if (leftEffectivePinned) setLeftRevealed(false);
+  }, [leftEffectivePinned]);
+  // The spine's "Show sidebar" can be pressed from the keyboard, and a
+  // peek otherwise closes only on mouseleave. Close it when focus leaves
+  // the spine + panel for good — unless the pointer is still over them,
+  // where mouseleave remains the authority. (Tracked from the same
+  // enter/leave handlers rather than `:hover`, which jsdom mis-reports.)
+  const leftPointerOverRef = useRef(false);
+  const hideLeftOnFocusExit = useCallback(
+    (event: React.FocusEvent<HTMLElement>): void => {
+      if (leftEffectivePinned || leftPointerOverRef.current) return;
+      const next = event.relatedTarget;
+      if (next instanceof Element && next.closest(".psl__left, .psl__left-spine") !== null) return;
+      hideLeft();
+    },
+    [leftEffectivePinned, hideLeft]
+  );
   // Grid rail occupancy is independent of selection so clicking a tile
   // cannot reflow the virtualized grid under the cursor. Use the user's
   // pin intent (`rightPinned`), not `railEffectivePinned`. The latter is
@@ -2488,8 +2744,8 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   // picking "red" in the popover never made the arrow red. Lifting
   // here flows the hook into both surfaces via Stage props.
   //
-  // The hook depends on `captureId` for matching-text affordance
-  // resets. Use the selected record id, sentinel-guarded so the hook
+  // The hook depends on `captureId` to disarm the bag slot on capture
+  // switches. Use the selected record id, sentinel-guarded so the hook
   // is stable when nothing is selected (grid mode).
   const liftedToolState = useEditorToolState({
     captureId: selectedRecordId ?? "__library_no_capture__"
@@ -2605,6 +2861,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   function clearChipRow(): void {
     applyFilterAction({ type: "CLEAR_ALL" });
     setSearchQuery("");
+    setFamilyFilterId(null);
   }
 
   /** Map a click event's modifier keys onto the facet gesture model.
@@ -2792,6 +3049,31 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
     frame?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [view.kind, reelSelectedId]);
 
+  // Tab onto a frame does not select it, so the effect above never
+  // runs, and Chromium will not scroll the filmstrip for it either:
+  // it scrolls a horizontal scroller to a focused child only when the
+  // child is entirely out of view (measured on Chromium 151). A frame
+  // already partly in view stays put when focused, even with 2px
+  // showing. So Tab onto the frame cut off at the filmstrip's right
+  // edge left it and its focus ring about two-thirds hidden.
+  // Keyboard focus only: a mouse press focuses the frame too, and
+  // scrolling it out from under the pointer before mouseup would
+  // move the click onto its neighbour.
+  const revealKeyboardFocusedFrame = useCallback(
+    (event: FocusEvent<HTMLButtonElement>): void => {
+      const frame = event.currentTarget;
+      let keyboard = false;
+      try {
+        keyboard = frame.matches(":focus-visible");
+      } catch {
+        // A selector engine without :focus-visible (jsdom). Leave the
+        // scroll position alone rather than guess the modality.
+      }
+      if (keyboard) frame.scrollIntoView({ block: "nearest", inline: "nearest" });
+    },
+    []
+  );
+
   // Stale-selection fallback: when the live list no longer contains
   // the selected record (e.g. a soft-delete races an open Focus),
   // bail to grid via the reducer's FILTER_CHANGED action.
@@ -2975,11 +3257,15 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
         return;
       }
       if (record.kind !== "video") return;
+      // No `audio`: main fills it from the saved MP4 audio preference —
+      // the same value the grid palette's MP4 toggles write — so ⌘4–⌘6
+      // cannot ship a track the grid shows as off.
       void dispatch("clipboard:copyVideoFile", {
         captureId: record.id,
         format: shortcut.format,
         preset: shortcut.preset,
-        range: videoTrimRangeRef.current
+        range: videoTrimRangeRef.current,
+        segments: videoTrimSegmentsRef.current
       });
     }
   });
@@ -3036,6 +3322,49 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
     cartJumpTargetRef.current = captureId;
   }, [viewDispatch]);
 
+  // Family tab ▸ a member. Fetched by id because the member may be far
+  // outside the loaded keyset window (an original from last month); the
+  // record is retained so the universe holds it, then selected in place —
+  // the grid scrolls to it, Focus/Reel switch to it.
+  const selectFamilyMember = useCallback(
+    (captureId: string): void => {
+      void (async () => {
+        const result = await dispatch("library:byId", { id: captureId });
+        if (!result.ok || result.value === null || result.value.deleted_at !== null) return;
+        retainOpenedRecord(result.value);
+        if (!dayIdGroupsRef.current.flat().includes(captureId) && familyFilterIdRef.current === null) {
+          activeFilterRef.current = initialLibraryFilter;
+          setActiveFilter(initialLibraryFilter);
+          setSearchQuery("");
+        }
+        if (viewRef.current.kind === "grid") {
+          setGridActiveTab("family");
+          viewDispatch({ type: "SELECT_IN_GRID", recordId: captureId }, { history: "replace" });
+          cartJumpTargetRef.current = captureId;
+        } else {
+          viewDispatch({ type: "NAVIGATE", recordId: captureId });
+        }
+      })();
+    },
+    [retainOpenedRecord, viewDispatch]
+  );
+
+  // Family tab ▸ a family: show it in the grid.
+  const filterToFamily = useCallback(
+    (familyId: string): void => {
+      const cur = viewRef.current;
+      if (cur.kind === "focus") {
+        viewDispatch({ type: "CLOSE_FOCUS" });
+      } else if (cur.kind === "reel") {
+        viewDispatch({ type: "TOGGLE_VIEW", to: "grid", fallbackId: null });
+      }
+      setSearchQuery("");
+      setGridActiveTab("family");
+      setFamilyFilterId(familyId);
+    },
+    [viewDispatch]
+  );
+
   useEffect(() => {
     const target = cartJumpTargetRef.current;
     if (target === null || view.kind !== "grid") return;
@@ -3081,6 +3410,16 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
 
       const kind = viewRef.current.kind;
       const usingPrimary = isPrimaryAccel(event, shortcutPlatform);
+
+      // Primary+Shift+D — duplicate the selected snap (the editor's own
+      // Primary+D duplicates a LAYER, and requires no Shift). Stamped so
+      // the File menu's accelerator IPC for this same keypress is dropped.
+      if (usingPrimary && event.shiftKey && !event.altKey && event.key.toLowerCase() === "d") {
+        event.preventDefault();
+        lastDuplicateKeyAtRef.current = performance.now();
+        void duplicateSelectedRef.current("duplicate");
+        return;
+      }
 
       // Primary+[ / +] — Reel-mode scrub aliases for ←/→. Same dispatch,
       // just a second binding so the on-screen scrub hint is honest.
@@ -3310,6 +3649,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
   }
 
   function closeCaptureContextMenu(): void {
+    captureContextMenuSeqRef.current += 1;
     setCaptureContextMenu(null);
   }
 
@@ -3330,19 +3670,32 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
     const isVideo = record.kind === "video";
     // Row count drives only the off-screen clamp; see
     // captureContextMenuHeight.
-    const rows = isTrashView ? 3 : isVideo ? 4 : 8;
+    const rows = isTrashView ? 3 : isVideo ? 6 : 10;
     const position = clampContextMenuPosition(
       event.clientX,
       event.clientY,
       CAPTURE_CONTEXT_MENU_WIDTH,
       captureContextMenuHeight(rows)
     );
-    setCaptureContextMenu({
+    const menu = {
       capture: c,
       recordId: record.id,
       isVideo,
       isTrashed: isTrashView,
       ...position
+    };
+    const seq = ++captureContextMenuSeqRef.current;
+    if (isTrashView) {
+      setCaptureContextMenu({ ...menu, editSummary: null });
+      return;
+    }
+    // The duplicate rows ask "With Edits or Base Image Only?" only when the
+    // snap has edits, so learn that before the menu draws — one local DB
+    // read, never long enough to see — rather than redraw it under the
+    // pointer when the answer lands.
+    void captureEditSummaryFor(record).then((editSummary) => {
+      if (seq !== captureContextMenuSeqRef.current) return;
+      setCaptureContextMenu({ ...menu, editSummary });
     });
   }
 
@@ -4011,9 +4364,10 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
     return record?.id ?? null;
   }, [visible, fixtureBacking]);
 
-  const leftState = leftPinned ? "pinned" : leftRevealed ? "peek" : "collapsed";
+  const leftState = leftEffectivePinned ? "pinned" : leftRevealed ? "peek" : "collapsed";
 
   return (
+    <DuplicateJobsContext.Provider value={duplicateJobStore}>
     <div
       className="psl"
       data-mode={view.kind}
@@ -4051,19 +4405,22 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
         <div className="psl__topbar-l">
           <div className="psl__title">
             <span className="psl__title-mark">
-              <PwrSnapMark size={18} />
+              <PwrSnapMark size={20} decorative />
             </span>
             <PwrSnapWordmark />
           </div>
-          {/* Windows: custom title-bar menu bar (the native one is gone under
-              titleBarStyle:"hidden"). No-op on macOS/Linux. */}
-          {window.pwrsnapApi?.platform === "win32" ? <AppMenuBar /> : null}
+          {/* Windows and Linux: custom title-bar menu bar. Both hide the
+              native title bar (`titleBarStyle: "hidden"`), and with it the
+              menu — Windows because the menu lived in that bar, Linux because
+              a frameless window never builds one (`RootView::SetMenu` returns
+              early on `!has_frame()`). macOS keeps the system menu bar. */}
+          {menuBarIsInToolbar(rendererPlatform()) ? <AppMenuBar /> : null}
           <div className="psl__history" aria-label="Navigation history">
             <button
               type="button"
               className="psl__history-btn"
               aria-label="Back"
-              title="Back"
+              data-tip="Back"
               disabled={navHistory.back.length === 0}
               onClick={goBack}
             >
@@ -4075,7 +4432,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               type="button"
               className="psl__history-btn"
               aria-label="Forward"
-              title="Forward"
+              data-tip="Forward"
               disabled={navHistory.forward.length === 0}
               onClick={goForward}
             >
@@ -4214,7 +4571,8 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                 type="button"
                 className="psl__search-clear"
                 aria-label="Clear search"
-                title="Clear (Esc)"
+                data-tip="Clear search"
+                data-tip-keys="Esc"
                 onClick={() => {
                   setSearchQuery("");
                   searchInputRef.current?.focus();
@@ -4250,7 +4608,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           <button
             className="psl__icon-btn"
             type="button"
-            title="Settings"
+            data-tip="Settings"
             aria-label="Open Settings"
             onClick={() => { void dispatch("settings:open", {}); }}
           >
@@ -4268,7 +4626,11 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           <button
             className="psl__chip-btn psl__capture-btn psl__capture-btn--video"
             type="button"
-            title="Pick a region or window to capture as a video clip"
+            // The fast tooltip, because a tight top bar drops the label and
+            // leaves only the icon.
+            data-tip="Record Video"
+            data-tip-keys={videoCaptureChord.length > 0 ? videoCaptureChord : undefined}
+            data-tip-detail="Pick a region or window to capture as a video clip"
             aria-label="Record Video"
             onClick={() => {
               void dispatch("capture:videoInteractive", {});
@@ -4293,7 +4655,9 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               libraryIsEmpty ? " psl__chip-btn--breathe" : ""
             }`}
             type="button"
-            title="Smart auto-mode · picks region, window, or full screen"
+            data-tip="Quick Capture"
+            data-tip-keys={quickCaptureChord.length > 0 ? quickCaptureChord : undefined}
+            data-tip-detail="Smart auto-mode · picks region, window, or full screen"
             aria-label="Quick Capture"
             onClick={() => {
               void dispatchInteractiveCapture("library.quick_capture", "auto");
@@ -4309,6 +4673,10 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                 : "Quick Capture"}
             </span>
           </button>
+          {/* Linux: a frameless window gets neither traffic lights nor a
+              `titleBarOverlay`, so nobody draws min/max/close but us. Last in
+              the right cluster, which is GNOME's side. */}
+          {paintsOwnCaptionButtons(rendererPlatform()) ? <WindowControls /> : null}
         </div>
       </header>
 
@@ -4318,18 +4686,28 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           triggers a peek. The aside.psl__left below carries the same
           mouse handlers, so the panel stays revealed while the cursor
           is anywhere over it. */}
-      {!leftPinned && (
+      {!leftEffectivePinned && (
         <div
           className="psl__left-spine"
-          onMouseEnter={revealLeft}
-          onMouseLeave={hideLeft}
+          onMouseEnter={() => {
+            leftPointerOverRef.current = true;
+            revealLeft();
+          }}
+          onMouseLeave={() => {
+            leftPointerOverRef.current = false;
+            hideLeft();
+          }}
+          onBlur={hideLeftOnFocusExit}
         >
+          {/* When the window is what collapsed the nav, the user's pin is
+              already set — pinning again would do nothing visible — so the
+              button peeks the panel instead. */}
           <button
             type="button"
             className="psl__left-spine-btn"
-            aria-label="Pin sidebar"
-            title="Pin sidebar"
-            onClick={() => setLeftPinned(true)}
+            aria-label={leftAutoCollapsed ? "Show sidebar" : "Pin sidebar"}
+            data-tip={leftAutoCollapsed ? "Show sidebar" : "Pin sidebar"}
+            onClick={leftAutoCollapsed ? revealLeft : () => setLeftPinned(true)}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M3 6h18M3 12h18M3 18h18" />
@@ -4341,11 +4719,14 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
       <aside
         className="psl__left"
         onMouseEnter={() => {
-          if (!leftPinned) revealLeft();
+          leftPointerOverRef.current = true;
+          if (!leftEffectivePinned) revealLeft();
         }}
         onMouseLeave={() => {
-          if (!leftPinned) hideLeft();
+          leftPointerOverRef.current = false;
+          if (!leftEffectivePinned) hideLeft();
         }}
+        onBlur={hideLeftOnFocusExit}
       >
         <div className="psl__left-section psl__left-section--top">
           <span>Library</span>
@@ -4356,7 +4737,9 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               spine button at `.psl__left-spine` still surfaces when
               the panel is collapsed entirely; both the chip and the
               spine route through `setLeftPinned` so all three entry
-              points stay in sync. */}
+              points stay in sync — except while the window has
+              auto-collapsed the nav, when the pin is already set and
+              the spine only peeks (`revealLeft`). */}
         </div>
         {/* LIBRARY = SCOPE. Radio semantics, exactly one active. */}
         <button
@@ -4365,12 +4748,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           onClick={() => applyFilterAction({ type: "SET_SCOPE", scope: "all" })}
         >
           <span className="psl__nav-icon">
-            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <rect x="3" y="3" width="7" height="7" />
-              <rect x="14" y="3" width="7" height="7" />
-              <rect x="3" y="14" width="7" height="7" />
-              <rect x="14" y="14" width="7" height="7" />
-            </svg>
+            <PsIcon name="all" size={16} />
           </span>
           <span className="psl__nav-label">All Captures</span>
           <span className="psl__nav-count">{totalItems}</span>
@@ -4381,10 +4759,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           onClick={() => applyFilterAction({ type: "SET_SCOPE", scope: "today" })}
         >
           <span className="psl__nav-icon">
-            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <circle cx="12" cy="12" r="9" />
-              <path d="M12 7v5l3 2" />
-            </svg>
+            <PsIcon name="today" size={16} />
           </span>
           <span className="psl__nav-label">Today</span>
           <span className="psl__nav-count">{todayCount}</span>
@@ -4395,10 +4770,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           onClick={() => applyFilterAction({ type: "SET_SCOPE", scope: "trash" })}
         >
           <span className="psl__nav-icon">
-            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <path d="M5 4l1 16h12l1-16" />
-              <path d="M9 4V2h6v2" />
-            </svg>
+            <PsIcon name="trash" size={16} />
           </span>
           <span className="psl__nav-label">Trash</span>
           <span className="psl__nav-count">{trashTotal}</span>
@@ -4410,33 +4782,17 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
             {
               key: "images" as const,
               label: "Images",
-              icon: (
-                <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
-                  <rect x="3" y="5" width="18" height="14" rx="2" />
-                  <circle cx="9" cy="11" r="1.4" fill="currentColor" />
-                  <path d="m21 17-5-5-7 7" />
-                </svg>
-              )
+              icon: <PsIcon name="images" size={16} />
             },
             {
               key: "videos" as const,
               label: "Videos",
-              icon: (
-                <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
-                  <rect x="3" y="6" width="14" height="12" rx="1.5" />
-                  <path d="m17 10 4-2v8l-4-2z" fill="currentColor" />
-                </svg>
-              )
+              icon: <PsIcon name="videos" size={16} />
             },
             {
               key: "projects" as const,
               label: "Projects",
-              icon: (
-                <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
-                  <rect x="3" y="6" width="14" height="12" rx="2" />
-                  <path d="m17 10 4-2v8l-4-2z" fill="currentColor" />
-                </svg>
-              )
+              icon: <PsIcon name="projects" size={16} />
             }
           ] as const
         ).map(({ key, label, icon }) => {
@@ -4481,9 +4837,9 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                   modifier: facetModifier(e)
                 });
               }}
-              title={
+              data-tip={
                 excluded
-                  ? `${label} is excluded · ${altModifierLabel}-click to clear the exclusion`
+                  ? `${label} is excluded`
                   : selected
                     ? isSoleType
                       ? `Click to clear the ${label.toLowerCase()} filter`
@@ -4491,6 +4847,9 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                     : typeFacetActive
                       ? `Add ${label.toLowerCase()} to the filter`
                       : `Show only ${label.toLowerCase()}`
+              }
+              data-tip-detail={
+                excluded ? `${altModifierLabel}-click to clear the exclusion` : undefined
               }
             >
               <span className="psl__nav-icon">{icon}</span>
@@ -4506,7 +4865,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                   role="button"
                   tabIndex={-1}
                   className="psl__facet-only"
-                  title={`Show only ${label.toLowerCase()}`}
+                  data-tip={`Show only ${label.toLowerCase()}`}
                   aria-label={`Show only ${label.toLowerCase()}`}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -4553,17 +4912,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           aria-label="Create a new Sizzle Reel"
         >
           <span className="psl__nav-icon">
-            <svg
-              viewBox="0 0 24 24"
-              width="11"
-              height="11"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-            >
-              <path d="M12 5v14M5 12h14" />
-            </svg>
+            <PsIcon name="plus" size={16} />
           </span>
           <span className="psl__nav-label">New Sizzle Reel</span>
         </button>
@@ -4609,17 +4958,24 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                   modifier: facetModifier(e)
                 });
               }}
-              title={
+              data-tip={
                 rowState === "excluded"
-                  ? `${name} is excluded · ${altModifierLabel}-click to stop excluding it`
+                  ? `${name} is excluded`
                   : isSoleInclude
-                    ? `Click to clear the ${name} filter · ${primaryModifierLabel}-click to add another app`
+                    ? `Click to clear the ${name} filter`
+                    : `Show only ${name}`
+              }
+              data-tip-detail={
+                rowState === "excluded"
+                  ? `${altModifierLabel}-click to stop excluding it`
+                  : isSoleInclude
+                    ? `${primaryModifierLabel}-click to add another app`
                     : excludeModeActive
                       ? // ⌘-click keeps the facet's polarity, so while the
                         // facet is excluding it ADDS to the exclusion —
                         // promising "⌘-click to add" here would be a lie.
-                        `Show only ${name} · ${altModifierLabel}-click to also exclude it`
-                      : `Show only ${name} · ${primaryModifierLabel}-click to add · ${altModifierLabel}-click to exclude`
+                        `${altModifierLabel}-click to also exclude it`
+                      : `${primaryModifierLabel}-click to add\n${altModifierLabel}-click to exclude`
               }
             >
               <span className="psl__nav-icon">
@@ -4639,7 +4995,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                   role="button"
                   tabIndex={-1}
                   className="psl__facet-only"
-                  title={`Show only ${name}`}
+                  data-tip={`Show only ${name}`}
                   aria-label={`Show only ${name}`}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -4674,8 +5030,29 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
             what you're looking at, so scrolling them away defeats the
             purpose. Hidden entirely for the neutral filter so the
             default Library gains no chrome. */}
-        {filterChips.length > 0 && (
+        {(filterChips.length > 0 || familyFilterActive) && (
           <div className="psl__chips" role="status" aria-label="Active search and filters">
+            {familyFilterActive ? (
+              <span className="psl__chip" data-chip-kind="family">
+                <span className="psl__chip-glyph psl__chip-glyph--family" aria-hidden="true">
+                  ⧉
+                </span>
+                <span className="psl__chip-label">
+                  Family · {familyFilterRows?.length ?? "…"}
+                </span>
+                <button
+                  type="button"
+                  className="psl__chip-x"
+                  title="Show every snap"
+                  aria-label="Remove filter Family"
+                  onClick={() => setFamilyFilterId(null)}
+                >
+                  <svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round">
+                    <path d="M6 6l12 12M18 6 6 18" />
+                  </svg>
+                </button>
+              </span>
+            ) : null}
             {filterChips.map((chip) => {
               const isSearch = chip.kind === "search";
               const described = chip.negated ? `not ${chip.label}` : chip.label;
@@ -4713,7 +5090,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                   <button
                     type="button"
                     className="psl__chip-x"
-                    title={isSearch ? `Clear search ${described}` : `Remove ${described}`}
+                    data-tip={isSearch ? `Clear search ${described}` : `Remove ${described}`}
                     aria-label={
                       isSearch ? `Clear search ${described}` : `Remove filter ${described}`
                     }
@@ -4799,7 +5176,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               // showing/hiding or collapsing (it claims/releases its column)
               // is the main one. `railDataRight` already folds in rail
               // visibility + the pinned/collapsed width.
-              layoutSignal={`${view.kind}|${leftPinned ? "lp" : "lc"}|${
+              layoutSignal={`${view.kind}|${leftEffectivePinned ? "lp" : "lc"}|${
                 railShowing ? "rail" : "norail"
               }|${railDataRight ?? "none"}`}
               selectedRecordId={selectedRecordId}
@@ -4820,6 +5197,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               onDontAskAgainTrash={suppressTrashConfirm}
               restoreCaptureAction={restoreCaptureAction}
               purgeCaptureAction={purgeCaptureAction}
+              familySizes={liveCountByFamily}
             />
           </SurfaceVisibleContext.Provider>
         </div>
@@ -4845,6 +5223,16 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
             // and in particular no second copy path (see
             // clipboard-copy.ts).
             onEdit={() => onSelectCell(captureContextMenu.capture, "edit-cta")}
+            onDuplicate={(mode, withEdits) => {
+              const record = fixtureBacking.recordFor(captureContextMenu.capture.id);
+              if (record === null) return;
+              void duplicateRecord(record, {
+                mode,
+                // No edits: the two copies are the same, so take the whole bundle.
+                withEdits: withEdits ?? true,
+                remember: withEdits !== null
+              });
+            }}
             onCopyPreset={(preset) => {
               copyImagePreset(captureContextMenu.recordId, preset);
               setCopyPulses((current) => ({ ...current, [preset]: current[preset] + 1 }));
@@ -4917,6 +5305,8 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           onBlurStyleChange={setBlurStyle}
           onSelectionChange={setSelectedLayerIds}
           onLayersApi={setLayersApi}
+          selectedLayerIds={selectedLayerIds}
+          layersApi={layersApi}
           {...(view.kind === "reel"
             ? {
                 aboveStageSlot: (
@@ -4971,6 +5361,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                                     (c.hasAlpha ? " psl__frame--alpha" : "")
                                   }
                                   onClick={() => onSelectFrame(c)}
+                                  onFocus={revealKeyboardFocusedFrame}
                                 >
                                   <CellThumb
                                     capture={c}
@@ -4979,7 +5370,11 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                                     projectCoverRecord={coverRecord}
                                     width={140}
                                   />
-                                  <span className="psl__frame-num">{c.time}</span>
+                                  <DuplicateTileProgress sourceId={record?.id} />
+                                  <span className="psl__frame-num">
+                                    <FamilyGlyph record={record} familySizes={liveCountByFamily} />
+                                    {c.time}
+                                  </span>
                                   <span className="psl__frame-app">
                                     <AppIcon app={c.app} size={8} name={appLabels[c.app]} bundleId={c.bundleId ?? undefined} />
                                   </span>
@@ -4990,26 +5385,21 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                                           role="button"
                                           tabIndex={-1}
                                           className="psl__frame-trash psl__frame-trash--restore"
-                                          title="Restore"
+                                          data-tip="Restore from Trash"
                                           aria-label="Restore from Trash"
                                           onClick={(e) => restoreCaptureAction(c.id, e)}
                                         >
-                                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <path d="M3 12a9 9 0 1 0 3-6.7" />
-                                            <path d="M3 4v5h5" />
-                                          </svg>
+                                          <PsIcon name="restore" size={12} line={1.2} />
                                         </span>
                                         <span
                                           role="button"
                                           tabIndex={-1}
                                           className="psl__frame-trash psl__frame-trash--purge"
-                                          title="Delete permanently"
+                                          data-tip="Delete permanently"
                                           aria-label="Delete permanently"
                                           onClick={(e) => purgeCaptureAction(c.id, e)}
                                         >
-                                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-                                          </svg>
+                                          <PsIcon name="purge" size={12} line={1.2} />
                                         </span>
                                       </span>
                                     ) : (
@@ -5026,13 +5416,11 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
                                             role="button"
                                             tabIndex={-1}
                                             className="psl__frame-trash"
-                                            title="Move to Trash"
+                                            data-tip="Move to Trash"
                                             aria-label="Move to Trash"
                                             {...trigger}
                                           >
-                                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                              <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-                                            </svg>
+                                            <PsIcon name="trash" size={12} line={1.2} />
                                           </span>
                                         )}
                                       </DeleteConfirm>
@@ -5064,6 +5452,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           // `videoTrim` comment above. Null when the selection isn't a
           // video (the rail's video branch is inert then anyway).
           videoTrimRange={selectedVideo === null ? null : videoTrim.range}
+          videoTrimSegments={selectedVideo === null ? undefined : videoTrim.exportSegments}
           copyPulses={copyPulses}
           // Use the EFFECTIVE pin, not the raw one, so the rail's own render
           // (activity-bar spine + hover-pop when unpinned) matches the
@@ -5086,6 +5475,15 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           selectedLayerIds={selectedLayerIds}
           layersApi={layersApi}
           shortcutPlatform={shortcutPlatform}
+          families={captureFamilies}
+          onSelectFamilyMember={selectFamilyMember}
+          onFilterFamily={filterToFamily}
+          duplicatePrefs={duplicatePrefs}
+          onOpenEnrichmentRepair={openFailedEnrichmentRepair}
+          enrichmentFailedCount={enrichmentRepairCounts?.failed ?? null}
+          onDuplicate={(record, request) => {
+            void duplicateRecord(record, request);
+          }}
         />
       ) : null}
 
@@ -5109,6 +5507,58 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
           />,
           document.querySelector(".app-toast-stack") ?? document.body
         )}
+
+      {/* Background video duplicates: one progress row per copy, with
+          Cancel, in the same lower-left stack. */}
+      <DuplicateProgressToasts onCancel={cancelDuplicateJob} />
+
+      {/* AI re-run of failed / never-run snaps. The toast is the dialog
+          collapsed: clicking it opens the dialog again. */}
+      {enrichmentRepair !== null ? (
+        <EnrichmentRepairDialog
+          key={enrichmentRepair.key}
+          job={enrichmentRepairJob}
+          request={enrichmentRepair.request}
+          providerLabel={enrichmentProviderLabel}
+          aiEnabled={aiEnabled}
+          altModifierLabel={altModifierLabel}
+          onJobChange={setEnrichmentRepairJob}
+          onEnableAi={toggleAiEnabled}
+          onClose={() => setEnrichmentRepair(null)}
+        />
+      ) : enrichmentRepairJob !== null ? (
+        <EnrichmentRepairToast
+          job={enrichmentRepairJob}
+          onOpen={openEnrichmentRepair}
+          onCancel={(jobId) => {
+            void dispatch("codex:repair:cancel", { jobId }).then((result) => {
+              if (result.ok) setEnrichmentRepairJob(result.value);
+            });
+          }}
+          onDismiss={(jobId) => {
+            setEnrichmentRepairJob(null);
+            void dispatch("codex:repair:dismiss", { jobId });
+          }}
+        />
+      ) : null}
+      {enrichmentRecovery !== null && !enrichmentRepairOpen && enrichmentRepairJob?.state !== "running" ? (
+        <EnrichmentRecoveryToast
+          providerLabel={enrichmentProviderLabel}
+          failed={enrichmentRecovery.failed}
+          windowLabel={repairWindowToken(
+            { kind: "range", since: enrichmentRecovery.downSince, until: enrichmentRecovery.upAt },
+            Date.now()
+          )}
+          onRerun={() => {
+            openEnrichmentRepairWith({
+              statuses: ["failed"],
+              window: { since: enrichmentRecovery.since, until: enrichmentRecovery.until }
+            });
+            dismissEnrichmentRecovery();
+          }}
+          onDismiss={dismissEnrichmentRecovery}
+        />
+      ) : null}
 
       {/* Result-aware action failures stay visible over Grid, Focus, and
           Reel. Mutation failures carry a direct retry that targets only the
@@ -5152,6 +5602,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
         <div className="psl__status-l">
           <div className="psl__storage" ref={storagePanelRef}>
             <button
+              ref={storageTriggerRef}
               className="psl__storage-trigger"
               type="button"
               aria-haspopup="dialog"
@@ -5162,7 +5613,12 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               <span>{storageLabel}</span>
             </button>
             {storagePanelOpen ? (
-              <div className="psl__storage-popover" role="dialog" aria-label="Storage usage">
+              <div
+                ref={storagePopoverRef}
+                className="psl__storage-popover"
+                role="dialog"
+                aria-label="Storage usage"
+              >
                 {storage.error !== null ? (
                   <div className="psl__storage-error">{storage.error}</div>
                 ) : null}
@@ -5260,6 +5716,49 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               )}
             </span>
           </button>
+          {enrichmentRepairJob?.state === "running" ? (
+            <button
+              type="button"
+              className="psl__ai-repair is-running"
+              aria-haspopup="dialog"
+              aria-label={`Re-running AI, ${enrichmentRepairJob.processed} of ${enrichmentRepairJob.total}`}
+              data-tip="Show the AI re-run"
+              onClick={openEnrichmentRepair}
+            >
+              <span>
+                Re-running{" "}
+                <b>
+                  {enrichmentRepairJob.processed.toLocaleString()}/{enrichmentRepairJob.total.toLocaleString()}
+                </b>
+              </span>
+              <span className="psl__ai-repair-bar" aria-hidden="true">
+                <RepairSplitBar job={enrichmentRepairJob} small />
+              </span>
+            </button>
+          ) : aiEnabled && (enrichmentRepairCounts?.failed ?? 0) > 0 ? (
+            <button
+              type="button"
+              className="psl__ai-repair has-failed"
+              aria-haspopup="dialog"
+              data-tip={`AI failed on ${enrichmentRepairCounts?.failed.toLocaleString()} ${
+                enrichmentRepairCounts?.failed === 1 ? "snap" : "snaps"
+              }`}
+              data-tip-detail="Re-run AI on them"
+              onClick={openFailedEnrichmentRepair}
+            >
+              <b>{enrichmentRepairCounts?.failed.toLocaleString()}</b> failed · Re-run…
+            </button>
+          ) : aiEnabled ? (
+            <button
+              type="button"
+              className="psl__ai-repair"
+              aria-haspopup="dialog"
+              data-tip="Re-run AI on snaps it failed on or never read"
+              onClick={openEnrichmentRepair}
+            >
+              Re-run AI…
+            </button>
+          ) : null}
         </div>
         <div className="psl__status-r">
           {/* Grid zoom stepper — the discoverable, labeled face of pinch-to-
@@ -5273,7 +5772,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               <button
                 type="button"
                 className="psl__colnudge-btn"
-                title="Fewer, larger thumbnails"
+                data-tip="Fewer, larger thumbnails"
                 aria-label="Fewer columns"
                 disabled={gridZoom >= GRID_ZOOM_MAX}
                 onClick={() => stepGridZoomBy(1)}
@@ -5288,7 +5787,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
               <button
                 type="button"
                 className="psl__colnudge-btn"
-                title="More, smaller thumbnails"
+                data-tip="More, smaller thumbnails"
                 aria-label="More columns"
                 disabled={gridZoom <= GRID_ZOOM_MIN}
                 onClick={() => stepGridZoomBy(-1)}
@@ -5311,6 +5810,7 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
         />
       ) : null}
     </div>
+    </DuplicateJobsContext.Provider>
   );
 }
 
@@ -5450,6 +5950,8 @@ type VirtualizedGridProps = {
   onDontAskAgainTrash: () => void;
   restoreCaptureAction: CellAction;
   purgeCaptureAction: CellAction;
+  /** familyId → live member count, for the ⧉ N glyph. */
+  familySizes: ReadonlyMap<string, number>;
 };
 
 type ToolbarTier =
@@ -5472,15 +5974,16 @@ const TOOLBAR_TIER_RANK: Readonly<Record<ToolbarTier, number>> = {
 };
 
 const TOOLBAR_BREAKPOINTS = [1024, 960, 840, 720, 640, 560] as const;
-const WINDOWS_MENU_BAR_RESPONSIVE_RESERVE_PX = 300;
+/** Width the in-toolbar menu bar spends before any control gets a pixel.
+ *  Charged on every platform that paints `AppMenuBar` — see
+ *  `menuBarIsInToolbar`. */
+const IN_TOOLBAR_MENU_BAR_RESERVE_PX = 300;
 
-function toolbarTierForWidth(width: number, platform: string | undefined): ToolbarTier {
-  // Unlike macOS, Windows renders File / Edit / View / Window / Library / Help
-  // inside the Library toolbar. Treat that fixed menu as already-spent width;
-  // otherwise a 1218px VM viewport selects the wide tier even though the
-  // controls have only about 918px available and visibly crowd one another.
-  const availableWidth =
-    width - (platform === "win32" ? WINDOWS_MENU_BAR_RESPONSIVE_RESERVE_PX : 0);
+function toolbarTierForWidth(width: number, reservePx: number): ToolbarTier {
+  // Treat that fixed menu as already-spent width; otherwise a 1218px VM
+  // viewport selects the wide tier even though the controls have only about
+  // 918px available and visibly crowd one another.
+  const availableWidth = width - reservePx;
   if (availableWidth <= 560) return "tiny";
   if (availableWidth <= 640) return "minimal";
   if (availableWidth <= 720) return "small";
@@ -5490,33 +5993,41 @@ function toolbarTierForWidth(width: number, platform: string | undefined): Toolb
   return "wide";
 }
 
+function inToolbarMenuReservePx(): number {
+  return menuBarIsInToolbar(window.pwrsnapApi?.platform) ? IN_TOOLBAR_MENU_BAR_RESERVE_PX : 0;
+}
+
 /** Atomic responsive-toolbar tier. The renderer viewport is the Library
  *  content width (DevTools-docked included). All breakpoint listeners read
  *  the same live width and commit one tier, so a fast drag can never render
- *  a mixture such as `small` capture buttons with pre-`narrow` search. */
-function useToolbarTier(): ToolbarTier {
+ *  a mixture such as `small` capture buttons with pre-`narrow` search.
+ *
+ *  `for: "layout"` drops the in-toolbar menu reserve: that menu spends
+ *  width in the top bar row only, so charging it to the columns below would
+ *  shift every column breakpoint 300px wider on Windows and Linux. */
+function useToolbarTier(options: { for: "toolbar" | "layout" } = { for: "toolbar" }): ToolbarTier {
+  const chargeMenu = options.for === "toolbar";
   const [tier, setTier] = useState<ToolbarTier>(() =>
     typeof window === "undefined" || typeof window.matchMedia !== "function"
       ? "wide"
-      : toolbarTierForWidth(window.innerWidth, window.pwrsnapApi?.platform)
+      : toolbarTierForWidth(window.innerWidth, chargeMenu ? inToolbarMenuReservePx() : 0)
   );
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
       return;
     }
-    const platform = window.pwrsnapApi?.platform;
-    const responsiveReserve =
-      platform === "win32" ? WINDOWS_MENU_BAR_RESPONSIVE_RESERVE_PX : 0;
+    const responsiveReserve = chargeMenu ? inToolbarMenuReservePx() : 0;
     const queries = TOOLBAR_BREAKPOINTS.map((width) =>
       window.matchMedia(`(max-width: ${width + responsiveReserve}px)`)
     );
-    const onChange = (): void => setTier(toolbarTierForWidth(window.innerWidth, platform));
+    const onChange = (): void =>
+      setTier(toolbarTierForWidth(window.innerWidth, responsiveReserve));
     onChange();
     for (const query of queries) query.addEventListener("change", onChange);
     return () => {
       for (const query of queries) query.removeEventListener("change", onChange);
     };
-  }, []);
+  }, [chargeMenu]);
   return tier;
 }
 
@@ -5587,12 +6098,13 @@ function useCellsPerRow(
 }
 
 /**
- * Shared dismiss + focus mechanism for the grid's context menus:
- * click-outside closes, Esc closes (capture phase, so it beats the
- * window-level Esc handlers that collapse the rail / leave Focus), and
- * the menu takes focus on the next frame so keyboard users land inside
- * it. Both the project menu and the capture menu use this so the two
- * can't drift.
+ * Shared dismiss + keyboard mechanism for the grid's context menus:
+ * click-outside closes; Esc closes (`useDismissable`, whose claim stops
+ * the event before the window-level Esc handlers that collapse the rail /
+ * leave Focus); and the role="menu" keys — arrows, Home/End, typeahead,
+ * Tab closes — with focus into the first row on open and back to the tile
+ * on close (`useMenuNavigation`). Both the project menu and the capture
+ * menu use this so the two can't drift.
  *
  * Scroll / resize / blur also close, for the same reason `DeleteConfirm`
  * closes on them: `.psl__context-menu` is `position: fixed` at the
@@ -5614,35 +6126,26 @@ function useContextMenuDismiss(
       if (event.target instanceof Node && root.contains(event.target)) return;
       onClose();
     }
-    function onKeyDown(event: KeyboardEvent): void {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      onClose();
-    }
     function onDetach(): void {
       onClose();
     }
     document.addEventListener("mousedown", onMouseDown);
-    document.addEventListener("keydown", onKeyDown, { capture: true });
     window.addEventListener("scroll", onDetach, true);
     window.addEventListener("resize", onDetach);
     window.addEventListener("blur", onDetach);
     return () => {
       document.removeEventListener("mousedown", onMouseDown);
-      document.removeEventListener("keydown", onKeyDown, { capture: true });
       window.removeEventListener("scroll", onDetach, true);
       window.removeEventListener("resize", onDetach);
       window.removeEventListener("blur", onDetach);
     };
   }, [onClose, rootRef]);
 
-  useEffect(() => {
-    // preventScroll so taking focus never nudges a scroller — the
-    // close-on-scroll listener above would otherwise dismiss the menu the
-    // instant it opens (same reason DeleteConfirm does this).
-    requestAnimationFrame(() => rootRef.current?.focus({ preventScroll: true }));
-  }, [rootRef]);
+  useDismissable({ open: true, onDismiss: onClose, surfaceRef: rootRef });
+  // Focuses the first row with preventScroll, so taking focus never nudges
+  // a scroller — the close-on-scroll listener above would otherwise dismiss
+  // the menu the instant it opens (same reason DeleteConfirm does this).
+  useMenuNavigation({ open: true, menuRef: rootRef, onClose });
 }
 
 /**
@@ -5664,6 +6167,7 @@ function LibraryCaptureContextMenu({
   menu,
   onClose,
   onEdit,
+  onDuplicate,
   onCopyPreset,
   onSaveFile,
   onReveal,
@@ -5675,6 +6179,8 @@ function LibraryCaptureContextMenu({
   menu: CaptureContextMenuState;
   onClose: () => void;
   onEdit: () => void;
+  /** `withEdits: null` — the snap has no edits, so there was no choice. */
+  onDuplicate: (mode: DuplicateMode, withEdits: boolean | null) => void;
   onCopyPreset: (preset: CopyPreset) => void;
   onSaveFile: () => void;
   onReveal: () => void;
@@ -5698,6 +6204,56 @@ function LibraryCaptureContextMenu({
     };
   }
 
+  // Which duplicate submenu is open. Asked only when there is a choice:
+  // a snap with no edits copies the same either way.
+  const [openSub, setOpenSub] = useState<DuplicateMode | null>(null);
+  const closeSubTimerRef = useRef<number | null>(null);
+  const cancelSubClose = useCallback((): void => {
+    if (closeSubTimerRef.current === null) return;
+    window.clearTimeout(closeSubTimerRef.current);
+    closeSubTimerRef.current = null;
+  }, []);
+  useEffect(() => cancelSubClose, [cancelSubClose]);
+  const offerChoice = menu.editSummary === null || menu.editSummary.hasEdits;
+  const choices = duplicateChoiceLabels(menu.isVideo ? "video" : "image");
+  const editsHint =
+    menu.editSummary === null ? undefined : formatCaptureEditSummary(menu.editSummary);
+  const flipSub =
+    menu.x + CAPTURE_CONTEXT_MENU_WIDTH + CAPTURE_CONTEXT_SUBMENU_WIDTH > window.innerWidth;
+  function duplicateRow(mode: DuplicateMode, label: string) {
+    if (!offerChoice) {
+      return (
+        <button
+          type="button"
+          role="menuitem"
+          className="psl__context-menu-row"
+          onClick={run(() => onDuplicate(mode, null))}
+        >
+          {label}
+        </button>
+      );
+    }
+    return (
+      <ContextSubmenuRow
+        label={label}
+        open={openSub === mode}
+        onOpen={() => setOpenSub(mode)}
+        onClose={() => setOpenSub((current) => (current === mode ? null : current))}
+        flip={flipSub}
+      >
+        <ContextMenuChoiceRow
+          label={choices.withEdits}
+          hint={editsHint}
+          onSelect={run(() => onDuplicate(mode, true))}
+        />
+        <ContextMenuChoiceRow
+          label={choices.baseOnly}
+          onSelect={run(() => onDuplicate(mode, false))}
+        />
+      </ContextSubmenuRow>
+    );
+  }
+
   return (
     <div
       ref={rootRef}
@@ -5706,6 +6262,27 @@ function LibraryCaptureContextMenu({
       tabIndex={-1}
       style={{ left: `${menu.x}px`, top: `${menu.y}px` }}
       onContextMenu={(event) => event.preventDefault()}
+      onBlur={closeWhenFocusLeaves(onClose)}
+      onMouseOver={(event) => {
+        if (openSub === null) return;
+        const target = event.target as Element;
+        // Still on the open submenu, or its row: stay.
+        const sub = target.closest(".psl__context-menu-sub");
+        if (sub?.querySelector('[aria-expanded="true"]') != null) {
+          cancelSubClose();
+          return;
+        }
+        // Only another ROW counts as leaving. The menu's own padding is the
+        // strip the pointer crosses from the row to the submenu; closing on
+        // it shut the submenu before the pointer could reach it.
+        if (target.closest('[role="menuitem"]') === null) return;
+        if (closeSubTimerRef.current !== null) return;
+        const leaving = openSub;
+        closeSubTimerRef.current = window.setTimeout(() => {
+          closeSubTimerRef.current = null;
+          setOpenSub((current) => (current === leaving ? null : current));
+        }, CAPTURE_CONTEXT_SUBMENU_CLOSE_DELAY_MS);
+      }}
       aria-label={`${menu.capture.n} actions`}
     >
       {menu.isTrashed ? (
@@ -5746,6 +6323,8 @@ function LibraryCaptureContextMenu({
           >
             Edit
           </button>
+          {duplicateRow("edit-copy", "Edit a Copy")}
+          {duplicateRow("duplicate", "Duplicate")}
           {/* Video has no Low/Med/High preset model (see
               `capture:presetMetrics`) and no `capture:saveAs` — its
               export lives in the inspector's six-card panel. */}
@@ -5827,6 +6406,7 @@ function LibraryProjectContextMenu({
       tabIndex={-1}
       style={{ left: `${menu.x}px`, top: `${menu.y}px` }}
       onContextMenu={(event) => event.preventDefault()}
+      onBlur={closeWhenFocusLeaves(onClose)}
       aria-label={`${menu.projectName} actions`}
     >
       <button
@@ -5874,7 +6454,8 @@ function VirtualizedGrid({
   confirmBeforeTrash,
   onDontAskAgainTrash,
   restoreCaptureAction,
-  purgeCaptureAction
+  purgeCaptureAction,
+  familySizes
 }: VirtualizedGridProps) {
   const cellsPerRow = useCellsPerRow(scrollElement, cellMinWidth, layoutSignal);
   // Mirror the measured value up to Library for keyboard grid-nav + the
@@ -6155,6 +6736,7 @@ function VirtualizedGrid({
                 onDontAskAgainTrash={onDontAskAgainTrash}
                 restoreCaptureAction={restoreCaptureAction}
                 purgeCaptureAction={purgeCaptureAction}
+                familySizes={familySizes}
               />
             )}
           </div>
@@ -6179,6 +6761,32 @@ function VirtualizedGrid({
   );
 }
 
+/**
+ * ⧉ N — this snap shares a family with N − 1 live copies (or originals).
+ * Always shown once a family has more than one live member; a family of
+ * one (every other member trashed) is just a snap again.
+ */
+function FamilyGlyph({
+  record,
+  familySizes
+}: {
+  record: CaptureRecord | null | undefined;
+  familySizes: ReadonlyMap<string, number>;
+}) {
+  const familyId = record?.family_id ?? null;
+  const size = familyId === null ? 0 : familySizes.get(familyId) ?? 0;
+  if (size < 2) return null;
+  return (
+    <span
+      className="psl__family-glyph"
+      title={`${size} snaps in this family`}
+      aria-label={`${size} snaps in this family`}
+    >
+      <span aria-hidden="true">⧉ {size}</span>
+    </span>
+  );
+}
+
 function CellRow({
   cells,
   gridTemplate,
@@ -6198,7 +6806,8 @@ function CellRow({
   confirmBeforeTrash,
   onDontAskAgainTrash,
   restoreCaptureAction,
-  purgeCaptureAction
+  purgeCaptureAction,
+  familySizes
 }: {
   cells: DayGroup["items"];
   gridTemplate: string;
@@ -6223,6 +6832,8 @@ function CellRow({
   onDontAskAgainTrash: () => void;
   restoreCaptureAction: CellAction;
   purgeCaptureAction: CellAction;
+  /** familyId → live member count, for the ⧉ N glyph. */
+  familySizes: ReadonlyMap<string, number>;
 }) {
   // Inline grid styling — `.psl__grid` from the CSS uses auto-fill;
   // we override with explicit columns matching the computed
@@ -6308,10 +6919,15 @@ function CellRow({
                 projectCoverRecord={projectCoverRecord}
                 width={400}
               />
+              <DuplicateTileProgress sourceId={record?.id} />
               {cartEligible && record !== null ? (
                 <CartCellCheckbox captureId={record.id} />
               ) : null}
-              <span className="psl__cell-time">{c.time}</span>
+              <span className="psl__cell-time">
+                <FamilyGlyph record={record} familySizes={familySizes} />
+                {c.time}
+              </span>
+              <div className="psl__cell-foot">
               <span className="psl__cell-app-overlay">
                 {isProject ? (
                   // Project cells get the project name as the corner
@@ -6331,7 +6947,7 @@ function CellRow({
                   <button
                     type="button"
                     className="psl__cell-trash psl__cell-duplicate"
-                    title="Duplicate Sizzle Reel"
+                    data-tip="Duplicate Sizzle Reel"
                     aria-label={`Duplicate ${c.n}`}
                     onClick={(event) => duplicateSizzleProject(projectId, event)}
                   >
@@ -6345,7 +6961,7 @@ function CellRow({
                   <button
                     type="button"
                     className="psl__cell-trash psl__cell-edit"
-                    title="Edit"
+                    data-tip="Edit"
                     aria-label={`Edit ${c.n}`}
                     onClick={(e) => {
                       // Stop propagation so the CTA doesn't also fire the
@@ -6369,25 +6985,20 @@ function CellRow({
                       <button
                         type="button"
                         className="psl__cell-trash psl__cell-trash--restore"
-                        title="Restore"
+                        data-tip="Restore from Trash"
                         aria-label="Restore from Trash"
                         onClick={(e) => restoreCaptureAction(c.id, e)}
                       >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <path d="M3 12a9 9 0 1 0 3-6.7" />
-                          <path d="M3 4v5h5" />
-                        </svg>
+                        <PsIcon name="restore" size={16} line={1.5} />
                       </button>
                       <button
                         type="button"
                         className="psl__cell-trash psl__cell-trash--purge"
-                        title="Delete permanently"
+                        data-tip="Delete permanently"
                         aria-label="Delete permanently"
                         onClick={(e) => purgeCaptureAction(c.id, e)}
                       >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-                        </svg>
+                        <PsIcon name="purge" size={16} line={1.5} />
                       </button>
                     </>
                   ) : (
@@ -6403,13 +7014,11 @@ function CellRow({
                         <button
                           type="button"
                           className="psl__cell-trash"
-                          title="Move to Trash"
+                          data-tip="Move to Trash"
                           aria-label="Move to Trash"
                           {...trigger}
                         >
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-                          </svg>
+                          <PsIcon name="trash" size={16} line={1.5} />
                         </button>
                       )}
                     </DeleteConfirm>
@@ -6423,6 +7032,7 @@ function CellRow({
                   </span>
                 ) : null}
               </span>
+              </div>
             </div>
           </div>
         );

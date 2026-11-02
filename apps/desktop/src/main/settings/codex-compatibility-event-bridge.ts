@@ -8,6 +8,7 @@ import {
   onCodexCliCompatibilityAlertChanged,
   rememberRelayedCodexCompatibilityAlert
 } from "./codex-compatibility-alert";
+import { onCodexVersionAdvisoryChanged } from "./codex-version-advisory";
 
 let uninstallBridge: (() => void) | null = null;
 
@@ -49,9 +50,14 @@ export function installCodexCompatibilityEventBridge(): void {
       rememberRelayedCodexCompatibilityAlert(payload);
     }
   );
+  const unsubscribeAdvisory = onCodexVersionAdvisoryChanged((advisory) => {
+    broadcastRendererEventToLocalWindows(EVENT_CHANNELS.codexVersionAdvisoryChanged, advisory);
+    relayRendererEventToPeer(EVENT_CHANNELS.codexVersionAdvisoryChanged, advisory);
+  });
   uninstallBridge = () => {
     unsubscribeLocal();
     unsubscribeRemote();
+    unsubscribeAdvisory();
     uninstallBridge = null;
   };
 }

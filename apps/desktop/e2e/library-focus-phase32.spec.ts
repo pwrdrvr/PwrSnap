@@ -79,27 +79,15 @@ test.skip("library-focus-phase32: lifted hook + crop + selection", async ({}, te
       )
     ).toHaveCount(1);
 
-    // Open the caret-popover for arrow.
-    await win.locator('[data-testid="tool-caret-arrow"]').click();
-    await win
-      .locator('[data-testid="tool-style-popover"]')
-      .waitFor({ state: "visible" });
+    // The arrow's style is in the property bar docked over the toolbar.
+    const bar = win.locator('[data-testid="edit-property-bar"][data-target="tool"]');
+    await bar.waitFor({ state: "visible" });
 
     // Pick red.
-    await win
-      .locator(
-        '[data-testid="tool-style-popover"] [data-testid="swatch-red"]'
-      )
-      .click();
+    await bar.locator('[data-testid="swatch-red"]').click();
     await expect(
       win.locator('[data-testid="swatch-red"][aria-checked="true"]')
     ).toHaveCount(1);
-
-    // Close popover with Escape so it doesn't intercept canvas clicks.
-    await win.keyboard.press("Escape");
-    await expect(
-      win.locator('[data-testid="tool-style-popover"]')
-    ).toHaveCount(0);
 
     await screenshot(testInfo, win, "02-picked-red.png");
 

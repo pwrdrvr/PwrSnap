@@ -19,7 +19,13 @@ $paths = @(
   "apps/desktop/release-stage",
   "apps/desktop/scripts/package-win.mjs",
   "apps/desktop/scripts/package-win-update-smoke.mjs",
+  "apps/desktop/scripts/staged-pnpm-config.mjs",
+  # Cuts the stable PwrSnap.Setup.exe alias after Authenticode verification,
+  # and owns the SHA256SUMS format package-win.mjs writes.
+  "apps/desktop/scripts/windows-release-artifacts.mjs",
   "apps/desktop/scripts/sharp-platform-packages.mjs",
+  "apps/desktop/scripts/better-sqlite3-prebuilds.mjs",
+  "apps/desktop/scripts/packaged-html-rules.mjs",
   "apps/desktop/scripts/verify-asar-contents.mjs",
   # The signed updater pair is exercised only after it leaves the protected
   # environment. Carry the pure-Node runner with the prepared source so the

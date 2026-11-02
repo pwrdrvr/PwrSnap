@@ -6,6 +6,7 @@ export type TransientWindowDisposers = Readonly<{
   disposeTray: () => void;
   disposeFloatOver: () => void;
   disposeRecordingController: () => void;
+  disposeRecordingFrame: () => void;
   disposeRegionSelector: () => void;
   disposeFocusSink: () => void;
   destroyTextBakePool: () => void;
@@ -30,6 +31,7 @@ export function installTransientWindowTeardown(
     disposers.disposeTray();
     disposers.disposeFloatOver();
     disposers.disposeRecordingController();
+    disposers.disposeRecordingFrame();
     disposers.disposeRegionSelector();
     disposers.disposeFocusSink();
     disposers.destroyTextBakePool();

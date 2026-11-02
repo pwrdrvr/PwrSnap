@@ -26,12 +26,18 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactElement
 } from "react";
-import type { ArrowToolStyle, BundleLayerNode } from "@pwrsnap/shared";
+import type { ArrowToolStyle, BundleLayerNode, StrokeOverlay } from "@pwrsnap/shared";
 import {
   readArrowDoubleEnded,
   readArrowEndStyle,
-  readArrowStemStyle
+  readArrowStemStyle,
+  readShapeFilled,
+  readShapeKind,
+  readShapeStrokeStyle,
+  readStrokeOpacity,
+  type ShapeKind
 } from "@pwrsnap/shared";
+import { ShapeIcon, type ShapeIconBox, type ShapeIconPatternUnit } from "./ShapeIcon";
 import { useCaptureModel } from "../editor/useCaptureModel";
 import type { LayersPanelApi } from "../editor/Editor";
 import { isBaseLayer, isCropLayer, isSourceRaster } from "../editor/layer-roles";
@@ -40,6 +46,7 @@ import { affineTransformsEqual } from "../editor/raster-resize";
 import { TOOLS } from "../editor/editor-tools";
 import { ToolStyleBody } from "../editor/ToolStylePopover";
 import { styledLayerStyle } from "./styled-layer-style";
+import { strokeLayerName } from "../editor/overlayToLayer";
 import "./LayersPanel.css";
 
 export type LayersPanelProps = {
@@ -134,6 +141,8 @@ function shapeLabel(node: Extract<BundleLayerNode, { kind: "vector" }>): string 
       return "Blur";
     case "step":
       return "Step";
+    case "stroke":
+      return strokeLayerName(node.shape.tool);
     case "crop":
       return "Crop";
   }
@@ -240,6 +249,9 @@ function ArrowPreview({
             <path d="M1 1 9 5 1 9" fill="none" stroke={color} strokeWidth="1.5" />
           ) : endStyle === "dot" ? (
             <circle cx="5" cy="5" r="3" fill={color} />
+          ) : endStyle === "bar" ? (
+            // ON the endpoint (refX), where `line` sits back from it.
+            <path d="M8 1v8" fill="none" stroke={color} strokeWidth="1.5" />
           ) : (
             <path d="M6 1v8" fill="none" stroke={color} strokeWidth="1.5" />
           )}
@@ -263,6 +275,19 @@ function ArrowPreview({
   );
 }
 
+/** Layer-row preview boxes (48×28 viewBox), one per shape kind. */
+const PREVIEW_SHAPE_BOX: Record<ShapeKind, ShapeIconBox> = {
+  rect: { cx: 24, cy: 14, w: 32, h: 16 },
+  square: { cx: 24, cy: 14, w: 16, h: 18 },
+  circle: { cx: 24, cy: 14, w: 16, h: 16 },
+  oval: { cx: 24, cy: 14, w: 30, h: 16 },
+  parallelogram: { cx: 23.5, cy: 14, w: 26, h: 18, shear: 2.5 }
+};
+
+/** Close to the arrow preview's stem dashes ("4 2.5" / "1 2.5"), so a
+ *  dashed arrow and a dashed box read alike in the list. */
+const PREVIEW_PATTERN_UNIT: ShapeIconPatternUnit = { dashed: 1, dotted: 1.4 };
+
 function ShapePreview({
   node
 }: {
@@ -271,44 +296,64 @@ function ShapePreview({
   const shape = node.shape;
   if (shape.kind !== "shape") return IMAGE_ICON;
   const color = previewColor(shape.color);
-  const paint = {
-    fill: shape.filled ? color : "none",
-    fillOpacity: shape.filled ? 0.22 : undefined,
-    stroke: color,
-    strokeWidth: previewStrokeWidth(shape.thickness)
-  };
-  switch (shape.shape ?? "rect") {
-    case "circle":
-      return (
-        <svg viewBox="0 0 48 28" aria-hidden="true">
-          <circle cx="24" cy="14" r="8" {...paint} />
-        </svg>
-      );
-    case "oval":
-      return (
-        <svg viewBox="0 0 48 28" aria-hidden="true">
-          <ellipse cx="24" cy="14" rx="15" ry="8" {...paint} />
-        </svg>
-      );
-    case "parallelogram":
-      return (
-        <svg viewBox="0 0 48 28" aria-hidden="true">
-          <polygon points="13,5 39,5 34,23 8,23" {...paint} />
-        </svg>
-      );
-    case "square":
-      return (
-        <svg viewBox="0 0 48 28" aria-hidden="true">
-          <rect x="16" y="5" width="16" height="18" rx="1" {...paint} />
-        </svg>
-      );
-    default:
-      return (
-        <svg viewBox="0 0 48 28" aria-hidden="true">
-          <rect x="8" y="6" width="32" height="16" rx="1" {...paint} />
-        </svg>
-      );
+  const filled = readShapeFilled(shape);
+  const kind = readShapeKind(shape);
+  return (
+    <svg viewBox="0 0 48 28" aria-hidden="true">
+      <ShapeIcon
+        shape={kind}
+        box={PREVIEW_SHAPE_BOX[kind]}
+        paint={{
+          fill: filled ? color : "none",
+          fillOpacity: filled ? 0.22 : undefined,
+          stroke: color,
+          strokeWidth: previewStrokeWidth(shape.thickness)
+        }}
+        // A filled shape's stroke here is a preview rim, not the
+        // outline the canvas patterns — keep it solid, as the canvas is.
+        strokeStyle={filled ? "solid" : readShapeStrokeStyle(shape)}
+        patternUnit={PREVIEW_PATTERN_UNIT}
+      />
+    </svg>
+  );
+}
+
+/** One squiggle for every Draw stroke: its color, a width that tells pen
+ *  from marker, and the marker's translucency. The airbrush reads as a
+ *  soft-edged line. */
+function StrokePreview({ shape }: { shape: StrokeOverlay }): ReactElement {
+  const color = previewColor(shape.color);
+  if (shape.tool === "airbrush") {
+    const d = "M8 18c8-9 20-9 32-4";
+    return (
+      <svg
+        viewBox="0 0 48 28"
+        aria-hidden="true"
+        fill="none"
+        stroke={color}
+        strokeLinecap="round"
+        opacity={readStrokeOpacity(shape)}
+      >
+        <path d={d} strokeWidth="10" opacity="0.2" />
+        <path d={d} strokeWidth="7" opacity="0.35" />
+        <path d={d} strokeWidth="4" />
+      </svg>
+    );
   }
+  const marker = shape.tool === "marker";
+  return (
+    <svg viewBox="0 0 48 28" aria-hidden="true">
+      <path
+        d={marker ? "M8 15 40 15" : "M8 19c5-12 10-12 13-5s9 7 19-6"}
+        fill="none"
+        stroke={color}
+        strokeOpacity={readStrokeOpacity(shape)}
+        strokeWidth={marker ? 7 : previewStrokeWidth(shape.thickness)}
+        strokeLinecap={marker ? "butt" : "round"}
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
 }
 
 function previewForNode(node: BundleLayerNode): ReactElement {
@@ -374,6 +419,8 @@ function previewForNode(node: BundleLayerNode): ReactElement {
         );
       case "step":
         return STEP_ICON;
+      case "stroke":
+        return <StrokePreview shape={node.shape} />;
     }
   }
   if (node.kind === "effect") {
@@ -679,7 +726,7 @@ export function LayersPanel({
                     className="psl-layers__grip"
                     data-testid={`layer-grip-${id}`}
                     aria-hidden="true"
-                    title="Drag to reorder"
+                    data-tip="Drag to reorder"
                     onClick={(e): void => e.stopPropagation()}
                     onPointerDown={(e): void => {
                       if (e.button !== 0) return;
@@ -714,7 +761,7 @@ export function LayersPanel({
                     }
                     aria-controls={inspectorDomId}
                     aria-expanded={inspectorExpanded}
-                    title={inspectorExpanded ? "Collapse properties" : "Expand properties"}
+                    data-tip={inspectorExpanded ? "Collapse properties" : "Expand properties"}
                     onClick={(e): void => {
                       e.stopPropagation();
                       toggleLayerInspector(id);
@@ -730,7 +777,7 @@ export function LayersPanel({
                     data-testid={`layer-visibility-${id}`}
                     aria-label={visible ? "Hide layer" : "Show layer"}
                     aria-pressed={!visible}
-                    title={visible ? "Hide" : "Show"}
+                    data-tip={visible ? "Hide layer" : "Show layer"}
                     onClick={(e): void => {
                       e.stopPropagation();
                       void api?.setLayerVisibility(id, !visible);
@@ -744,7 +791,7 @@ export function LayersPanel({
                       className="psl-layers__btn"
                       data-testid={`layer-reset-${id}`}
                       aria-label="Reset position and size"
-                      title="Reset to original position & size"
+                      data-tip="Reset to original position & size"
                       disabled={affineTransformsEqual(node.transform, rasterHome)}
                       onClick={(e): void => {
                         e.stopPropagation();
@@ -759,7 +806,8 @@ export function LayersPanel({
                     className="psl-layers__btn psl-layers__btn--danger"
                     data-testid={`layer-delete-${id}`}
                     aria-label={crop ? "Remove crop (restore full image)" : "Delete layer"}
-                    title={crop ? "Remove crop" : "Delete"}
+                    data-tip={crop ? "Remove crop" : "Delete layer"}
+                    data-tip-detail={crop ? "Restores the full image" : undefined}
                     disabled={sourceRaster}
                     onClick={(e): void => {
                       e.stopPropagation();
@@ -792,6 +840,7 @@ export function LayersPanel({
                         api?.updateLayerStyle(id, field, value);
                       }}
                       styleTargetKey={id}
+                      allowEraser={false}
                     />
                   </div>
                 </section>

@@ -16,7 +16,7 @@
 //     allowed to bubble.
 //   • disabled prop disables the send button + textarea.
 
-import { act, createElement, type ReactElement } from "react";
+import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
   afterEach,

@@ -108,6 +108,12 @@ function button(label: string): HTMLButtonElement | undefined {
   );
 }
 
+/** The release-notes control is an `<a href>`, not a button — see
+ *  ReleaseNotesLink.tsx. */
+function notesLink(): HTMLAnchorElement | null {
+  return container?.querySelector("a.psu__notes") ?? null;
+}
+
 beforeEach(() => {
   resetAppUpdateDismissals();
 });
@@ -159,6 +165,46 @@ describe("AppUpdateRow", () => {
     // main is quitting into the new build — the button must not be
     // pressable a second time on the way out.
     expect(button("Restarting...")?.disabled).toBe(true);
+  });
+
+  // The row offers to restart into a version it cannot describe: the
+  // CHANGELOG bundled in the RUNNING build says nothing about the one
+  // being installed. This is the only way out to what it contains.
+  test("offers the release notes for the version it will install", async () => {
+    const api = installFakeApi();
+    await mountRow("tray");
+    await api.pushStatus({ status: "downloaded", version: "1.2.0" });
+
+    const notes = notesLink();
+    expect(notes?.textContent).toBe("Notes");
+    // "Notes" fits the 24px strip; the accessible name carries the phrase
+    // and the version, which is what a screen reader announces.
+    expect(notes?.getAttribute("aria-label")).toBe("Release notes for v1.2.0");
+    // The href is what a cmd-click reaches, and `onClick` never sees one.
+    expect(notes?.getAttribute("href")).toBe(
+      "https://github.com/pwrdrvr/PwrSnap/releases/tag/v1.2.0"
+    );
+
+    await act(async () => {
+      notes?.click();
+      await Promise.resolve();
+    });
+
+    expect(api.calls).toContainEqual({
+      name: "app:openExternal",
+      req: { url: "https://github.com/pwrdrvr/PwrSnap/releases/tag/v1.2.0" }
+    });
+  });
+
+  test("drops the notes control, not the row, when the version has no page", async () => {
+    // Both hosts size themselves to their content, so a dead control would
+    // cost popover width for nothing. Restart is unaffected.
+    const api = installFakeApi();
+    await mountRow("tray");
+    await api.pushStatus({ status: "downloaded", version: "dev-build" });
+
+    expect(notesLink()).toBeNull();
+    expect(button("Restart")).toBeDefined();
   });
 
   // A downgrade is the way back to the train the user picked. Calling

@@ -1,5 +1,5 @@
 import type { LocalAgentCapability } from "@pwrsnap/shared";
-import { ok } from "@pwrsnap/shared";
+import { err, ok } from "@pwrsnap/shared";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import type { CommandContext } from "../../command-bus";
@@ -7,6 +7,7 @@ import {
   createDefaultLocalAgentMcpTools,
   type LocalAgentToolContext,
   toMcpToolResult,
+  validateToolCapability,
   withMcpResourceLink
 } from "../mcp-tool-registry";
 
@@ -236,7 +237,13 @@ describe("createDefaultLocalAgentMcpTools", () => {
       sizzleSend: noop,
       sizzleStatus: noop,
       sizzleRenderPreview: noop,
-      sizzleRenderFull: noop
+      sizzleRenderFull: noop,
+      videoInspect: noop,
+      videoEdit: noop,
+      captureDuplicate: noop,
+      captureEditSummary: noop,
+      captureFamilies: noop,
+      captureFamily: noop
     });
     expect(tools.map((tool) => tool.name)).toEqual([
       "pwrsnap_library_search",
@@ -246,6 +253,12 @@ describe("createDefaultLocalAgentMcpTools", () => {
       "pwrsnap_capture_resource",
       "pwrsnap_capture_export",
       "pwrsnap_image_edit_send",
+      "pwrsnap_video_inspect",
+      "pwrsnap_video_edit",
+      "pwrsnap_capture_duplicate",
+      "pwrsnap_capture_edit_summary",
+      "pwrsnap_capture_families",
+      "pwrsnap_capture_family",
       "pwrsnap_sizzle_create",
       "pwrsnap_sizzle_send",
       "pwrsnap_sizzle_status",
@@ -306,7 +319,13 @@ describe("createDefaultLocalAgentMcpTools", () => {
       sizzleSend: noop,
       sizzleStatus: noop,
       sizzleRenderPreview: noop,
-      sizzleRenderFull: noop
+      sizzleRenderFull: noop,
+      videoInspect: noop,
+      videoEdit: noop,
+      captureDuplicate: noop,
+      captureEditSummary: noop,
+      captureFamilies: noop,
+      captureFamily: noop
     });
     const annotations = Object.fromEntries(
       tools.map((tool) => [tool.name, tool.annotations])
@@ -351,11 +370,196 @@ describe("createDefaultLocalAgentMcpTools", () => {
       idempotentHint: true,
       openWorldHint: false
     });
+    // Adds a capture and changes nothing that exists; a second call adds a
+    // second copy.
+    expect(annotations.pwrsnap_capture_duplicate).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false
+    });
+    for (const name of [
+      "pwrsnap_capture_edit_summary",
+      "pwrsnap_capture_families",
+      "pwrsnap_capture_family"
+    ]) {
+      expect(annotations[name]).toMatchObject({
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      });
+    }
     expect(annotations.pwrsnap_sizzle_render_full).toMatchObject({
       readOnlyHint: false,
       destructiveHint: false,
       idempotentHint: false,
       openWorldHint: true
     });
+  });
+});
+
+describe("video tools", () => {
+  const noop = async () => ok({});
+  const tools = createDefaultLocalAgentMcpTools({
+    search: noop,
+    deleteToTrash: noop,
+    videoInspect: noop,
+    videoEdit: noop
+  });
+  const inspect = tools.find((tool) => tool.name === "pwrsnap_video_inspect");
+  const edit = tools.find((tool) => tool.name === "pwrsnap_video_edit");
+
+  test("inspect is a library read; edit needs capture.edit and is not destructive", () => {
+    expect(inspect?.requiredCapabilities).toEqual(["library.read"]);
+    expect(inspect?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    expect(edit?.requiredCapabilities).toEqual(["capture.edit"]);
+    // The recording is never modified and every edit is undoable, so the
+    // client should not treat a cut like a delete.
+    expect(edit?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false });
+  });
+
+  test("teach the kept-span model and the activity levels", () => {
+    expect(inspect?.description).toContain("source seconds");
+    expect(inspect?.description).toContain("stillSpans");
+    expect(edit?.description).toContain("cutStill");
+  });
+
+  test("edit schema accepts each operation and rejects junk spans", () => {
+    if (edit === undefined) throw new Error("expected edit tool");
+    const schema = z.object(edit.inputSchema);
+    expect(schema.safeParse({ captureId: "c", keep: [{ start: 1, end: 4 }] }).success).toBe(true);
+    expect(schema.safeParse({ captureId: "c", cut: [{ start: 5, end: 12 }] }).success).toBe(true);
+    expect(schema.safeParse({ captureId: "c", cutStill: { minStillSec: 5 } }).success).toBe(true);
+    expect(schema.safeParse({ captureId: "c", reset: true }).success).toBe(true);
+    expect(schema.safeParse({ captureId: "c", keep: [] }).success).toBe(false);
+    expect(schema.safeParse({ captureId: "c", cut: [{ start: -1, end: 2 }] }).success).toBe(false);
+    expect(schema.safeParse({ captureId: "c", cutStill: { minStillSec: 0.1 } }).success).toBe(false);
+  });
+});
+
+describe("duplicate and family tools", () => {
+  const noop = async () => ok({});
+  const tools = createDefaultLocalAgentMcpTools({
+    search: noop,
+    deleteToTrash: noop,
+    captureDuplicate: noop,
+    captureEditSummary: noop,
+    captureFamilies: noop,
+    captureFamily: noop
+  });
+  function tool(name: string) {
+    const found = tools.find((candidate) => candidate.name === name);
+    if (found === undefined) throw new Error(`expected ${name}`);
+    return found;
+  }
+  const duplicate = tool("pwrsnap_capture_duplicate");
+  const editSummary = tool("pwrsnap_capture_edit_summary");
+  const families = tool("pwrsnap_capture_families");
+  const family = tool("pwrsnap_capture_family");
+
+  test("are omitted when their dispatchers are not wired", () => {
+    const minimal = createDefaultLocalAgentMcpTools({ search: noop, deleteToTrash: noop });
+    expect(minimal.map((candidate) => candidate.name)).not.toContain("pwrsnap_capture_duplicate");
+  });
+
+  test("duplicate requires withEdits — there is no implicit default", () => {
+    const schema = z.object(duplicate.inputSchema);
+    expect(Object.keys(duplicate.inputSchema)).toEqual(["captureId", "withEdits"]);
+    expect(schema.safeParse({ captureId: "cap_1", withEdits: true }).success).toBe(true);
+    expect(schema.safeParse({ captureId: "cap_1", withEdits: false }).success).toBe(true);
+    // The Library remembers the user's last choice; an agent never inherits it.
+    expect(schema.safeParse({ captureId: "cap_1" }).success).toBe(false);
+    expect(schema.safeParse({ captureId: "cap_1", withEdits: "true" }).success).toBe(false);
+    expect(schema.safeParse({ captureId: "", withEdits: true }).success).toBe(false);
+    expect(schema.parse({ captureId: "cap_1", withEdits: false })).toEqual({
+      captureId: "cap_1",
+      withEdits: false
+    });
+  });
+
+  test("teach the duplicate-then-edit workflow", () => {
+    expect(duplicate.description).toContain("familyId");
+    expect(duplicate.description).toContain("pwrsnap_image_edit_send");
+    expect(duplicate.description).toContain("pwrsnap_capture_edit_summary");
+    expect(editSummary.description).toContain("withEdits=true");
+  });
+
+  test("family schemas bound their ids, pages, and detail", () => {
+    expect(z.object(editSummary.inputSchema).safeParse({ captureId: "cap_1" }).success).toBe(true);
+    expect(z.object(families.inputSchema).safeParse({}).success).toBe(true);
+    expect(z.object(families.inputSchema).safeParse({ limit: 51 }).success).toBe(false);
+    const familySchema = z.object(family.inputSchema);
+    expect(familySchema.safeParse({ familyId: "fam_1", detail: "enriched", limit: 10 }).success)
+      .toBe(true);
+    expect(familySchema.safeParse({}).success).toBe(false);
+    expect(familySchema.safeParse({ familyId: "x".repeat(65) }).success).toBe(false);
+    expect(familySchema.safeParse({ familyId: "fam_1", detail: "full" }).success).toBe(false);
+    expect(familySchema.safeParse({ familyId: "fam_1", offset: 25 }).success).toBe(true);
+    expect(familySchema.safeParse({ familyId: "fam_1", offset: -1 }).success).toBe(false);
+    expect(z.object(families.inputSchema).safeParse({ offset: 1.5 }).success).toBe(false);
+  });
+
+  test("duplicate is a capture.edit write that a read-only grant cannot call", () => {
+    expect(duplicate.requiredCapabilities).toEqual(["capture.edit"]);
+    const input = { captureId: "cap_1", withEdits: true };
+    expect(validateToolCapability(duplicate, ctx(["capture.edit"]), input)).toEqual(ok(undefined));
+    for (const readOnly of [
+      ["library.read"],
+      ["library.read", "capture.composite.read", "capture.original.read", "capture.export"]
+    ] as const) {
+      const denied = validateToolCapability(duplicate, ctx(readOnly), input);
+      expect(denied).toMatchObject({
+        ok: false,
+        error: { code: "missing_capability", message: expect.stringContaining("capture.edit") }
+      });
+    }
+  });
+
+  test("the edit summary admits a reader or an editor, and nobody else", () => {
+    const input = { captureId: "cap_1" };
+    expect(validateToolCapability(editSummary, ctx(["library.read"]), input).ok).toBe(true);
+    expect(validateToolCapability(editSummary, ctx(["capture.edit"]), input).ok).toBe(true);
+    expect(validateToolCapability(editSummary, ctx(["trash.write"]), input)).toMatchObject({
+      ok: false,
+      error: {
+        code: "missing_capability",
+        message: "local agent cannot call pwrsnap_capture_edit_summary; missing one of library.read, capture.edit"
+      }
+    });
+  });
+
+  test("family reads need library.read", () => {
+    expect(families.requiredCapabilities).toEqual(["library.read"]);
+    expect(family.requiredCapabilities).toEqual(["library.read"]);
+    expect(validateToolCapability(families, ctx(["capture.edit"]), {}).ok).toBe(false);
+    expect(validateToolCapability(family, ctx(["library.read"]), { familyId: "fam_1" }).ok)
+      .toBe(true);
+  });
+
+  test("a duplicate receipt carries its data twice and a refusal maps to its code", () => {
+    const receipt = {
+      captureId: "cap_copy",
+      familyId: "cap_1",
+      duplicatedFrom: "cap_1",
+      withEdits: true,
+      kind: "image",
+      capturedAt: "2026-06-07T12:00:00.000Z",
+      widthPx: 1280,
+      heightPx: 800
+    };
+    const result = toMcpToolResult(ok(receipt));
+    expect(result.structuredContent).toEqual(receipt);
+    expect(result.content).toEqual([
+      { type: "text", text: "PwrSnap operation completed." },
+      { type: "text", text: JSON.stringify(receipt) }
+    ]);
+
+    for (const code of ["not_found", "trashed", "unsupported"]) {
+      expect(toMcpToolResult(err({ kind: "validation", code, message: "nope" }))).toEqual({
+        isError: true,
+        content: [{ type: "text", text: `${code}: nope` }]
+      });
+    }
   });
 });

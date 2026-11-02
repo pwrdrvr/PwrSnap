@@ -154,7 +154,7 @@ export type CopyButtonProps = {
   /** Fired on a drag-start gesture to drag this exact preset as a PNG file. */
   onDrag?: (preset: CopyPreset) => void;
   /** Fired on a click of the FILE chip. Caller dispatches
-   *  `clipboard:copy-path` so the rendered cache file's POSIX path
+   *  `clipboard:copy-path` so the rendered cache file's native absolute path
    *  lands on the clipboard as text. Drag still hands off the file
    *  itself; this is the keyboardless-mouse equivalent for pasting
    *  the path into a terminal / editor. */
@@ -319,11 +319,12 @@ export function CopyButton({
           className={"fo__copy-file" + (pathCopied ? " is-copied" : "")}
           draggable={onDrag !== undefined}
           href="#"
-          title={
-            onCopyPath !== undefined
-              ? `Click to copy ${label} PNG file path · drag for the file itself`
-              : `Drag ${label} PNG file`
+          // "File" alone does not say a click copies the path; the fast
+          // tooltip does.
+          data-tip={
+            onCopyPath !== undefined ? `Copy ${label} PNG file path` : `Drag ${label} PNG file`
           }
+          data-tip-detail={onCopyPath !== undefined ? "Drag for the file itself" : undefined}
           aria-label={
             onCopyPath !== undefined
               ? `Copy ${label} PNG file path to clipboard, or drag for the file`

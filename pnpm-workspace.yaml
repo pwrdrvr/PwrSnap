@@ -1,6 +1,13 @@
 packages:
   - apps/*
   - packages/*
+# Keep user-level hooks out of the project checksum on every machine.
+globalPnpmfile: ./.pnpmfile-global.cjs
+# Scripts consume the explicitly installed tree, including release stages and
+# the privileged metadata-only install that intentionally skips scripts.
+verifyDepsBeforeRun: false
+# Completed CI trees must contain portable files and relative workspace links.
+packageImportMethod: auto
 minimumReleaseAge: 10080
 # Release builds produce a universal macOS app and an x64 Windows installer.
 # Runtime packages like sharp publish OS+CPU-specific optional dependencies,
@@ -17,19 +24,28 @@ supportedArchitectures:
     - arm64
     - current
 allowBuilds:
-  better-sqlite3: true
-  electron: true
+  # better-sqlite3 13 loads its bundled N-API prebuild, so nothing builds it.
+  # pnpm 10 ignored its `gypfile: false` and ran a node-gyp rebuild that
+  # needed Python and a C++ toolchain; pnpm 12 honors it. This keeps it that
+  # way. See AGENTS.md.
+  better-sqlite3: false
+  # No `electron` entry: since Electron 42 the package has no install script.
+  # The desktop postinstall runs its `install-electron` bin instead.
   electron-winstaller: true
   esbuild: true
   sharp: true
 
-# The @pwrdrvr/agent-kit packages are PwrDrvr's own, freshly published, and
-# pinned — exempt them from the 7-day minimumReleaseAge gate (which targets
-# untrusted third-party releases) so PwrSnap can consume 0.1.0 immediately.
 minimumReleaseAgeExclude:
-  # Security backport: GHSA-qw65-cvwx-89v3 and GHSA-58mr-gqgx-xq4g.
-  # Exempt only this release; future fast-uri versions retain the age gate.
-  - "fast-uri@3.1.7"
+  # Security updates: GHSA-hxh3-vqpv-xpqv (hono),
+  # GHSA-2vr4-cq9g-pvrc and GHSA-h3mg-xc3c-68pw (ip-address).
+  # Exempt only these pinned releases; future versions retain the age gate.
+  - "hono@4.13.12"
+  - "ip-address@10.7.3"
+  # GHSA-jr5w-w6x2-84p9 eMudhra fix; npm published 2026-10-21T03:31:39.419Z.
+  - "electron@44.9.3"
+  # The @pwrdrvr/agent-kit packages are PwrDrvr's own, freshly published, and
+  # pinned — exempt them from the 7-day minimumReleaseAge gate (which targets
+  # untrusted third-party releases) so PwrSnap can consume 0.1.0 immediately.
   - "@pwrdrvr/codex-app-server-protocol"
   - "@pwrdrvr/agent-core"
   - "@pwrdrvr/agent-transport"
@@ -37,3 +53,15 @@ minimumReleaseAgeExclude:
   - "@pwrdrvr/agent-client"
   - "@pwrdrvr/agent-acp"
   - "@pwrdrvr/agent-chat-react"
+
+# Security and type overrides formerly stored in package.json.
+overrides:
+  "@types/node": "24.19.1"
+  "brace-expansion@1": "1.1.21"
+  "brace-expansion@2": "2.1.7"
+  "brace-expansion@5": "5.0.12"
+  "fast-uri@3": "3.1.8"
+  "hono@4": "4.13.12"
+  "ip-address@10": "10.7.3"
+  "tar": "7.5.22"
+  "undici@7": "7.30.0"

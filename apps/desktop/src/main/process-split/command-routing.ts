@@ -39,6 +39,7 @@ const EXACT_OWNERS: Readonly<Record<string, CommandOwner>> = {
   "capture:saveAs": "library",
   "library:focus": "library",
   "library:openInLibrary": "library",
+  "library:openEnrichmentRepair": "library",
   "library:export": "library",
   // Capture-folder health and location mutations share process-local state
   // and an exclusive queue with capture persistence. They must remain with
@@ -48,6 +49,11 @@ const EXACT_OWNERS: Readonly<Record<string, CommandOwner>> = {
   "storage:openCapturesAccessSettings": "agent",
   "storage:checkCapturesAccess": "agent",
   "storage:moveCapturesToDocuments": "agent",
+  // Derived-cache cleanup belongs with the WRITERS of <cacheRoot>, which is
+  // the agent (`video:*`). The library forwards whole operations here so the
+  // agent's admission gate can abort and drain an in-flight remux before any
+  // file is removed — a delete issued library-side could not.
+  "storage:runCacheCleanup": "agent",
   // Library-surface-only utility registered alongside its callers.
   "clipboard:copyText": "library"
 };
@@ -73,6 +79,7 @@ const PREFIX_OWNERS: ReadonlyArray<readonly [string, CommandOwner]> = [
   ["localAgents:", "agent"],
   ["permissions:", "agent"],
   ["acp:", "agent"],
+  ["customModels:", "agent"],
   ["codex:", "agent"],
   ["app:update:", "agent"],
   // Library: everything that renders, edits, or organizes captures in

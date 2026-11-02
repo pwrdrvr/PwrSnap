@@ -1,75 +1,5 @@
 /* PwrSnap Float-Over — capture confirmation toast */
 
-/* ---- Faux mac desktop wallpaper for context ---- */
-.fo-desktop {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  background:
-    radial-gradient(1200px 700px at 18% 12%, color-mix(in srgb, var(--accent) 8%, transparent) 0%, transparent 55%),
-    radial-gradient(900px 600px at 88% 92%, color-mix(in srgb, var(--brand-blue) 6%, transparent) 0%, transparent 55%),
-    linear-gradient(140deg, var(--bg-app) 0%, var(--bg-panel-hover) 50%, var(--bg-app) 100%);
-  font-family: var(--font-sans);
-}
-.fo-desktop::before {
-  content: "";
-  position: absolute; inset: 0;
-  background-image:
-    linear-gradient(color-mix(in srgb, var(--surface-highlight) 1%, transparent) 1px, transparent 1px),
-    linear-gradient(90deg, color-mix(in srgb, var(--surface-highlight) 1%, transparent) 1px, transparent 1px);
-  background-size: 36px 36px;
-  pointer-events: none;
-}
-.fo-menubar {
-  position: absolute; top: 0; left: 0; right: 0;
-  height: 26px;
-  background: color-mix(in srgb, var(--bg-app) 72%, transparent);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border-bottom: 1px solid color-mix(in srgb, var(--surface-highlight) 4%, transparent);
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 0 14px;
-  font: 500 12px/1 var(--font-sans);
-  color: var(--text-secondary);
-  z-index: 5;
-}
-.fo-menubar__l { display: flex; gap: 16px; align-items: center; }
-.fo-menubar__r { display: flex; gap: 14px; align-items: center; color: var(--text-muted); font-size: 11px; }
-.fo-menubar__active { color: var(--text-primary); font-weight: 600; }
-.fo-menubar__pwr {
-  display: inline-flex; align-items: center; gap: 6px;
-  color: var(--accent-bright);
-}
-.fo-menubar__pwr-dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--success);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--success) 18%, transparent);
-}
-
-/* fake window underneath toast, for spatial context */
-.fo-window {
-  position: absolute;
-  border-radius: 10px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-subtle);
-  box-shadow: 0 24px 64px color-mix(in srgb, var(--shadow-base) 50%, transparent);
-  overflow: hidden;
-}
-.fo-window img { display: block; width: 100%; height: 100%; object-fit: cover; opacity: 0.82; }
-
-/* dock-ish bottom hint */
-.fo-dock {
-  position: absolute;
-  bottom: 14px; left: 50%; transform: translateX(-50%);
-  height: 56px; width: 360px;
-  background: color-mix(in srgb, var(--bg-panel-hover) 55%, transparent);
-  border: 1px solid var(--border-subtle);
-  border-radius: 14px;
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-}
-
 /* ============================================================
    FLOAT-OVER TOAST
    ============================================================ */
@@ -83,11 +13,23 @@
      (--bg-app), header = chrome lift (--bg-sidebar, on .fo__hdr).
      Don't paint this with --bg-panel-hover — it's the warm
      hover-state token and reads as a different color family than
-     the library. No saturate() on the blur; it pulls color from
-     whatever's behind the toast. */
-  background: color-mix(in srgb, var(--bg-app) 94%, transparent);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
+     the library.
+
+     OPAQUE, and no backdrop-filter. The design mockup was 94% +
+     blur(24px), which read as frosted glass there because the toast
+     sat over a fake desktop painted in the same page. In the real
+     app this is its own `transparent: true` BrowserWindow, and a
+     backdrop-filter only samples what this page painted — never the
+     other apps' windows behind it. So the blur did nothing and the
+     6% gap let whatever was behind show through UNBLURRED and sharp-
+     edged: a white window edge became a ~#0f0f0f stripe, the same
+     tone as our own cards (--bg-panel-elevated #101010), and read as
+     a control inside the toast. Real frosted glass needs native
+     `vibrancy` on the window, which CSS can't fade with the toast's
+     exit animation (it leaves an empty frosted slab on screen), and
+     does not exist on Windows. Pinned by
+     popover-surface-contract.test.ts. */
+  background: var(--bg-app);
   border: 1px solid var(--border-subtle);
   border-radius: 14px;
   box-shadow:
@@ -101,6 +43,18 @@
   display: flex;
   flex-direction: column;
   user-select: none;
+  /* Ceiling published by FloatOverHost.tsx on the measured wrapper —
+     min(the 800 DIP constant, this display's work area less its two
+     anchor margins), converted to CSS px. `.fo__body` absorbs whatever
+     doesn't fit and scrolls it; the header and footer stay pinned.
+     Without this the toast measured past main's clamp and the window
+     CLIPPED the bottom, which put Discard / Dismiss / Edit out of
+     reach. `none` keeps the design-reference page (`design/`, no host
+     to publish the variable) rendering at natural height. The value is
+     never derived from the window's own size — that closes a feedback
+     loop the toast cannot grow back out of; see the long comment in
+     FloatOverHost.tsx. */
+  max-height: var(--fo-max-h, none);
 }
 
 .fo--variant-compact { width: 320px; }
@@ -130,6 +84,31 @@
   padding: 10px 12px 8px;
   background: var(--bg-sidebar);
   border-bottom: 1px solid var(--border-subtle);
+  /* Pinned. A flex item defaults to `flex-shrink: 1`, so once `.fo`
+     hits its max-height the header would give up its own padding and
+     squash its text rather than letting the middle scroll. */
+  flex: none;
+}
+
+/* ----- scrolling middle -----
+   Everything between the header and the footer. Scrolls only when the
+   toast is against `--fo-max-h`; below that it is an ordinary block
+   and the window shrink-wraps it exactly as before. */
+.fo__body {
+  flex: 1 1 auto;
+  /* Load-bearing. A flex item's `min-height` is `auto`, which resolves
+     to its content height and refuses to shrink past it — the middle
+     would keep its full height, `.fo` would overflow its own
+     max-height, and `overflow-y: auto` would never engage because the
+     box never got smaller than its content. */
+  min-height: 0;
+  overflow-y: auto;
+  /* No horizontal scroller: nothing here scrolls sideways, and a
+     stray overflowing child should be clipped like `.fo` clips it. */
+  overflow-x: hidden;
+  /* Wheeling past either end stops here rather than propagating —
+     there is no page behind this to scroll. */
+  overscroll-behavior: contain;
 }
 .fo__hdr-mark {
   width: 22px; height: 22px;
@@ -175,6 +154,53 @@
   border: 1px solid var(--border-subtle);
   aspect-ratio: 16 / 10;
 }
+/* The video toast carries a trim strip and a six-card export grid the
+   image toast does not, and with a Codex description and tags it ran past
+   FLOAT_OVER_HEIGHT_MAX (main/float-over.ts) — the window clipped the
+   footer. A 2:1 slot buys back 46px. Still a layout slot, not a crop:
+   HoverAutoplayVideo is `object-fit: contain`, so a 16:10 take pillarboxes. */
+.fo__preview--video { aspect-ratio: 2 / 1; }
+/* Low-resolution work areas trade preview height for room to reach the
+   metadata and actions. The image remains contained at its true ratio. */
+[data-popover-density="compact"] .fo__preview { aspect-ratio: 2 / 1; }
+/* The receipt row is three chips at ~355px in a 294px row, so it wraps onto a
+   second line. Glyph + meter is enough for a live source. A silent one keeps
+   its reason as text, so that failure is still said out loud; every chip keeps
+   its accessible name and its title. */
+[data-popover-density="compact"] .fo__sources .ps-chip__name {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+/* The source chips sat flush under the header with 8px below them; give them
+   the same 8px above. Compact only: the regular video toast has 3px of
+   headroom under its 800 ceiling and cannot spend 8. */
+[data-popover-density="compact"] .fo__body > .fo__sources:first-child { padding-top: var(--space-2, 8px); }
+/* The tag row's 48px minimum leaves ~26px of dead space above the Codex row
+   at compact; let it hug its chips. */
+[data-popover-density="compact"] .fo__tags { min-height: 0; }
+/* The Codex row carries Save and Enable, and is the last thing in the
+   scrolling body, so a scrolled toast lost it first. Pin it above the footer;
+   the description and tags scroll under it. */
+[data-popover-density="compact"] .fo__body > .fo__ai-row {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  background: var(--bg-app);
+  box-shadow: 0 -10px 10px -6px var(--bg-app);
+}
+/* The AI-off call to action is a sentence, and a 185px slot truncates it
+   mid-word. Wrap it onto two lines instead. The full text is also its title. */
+[data-popover-density="compact"] .fo__ai-row .ps-codex-pill__summary {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 1.25;
+}
 /* `contain` so the user recognizes their capture at its true aspect
    ratio. The 16:10 frame is just a layout slot — a tiny region
    capture should look tiny, not zoomed-to-fill. */
@@ -205,6 +231,20 @@
   opacity: 0; transition: opacity 140ms var(--ease-out);
 }
 .fo__preview:hover .fo__preview-actions { opacity: 1; }
+/* The keyboard reaches these buttons too, and at opacity 0 a focused one
+   drew nothing: opacity fades an element's outline with it. */
+.fo__preview-actions:has(:focus-visible) { opacity: 1; }
+/* Over the capture, so the ring carries its own 1px `--bg-app` halo, as
+   `.psl__stage-nav` does. */
+.fo__hover-btn:focus-visible { box-shadow: 0 0 0 4px var(--bg-app); }
+/* The video's native controls make it a Tab stop, and `.fo__preview`
+   clips at its rounded border, which cut an outset ring away entirely.
+   Inset, with the preview's inner radius (8px less its 1px border) so
+   the clip leaves the ring's corners alone. */
+.fo__preview video:focus-visible {
+  outline-offset: -2px;
+  border-radius: 7px;
+}
 .fo__preview-actions-l, .fo__preview-actions-r { display: flex; gap: 4px; }
 .fo__hover-btn {
   height: 24px; padding: 0 8px;
@@ -217,7 +257,13 @@
   font: 600 10px/1 var(--font-sans);
   cursor: pointer;
 }
-.fo__hover-btn:hover { background: color-mix(in srgb, var(--bg-panel-elevated) 92%, transparent); border-color: var(--accent-border); color: var(--accent-bright); }
+.fo__hover-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--bg-panel-elevated) 92%, transparent); border-color: var(--accent-border); color: var(--accent-bright); }
+/* Without this, `disabled` is invisible: a hover button with no handler
+   renders at full opacity and still lights up accent-bright on hover —
+   i.e. it looks exactly like a live control that does nothing, which is
+   the bug the disabled guards exist to make impossible. Covers Drag,
+   Edit and Reveal. */
+.fo__hover-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* ----- copy resolution buttons ----- */
 .fo__copy {
@@ -377,6 +423,50 @@
   gap: 6px;
   min-width: 0;
 }
+.fo__export-progress {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  font: 600 10px/1 var(--font-mono);
+}
+.fo__export-progress-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.fo__export-progress-track {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--border-default);
+}
+.fo__export-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 180ms linear;
+}
+.fo__export-progress.is-indeterminate .fo__export-progress-fill {
+  width: 42%;
+  animation: fo-export-progress-indeterminate 1.1s ease-in-out infinite;
+}
+@keyframes fo-export-progress-indeterminate {
+  from { transform: translateX(-125%); }
+  to { transform: translateX(340%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fo__export-progress.is-indeterminate .fo__export-progress-fill {
+    animation: none;
+    transform: translateX(70%);
+  }
+}
 .fo__copy-dim {
   display: flex;
   flex-direction: column;
@@ -466,6 +556,14 @@
 .fo__desc::placeholder { color: var(--text-subtle); }
 .fo__title:focus,
 .fo__desc:focus { border-color: var(--accent-border); background: color-mix(in srgb, var(--accent) 4%, transparent); }
+/* That border tint measures 2.2:1 and the 4% fill is fainter still. Both
+   stay, and the field draws the house ring too. */
+.fo__title:focus-visible,
+.fo__desc:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  scroll-margin: 4px;
+}
 .fo__title.is-suggested,
 .fo__desc.is-suggested {
   color: var(--text-secondary);
@@ -474,8 +572,44 @@
   background: color-mix(in srgb, var(--accent) 3.5%, transparent);
 }
 
+/* Two lines tall (2 × 22px chip + 4px gap) whether or not anything is in
+   it yet. Enrichment lands tags seconds after the toast appears, and the
+   window is anchored bottom-right, so a row that grew on arrival moved the
+   preview and export cards up under the cursor. Chips past two lines
+   collapse into "+N" (fitTagRow.ts); expanding is a click, so that growth
+   is the user's own. `align-content` keeps a short row at the top rather
+   than centred in the space it holds. Keep the gap in step with
+   TAG_ROW_GAP_PX in FloatOver.tsx. */
 .fo__tags {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+  position: relative;
+  display: flex; flex-wrap: wrap; align-items: center; align-content: flex-start;
+  gap: 4px;
+  min-height: 48px;
+}
+/* Past the fold: out of flow and invisible, but still laid out so its
+   width can be measured when the row changes. */
+.fo__tag.is-overflow {
+  position: absolute; top: 0; left: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.fo__tag-more {
+  appearance: none;
+  justify-content: center;
+  min-width: 30px;
+  padding: 0 7px;
+  background: transparent;
+  border-color: var(--border-subtle);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.fo__tag-more:hover { color: var(--text-primary); border-color: var(--accent-border); }
+.fo__tag-ghost {
+  flex: none;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 22%, transparent);
+  background: color-mix(in srgb, var(--accent) 3.5%, transparent);
 }
 .fo__tag {
   display: inline-flex; align-items: center; gap: 4px;
@@ -526,6 +660,7 @@
   cursor: pointer;
 }
 .fo__tag-input {
+  /* min-width is TAG_INPUT_MIN_WIDTH_PX in FloatOver.tsx. */
   flex: 1; min-width: 60px;
   height: 22px;
   background: transparent;
@@ -536,6 +671,14 @@
   padding: 0 4px;
 }
 .fo__tag-input::placeholder { color: var(--text-subtle); }
+/* No border, fill or wrapper box: focused, the field showed only its
+   caret. It rings itself, 1px out. */
+.fo__tag-input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  border-radius: var(--radius-sm);
+  scroll-margin: 4px;
+}
 .fo__tag-input:disabled {
   cursor: wait;
   opacity: 0.55;
@@ -574,18 +717,49 @@
 }
 
 /* ----- AI suggestion strip (now via shared CodexStatusPill) ----- */
+/* One row: the auto-apply checkbox sits beside the pill instead of on a
+   19px line of its own under it. The pill takes the slack and wraps its
+   own text if a status runs long. */
 .fo__ai-row {
   margin: 0 12px 8px;
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  align-items: center;
+  gap: 10px;
 }
+.fo__ai-row > .ps-codex-pill {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* One line, one height, in every state. The status copy changes when the
+   run lands, and a status that wrapped (a long error) or an action button
+   taller than the line (Use / Save / Configure AI) changed the toast's
+   height at exactly that moment. The full text rides the summary's
+   `title`; the Library's detail rail keeps the wrapping pill. */
+.fo__ai-row .ps-codex-pill__text {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+/* One line here: the summary ellipsizes, the run clock keeps its digits. */
+.fo__ai-row .ps-codex-pill__headline {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+.fo__ai-row .ps-codex-pill__summary {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* A 22px button in a 16px line: let it overhang into the pill's padding
+   instead of growing the pill. It keeps its full hit target. */
+.fo__ai-row .ps-codex-pill__action { margin: -3px 0; }
 .fo__auto-accept {
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: 6px;
-  align-self: flex-end;
   padding: 0 2px;
+  white-space: nowrap;
   font: 500 10px/1.2 var(--font-sans);
   color: var(--text-secondary);
   cursor: pointer;
@@ -609,6 +783,18 @@
   letter-spacing: 0.02em;
 }
 .fo__ai-accept:hover { background: var(--accent-strong); }
+/* Cancel stops a run in flight; it is not the pill's positive action, so it
+   keeps the slot's size but not its accent. Same weight as the Library
+   rail, where Cancel is a link in the slot Regenerate uses. */
+.fo__ai-accept.is-quiet {
+  background: transparent;
+  color: var(--text-secondary);
+  box-shadow: inset 0 0 0 1px var(--border-default);
+}
+.fo__ai-accept.is-quiet:hover {
+  background: var(--bg-panel-elevated);
+  color: var(--text-primary);
+}
 
 /* ----- footer / destinations ----- */
 .fo__foot {
@@ -616,7 +802,9 @@
   gap: 8px;
   padding: 8px 10px 10px;
   border-top: 1px solid color-mix(in srgb, var(--surface-highlight) 4%, transparent);
-  background: color-mix(in srgb, var(--bg-app) 18%, transparent);
+  /* Pinned — same reason as `.fo__hdr`. This is the row the whole
+     scroll treatment exists to keep reachable. */
+  flex: none;
 }
 .fo__dest {
   display: flex; align-items: center; gap: 4px;
@@ -734,46 +922,21 @@
   border-radius: 3px;
 }
 
-/* ============================================================
-   DESIGN-CANVAS ARTBOARD — desktop frame to display variants
-   ============================================================ */
-.fo-frame {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  border-radius: 12px;
-  overflow: hidden;
-  background: var(--bg-app);
-  border: 1px solid var(--border-default);
-  box-shadow: var(--shadow-lg);
-}
+/* Post-capture source receipt — the chips under the header that say
+   what the take actually contains. See recordingSourceReceipts() in
+   FloatOver.tsx for which chips appear and why.
 
-/* annotated callouts on artboards */
-.fo-callout {
-  position: absolute;
-  background: var(--accent);
-  color: var(--button-text-on-accent);
-  font: 700 10px/1 var(--font-mono);
-  padding: 4px 7px;
-  border-radius: 4px;
-  letter-spacing: 0.02em;
-  pointer-events: none;
-  z-index: 100;
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 40%, transparent);
-}
-.fo-callout::after {
-  content: "";
-  position: absolute;
-  width: 6px; height: 6px;
-  background: var(--accent);
-  transform: rotate(45deg);
-}
-.fo-callout.is-bottom-arrow::after {
-  bottom: -3px; left: 12px;
-}
-.fo-callout.is-top-arrow::after {
-  top: -3px; left: 12px;
-}
-.fo-callout.is-left-arrow::after {
-  left: -3px; top: 9px;
+   Sits between the header and AppUpdateRow so it reads as part of the
+   capture's identity rather than as an action. One line by construction:
+   a silent chip prints its reason in the meter's slot (SourceChip's
+   `reasonTakesMeterSlot` + RECEIPT_SILENT_MARK), so three chips are 355px
+   in the 366px row whatever mix of live and silent they are. `wrap` stays
+   only as a failsafe — a wrapped row costs 30px, a clipped one hides a
+   chip. */
+.fo__sources {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 0 var(--space-3, 12px) var(--space-2, 8px);
 }

@@ -88,4 +88,44 @@ describe("AiEnrichmentBudget", () => {
 
     expect(resetStatus.limitedAttemptsLastHour).toBe(0);
   });
+
+  test("defaults to a burst of 20 and 10 a minute", () => {
+    const budget = new AiEnrichmentBudget({ nowMs: () => 0 });
+    const status = budget.status(enabledSettings());
+    expect(status.capacity).toBe(20);
+    expect(status.refillIntervalMs).toBe(6_000);
+  });
+
+  test("a user rate limit reshapes the bucket, and clearing it restores the default", () => {
+    let now = 0;
+    const budget = new AiEnrichmentBudget({ nowMs: () => now });
+    const fast = enabledSettings({ enrichmentRateLimit: { burst: 60, perMinute: 120 } });
+    for (let i = 0; i < 20; i += 1) expect(budget.consume(enabledSettings()).allowed).toBe(true);
+    expect(budget.status(enabledSettings()).tokensAvailable).toBe(0);
+
+    // Raising the burst adds its extra room at once.
+    const raised = budget.status(fast);
+    expect(raised).toMatchObject({ capacity: 60, refillIntervalMs: 500, tokensAvailable: 40 });
+    now += 1_000;
+    expect(budget.status(fast).tokensAvailable).toBe(42);
+
+    // Back to the default: clamped to the smaller burst.
+    expect(budget.status(enabledSettings())).toMatchObject({
+      capacity: 20,
+      refillIntervalMs: 6_000,
+      tokensAvailable: 20
+    });
+  });
+
+  test("switching to a faster rate credits at most one token for time already waited", () => {
+    let now = 0;
+    const budget = new AiEnrichmentBudget({ capacity: 5, refillIntervalMs: 60_000, nowMs: () => now });
+    for (let i = 0; i < 5; i += 1) budget.consume(enabledSettings());
+    now += 59_000;
+    const fast = enabledSettings({ enrichmentRateLimit: { burst: 5, perMinute: 600 } });
+    // 59s at the old rate is worth one token at the new one, not 590.
+    expect(budget.status(fast).tokensAvailable).toBe(1);
+    now += 100;
+    expect(budget.status(fast).tokensAvailable).toBe(2);
+  });
 });

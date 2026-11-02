@@ -71,6 +71,7 @@ beforeEach(() => {
     {
       display_id: "42",
       thumbnail: {
+        isEmpty: () => false,
         getSize: () => ({ width: 2880, height: 1620 }),
         toPNG: () => mocks.png
       }

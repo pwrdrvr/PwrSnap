@@ -5,8 +5,14 @@
 // 404s. The capture-id case-preservation rule is the one that bit us
 // in commit 8d92916; lock it down.
 
+import { createHash } from "node:crypto";
 import { describe, expect, test } from "vitest";
+// Imported for their VALUES, not as literals — this is the pairing that
+// broke, so the test has to read what the handlers really produce.
+import { VIDEO_AUDIO_ASSET, videoPlaybackAsset } from "../handlers/recording-handlers";
 import {
+  isDerivedAudioAsset,
+  isDerivedPlaybackAsset,
   parseAppIconBundleId,
   parseCacheUrl,
   parseCaptureId,
@@ -332,11 +338,95 @@ describe("parseAppIconBundleId", () => {
 });
 
 describe("parseVideoAssetUrl", () => {
+  // The producer and the whitelist are two files that must agree on a
+  // filename, and they silently disagreed once: a new playback asset was
+  // added without its pattern, so every URL main handed the player 404'd
+  // and the video rendered as a black frame with no error anywhere. Assert
+  // the REAL constants against the REAL whitelist rather than string
+  // literals, which is the only version of this test that could have
+  // caught it.
+  test("every asset the handlers actually produce is servable", () => {
+    // `videoPlaybackAsset` takes the source cache key, so exercise it with a
+    // real digest slice rather than a placeholder — the key's alphabet and
+    // width are part of what the whitelist has to admit.
+    const key = createHash("sha256").update("source").digest("hex").slice(0, 24);
+    for (const asset of [VIDEO_AUDIO_ASSET, videoPlaybackAsset(key)]) {
+      expect(parseVideoAssetUrl(`pwrsnap-cache://v/cap/${asset}`)).toEqual({
+        captureId: "cap",
+        asset
+      });
+    }
+  });
+
+  // The other half of the same agreement, and the half that drifted next.
+  // The orphan sweep in `ensureVideoAudioAsset` decides what it may DELETE;
+  // this file decides what it may SERVE. When the sweep re-spelled the list
+  // it skipped `audio-mixed-vN.m4a` — a name still served, so still a real
+  // orphan — and that file survived every pipeline bump. Both sides now
+  // read `isDerivedAudioAsset`, so pin that they cannot disagree: anything
+  // servable-but-not-current must be reclaimable, and the live names must
+  // never be.
+  test("the sweep can reclaim every stale audio asset the resolver still serves", () => {
+    const stale = [
+      "audio.m4a",
+      "audio-mixed-v1.m4a",
+      "audio-mixed-v2.m4a",
+      "mixed-audio-v1.m4a"
+    ].filter((name) => name !== VIDEO_AUDIO_ASSET);
+    expect(stale.length).toBeGreaterThan(0);
+    for (const asset of stale) {
+      // Servable, so a renderer holding an old URL still works…
+      expect(parseVideoAssetUrl(`pwrsnap-cache://v/cap/${asset}`)).not.toBeNull();
+      // …and sweepable, so it does not live forever.
+      expect(isDerivedAudioAsset(asset)).toBe(true);
+    }
+  });
+
+  // The playback lane sweeps itself, against a key the waveform lane cannot
+  // compute. Each rendition is a FULL COPY of a recording, so a spelling the
+  // resolver serves but no sweep recognises strands source-sized bytes until
+  // the capture is hard-deleted. The unkeyed name is the one that matters
+  // here: #496 shipped it, so it is already on disk in the wild.
+  test("the playback sweep can reclaim every rendition spelling ever shipped", () => {
+    for (const asset of [
+      "playback-mixed-audio-v1.mp4",
+      "playback-mixed-audio-v2.mp4",
+      "playback-mixed-audio-v2-0123456789abcdef01234567.mp4"
+    ]) {
+      expect(parseVideoAssetUrl(`pwrsnap-cache://v/cap/${asset}`)).not.toBeNull();
+      expect(isDerivedPlaybackAsset(asset)).toBe(true);
+    }
+  });
+
+  // The two sweeps delete on different schedules, so each must decline the
+  // other's files. An audio sweep that claimed renditions would drop the one
+  // a player is loading right now; a playback sweep that claimed the mixed
+  // audio would take the waveform out from under the timeline.
+  test("the two sweeps never claim each other's assets", () => {
+    expect(isDerivedPlaybackAsset(VIDEO_AUDIO_ASSET)).toBe(false);
+    expect(isDerivedPlaybackAsset("audio.m4a")).toBe(false);
+    expect(isDerivedAudioAsset("playback-mixed-audio-v2.mp4")).toBe(false);
+    expect(isDerivedAudioAsset("playback-mixed-audio-v2-0123456789abcdef01234567.mp4")).toBe(false);
+  });
+
+  test("the filmstrip is never mistaken for a sweepable audio derivative", () => {
+    for (const predicate of [isDerivedAudioAsset, isDerivedPlaybackAsset]) {
+      expect(predicate("frames-v2-n24-w96.jpg")).toBe(false);
+      expect(predicate("frames-n24-w96.jpg")).toBe(false);
+      expect(predicate("poster.png")).toBe(false);
+    }
+  });
+
   test("parses filmstrip + audio assets and preserves capture-id case", () => {
-    expect(parseVideoAssetUrl("pwrsnap-cache://v/AbC_1-x/frames-n24-w96.jpg")).toEqual({
+    expect(parseVideoAssetUrl("pwrsnap-cache://v/AbC_1-x/frames-v2-n24-w96.jpg")).toEqual({
       captureId: "AbC_1-x",
-      asset: "frames-n24-w96.jpg"
+      asset: "frames-v2-n24-w96.jpg"
     });
+    // The unversioned v1 spelling stays addressable for a renderer holding
+    // an old URL.
+    expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/frames-n24-w96.jpg")?.asset).toBe(
+      "frames-n24-w96.jpg"
+    );
     expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/audio.m4a")).toEqual({
       captureId: "cap",
       asset: "audio.m4a"
@@ -345,6 +435,13 @@ describe("parseVideoAssetUrl", () => {
 
   test("strips cache-buster query and trailing slash", () => {
     expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/audio.m4a?v=3")?.asset).toBe("audio.m4a");
+    expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/audio-mixed-v2.m4a")?.asset).toBe("audio-mixed-v2.m4a");
+    expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/mixed-audio-v2.m4a?v=3")?.asset).toBe(
+      "mixed-audio-v2.m4a"
+    );
+    expect(
+      parseVideoAssetUrl("pwrsnap-cache://v/cap/playback-mixed-audio-v2.mp4?v=3")?.asset
+    ).toBe("playback-mixed-audio-v2.mp4");
     expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/frames-n8-w64.jpg/")?.asset).toBe(
       "frames-n8-w64.jpg"
     );
@@ -355,6 +452,9 @@ describe("parseVideoAssetUrl", () => {
     expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/poster.png")).toBeNull();
     expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/frames-n24-w96.png")).toBeNull();
     expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/frames-nx-w96.jpg")).toBeNull();
+    expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/frames-v-n24-w96.jpg")).toBeNull();
+    expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/frames-vx-n24-w96.jpg")).toBeNull();
+    expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/frames-v2-v2-n24-w96.jpg")).toBeNull();
     expect(parseVideoAssetUrl("pwrsnap-cache://v/cap/a/audio.m4a")).toBeNull();
     expect(parseVideoAssetUrl("pwrsnap-cache://v/cap")).toBeNull();
     expect(parseVideoAssetUrl("pwrsnap-cache://v//audio.m4a")).toBeNull();
@@ -368,8 +468,8 @@ describe("parseVideoAssetUrl", () => {
   });
 
   test("videoAssetUrl round-trips through the parser", () => {
-    const url = videoAssetUrl("Cap_9", "frames-n24-w96.jpg");
-    expect(url).toBe(`${SCHEMES.cache}://v/Cap_9/frames-n24-w96.jpg`);
-    expect(parseVideoAssetUrl(url)).toEqual({ captureId: "Cap_9", asset: "frames-n24-w96.jpg" });
+    const url = videoAssetUrl("Cap_9", "frames-v2-n24-w96.jpg");
+    expect(url).toBe(`${SCHEMES.cache}://v/Cap_9/frames-v2-n24-w96.jpg`);
+    expect(parseVideoAssetUrl(url)).toEqual({ captureId: "Cap_9", asset: "frames-v2-n24-w96.jpg" });
   });
 });

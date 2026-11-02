@@ -408,10 +408,6 @@ function getDatabaseStats(): {
   return { pageCount, pageSize, freelistCount };
 }
 
-function getCaptureCount(): number {
-  return getLiveSourceCaptureStats().captureCount;
-}
-
 function getLiveSourceCaptureStats(): {
   bytes: number;
   captureCount: number;

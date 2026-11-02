@@ -11,10 +11,18 @@
 :root {
   color-scheme: dark;
 
-  /* ---------- TYPE ---------- */
-  --font-sans: "Geist", "SF Pro Text", "Inter", system-ui, -apple-system, sans-serif;
+  /* ---------- TYPE ----------
+     Each stack leads with the family ./fonts.css REGISTERS, which is not
+     always the typeface's marketing name: @fontsource/geist-sans declares
+     its faces as "Geist Sans". Leading with bare "Geist" matched no bundled
+     face, so the woff2 never loaded and every sans glyph fell through to
+     the system UI font. "Geist" stays second for a system install — and it
+     is the name design/ds/colors_and_type.css uses, because that mirror
+     loads Google Fonts, not @fontsource. Pinned by
+     __tests__/font-family-contract.test.ts. */
+  --font-sans: "Geist Sans", "Geist", "SF Pro Text", "Inter", system-ui, -apple-system, sans-serif;
   --font-mono: "Geist Mono", "SF Mono", "JetBrains Mono", Consolas, monospace;
-  --font-display: "Geist", "SF Pro Display", system-ui, sans-serif;
+  --font-display: "Geist Sans", "Geist", "SF Pro Display", system-ui, sans-serif;
 
   /* ---------- COLOR — surfaces (pure-black suite system) ---------- */
   --bg-app:            #000000;   /* root, pure black per PwrAgent suite */
@@ -54,6 +62,17 @@
   --accent-border: color-mix(in srgb, var(--accent) 42%, transparent);
   --accent-shadow: color-mix(in srgb, var(--accent) 34%, transparent);
 
+  /* ---------- COLOR — focus ----------
+     The house focus ring is `outline: 2px solid var(--focus-ring)`. Same
+     name and value as PwrAgent's (docs/UI-THEME.md) and PwrGit's. It is
+     full-strength `--accent`, never a derived overlay: `--accent-border`
+     rings measured 2.2:1 against the dark surfaces, and 1.4.11 wants
+     3:1. `--accent` measures 8.6:1 on `--bg-app` dark and 4.6:1 on
+     white. Like the overlays above it resolves against whichever
+     `--accent` the element has, so the light block does not redeclare
+     it. */
+  --focus-ring: var(--accent);
+
   /* ---------- COLOR — brand blue (logo / parent stamp ONLY) ---------- */
   /* Reserved for the PwrDrvr brand mark on its navy plate. Do NOT use
      in product UI — the in-product accent is copper above. */
@@ -81,9 +100,13 @@
   --warn-soft:     rgba(216, 168, 90, 0.14);
   --warn-border:   rgba(216, 168, 90, 0.32);
   --warn-text:     #e8c890;
+  /* Fill for a warn-tone button. Its own token because the light --warn
+     carries white text at only 4.39:1; see --button-text-on-warn. */
+  --warn-strong:   #d8a85a;
 
   /* ---------- BUTTON ---------- */
   --button-text-on-accent: #000000;   /* pure black on tangerine fills */
+  --button-text-on-warn:   #000000;   /* on --warn-strong: 9.7:1 */
 
   /* ---------- MEDIA OVERLAYS ----------
      Badges and pills painted DIRECTLY ON TOP of thumbnail images
@@ -154,13 +177,28 @@
   --space-8: 64px;
   --space-9: 96px;
 
-  /* ---------- WINDOWS CHROME ----------
-     Right-side room a `:root[data-platform="win32"]` title bar reserves for
-     the native min/max/close caption buttons drawn by `titleBarOverlay` (see
-     platformWindowChrome in apps/desktop/src/main/window.ts). Every win32
-     title bar (.psl__topbar, .pss__titlebar, .szl__titlebar, .ps-doc__titlebar)
-     pads its right edge by this so right-aligned content clears the buttons.
-     One knob instead of the same magic number in four stylesheets. */
+  /* ---------- PLATFORM CHROME ----------
+     Two mirror-image reservations, one per platform that draws OS buttons
+     INSIDE our 41px title bar. Both are opt-in: the base rule for every bar
+     (.psl__topbar, .pss__titlebar, .szl__titlebar, .ps-doc__titlebar) reserves
+     nothing, because Linux gets an ordinary OS frame and has no in-window
+     buttons to clear. See platformWindowChrome in
+     apps/desktop/src/main/window.ts for the main-process half.
+
+     Left-side room a `:root[data-platform="darwin"]` title bar reserves for the
+     macOS traffic lights, which `titleBarStyle: "hiddenInset"` insets into our
+     bar. MACOS_TRAFFIC_LIGHT_POSITION (window.ts) places the 60pt button group
+     at x=16, so it ends at x=76, and the brand starts here at x=96 — 20px
+     clear of it. Pwr-family value: PwrGit and PwrAgent start their brand at
+     96 too. The two are pinned against each other by
+     macos-traffic-light-position.test.ts; change one there and the other in
+     the same commit. */
+  --mac-traffic-light-reserve: 96px;
+  /* Right-side room a `:root[data-platform="win32"]` title bar reserves for
+     the native min/max/close caption buttons drawn by `titleBarOverlay`. Every
+     win32 title bar pads its right edge by this so right-aligned content clears
+     the buttons. One knob instead of the same magic number in four
+     stylesheets. */
   --win-caption-reserve: 150px;
 
   /* ---------- TYPE SCALE ---------- */
@@ -218,7 +256,6 @@
   --pse-panel-grace-ms: 500ms;
   --pse-panel-slide-dur: 180ms;
   --pse-panel-slide-ease: cubic-bezier(0.32, 0.72, 0, 1);
-  --pse-affordance-auto-dismiss-ms: 8000ms;
 }
 
 /* ============================================================
@@ -288,9 +325,11 @@
   --warn-soft:     rgba(168, 107, 0, 0.12);
   --warn-border:   rgba(168, 107, 0, 0.28);
   --warn-text:     #6b4400;
+  --warn-strong:   #8f5b00;   /* white on it: 5.7:1 */
 
   /* ---------- BUTTON ---------- */
   --button-text-on-accent: #ffffff;   /* white reads cleanest on the deep tangerine */
+  --button-text-on-warn:   #ffffff;
 
   /* ---------- SHADOWS — softer on light surfaces ----------
      Same color-mix shape as the dark block — both themes derive

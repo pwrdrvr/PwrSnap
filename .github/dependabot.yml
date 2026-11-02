@@ -4,6 +4,13 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Must equal `minimumReleaseAge` in pnpm-workspace.yaml (10080 minutes
+    # = 7 days). pnpm refuses to resolve a version younger than that, so a
+    # Dependabot PR opened before the cooldown expires cannot install — the
+    # PR just sits with a red install until the age gate happens to pass.
+    # Change the two numbers together, or the gap reopens.
+    cooldown:
+      default-days: 7
     groups:
       react-runtime:
         patterns:
@@ -14,6 +21,28 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+
+  # GitHub Actions are not covered by `minimumReleaseAge` — that setting is
+  # pnpm's and never sees this ecosystem. The cooldown is kept at the same 7
+  # days anyway, matching PwrGit, so a freshly tagged action gets a week to
+  # be pulled or re-tagged before a PR lands here.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    # Same no-automatic-majors policy the npm entry above applies. Without
+    # it this ecosystem would be the one place in the repo where a major
+    # bump opens itself -- the workflows pin several actions by tag
+    # (actions/checkout@v5, setup-node@v6, github-script@v9,
+    # upload-artifact@v7), so v5 -> v6 PRs would start arriving. Majors for
+    # actions are worth taking deliberately (a bumped runtime can deprecate
+    # a runner), so do them by hand, or drop this block to let them flow.
     ignore:
       - dependency-name: "*"
         update-types:

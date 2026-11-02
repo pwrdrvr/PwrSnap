@@ -7,8 +7,10 @@ import type {
   AiRunUsageDetail,
   CaptureEnrichment,
   CaptureRecord,
-  SettingsChangedEvent
+  SettingsChangedEvent,
+  Settings
 } from "@pwrsnap/shared";
+import { baseSettings } from "../../settings/__tests__/settings-fixture";
 import { DetailRail, AiRunUsageStrip } from "../DetailRail";
 import type { LibraryView } from "../library-view";
 import type { LayersPanelApi } from "../../editor/Editor";
@@ -37,6 +39,7 @@ const record: CaptureRecord = {
   sha256: "sha_cap_1",
   source_app_bundle_id: "jp.naver.line.mac",
   source_app_name: "LINE",
+  source_window_title: null,
   edits_version: 0,
   has_alpha: false,
   deleted_at: null
@@ -149,7 +152,8 @@ function aiUsageDetail(patch: Partial<AiRunUsageDetail> = {}): AiRunUsageDetail 
 function installFakeApi(
   initial: CaptureEnrichment,
   options?: {
-    usageDetail?: () => AiRunUsageDetail;
+    usageDetail?: () => AiRunUsageDetail | null;
+    settings?: Settings;
   }
 ): {
   dispatch: ReturnType<typeof vi.fn>;
@@ -180,6 +184,7 @@ function installFakeApi(
   const defaultUsageDetail = aiUsageDetail();
   const getUsageDetail = options?.usageDetail ?? (() => defaultUsageDetail);
   const dispatch = vi.fn(async (name: string) => {
+    if (name === "settings:read") return { ok: true, value: options?.settings };
     if (name === "codex:enrichment") return { ok: true, value: initial };
     if (name === "codex:usageRunDetail") return { ok: true, value: getUsageDetail() };
     if (name === "codex:acceptDescription") return { ok: true, value: accepted };
@@ -227,7 +232,8 @@ function installFakeApi(
 async function renderDetailRail(
   initial: CaptureEnrichment,
   options?: {
-    usageDetail?: () => AiRunUsageDetail;
+    usageDetail?: () => AiRunUsageDetail | null;
+    settings?: Settings;
   },
   extraProps?: Record<string, unknown>
 ): Promise<{
@@ -271,6 +277,111 @@ afterEach(async () => {
 });
 
 describe("DetailRail", () => {
+  test.each(["queued", "running"] as const)("Cancel targets the current %s run without regenerating", async (status) => {
+    const { el, dispatch, pushEvent } = await renderDetailRail(enrichment({ status }));
+    const cancel = el.querySelector<HTMLButtonElement>('button[title="Cancel enrichment"]');
+    expect(cancel?.textContent).toBe("Cancel");
+    await act(async () => { cancel!.click(); });
+    expect(dispatch).toHaveBeenCalledWith("codex:cancel", { runId: "run_1" });
+    expect(dispatch.mock.calls.some(([name]) => name === "codex:enrich")).toBe(false);
+    await act(async () => {
+      pushEvent(EVENT_CHANNELS.aiRunUpdated, { enrichment: enrichment({ status: "cancelled" }) });
+    });
+    expect(el.querySelector('button[title="Cancel enrichment"]')).toBeNull();
+    expect(el.textContent).toContain("Enrichment cancelled.");
+    expect(el.querySelector(".ps-codex-pill .psl__chip-link")?.textContent).toBe("Regenerate");
+  });
+
+  test("selecting completed, failed, and unenriched captures only reads saved results", async () => {
+    const completed = enrichment();
+    const failed = enrichment({ captureId: "failed", status: "failed", error: "Previously recorded failure" });
+    const saved = new Map<string, CaptureEnrichment | null>([
+      [record.id, completed], ["failed", failed], ["unenriched", null]
+    ]);
+    const { el, dispatch } = await renderDetailRail(completed);
+    const originalDispatch = dispatch.getMockImplementation() as (name: string) => Promise<unknown>;
+    dispatch.mockImplementation(async (name: string, req: { captureId?: string }) => {
+      if (name === "codex:enrichment") return { ok: true, value: saved.get(req.captureId!) };
+      return originalDispatch(name);
+    });
+
+    for (const id of ["failed", "unenriched", record.id, "failed", record.id]) {
+      await act(async () => {
+        root?.render(createElement(DetailRail, {
+          view: { kind: "focus", selectedRecordId: id, returnAnchor: { scrollTop: 0, cellId: id } },
+          record: { ...record, id }
+        }));
+      });
+      expect(dispatch).toHaveBeenCalledWith("codex:enrichment", { captureId: id });
+      if (id === "failed") expect(el.textContent).toContain("Previously recorded failure");
+    }
+    expect(dispatch.mock.calls.filter(([name]) => name === "codex:enrich")).toEqual([]);
+
+    // Starting a new run still requires the explicit button action.
+    const regenerate = el.querySelector<HTMLButtonElement>(".ps-codex-pill .psl__chip-link");
+    expect(regenerate?.textContent).toBe("Regenerate");
+    await act(async () => { regenerate!.click(); });
+    expect(dispatch.mock.calls.filter(([name]) => name === "codex:enrich")).toEqual([
+      ["codex:enrich", { captureId: record.id, triggerSource: "library-regenerate" }]
+    ]);
+  });
+
+  test.each([
+    { provider: "openai", model: "gpt-6-luna", label: "GPT-6-Luna" },
+    { provider: "custom:previous", model: "/fixture/previous.gguf", label: "Previous model" }
+  ])("attributes old $provider runs once and keeps the next model only in Regenerate's tooltip", async ({ provider, model, label }) => {
+    const usage = aiUsageDetail({ model, modelProvider: provider, modelLabel: label, selectedModelLabel: label });
+    usage.run.selectedModel = model;
+    const settings: Settings = { ...baseSettings, ai: { ...baseSettings.ai,
+      defaults: { ...baseSettings.ai.defaults, enrichment: { provider: "custom:next", model: "/fixture/next.gguf" } },
+      customConnections: [{ id: "connection", name: "Next endpoint", baseUrl: "http://127.0.0.1:8080/v1", protocol: "openai-chat", auth: { type: "none" } }],
+      customModels: [{ id: "next", connectionId: "connection", displayName: "Next model", modelId: "/fixture/next.gguf", capabilities: { vision: true, streaming: true }, maxOutputTokens: 4096 }]
+    } };
+    const { el, pushEvent } = await renderDetailRail(enrichment({
+      suggestedTitle: "Fixture", acceptedTitle: "Fixture", suggestedDescription: "Fixture description", acceptedDescription: "Fixture description"
+    }), { usageDetail: () => usage, settings });
+    expect(el.querySelector(".ps-codex-pill__summary")?.textContent).toBe("Description filled");
+    expect(el.querySelector(".psl__ai-usage-model")?.textContent).toBe(label);
+    expect(el.textContent?.split(label)).toHaveLength(2);
+    expect(el.textContent).not.toContain("Next model");
+    expect(el.querySelector(".ps-codex-pill .psl__chip-link")?.getAttribute("title"))
+      .toBe("Regenerate with Next model (Next endpoint)");
+    settings.ai.defaults.enrichment = { provider: "codex", model: "gpt-6-sol" };
+    await act(async () => { pushEvent(EVENT_CHANNELS.settingsChanged, { settings }); });
+    expect(el.textContent?.split(label)).toHaveLength(2);
+    expect(el.textContent).not.toContain("gpt-6-sol");
+    expect(el.querySelector(".ps-codex-pill .psl__chip-link")?.getAttribute("title"))
+      .toBe("Regenerate with Codex (gpt-6-sol)");
+  });
+
+  test("missing run metadata never falls back to the current model for attribution", async () => {
+    const settings: Settings = { ...baseSettings, ai: { ...baseSettings.ai,
+      defaults: { ...baseSettings.ai.defaults, enrichment: { provider: "codex", model: "next-model" } }
+    } };
+    const { el } = await renderDetailRail(enrichment(), { usageDetail: () => null, settings });
+    expect(el.textContent).not.toContain("next-model");
+    expect(el.querySelector(".psl__ai-usage-model")).toBeNull();
+    expect(el.querySelector(".ps-codex-pill__summary")?.textContent).toBe("Drafted a title + description");
+    expect(el.querySelector(".ps-codex-pill .psl__chip-link")?.getAttribute("title"))
+      .toBe("Regenerate with Codex (next-model)");
+  });
+
+  test("custom enrichment uses the run's saved display name in its status and usage metadata", async () => {
+    const path = "/fixture/models/weights.gguf";
+    const usage = aiUsageDetail({ model: path, modelProvider: "custom:fixture", modelLabel: "Bench model", selectedModelLabel: "Bench model" });
+    usage.run.selectedModel = path;
+    const { el, pushEvent } = await renderDetailRail(enrichment({
+      suggestedTitle: "Fixture", acceptedTitle: "Fixture", suggestedDescription: "A fixture capture", acceptedDescription: "A fixture capture", descriptionAcceptedAt: "2026-05-15T18:25:00.000Z"
+    }), { usageDetail: () => usage });
+    expect(el.querySelector(".ps-codex-pill__summary")?.textContent).toBe("Description filled");
+    expect(el.querySelector(".psl__ai-usage-model")?.textContent).toBe("Bench model");
+    expect(el.textContent?.split("Bench model")).toHaveLength(2);
+    expect(el.textContent).not.toContain(path);
+    usage.modelLabel = "Renamed bench";
+    usage.selectedModelLabel = "Renamed bench";
+    await act(async () => { pushEvent(EVENT_CHANNELS.settingsChanged, { settings: { ai: { budgetSafetyDisabledAt: null } } }); });
+    expect(el.querySelector(".psl__ai-usage-model")?.textContent).toBe("Renamed bench");
+  });
   test("per-field Use button promotes Codex's initial draft to accepted", async () => {
     const { el, dispatch } = await renderDetailRail(
       enrichment({
@@ -367,6 +478,42 @@ describe("DetailRail", () => {
       tagEditor?.querySelectorAll(".psl__tag-accepted > span") ?? []
     ).map((node) => node.textContent?.trim());
     expect(editorTagLabels).toEqual(["chat", "pwrsnap", "bot"]);
+  });
+
+  test("shows a non-null source window title exactly in the detail header", async () => {
+    const windowTitle =
+      "プロジェクト計画 🪟 — " + "an-uninterrupted-window-title-segment-".repeat(8);
+    const { el } = await renderDetailRail(enrichment(), undefined, {
+      record: { ...record, source_window_title: windowTitle }
+    });
+
+    const title = el.querySelector<HTMLElement>(
+      '[data-testid="detail-window-title"]'
+    );
+    expect(title?.textContent).toBe(windowTitle);
+    expect(title?.classList.contains("psl__detail-window-title")).toBe(true);
+    expect(title?.getAttribute("dir")).toBe("auto");
+  });
+
+  test("omits the source window title line when the title is null", async () => {
+    const { el } = await renderDetailRail(enrichment());
+
+    expect(
+      el.querySelector('[data-testid="detail-window-title"]')
+    ).toBeNull();
+  });
+
+  test("omits the source window title line for a legacy absent field", async () => {
+    const { el } = await renderDetailRail(enrichment(), undefined, {
+      record: {
+        ...record,
+        source_window_title: undefined as unknown as null
+      }
+    });
+
+    expect(
+      el.querySelector('[data-testid="detail-window-title"]')
+    ).toBeNull();
   });
 
   test("× on an accepted tag chip dispatches library:removeTag with the label", async () => {
@@ -577,6 +724,29 @@ describe("DetailRail", () => {
     // The textarea must show Codex's draft now, not the user's
     // half-typed string.
     expect(textarea?.value).toBe("Codex draft body");
+  });
+
+  test("AI strip carries the same Auto-apply switch as the popover and persists it", async () => {
+    const settings: Settings = { ...baseSettings, ai: { ...baseSettings.ai,
+      enabled: true, consentAcceptedAt: "2026-05-15T18:25:00.000Z", autoAcceptSuggestions: false
+    } };
+    const { el, dispatch } = await renderDetailRail(
+      enrichment({ suggestedTitle: "Codex headline", suggestedDescription: "Codex body" }),
+      { settings }
+    );
+    const label = el.querySelector<HTMLLabelElement>(".ps-codex-pill__footer .ps-codex-pill__auto");
+    expect(label?.textContent).toBe("Auto-apply");
+    expect(label?.dataset.tip).toBe("Apply AI enrichment automatically when ready");
+    const box = label?.querySelector<HTMLInputElement>("input[type='checkbox']");
+    expect(box?.getAttribute("aria-label")).toBe("Auto-apply AI enrichment");
+    expect(box?.checked).toBe(false);
+    await act(async () => { box?.click(); await Promise.resolve(); });
+    expect(dispatch).toHaveBeenCalledWith("settings:write", { ai: { autoAcceptSuggestions: true } });
+  });
+
+  test("AI strip hides Auto-apply until AI is enabled and consented", async () => {
+    const { el } = await renderDetailRail(enrichment(), { settings: baseSettings });
+    expect(el.querySelector(".ps-codex-pill__auto")).toBeNull();
   });
 
   test("AI strip shows a prominent Use draft button and a de-emphasized Regenerate link", async () => {
@@ -888,7 +1058,7 @@ describe("DetailRail", () => {
     expect(infoTab).not.toBeNull();
     expect(ocrTab).not.toBeNull();
     expect(chatTab).not.toBeNull();
-    expect(chatTab?.title).toBe("Chat with AI");
+    expect(chatTab?.dataset.tip).toBe("Chat with AI");
     expect(infoTab?.getAttribute("role")).toBe("tab");
     expect(ocrTab?.getAttribute("role")).toBe("tab");
     expect(chatTab?.getAttribute("role")).toBe("tab");
@@ -941,13 +1111,11 @@ describe("DetailRail", () => {
     const ocrTab = el.querySelector<HTMLButtonElement>(
       '[data-testid="psl-right-tab-ocr"]'
     );
-    expect(ocrTab?.querySelector(".rab__act-badge")?.getAttribute("title")).toBe(
-      "extracted text available"
-    );
+    expect(ocrTab?.querySelector(".rab__act-badge")).not.toBeNull();
     expect(ocrTab?.getAttribute("aria-label")).toBe(
       "OCR — extracted text available"
     );
-    expect(ocrTab?.title).toBe("OCR — extracted text ready");
+    expect(ocrTab?.dataset.tip).toBe("OCR — extracted text ready");
   });
 
   test("Grid mode renders the restricted Info/OCR inspector (no Chat tab)", async () => {
@@ -1534,12 +1702,15 @@ describe("DetailRail — Layers tab", () => {
   // moveLayerToIndex) can't silently drift the stub out of conformance.
   const stubLayersApi: LayersPanelApi = {
     selectLayers: () => undefined,
+    clearSelection: () => undefined,
     setLayerVisibility: async () => undefined,
     deleteLayer: async () => undefined,
     moveLayerToIndex: async () => undefined,
     uncrop: async () => undefined,
     resetRasterTransform: async () => undefined,
-    updateLayerStyle: () => undefined
+    updateLayerStyle: () => undefined,
+    applyBagSlot: () => undefined,
+    addArrowLabel: () => false
   };
 
   test("shows Properties and Layers tabs for an image capture when layersApi is present", async () => {
@@ -1575,6 +1746,8 @@ describe("DetailRail video export honors the persisted trim range", () => {
     containerFormat: "mp4" as const,
     hasSystemAudio: false,
     hasMicrophoneAudio: false,
+    requestedSystemAudio: false,
+    requestedMicrophone: false,
     previewPath: null,
     previewStatus: "ready" as const
   };
@@ -1583,7 +1756,7 @@ describe("DetailRail video export honors the persisted trim range", () => {
     const videoRecord: CaptureRecord = {
       ...record,
       kind: "video",
-      video: { ...videoMeta, defaultRange: { start: 0, end: 16 } }
+      video: { ...videoMeta, defaultRange: { start: 0, end: 16 }, segments: [{ start: 0, end: 16 }] }
     };
     const { el, dispatch } = await renderDetailRail(enrichment(), undefined, {
       record: videoRecord
@@ -1593,7 +1766,9 @@ describe("DetailRail video export honors the persisted trim range", () => {
     const metricsCall = dispatch.mock.calls.find((c) => c[0] === "video:presetMetrics");
     expect(metricsCall?.[1]).toEqual({
       captureId: record.id,
-      range: { start: 0, end: 16 }
+      range: { start: 0, end: 16 },
+      // The fixture take recorded no audio: explicitly silent.
+      audio: { includeMicrophone: false, includeSystemAudio: false }
     });
   });
 
@@ -1601,7 +1776,7 @@ describe("DetailRail video export honors the persisted trim range", () => {
     const videoRecord: CaptureRecord = {
       ...record,
       kind: "video",
-      video: { ...videoMeta, defaultRange: { start: 3.4, end: 11.2 } }
+      video: { ...videoMeta, defaultRange: { start: 3.4, end: 11.2 }, segments: [{ start: 3.4, end: 11.2 }] }
     };
     const { el, dispatch } = await renderDetailRail(enrichment(), undefined, {
       record: videoRecord
@@ -1613,7 +1788,9 @@ describe("DetailRail video export honors the persisted trim range", () => {
     const metricsCall = dispatch.mock.calls.find((c) => c[0] === "video:presetMetrics");
     expect(metricsCall?.[1]).toEqual({
       captureId: record.id,
-      range: { start: 3.4, end: 11.2 }
+      range: { start: 3.4, end: 11.2 },
+      // The fixture take recorded no audio: explicitly silent.
+      audio: { includeMicrophone: false, includeSystemAudio: false }
     });
 
     // Clicking a card exports the displayed range explicitly.

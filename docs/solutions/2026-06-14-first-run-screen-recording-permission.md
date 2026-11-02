@@ -164,3 +164,40 @@ moment the first capture lands. Honors `prefers-reduced-motion`.
   Library is empty.
 - Tests: `screen-permission-gate.test.ts` (new), updated
   `recording-permissions.test.ts`.
+
+## Addendum (2026-10-11): the probe is gone; the permission guide replaced it
+
+The fix above made every blocked capture, and the System Permissions
+buttons, call `desktopCapturer.getSources` first, on the theory that the
+probe is silent once macOS has a decision on file. On macOS 26 it is not.
+Whenever macOS has no decision for the running identity (a fresh install,
+a row the user removed, a `tccutil reset`, a new dev-build identity), the
+probe raises macOS's own "would like to record this computer's screen"
+alert, and that alert:
+
+- belongs to the system, not to PwrSnap, so it **stays on screen after
+  PwrSnap relaunches**, even once the grant has landed;
+- **stacks**: each blocked capture fired another probe, so users saw two or
+  three copies;
+- arrived on top of PwrSnap's own permission guide, so the user was asked
+  twice, two different ways.
+
+The original reason for the probe, getting a copy macOS had never seen into
+the list, is now done by the permission guide
+([capture/permission-guide.ts](../../apps/desktop/src/main/capture/permission-guide.ts)):
+its handle drags the running bundle into the list whether or not macOS has a
+decision on file, and its Reset (`tccutil reset ScreenCapture <bundle id>`)
+clears a row signed to a different copy. So:
+
+- `guardScreenCapture` never calls a capture API while preflight is not
+  granted. It shows the guide (UI callers) or just errors (headless), and
+  still writes `screenCapturePrompted`.
+- `permissions:request` for screen / system audio only reads status back.
+- The System Permissions page's "Request access" and "Show me how" both open
+  the guide.
+
+The "cardinal rule" in the Gotchas above ("always run the real probe") is
+therefore superseded by its opposite: **never** touch a capture API while
+preflight says not granted. The header of
+[screen-permission-gate.ts](../../apps/desktop/src/main/capture/screen-permission-gate.ts)
+says why.

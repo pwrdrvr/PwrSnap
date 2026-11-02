@@ -58,6 +58,7 @@ type WindowSpy = {
 
 const constructed: WindowSpy[] = [];
 const ipcListeners = new Map<string, (event: unknown, payload: unknown) => void>();
+const ipcHandlers = new Map<string, (event: unknown, payload: unknown) => unknown>();
 const deferredLoadResolvers: (() => void)[] = [];
 let deferSelectorLoads = false;
 // When true, the window spy stops auto-acking `region-selector:painted`
@@ -66,7 +67,10 @@ let deferSelectorLoads = false;
 let suppressPaintAck = false;
 const screenSnapshotMocks = vi.hoisted(() => ({
   captureAndRegister: vi.fn(),
-  releaseSnapshot: vi.fn()
+  releaseSnapshot: vi.fn(),
+  releaseAllSnapshots: vi.fn(),
+  readSnapshotForRenderer: vi.fn(),
+  recordSnapshotCanvasUpload: vi.fn()
 }));
 const selectorShortcutMocks = vi.hoisted(() => {
   const callbacks = new Map<string, () => void>();
@@ -90,6 +94,7 @@ function selectorLoadPromise(): Promise<void> {
 }
 
 function makeWindowSpy(options: Record<string, unknown>): WindowSpy {
+  const webContentsId = 100 + constructed.length;
   return {
     setTitle: vi.fn(),
     setAlwaysOnTop: vi.fn(),
@@ -107,7 +112,7 @@ function makeWindowSpy(options: Record<string, unknown>): WindowSpy {
     loadURL: vi.fn(() => selectorLoadPromise()),
     loadFile: vi.fn(() => selectorLoadPromise()),
     webContents: {
-      id: 100 + constructed.length,
+      id: webContentsId,
       on: vi.fn(),
       // Simulate the selector renderer: when main pushes the per-show
       // mode with a snapshot URL, the real renderer loads the frozen
@@ -121,7 +126,16 @@ function makeWindowSpy(options: Record<string, unknown>): WindowSpy {
           const url = (payload as { screenUrl?: unknown }).screenUrl;
           if (typeof url === "string") {
             queueMicrotask(() =>
-              ipcListeners.get("region-selector:painted")?.({}, { screenUrl: url })
+              ipcListeners.get("region-selector:painted")?.(
+                { sender: { id: webContentsId } },
+                {
+                  screenUrl: url,
+                  transport: "img",
+                  decodeMs: 1,
+                  mainToRendererBytes: 0,
+                  canvasUploadBytes: 0
+                }
+              )
             );
           }
         }
@@ -184,7 +198,11 @@ vi.mock("electron", () => {
       on: vi.fn((channel: string, listener: (event: unknown, payload: unknown) => void) => {
         ipcListeners.set(channel, listener);
       }),
-      removeAllListeners: vi.fn()
+      handle: vi.fn((channel: string, listener: (event: unknown, payload: unknown) => unknown) => {
+        ipcHandlers.set(channel, listener);
+      }),
+      removeAllListeners: vi.fn(),
+      removeHandler: vi.fn()
     }
   };
 });
@@ -214,7 +232,10 @@ vi.mock("../capture/window-list", () => ({
 
 vi.mock("../capture/screen-snapshot", () => ({
   captureAndRegister: screenSnapshotMocks.captureAndRegister,
-  releaseSnapshot: screenSnapshotMocks.releaseSnapshot
+  releaseSnapshot: screenSnapshotMocks.releaseSnapshot,
+  releaseAllSnapshots: screenSnapshotMocks.releaseAllSnapshots,
+  readSnapshotForRenderer: screenSnapshotMocks.readSnapshotForRenderer,
+  recordSnapshotCanvasUpload: screenSnapshotMocks.recordSnapshotCanvasUpload
 }));
 
 // Hoisted (not inline `vi.fn()`) so the SAME spy survives the
@@ -239,11 +260,15 @@ const realPlatform = process.platform;
 beforeEach(() => {
   constructed.length = 0;
   ipcListeners.clear();
+  ipcHandlers.clear();
   deferredLoadResolvers.length = 0;
   deferSelectorLoads = false;
   suppressPaintAck = false;
   screenSnapshotMocks.captureAndRegister.mockReset();
   screenSnapshotMocks.releaseSnapshot.mockReset();
+  screenSnapshotMocks.releaseAllSnapshots.mockReset();
+  screenSnapshotMocks.readSnapshotForRenderer.mockReset();
+  screenSnapshotMocks.recordSnapshotCanvasUpload.mockReset();
   // mockReset, not mockClear: the compositor-flush test below installs a
   // `mockImplementation` on hideTrayPopoverIfVisible, and mockClear drops
   // only the call records — the implementation would survive into every
@@ -256,8 +281,15 @@ beforeEach(() => {
   selectorShortcutMocks.unregister.mockClear();
   screenSnapshotMocks.captureAndRegister.mockResolvedValue({
     id: "snapshot-1",
-    filePath: "/tmp/snapshot.png",
-    displayId: 1
+    displayId: 1,
+    transport: "png-file",
+    acquisition: {
+      sourceBitmapBytes: 0,
+      mappingWriteBytes: 0,
+      fullScreenPngEncodeCount: 1,
+      fullScreenPngBytes: 100,
+      fullScreenTempFileWriteBytes: 100
+    }
   });
   vi.resetModules();
   // createSelectorWindow only sets the NSPanel (`type: 'panel'`) +
@@ -305,6 +337,17 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
   });
 
   test("disables background throttling so hidden prewarm loads before the first shortcut", async () => {
+    const { preWarmRegionSelector } = await import("../capture/region-selector");
+    preWarmRegionSelector();
+
+    const spy = constructed[0]!;
+    expect(spy.options.webPreferences).toMatchObject({
+      backgroundThrottling: false
+    });
+  });
+
+  test("disables background throttling on Windows so a reused hidden selector can schedule its presentation frames", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
     const { preWarmRegionSelector } = await import("../capture/region-selector");
     preWarmRegionSelector();
 
@@ -625,15 +668,107 @@ describe("region-selector — snapshot-paint gate before show()", () => {
     // A late ack from a SUPERSEDED capture (different screenUrl) must not
     // satisfy the current wait — the selector stays hidden. (Well under
     // the 250ms timeout, so the fallback can't be what keeps it hidden.)
-    ipcListeners.get("region-selector:painted")?.({}, { screenUrl: "pwrsnap-screen://r/stale-0" });
+    const paintEvent = { sender: { id: constructed[0]!.webContents.id } };
+    ipcListeners.get("region-selector:painted")?.(paintEvent, {
+      screenUrl: "pwrsnap-screen://r/stale-0"
+    });
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(constructed[0]?.show).not.toHaveBeenCalled();
 
     // The ack for the CURRENT snapshot reveals it.
-    ipcListeners.get("region-selector:painted")?.({}, { screenUrl: "pwrsnap-screen://r/snapshot-1" });
+    ipcListeners.get("region-selector:painted")?.(paintEvent, {
+      screenUrl: "pwrsnap-screen://r/snapshot-1"
+    });
     await vi.waitFor(() => {
       expect(constructed[0]?.show).toHaveBeenCalledTimes(1);
     });
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+  });
+});
+
+describe("region-selector — mapped snapshot IPC boundary", () => {
+  test("admits only the active selector top-level frame and active opaque id", async () => {
+    screenSnapshotMocks.captureAndRegister.mockResolvedValueOnce({
+      id: "mapped-snapshot-1",
+      displayId: 1,
+      transport: "raw-rgba",
+      selectorDescriptor: {
+        id: "mapped-snapshot-1",
+        transport: "raw-rgba",
+        version: 1,
+        width: 2,
+        height: 1,
+        stride: 8,
+        pixelFormat: 1,
+        byteLength: 8
+      },
+      acquisition: {
+        sourceBitmapBytes: 8,
+        mappingWriteBytes: 72,
+        fullScreenPngEncodeCount: 0,
+        fullScreenPngBytes: 0,
+        fullScreenTempFileWriteBytes: 0
+      }
+    });
+    screenSnapshotMocks.readSnapshotForRenderer.mockResolvedValue({
+      ok: true,
+      header: {
+        version: 1,
+        width: 2,
+        height: 1,
+        stride: 8,
+        pixelFormat: 1,
+        byteLength: 8
+      },
+      data: Buffer.alloc(8)
+    });
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ keepPwrSnapChrome: true });
+    await vi.waitFor(() => {
+      expect(ipcHandlers.has("region-selector:snapshot-read")).toBe(true);
+      expect(constructed[0]?.webContents.send).toHaveBeenCalledWith(
+        "region-selector:mode",
+        expect.objectContaining({
+          snapshot: expect.objectContaining({ id: "mapped-snapshot-1" })
+        })
+      );
+    });
+    const handler = ipcHandlers.get("region-selector:snapshot-read")!;
+    const mainFrame = { processId: 10, routingId: 20 };
+    const sender = {
+      id: constructed[0]!.webContents.id,
+      isDestroyed: () => false,
+      mainFrame
+    };
+
+    await expect(
+      handler(
+        {
+          sender: { id: sender.id + 1, isDestroyed: () => false, mainFrame },
+          senderFrame: mainFrame
+        },
+        { id: "mapped-snapshot-1" }
+      )
+    ).resolves.toEqual({ ok: false, code: "unauthorized" });
+    await expect(
+      handler(
+        { sender, senderFrame: { processId: 10, routingId: 21 } },
+        { id: "mapped-snapshot-1" }
+      )
+    ).resolves.toEqual({ ok: false, code: "unauthorized" });
+    await expect(
+      handler({ sender, senderFrame: mainFrame }, { id: "mapped-snapshot-2" })
+    ).resolves.toEqual({ ok: false, code: "unauthorized" });
+    expect(screenSnapshotMocks.readSnapshotForRenderer).not.toHaveBeenCalled();
+
+    await expect(
+      handler({ sender, senderFrame: mainFrame }, { id: "mapped-snapshot-1" })
+    ).resolves.toMatchObject({ ok: true });
+    expect(screenSnapshotMocks.readSnapshotForRenderer).toHaveBeenCalledWith(
+      "mapped-snapshot-1"
+    );
 
     ipcListeners.get("region-selector:result")?.({}, { ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
@@ -650,6 +785,75 @@ describe("region-selector — authenticated post-show presentation trace", () =>
       triggerWallTime: "2026-09-01T12:00:00.000Z"
     };
   }
+
+  test("retains late bitmap readiness after timeout, rejects stale/duplicate acks, and summarizes frame timings", async () => {
+    suppressPaintAck = true;
+    const entries: Array<{ message: string; fields: Record<string, unknown> }> = [];
+    const { CaptureLatencyTrace } = await import("../capture/capture-latency-trace");
+    const trace = new CaptureLatencyTrace(invocation(), "window", {
+      logger: {
+        debug: (message, fields) => entries.push({ message, fields }),
+        info: (message, fields) => entries.push({ message, fields })
+      }
+    });
+    screenSnapshotMocks.captureAndRegister.mockResolvedValueOnce({
+      id: "late-mapped", displayId: 1, transport: "raw-rgba",
+      selectorDescriptor: {
+        id: "late-mapped", transport: "raw-rgba", version: 1,
+        width: 2, height: 1, stride: 8, pixelFormat: 1, byteLength: 8
+      }
+    });
+    const { pickRegion, hideSelector } = await import("../capture/region-selector");
+    const pick = pickRegion({ mode: "window", latencyTrace: trace });
+    const spy = constructed[0]!;
+    await vi.waitFor(() => expect(spy.show).toHaveBeenCalledTimes(1));
+    const request = spy.webContents.send.mock.calls.find(
+      ([channel]) => channel === "region-selector:presentation-request"
+    )?.[1] as Record<string, unknown>;
+    screenSnapshotMocks.readSnapshotForRenderer.mockResolvedValueOnce({ ok: true });
+    const mainFrame = { processId: 10, routingId: 20 };
+    await ipcHandlers.get("region-selector:snapshot-read")!({
+      sender: { id: spy.webContents.id, isDestroyed: () => false, mainFrame },
+      senderFrame: mainFrame
+    }, { id: "late-mapped" });
+    const painted = ipcListeners.get("region-selector:painted")!;
+    const payload = {
+      screenUrl: "pwrsnap-screen://r/late-mapped", transport: "raw-rgba",
+      decodeMs: 900, readRoundTripMs: 850, canvasUploadMs: 50,
+      mainToRendererBytes: 8, canvasUploadBytes: 8
+    };
+    painted({ sender: { id: spy.webContents.id + 1 } }, payload);
+    painted({ sender: { id: spy.webContents.id } }, { ...payload, screenUrl: "stale" });
+    expect(screenSnapshotMocks.recordSnapshotCanvasUpload).not.toHaveBeenCalled();
+    painted({ sender: { id: spy.webContents.id } }, payload);
+    painted({ sender: { id: spy.webContents.id } }, payload);
+    expect(spy.show).toHaveBeenCalledTimes(1);
+    expect(screenSnapshotMocks.recordSnapshotCanvasUpload).toHaveBeenCalledTimes(1);
+    expect(screenSnapshotMocks.recordSnapshotCanvasUpload).toHaveBeenCalledWith("late-mapped", 8);
+    ipcListeners.get("region-selector:presented")?.({ sender: { id: spy.webContents.id } }, {
+      ...request, snapshotWaitMs: 600, firstFrameWaitMs: 20, secondFrameWaitMs: 30,
+      rendererTotalMs: Number.POSITIVE_INFINITY
+    });
+    expect(entries.find((entry) => entry.fields.stage === "frozen_source_decode_ready")?.fields)
+      .toMatchObject({ outcome: "timeout", renderer: "canvas" });
+    expect(entries.find((entry) => entry.fields.event === "capture_latency_summary")?.fields)
+      .toMatchObject({
+        snapshotReadiness: {
+          transport: "raw-rgba", gateOutcome: "timeout", late: true,
+          mainBitmapReadMs: expect.any(Number), mainBitmapReadOutcome: "read",
+          readRoundTripMs: 850, canvasUploadMs: 50, rendererReadyMs: 900
+        },
+        presentation: {
+          snapshotWaitMs: 600, firstFrameWaitMs: 20, secondFrameWaitMs: 30,
+          rendererTotalMs: null
+        }
+      });
+    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    await pick;
+    hideSelector();
+    painted({ sender: { id: spy.webContents.id } }, payload);
+    expect(screenSnapshotMocks.recordSnapshotCanvasUpload).toHaveBeenCalledTimes(1);
+  });
 
   test("requests acknowledgement after show/focus/moveTop and rejects stale or wrong senders", async () => {
     const entries: Array<{ message: string; fields: Record<string, unknown> }> = [];
@@ -961,7 +1165,7 @@ describe("region-selector — PwrSnap chrome leaves the frame before the screen 
     });
 
     expect(chromeMocks.hideTrayPopoverIfVisible).toHaveBeenCalledTimes(1);
-    expect(chromeMocks.setFloatOverState).toHaveBeenCalledWith({ kind: "cancel" });
+    expect(chromeMocks.setFloatOverState).toHaveBeenCalledWith({ kind: "cancel", chromeHide: true });
 
     const hideOrder = chromeMocks.hideTrayPopoverIfVisible.mock.invocationCallOrder[0]!;
     const parkOrder = chromeMocks.setFloatOverState.mock.invocationCallOrder[0]!;
@@ -1147,5 +1351,104 @@ describe("region-selector — Snap-vs-Record commit payload (issue #75)", () => 
       }
     );
     await expect(pick).resolves.toMatchObject({ ok: true, action: "record" });
+  });
+});
+
+describe("region-selector — recording source chips", () => {
+  test("forwards the per-show seed to the renderer", async () => {
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({
+      intent: "video",
+      sourcesDefault: { microphone: true, systemAudio: false }
+    });
+
+    await vi.waitFor(() => {
+      expect(constructed[0]?.webContents.send).toHaveBeenCalled();
+    });
+    const modeSend = constructed[0]!.webContents.send.mock.calls.find(
+      (call) => call[0] === "region-selector:mode"
+    );
+    expect(modeSend?.[1]).toMatchObject({
+      sources: { microphone: true, systemAudio: false }
+    });
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    await expect(pick).resolves.toMatchObject({ ok: false });
+  });
+
+  test("a caller that omits the seed sends no `sources` key", async () => {
+    // Omitting it is what hides the chips. Sending `sources: undefined`
+    // would be indistinguishable at the type level but reads as a
+    // present-but-empty answer to anything doing a key check.
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ intent: "video" });
+    await vi.waitFor(() => {
+      expect(constructed[0]?.webContents.send).toHaveBeenCalled();
+    });
+    const modeSend = constructed[0]!.webContents.send.mock.calls.find(
+      (call) => call[0] === "region-selector:mode"
+    );
+    expect(modeSend?.[1]).not.toHaveProperty("sources");
+
+    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    await expect(pick).resolves.toMatchObject({ ok: false });
+  });
+
+  test("carries the committed answer through to the result", async () => {
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ intent: "video" });
+    await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
+
+    ipcListeners.get("region-selector:result")?.(
+      {},
+      {
+        ok: true,
+        rect: { x: 10, y: 20, w: 300, h: 200 },
+        displayId: 1,
+        sources: { microphone: true, systemAudio: true }
+      }
+    );
+    await expect(pick).resolves.toMatchObject({
+      ok: true,
+      sources: { microphone: true, systemAudio: true }
+    });
+  });
+
+  test("a commit without sources leaves the field absent", async () => {
+    // Absent means "the selector did not ask", which is what routes the
+    // recording entry point back to the persisted defaults. A `sources`
+    // key holding undefined would defeat that.
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion();
+    await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
+
+    ipcListeners.get("region-selector:result")?.(
+      {},
+      { ok: true, rect: { x: 10, y: 20, w: 300, h: 200 }, displayId: 1 }
+    );
+    const result = await pick;
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty("sources");
+  });
+
+  test.each([
+    ["a half-filled object", { microphone: true }],
+    ["a non-boolean member", { microphone: true, systemAudio: "yes" }],
+    ["null", null],
+    ["a bare boolean", true]
+  ])("rejects the whole commit when sources is %s", async (_label, sources) => {
+    // A partially-parsed `sources` would read as "the user answered"
+    // while defaulting the missing half to off — a recording quietly
+    // missing audio the user armed. An unparseable payload is a cancel,
+    // the same as a bad `action`.
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ intent: "video" });
+    await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
+
+    ipcListeners.get("region-selector:result")?.(
+      {},
+      { ok: true, rect: { x: 10, y: 20, w: 300, h: 200 }, displayId: 1, sources }
+    );
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
   });
 });

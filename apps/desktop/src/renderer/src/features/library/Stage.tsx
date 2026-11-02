@@ -114,6 +114,10 @@ export type StageProps = {
    *  Stage is a pass-through, same as `onZoomChange`. */
   readonly onSelectionChange: (ids: readonly string[]) => void;
   readonly onLayersApi: (api: LayersPanelApi | null) => void;
+  /** Library's mirror of the canvas selection + the editor's layers
+   *  API, forwarded to the EditToolbar's property bar and tool bag. */
+  readonly selectedLayerIds: readonly string[];
+  readonly layersApi: LayersPanelApi | null;
   /** Optional content to render above the stage — used by Reel mode
    *  to host the filmstrip. Focus passes nothing (no filmstrip). */
   readonly aboveStageSlot?: ReactElement;
@@ -171,7 +175,9 @@ function StageBody({
   blurStyle,
   onBlurStyleChange,
   onSelectionChange,
-  onLayersApi
+  onLayersApi,
+  selectedLayerIds,
+  layersApi
 }: StageProps): ReactElement {
   const captureId = record.id;
   void view; // currently unused; kept in props for future variant logic
@@ -195,7 +201,9 @@ function StageBody({
           className="psl__focus-close"
           // Stable hook for the E2E specs' closeEditorWindow() helper.
           data-testid="focus-back"
-          title="Back to grid (Esc)"
+          aria-label="Back to grid"
+          data-tip="Back to grid"
+          data-tip-keys="Esc"
           onClick={() => dispatch({ type: "CLOSE_FOCUS" })}
         >
           <svg
@@ -215,7 +223,9 @@ function StageBody({
       <button
         type="button"
         className="psl__stage-nav is-prev"
-        title="Previous (←)"
+        aria-label="Previous capture"
+        data-tip="Previous"
+        data-tip-keys="←"
         disabled={prevRecordId === null}
         onClick={() => {
           if (prevRecordId !== null) dispatch({ type: "NAVIGATE", recordId: prevRecordId });
@@ -236,7 +246,9 @@ function StageBody({
       <button
         type="button"
         className="psl__stage-nav is-next"
-        title="Next (→)"
+        aria-label="Next capture"
+        data-tip="Next"
+        data-tip-keys="→"
         disabled={nextRecordId === null}
         onClick={() => {
           if (nextRecordId !== null) dispatch({ type: "NAVIGATE", recordId: nextRecordId });
@@ -291,6 +303,11 @@ function StageBody({
               reel={!dismissible}
             />
           ) : (
+            // Degenerate case: a video row whose `video_captures` metadata
+            // is missing. Audible, but deliberately NOT resolved through
+            // `video:playback` — that verb answers from the same metadata,
+            // and returns the capture URL unchanged when it is absent. The
+            // dispatch could only ever be a round trip to this same value.
             <video
               src={captureSrcUrl(record.id)}
               controls
@@ -331,6 +348,8 @@ function StageBody({
           zoom={zoom}
           blurStyle={blurStyle}
           onBlurStyleChange={onBlurStyleChange}
+          selectedLayerIds={selectedLayerIds}
+          layersApi={layersApi}
         />
       )}
     </>

@@ -41,8 +41,10 @@ import type {
   AiEnrichmentBudgetStatus,
   AiRunUsageDetail,
   CaptureEnrichment,
+  CaptureFamilySummary,
   CaptureRecord,
   ExportStrategy,
+  LibraryDuplicateWithEditsSettings,
   LibrarySidebarTab,
   ShortcutPlatform,
   SettingsChangedEvent,
@@ -57,15 +59,18 @@ import {
   estimateMetricForRung,
   type CopyPreset
 } from "../shared/CopyButton";
-import { CodexStatusPill, enrichmentBackendLabel } from "../shared/CodexStatusPill";
+import { CodexStatusPill, enrichmentBackendLabel, enrichmentRegenerateLabel } from "../shared/CodexStatusPill";
 import { useFieldEditor } from "../shared/useFieldEditor";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { useVideoExportPresets } from "../shared/useVideoExportPresets";
 import { useVideoPresetMetrics } from "../shared/useVideoPresetMetrics";
+import { recordedAudioTracks, useMp4ExportAudio } from "../shared/useMp4ExportAudio";
 import { VideoExportPresetGrid } from "../shared/VideoExportPresetGrid";
-import { exportRangeLabel } from "../shared/video-range";
+import { exportRangeLabel, exportSegmentsOf } from "../shared/video-range";
 import { AppTag } from "../shared/AppIcons";
+import { enrichmentRunClock } from "../shared/EnrichmentRunClock";
 import { DeleteConfirm } from "../shared/DeleteConfirm";
+import { PsIcon } from "../shared/PsIcon";
 import {
   RightActivityBar,
   type RightActivityTab
@@ -78,8 +83,10 @@ import type { LayersPanelApi } from "../editor/Editor";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag, subscribe } from "../../lib/pwrsnap";
 import { copyImagePreset, copyImagePresetPath } from "../../lib/clipboard-copy";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
-import { useCart } from "./CartContext";
+import { useCart, useCartLoaded } from "./CartContext";
 import { CartPanel } from "./CartPanel";
+import { DuplicateChooser, type DuplicateRequest } from "./DuplicateChooser";
+import { FamilyTab } from "./FamilyTab";
 import { mapBundleIdToAppId } from "./adapter";
 import type { LibraryView } from "./library-view";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
@@ -117,6 +124,12 @@ export type DetailRailProps = {
    *  `null` / omitted → fall back to the persisted `defaultRange`, so
    *  the rail still works standalone (tests, future embeddings). */
   readonly videoTrimRange?: VideoRange | null;
+  /** The live edit's export spans when it has cuts (`exportSegments`
+   *  from the same `useVideoTrimRange` instance), `undefined` for an
+   *  uncut edit. Rides every export beside `videoTrimRange`. Only read
+   *  when `videoTrimRange` is present — without it the rail falls back
+   *  to the persisted edit as a whole. */
+  readonly videoTrimSegments?: readonly VideoRange[] | undefined;
   /** Controlled active-tab — same shape as `pinned`. */
   readonly activeTab?: LibrarySidebarTab;
   readonly onActiveTabChange?: (next: LibrarySidebarTab) => void;
@@ -156,6 +169,21 @@ export type DetailRailProps = {
    *  mounted). Omitted/null in isolation (e.g. tests) → no Layers tab. */
   readonly layersApi?: LayersPanelApi | null;
   readonly shortcutPlatform?: ShortcutPlatform;
+  /** Every duplicate family (Library's `useCaptureFamilies`). The Family
+   *  tab appears once there is at least one. */
+  readonly families?: readonly CaptureFamilySummary[];
+  /** Family tab: select a member (it may not be loaded in the grid yet). */
+  readonly onSelectFamilyMember?: (captureId: string) => void;
+  /** Family tab: filter the grid to one family. */
+  readonly onFilterFamily?: (familyId: string) => void;
+  /** Footer Duplicate button. Omitted → no button. */
+  readonly onDuplicate?: (record: CaptureRecord, request: DuplicateRequest) => void;
+  /** The remembered With Edits / Base Only choice, per kind. */
+  readonly duplicatePrefs?: LibraryDuplicateWithEditsSettings;
+  /** Opens the dialog that re-runs AI over every snap it failed on. */
+  readonly onOpenEnrichmentRepair?: () => void;
+  /** Snaps AI failed on, across all time, for the rail's re-run link. */
+  readonly enrichmentFailedCount?: number | null;
 };
 
 export function DetailRail({
@@ -163,6 +191,7 @@ export function DetailRail({
   record,
   copyPulses,
   videoTrimRange = null,
+  videoTrimSegments,
   pinned: pinnedProp,
   onPinChange,
   activeTab: activeTabProp,
@@ -178,7 +207,14 @@ export function DetailRail({
   onGridActiveTabChange,
   selectedLayerIds = [],
   layersApi = null,
-  shortcutPlatform = rendererShortcutPlatform()
+  shortcutPlatform = rendererShortcutPlatform(),
+  families = NO_FAMILIES,
+  onSelectFamilyMember,
+  onFilterFamily,
+  onDuplicate,
+  duplicatePrefs = DEFAULT_DUPLICATE_PREFS,
+  onOpenEnrichmentRepair,
+  enrichmentFailedCount
 }: DetailRailProps): ReactElement | null {
   // Skip the image render-metrics IPC for video captures — the
   // sharp-based preset pipeline is image-only and the video branch
@@ -215,6 +251,14 @@ export function DetailRail({
       ? record.video.defaultRange
       : null;
   const videoRange = videoTrimRange ?? persistedVideoRange;
+  // Cuts follow the same rule: live when the Library threads the trim
+  // down, the record's persisted spans otherwise. `undefined` for an
+  // uncut edit, so those requests are unchanged.
+  const persistedVideoSegments =
+    record?.kind === "video" && record.video !== null && record.video !== undefined
+      ? exportSegmentsOf(record.video.segments)
+      : undefined;
+  const videoSegments = videoTrimRange !== null ? videoTrimSegments : persistedVideoSegments;
   // Byte/dimension estimates deliberately stay keyed on the PERSISTED
   // range. They're labels, not payloads — no race to fix — and the
   // live range changes on every pointermove, which would fire
@@ -222,6 +266,9 @@ export function DetailRail({
   // (the hook resets its map on each key change). They catch up on
   // release, same as before.
   const videoMetricsRange = persistedVideoRange;
+  const { audio: videoExportAudio, control: mp4AudioControl } = useMp4ExportAudio(
+    recordedAudioTracks(record?.kind === "video" ? record.video : null)
+  );
   const {
     states: videoExportStates,
     triggerCopy: triggerVideoCopy,
@@ -230,7 +277,12 @@ export function DetailRail({
   } = useVideoExportPresets(
     videoCaptureId === null
       ? null
-      : { captureId: videoCaptureId, range: videoRange ?? undefined }
+      : {
+          captureId: videoCaptureId,
+          range: videoRange ?? undefined,
+          segments: videoSegments,
+          audio: videoExportAudio
+        }
   );
   // Per-(format, preset) dimensions + byte estimates for the grid
   // cards. Estimated until the user clicks a card and the cache
@@ -239,7 +291,9 @@ export function DetailRail({
   // byte estimates re-derive from the range duration.
   const videoPresetMetrics = useVideoPresetMetrics(
     videoCaptureId,
-    videoMetricsRange ?? undefined
+    videoMetricsRange ?? undefined,
+    persistedVideoSegments,
+    videoExportAudio
   );
   // Active tab + pin state. The pin pair and the tab pair are
   // controlled INDEPENDENTLY — a caller can control just the pin
@@ -275,13 +329,17 @@ export function DetailRail({
     [onGridActiveTabChange]
   );
   const [budgetStatus, setBudgetStatus] = useState<AiEnrichmentBudgetStatus | null>(null);
-  // Which backend runs enrichment — so the status pill + OCR copy say "Grok" /
-  // "Gemini" instead of always "Codex". Derived from the enrichment Settings
-  // default; refreshed on settings changes.
-  const [enrichmentLabel, setEnrichmentLabel] = useState<{
-    providerLabel: string;
-    modelLabel: string | undefined;
-  }>({ providerLabel: "Codex", modelLabel: undefined });
+  // Current defaults describe the NEXT run, never the capture's history.
+  const [regenerateLabel, setRegenerateLabel] = useState("configured model");
+  // Custom models + connections, so a fallback chip can name the primary.
+  const [labelModels, setLabelModels] = useState<NonNullable<Parameters<typeof enrichmentBackendLabel>[1]>>({});
+  const fallbackFromLabel = enrichment?.fallbackFrom
+    ? enrichmentBackendLabel({ provider: enrichment.fallbackFrom }, labelModels).providerLabel
+    : undefined;
+  // Mirrors settings.ai.autoAcceptSuggestions, same switch the post-capture
+  // popover shows. `null` hides the control: settings not read yet, or AI is
+  // off / unconsented (the popover hides it then too).
+  const [autoApply, setAutoApply] = useState<boolean | null>(null);
   // Experimental DPI-aware export strategy (default legacy = no change).
   const [exportStrategy, setExportStrategy] = useState<ExportStrategy>("legacy");
 
@@ -324,6 +382,7 @@ export function DetailRail({
   // the tab badge + the auto-pop effect below.
   const cart = useCart();
   const cartCount = cart.captureIds.length;
+  const cartLoaded = useCartLoaded();
 
   const isPinControlled =
     pinnedProp !== undefined && onPinChange !== undefined;
@@ -374,7 +433,16 @@ export function DetailRail({
       void dispatch("settings:read", {}).then((result) => {
         if (cancelled || !result.ok) return;
         const settings = result.value as Settings | undefined;
-        setEnrichmentLabel(enrichmentBackendLabel(settings?.ai?.defaults?.enrichment));
+        if (settings !== undefined) {
+          setRegenerateLabel(enrichmentRegenerateLabel(settings.ai?.defaults?.enrichment, settings.ai));
+          setLabelModels({ customModels: settings.ai?.customModels, customConnections: settings.ai?.customConnections });
+        }
+        const ai = settings?.ai;
+        setAutoApply(
+          ai !== undefined && ai.enabled === true && ai.consentAcceptedAt !== null && ai.consentAcceptedAt !== undefined
+            ? ai.autoAcceptSuggestions === true
+            : null
+        );
         setExportStrategy(exportStrategyFromSettings(settings));
       });
     };
@@ -457,13 +525,27 @@ export function DetailRail({
   // the user can switch to the Info tab while collecting without the
   // cart yanking focus back on every check. Tracks the previous count
   // in a ref so we only fire on the rising 0→1 edge.
-  const prevCartCountRef = useRef(cartCount);
+  //
+  // Two things this must not do, both of which left the editor opening
+  // on Cart instead of Info:
+  //   • Fire on the saved cart LOADING. The cart persists across
+  //     launches and reads as empty until `cart:get` answers, so every
+  //     launch with a non-empty cart looked like a 0 → N add. The ref
+  //     stays null until the cart has loaded, so the first count it
+  //     sees is the baseline, not an edge.
+  //   • Pop the focus/reel tab from Grid. That tab is the persisted
+  //     `lastSelectedTab`, which Grid does not even show, so the pop was
+  //     invisible until the next capture opened. Grid pops its own tab.
+  const prevCartCountRef = useRef<number | null>(null);
+  const isGridView = view.kind === "grid";
   useEffect(() => {
+    if (!cartLoaded) return;
     if (prevCartCountRef.current === 0 && cartCount > 0) {
-      writeActiveTab("cart");
+      if (isGridView) setGridTab("cart");
+      else writeActiveTab("cart");
     }
     prevCartCountRef.current = cartCount;
-  }, [cartCount, writeActiveTab]);
+  }, [cartLoaded, cartCount, isGridView, setGridTab, writeActiveTab]);
 
   useEffect(() => {
     if (record === null) {
@@ -530,6 +612,11 @@ export function DetailRail({
   // changes whenever the editor's selection does).
   const isImageCapture = record?.kind === "image";
   const hasLayersApi = layersApi !== null;
+  const ownFamilyId = record?.family_id ?? null;
+  const ownFamilySize =
+    ownFamilyId === null
+      ? 0
+      : families.find((family) => family.familyId === ownFamilyId)?.liveCount ?? 0;
   const tabs: ReadonlyArray<RightActivityTab<SidebarTab>> = useMemo(
     () => [
       // Every tab carries a `title` (tooltip) and, whenever it can show
@@ -592,6 +679,25 @@ export function DetailRail({
             }
           ]
         : []),
+      // Family tab appears once any duplicate family exists. Like Cart it
+      // is a workspace-level list (every family), and it also leads with
+      // the selected snap's own family; the dot says the selected snap
+      // has copies.
+      ...(families.length > 0
+        ? [
+            {
+              id: "family" as const,
+              label: "Family",
+              title:
+                ownFamilySize > 1
+                  ? `${ownFamilySize} snaps in this family`
+                  : `${families.length} duplicate famil${families.length === 1 ? "y" : "ies"}`,
+              badge: ownFamilySize > 1,
+              badgeLabel: "this snap has copies",
+              icon: FAMILY_ICON
+            }
+          ]
+        : []),
       // Properties + Layers tabs — only for image captures with an
       // editor mounted (the editor publishes `layersApi`; videos mount
       // no editor, so both tabs are absent). Gated on `hasLayersApi`
@@ -619,6 +725,8 @@ export function DetailRail({
       sizzleProjects.length,
       containingProjects.length,
       cartCount,
+      families.length,
+      ownFamilySize,
       isImageCapture,
       hasLayersApi
     ]
@@ -630,7 +738,10 @@ export function DetailRail({
   // already gates the Cart entry on cartCount > 0, so this picks it up
   // only when there's actually a cart.
   const gridTabs = useMemo(
-    () => tabs.filter((t) => t.id === "info" || t.id === "ocr" || t.id === "cart"),
+    () =>
+      tabs.filter(
+        (t) => t.id === "info" || t.id === "ocr" || t.id === "cart" || t.id === "family"
+      ),
     [tabs]
   );
 
@@ -751,7 +862,9 @@ export function DetailRail({
   // `0:03–0:11 (8 s)` when the persisted trim is a strict sub-range,
   // null for the full clip (eyebrow reads plain `EXPORT`).
   const videoExportRangeLabel =
-    videoMeta === null ? null : exportRangeLabel(videoRange, videoMeta.durationSec);
+    videoMeta === null
+      ? null
+      : exportRangeLabel(videoRange, videoMeta.durationSec, videoSegments);
   const codexStatus = enrichment?.status ?? null;
   const draftAvailable =
     (enrichment?.suggestedTitle ?? "").trim().length > 0 ||
@@ -790,9 +903,19 @@ export function DetailRail({
             draftAvailable={draftAvailable}
             allDraftsAccepted={allDraftsAccepted}
             aiSafetyDisabled={aiSafetyDisabled}
-            providerLabel={enrichmentLabel.providerLabel}
-            modelLabel={enrichmentLabel.modelLabel}
+            regenerateLabel={regenerateLabel}
+            fallbackFromLabel={fallbackFromLabel}
+            autoApply={autoApply}
+            onSetAutoApply={(next) => {
+              const previous = autoApply;
+              setAutoApply(next);
+              void dispatch("settings:write", { ai: { autoAcceptSuggestions: next } }).then((result) => {
+                if (!result.ok) setAutoApply(previous);
+              });
+            }}
             onEnrichmentUpdate={setEnrichment}
+            onOpenEnrichmentRepair={onOpenEnrichmentRepair}
+            enrichmentFailedCount={enrichmentFailedCount}
           />
         </div>
       );
@@ -804,8 +927,8 @@ export function DetailRail({
             record={record}
             enrichment={enrichment}
             aiSafetyDisabled={aiSafetyDisabled}
-            providerLabel={enrichmentLabel.providerLabel}
-            modelLabel={enrichmentLabel.modelLabel}
+            regenerateLabel={regenerateLabel}
+            fallbackFromLabel={fallbackFromLabel}
           />
         </div>
       );
@@ -829,6 +952,18 @@ export function DetailRail({
       return (
         <div className="psl__right-body psl__right-body--cart">
           <CartPanel onJumpTo={onCartJumpTo} onTrashAll={onCartTrashAll} />
+        </div>
+      );
+    }
+    if (id === "family") {
+      return (
+        <div className="psl__right-body">
+          <FamilyTab
+            record={record}
+            families={families}
+            onSelectMember={(captureId) => onSelectFamilyMember?.(captureId)}
+            onFilterFamily={(familyId) => onFilterFamily?.(familyId)}
+          />
         </div>
       );
     }
@@ -916,6 +1051,7 @@ export function DetailRail({
                 onDrag={triggerVideoDrag}
                 shortcutPlatform={shortcutPlatform}
                 showShortcutHints={isGrid}
+                mp4Audio={mp4AudioControl}
               />
             </div>
           ) : (
@@ -987,17 +1123,7 @@ export function DetailRail({
                   else void dispatch("library:restore", { id: record.id });
                 }}
               >
-                <svg
-                  width="11"
-                  height="11"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                >
-                  <path d="M3 12a9 9 0 1 0 3-6.7" />
-                  <path d="M3 4v5h5" />
-                </svg>
+                <PsIcon name="restore" size={13} line={1.2} />
                 Restore
               </button>
               <button
@@ -1016,16 +1142,7 @@ export function DetailRail({
                   void dispatch("library:purge", { id: record.id });
                 }}
               >
-                <svg
-                  width="11"
-                  height="11"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                >
-                  <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-                </svg>
+                <PsIcon name="purge" size={13} line={1.2} />
                 Delete
               </button>
             </>
@@ -1033,11 +1150,10 @@ export function DetailRail({
             <>
               <button
                 type="button"
-                title={
-                  isVideo
-                    ? `Click to reveal in ${desktopFileManagerName(window.pwrsnapApi?.platform)}`
-                    : `Drag PNG file or click to reveal in ${desktopFileManagerName(window.pwrsnapApi?.platform)}`
-                }
+                // "File" alone does not say what a click does; the
+                // tooltip does.
+                data-tip={`Reveal in ${desktopFileManagerName(window.pwrsnapApi?.platform)}`}
+                data-tip-detail={isVideo ? undefined : "Or drag the PNG file out"}
                 // Image: this is the only drag affordance in the
                 // rail, so it carries `draggable` + HIGH preset.
                 // Video: drag-out lives in the 6-card grid above
@@ -1055,8 +1171,8 @@ export function DetailRail({
                 }}
               >
                 <svg
-                  width="11"
-                  height="11"
+                  width="13"
+                  height="13"
                   viewBox="0 0 24 24"
                   fill="none"
                   stroke="currentColor"
@@ -1067,6 +1183,13 @@ export function DetailRail({
                 </svg>
                 File
               </button>
+              {onDuplicate !== undefined && (
+                <DuplicateChooser
+                  record={record}
+                  prefs={duplicatePrefs}
+                  onDuplicate={onDuplicate}
+                />
+              )}
               {view.kind !== "focus" && view.kind !== "reel" && (
                 <button
                   type="button"
@@ -1076,8 +1199,8 @@ export function DetailRail({
                   }}
                 >
                   <svg
-                    width="11"
-                    height="11"
+                    width="13"
+                    height="13"
                     viewBox="0 0 24 24"
                     fill="none"
                     stroke="currentColor"
@@ -1105,19 +1228,11 @@ export function DetailRail({
                   <button
                     type="button"
                     className="is-danger"
-                    title="Move to Trash"
+                    aria-label="Move to Trash"
+                    data-tip="Move to Trash"
                     {...trigger}
                   >
-                    <svg
-                      width="11"
-                      height="11"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                    >
-                      <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-                    </svg>
+                    <PsIcon name="trash" size={13} line={1.2} />
                   </button>
                 )}
               </DeleteConfirm>
@@ -1216,6 +1331,25 @@ const PROJECT_ICON: ReactElement = (
   </svg>
 );
 
+const NO_FAMILIES: readonly CaptureFamilySummary[] = [];
+const DEFAULT_DUPLICATE_PREFS: LibraryDuplicateWithEditsSettings = { image: true, video: true };
+
+/** Two overlapping frames — the same mark as the ⧉ tile glyph. */
+const FAMILY_ICON: ReactElement = (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <rect x="8" y="8" width="12" height="12" rx="2" />
+    <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+  </svg>
+);
+
 /** Checklist / collected-items icon for the Cart tab. */
 const CART_ICON: ReactElement = (
   <svg
@@ -1275,10 +1409,16 @@ type DetailTabProps = {
   readonly draftAvailable: boolean;
   readonly allDraftsAccepted: boolean;
   readonly aiSafetyDisabled: boolean;
-  /** Enrichment backend label (e.g. "Grok") + optional model for the pill. */
-  readonly providerLabel: string;
-  readonly modelLabel: string | undefined;
+  /** Current target for the Regenerate action only. */
+  readonly regenerateLabel: string;
+  /** The primary backend this run's caption fallback stood in for. */
+  readonly fallbackFromLabel?: string | undefined;
+  /** Current auto-apply setting, or null when the control should not show. */
+  readonly autoApply: boolean | null;
+  readonly onSetAutoApply: (next: boolean) => void;
   readonly onEnrichmentUpdate: (next: CaptureEnrichment) => void;
+  readonly onOpenEnrichmentRepair?: (() => void) | undefined;
+  readonly enrichmentFailedCount?: number | null | undefined;
 };
 
 function DetailTab({
@@ -1291,9 +1431,13 @@ function DetailTab({
   draftAvailable,
   allDraftsAccepted,
   aiSafetyDisabled,
-  providerLabel,
-  modelLabel,
-  onEnrichmentUpdate
+  regenerateLabel,
+  fallbackFromLabel,
+  autoApply,
+  onSetAutoApply,
+  onEnrichmentUpdate,
+  onOpenEnrichmentRepair,
+  enrichmentFailedCount
 }: DetailTabProps): ReactElement {
   const acceptedTitle = enrichment?.acceptedTitle ?? "";
   const suggestedTitle = enrichment?.suggestedTitle ?? "";
@@ -1311,13 +1455,18 @@ function DetailTab({
       return;
     }
     let cancelled = false;
-    void dispatch("codex:usageRunDetail", { runId }).then((result) => {
-      if (!cancelled) {
-        setUsageDetail(result.ok && isAiRunUsageDetail(result.value) ? result.value : null);
-      }
-    });
+    const load = (): void => {
+      void dispatch("codex:usageRunDetail", { runId }).then((result) => {
+        if (!cancelled) {
+          setUsageDetail(result.ok && isAiRunUsageDetail(result.value) ? result.value : null);
+        }
+      });
+    };
+    load();
+    const off = subscribe(EVENT_CHANNELS.settingsChanged, load);
     return () => {
       cancelled = true;
+      off();
     };
   }, [enrichment?.latestRunId, enrichment?.status]);
 
@@ -1412,7 +1561,7 @@ function DetailTab({
   // "accepted" with that value; otherwise it falls back to the
   // suggested italic preview. Mid-typing manual text is lost on
   // failure, but a Use-button dispatch failure is a rare edge case.
-  const useTitleDraft = useCallback(async () => {
+  const acceptTitleDraft = useCallback(async () => {
     if (suggestedTitle.trim().length === 0) return;
     commitTitle(suggestedTitle, "accepted");
     const result = await dispatch("codex:acceptTitle", {
@@ -1426,7 +1575,7 @@ function DetailTab({
     }
   }, [acceptedTitle, commitTitle, onEnrichmentUpdate, record.id, suggestedTitle]);
 
-  const useDescriptionDraft = useCallback(async () => {
+  const acceptDescriptionDraft = useCallback(async () => {
     if (suggestedDescription.trim().length === 0) return;
     commitDescription(suggestedDescription, "accepted");
     const result = await dispatch("codex:acceptDescription", {
@@ -1469,7 +1618,7 @@ function DetailTab({
   // user override, so the bulk action deliberately leaves filename
   // alone. Tags stay user-driven (their own +/× chip controls) to
   // avoid surprise-accepts.
-  const useAllTextDrafts = useCallback(async () => {
+  const acceptAllTextDrafts = useCallback(async () => {
     const wantTitle = titleDraftDiverged;
     const wantDescription = descriptionDraftDiverged;
     if (!wantTitle && !wantDescription) return;
@@ -1518,6 +1667,19 @@ function DetailTab({
     <>
       <div className="psl__detail-meta">
         <div className="psl__detail-name">{sourceName} snap</div>
+        {typeof record.source_window_title === "string" &&
+        record.source_window_title.length > 0 ? (
+          <div className="psl__detail-window-row">
+            <span className="psl__detail-window-label">Window title</span>
+            <span
+              className="psl__detail-window-title"
+              data-testid="detail-window-title"
+              dir="auto"
+            >
+              {record.source_window_title}
+            </span>
+          </div>
+        ) : null}
         <div className="psl__detail-row">
           <span>
             <b>
@@ -1546,42 +1708,82 @@ function DetailTab({
         draftAvailable={draftAvailable}
         accepted={allDraftsAccepted}
         safetyDisabled={aiSafetyDisabled}
-        providerLabel={providerLabel}
-        modelLabel={modelLabel}
+        providerLabel={null}
         error={enrichment?.error}
-        // Model + cost ride on the SAME row as the status sentence
-        // (`✦ Description filled from Codex · GPT-5.6 · <$0.001`)
-        // instead of in a second bordered card underneath it.
-        {...(usageDetail !== null ? { meta: <AiRunUsageStrip detail={usageDetail} /> } : {})}
-        action={
-          <>
-            {/* Prominent bulk Use — the common case. Covers title +
-                description + filename in one click. Tags stay separate
-                (per-chip +/× controls in the TagEditor) so suggestions
-                a user ignored don't sneak in. */}
-            {hasAnyDraft && !codexBusy ? (
-              <button
-                type="button"
-                className="psl__chip-btn psl__chip-btn--accent"
-                onClick={() => void useAllTextDrafts()}
-              >
-                Use draft
-              </button>
-            ) : null}
-            {/* Regenerate de-emphasized — text-link weight. Hidden
-                while Codex is mid-run; the per-pill status already
-                communicates "reading…". */}
-            {!codexBusy && !aiSafetyDisabled ? (
-              <button
-                type="button"
-                className="psl__chip-link"
-                onClick={regenerate}
-                title={`Ask ${providerLabel} for a fresh draft`}
-              >
-                Regenerate
-              </button>
-            ) : null}
-          </>
+        // The usage strip below names the model that actually answered; the
+        // chip says it wasn't the usual one, and the tooltip which one failed.
+        fallbackFrom={fallbackFromLabel}
+        clock={enrichmentRunClock(enrichment)}
+        // Only recorded run metadata supplies attribution, once. Defaults
+        // belong to the Regenerate tooltip, even while this detail is loading.
+        {...(usageDetail !== null && usageDetail.run.id === enrichment?.latestRunId ? { meta: <AiRunUsageStrip detail={usageDetail} /> } : {})}
+        footer={
+          codexBusy || hasAnyDraft || !aiSafetyDisabled || autoApply !== null ? (
+            <>
+              <span className="ps-codex-pill__footer-actions">
+                {codexBusy && enrichment?.latestRunId ? (
+                  <button type="button" className="psl__chip-link" title="Cancel enrichment"
+                    onClick={() => void dispatch("codex:cancel", { runId: enrichment.latestRunId! })}>
+                    Cancel
+                  </button>
+                ) : null}
+                {/* Prominent bulk Use — the common case. Covers title +
+                    description in one click. Tags stay separate (per-chip
+                    +/× controls in the TagEditor) so suggestions a user
+                    ignored don't sneak in. */}
+                {hasAnyDraft && !codexBusy ? (
+                  <button
+                    type="button"
+                    className="psl__chip-btn psl__chip-btn--accent"
+                    onClick={() => void acceptAllTextDrafts()}
+                  >
+                    Use draft
+                  </button>
+                ) : null}
+                {/* Regenerate de-emphasized — text-link weight. Hidden
+                    while the model is mid-run; the status already says so. */}
+                {!codexBusy && !aiSafetyDisabled ? (
+                  <button
+                    type="button"
+                    className="psl__chip-link"
+                    onClick={regenerate}
+                    title={`Regenerate with ${regenerateLabel}`}
+                  >
+                    Regenerate
+                  </button>
+                ) : null}
+                {/* One failure is rarely alone (a model that was down, an
+                    endpoint that moved): offer the batch repair from here. */}
+                {codexStatus === "failed" && !aiSafetyDisabled && onOpenEnrichmentRepair !== undefined ? (
+                  <button
+                    type="button"
+                    className="psl__chip-link"
+                    aria-haspopup="dialog"
+                    onClick={onOpenEnrichmentRepair}
+                    data-tip="Re-run AI on every snap it failed on"
+                  >
+                    {enrichmentFailedCount !== null &&
+                    enrichmentFailedCount !== undefined &&
+                    enrichmentFailedCount > 1
+                      ? `Re-run all ${enrichmentFailedCount.toLocaleString()} failed…`
+                      : "Re-run all failed…"}
+                  </button>
+                ) : null}
+              </span>
+              {/* Same switch, wording and tooltip as the post-capture popover. */}
+              {autoApply !== null ? (
+                <label className="ps-codex-pill__auto" data-tip="Apply AI enrichment automatically when ready">
+                  <input
+                    type="checkbox"
+                    aria-label="Auto-apply AI enrichment"
+                    checked={autoApply}
+                    onChange={(event) => onSetAutoApply(event.target.checked)}
+                  />
+                  <span>Auto-apply</span>
+                </label>
+              ) : null}
+            </>
+          ) : undefined
         }
       />
 
@@ -1591,12 +1793,12 @@ function DetailTab({
             <span>Title</span>
             {titleOrigin === "suggested" ? (
               <>
-                <span className="psl__field-origin">draft from {providerLabel}</span>
+                <span className="psl__field-origin">AI draft</span>
                 <button
                   type="button"
                   className="psl__field-use"
-                  onClick={() => void useTitleDraft()}
-                  title={`Save this ${providerLabel} draft as your title`}
+                  onClick={() => void acceptTitleDraft()}
+                  data-tip="Save this draft as your title"
                 >
                   Use
                 </button>
@@ -1614,9 +1816,9 @@ function DetailTab({
           />
           {titleDraftDiverged && titleOrigin !== "suggested" ? (
             <DraftPreview
-              label={`${providerLabel} draft`}
+              label="AI draft"
               text={suggestedTitle}
-              onUse={() => void useTitleDraft()}
+              onUse={() => void acceptTitleDraft()}
             />
           ) : null}
         </label>
@@ -1626,12 +1828,12 @@ function DetailTab({
             <span>Description</span>
             {descriptionOrigin === "suggested" ? (
               <>
-                <span className="psl__field-origin">draft from {providerLabel}</span>
+                <span className="psl__field-origin">AI draft</span>
                 <button
                   type="button"
                   className="psl__field-use"
-                  onClick={() => void useDescriptionDraft()}
-                  title={`Save this ${providerLabel} draft as your description`}
+                  onClick={() => void acceptDescriptionDraft()}
+                  data-tip="Save this draft as your description"
                 >
                   Use
                 </button>
@@ -1651,9 +1853,9 @@ function DetailTab({
           />
           {descriptionDraftDiverged && descriptionOrigin !== "suggested" ? (
             <DraftPreview
-              label={`${providerLabel} draft`}
+              label="AI draft"
               text={suggestedDescription}
-              onUse={() => void useDescriptionDraft()}
+              onUse={() => void acceptDescriptionDraft()}
             />
           ) : null}
         </label>
@@ -1668,7 +1870,7 @@ function DetailTab({
                 onClick={() => {
                   void dispatch("clipboard:copyText", { text: filenameValue });
                 }}
-                title="Copy the export filename stem to the clipboard"
+                data-tip="Copy the export filename stem to the clipboard"
               >
                 Copy
               </button>
@@ -1872,7 +2074,7 @@ function TagEditor({
               className="psl__tag-remove"
               onClick={() => void removeTag(tag)}
               aria-label={`remove ${tag}`}
-              title="Remove tag"
+              data-tip="Remove tag"
             >
               ×
             </button>
@@ -1924,18 +2126,17 @@ type OcrTabProps = {
   readonly record: CaptureRecord;
   readonly enrichment: CaptureEnrichment | null;
   readonly aiSafetyDisabled: boolean;
-  /** The enrichment backend's display name (e.g. "Grok") + optional model, so
-   *  the OCR copy names the actual agent instead of always saying "Codex". */
-  readonly providerLabel: string;
-  readonly modelLabel: string | undefined;
+  readonly regenerateLabel: string;
+  /** The primary backend this run's caption fallback stood in for. */
+  readonly fallbackFromLabel?: string | undefined;
 };
 
 function OcrTab({
   record,
   enrichment,
   aiSafetyDisabled,
-  providerLabel,
-  modelLabel
+  regenerateLabel,
+  fallbackFromLabel
 }: OcrTabProps): ReactElement {
   const ocrText = enrichment?.ocrText ?? "";
   const status = enrichment?.status ?? null;
@@ -1955,11 +2156,17 @@ function OcrTab({
           draftAvailable={ocrText.length > 0}
           accepted={ocrText.length > 0 && status === "completed"}
           safetyDisabled={aiSafetyDisabled}
-          providerLabel={providerLabel}
-          modelLabel={modelLabel}
+          providerLabel={null}
           error={enrichment?.error}
+          fallbackFrom={fallbackFromLabel}
         />
         <div className="psl__ocr-tab-actions">
+          {refreshing && enrichment?.latestRunId ? (
+            <button type="button" className="psl__chip-btn" title="Cancel enrichment"
+              onClick={() => void dispatch("codex:cancel", { runId: enrichment.latestRunId! })}>
+              Cancel
+            </button>
+          ) : null}
           <button
             type="button"
             className="psl__chip-btn"
@@ -1969,6 +2176,7 @@ function OcrTab({
                 triggerSource: "library-regenerate"
               })
             }
+            title={`Refresh OCR with ${regenerateLabel}`}
             disabled={refreshing || aiSafetyDisabled}
           >
             {refreshing ? "Reading…" : "Refresh OCR"}
@@ -1988,10 +2196,10 @@ function OcrTab({
       ) : (
         <div className="psl__ocr-tab-empty">
           {refreshing
-            ? `${providerLabel} is reading the snap…`
+            ? "Reading the snap…"
             : status === "failed"
-            ? `${providerLabel} could not extract text from this snap.`
-            : `No OCR text yet. Hit Refresh to ask ${providerLabel} to read the snap.`}
+            ? "Could not extract text from this snap."
+            : "No OCR text yet. Hit Refresh to read the snap."}
         </div>
       )}
     </div>
@@ -2018,7 +2226,7 @@ function DraftPreview({ label, text, onUse }: DraftPreviewProps): ReactElement {
           type="button"
           className="psl__draft-preview-use"
           onClick={onUse}
-          title="Replace current text with this draft"
+          data-tip="Replace current text with this draft"
         >
           Use this
         </button>
@@ -2221,6 +2429,9 @@ function ProjectTab({
                   {r === null ? (
                     <span className="psl__proj-scene-missing">×</span>
                   ) : r.kind === "video" ? (
+                    // `muted`, no controls: silent by construction, so the
+                    // audible-track resolution (`video:playback`) would buy
+                    // nothing and can cost a source-sized remux per row.
                     <video
                       src={captureSrcUrl(r.id)}
                       preload="metadata"

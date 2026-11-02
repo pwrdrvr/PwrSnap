@@ -432,17 +432,16 @@ export function useSequencePlan(args: {
     }
   }, [project.scenes, previewingSceneId, previewLoadedSceneId]);
 
-  // Proactively fill in sequence waveforms when a reel opens (or a new
-  // sequence scene appears) using audio that is ALREADY cached from a
+  // Proactively fill in sequence waveforms when a reel opens, its narration
+  // changes, or a render completes, using audio that is ALREADY cached from a
   // prior preview/render — so a rendered reel shows its waveforms
   // without making the user click ▶ first. This is cache-only on the
   // main side (never synthesizes), and runs through a bounded-
   // concurrency queue so a many-scene reel doesn't fire a burst of IPC
-  // payloads + wavesurfer decodes at once. Keyed on the set of sequence
-  // scene ids (not their text) so it doesn't re-run on every keystroke;
-  // the attempt-set guards against duplicate fetches, and a text edit
-  // clears the stale blob via the effect above (the user re-previews to
-  // regenerate, which isn't cached yet anyway).
+  // payloads + wavesurfer decodes at once. The attempt-set guards against
+  // duplicate fetches for a narration/voice tuple. A successful render
+  // advances lastRenderedAt: retry earlier cache misses then, because
+  // rendering has just produced the audio and timing the player needs.
   const sequenceSceneIdsKey = useMemo(
     () =>
       project.scenes
@@ -452,6 +451,9 @@ export function useSequencePlan(args: {
     [project.scenes, project.ttsModel, project.ttsProvider, project.voice]
   );
   const waveformAttemptRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    waveformAttemptRef.current.clear();
+  }, [project.id, project.lastRenderedAt]);
   useEffect(() => {
     const cacheAttemptKey = (scene: SizzleScene): string =>
       `${scene.id}:${project.ttsProvider}:${project.ttsModel}:${project.voice}:${sequenceTranscriptKey(scene)}`;
@@ -535,7 +537,7 @@ export function useSequencePlan(args: {
     // `sequenceAudioBlobs` is intentionally not a dependency: it changes
     // as blobs are populated, and the attempt-set already prevents
     // re-fetching. Re-running here would just churn.
-  }, [project.id, sequenceSceneIdsKey]);
+  }, [project.id, project.lastRenderedAt, sequenceSceneIdsKey]);
 
   const seekPreview = (sceneId: string, timeSec: number): void => {
     const scene = project.scenes.find((candidate) => candidate.id === sceneId);

@@ -156,14 +156,20 @@ test("library capture actions progressively collapse and hide at narrow widths",
     const quick = app.window.locator(TOPBAR_QUICK_CAPTURE);
     const video = app.window.locator(TOPBAR_VIDEO_CAPTURE);
     const platform = await app.window.evaluate(() => window.pwrsnapApi?.platform);
+    // Windows AND Linux paint File / Edit / View / … inside this same
+    // title-bar row, and `toolbarTierForWidth` charges both of them
+    // `IN_TOOLBAR_MENU_BAR_RESERVE_PX` for it. macOS keeps the system menu bar,
+    // so its whole viewport is toolbar. The widths below differ accordingly —
+    // same tier, ~300px further out on the two platforms that pay rent.
+    const menuBarInToolbar = platform === "win32" || platform === "linux";
 
     await expect(quick.locator(TOPBAR_CAPTURE_LABEL)).toBeVisible();
     await expect(video.locator(TOPBAR_CAPTURE_LABEL)).toBeVisible();
 
-    // The Windows app menu occupies about 300px inside this same title-bar
+    // The in-toolbar app menu occupies about 300px inside this same title-bar
     // row. At the maximized 1218px lab width, the remaining control area is a
     // tight-tier width even though the raw viewport is wider than 1024px.
-    await resizeLibrary(app, platform === "win32" ? 1218 : 950);
+    await resizeLibrary(app, menuBarInToolbar ? 1218 : 950);
     await expect(topbar).toHaveClass(/\bis-tight\b/);
     await expect(quick).toBeVisible();
     await expect(video).toBeVisible();
@@ -173,7 +179,7 @@ test("library capture actions progressively collapse and hide at narrow widths",
     await expect(quick.locator(TOPBAR_CAPTURE_LABEL)).toBeHidden();
     await expect(video.locator(TOPBAR_CAPTURE_LABEL)).toBeHidden();
 
-    if (platform === "win32") {
+    if (menuBarInToolbar) {
       const groupGaps = await topbar.evaluate((element) => {
         const left = element
           .querySelector<HTMLElement>(".psl__topbar-l")
@@ -198,16 +204,20 @@ test("library capture actions progressively collapse and hide at narrow widths",
       expect(groupGaps.centerToRight).toBeGreaterThanOrEqual(8);
     }
 
-    await resizeLibrary(app, platform === "win32" ? 1100 : 800);
+    await resizeLibrary(app, menuBarInToolbar ? 1100 : 800);
     await expect(topbar).toHaveClass(/\bis-compact\b/);
     await expect(quick).toBeVisible();
     await expect(video).toBeHidden();
 
-    await resizeLibrary(app, platform === "win32" ? 980 : 680);
+    await resizeLibrary(app, menuBarInToolbar ? 980 : 680);
     await expect(topbar).toHaveClass(/\bis-small\b/);
     await expect(quick).toBeHidden();
     await expect(video).toBeHidden();
 
+    // macOS only. `.psl__topbar.is-tight .psl__topbar-c` is absolutely
+    // centred against the whole bar, which only reads as centred when nothing
+    // competes for the left half — and Windows and Linux both paint the app
+    // menu there.
     const expectViewToggleCentered = async (): Promise<void> => {
       const viewToggle = app.window.locator(".psl__topbar-c");
       await expect(viewToggle).toBeVisible();
@@ -223,17 +233,17 @@ test("library capture actions progressively collapse and hide at narrow widths",
       expect(Math.abs(centers.header - centers.toggle)).toBeLessThanOrEqual(1);
     };
 
-    await resizeLibrary(app, platform === "win32" ? 871 : 571);
+    await resizeLibrary(app, menuBarInToolbar ? 871 : 571);
     await expect(topbar).toHaveClass(/\bis-minimal\b/);
-    if (platform !== "win32") await expectViewToggleCentered();
+    if (platform === "darwin") await expectViewToggleCentered();
 
-    await resizeLibrary(app, platform === "win32" ? 780 : 480);
+    await resizeLibrary(app, menuBarInToolbar ? 780 : 480);
     await expect(topbar).toHaveClass(/\bis-tiny\b/);
-    if (platform !== "win32") {
+    if (platform === "darwin") {
       await expectViewToggleCentered();
     }
     // The supported minimum itself must remain overflow-free after all
-    // low-priority Windows chrome has yielded.
+    // low-priority chrome has yielded, on every platform.
     await resizeLibrary(app, 480);
     const extents = await topbar.evaluate((element) => ({
       clientWidth: element.clientWidth,

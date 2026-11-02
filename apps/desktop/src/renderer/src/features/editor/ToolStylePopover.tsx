@@ -25,6 +25,17 @@
 // that, never shown again. The component reads the flag via
 // useSettings (same hook the parent toolbar uses) so cross-instance
 // state stays consistent.
+//
+// Keyboard: a light-dismiss MODAL popover (any pointerdown outside closes
+// it), so it behaves like one. It renders after the whole toolbar rather
+// than beside its caret, so as a non-modal popover it was unreachable in
+// any sensible order — Tab from the caret walked on through the toolbar and
+// focus never entered it. Now focus moves in once it is positioned, Tab
+// stays inside, and Escape closes it and returns focus to the caret —
+// without the editor ALSO clearing the canvas selection, which the old
+// document-bubble listener could not prevent (the editor listens earlier,
+// on window-capture). The Custom… color dialog inside is its own layer:
+// Escape there closes only it.
 
 import {
   useCallback,
@@ -46,6 +57,8 @@ import type {
   BlurEffectMode,
   BlurToolStyle,
   ColorToken,
+  DrawToolMode,
+  DrawToolStyle,
   HighlightToolStyle,
   OverlayOutlineMode,
   ShapeKind,
@@ -57,21 +70,26 @@ import type {
 } from "@pwrsnap/shared";
 import { COLOR_TOKENS, MAX_HIGHLIGHT_OPACITY } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
+import { useDismissable } from "../../lib/useDismissable";
+import { useFocusTrap } from "../../lib/useFocusTrap";
+import { useModal } from "../../lib/useModal";
 import { useSettings } from "../settings/useSettings";
+import { drawModeTipProps } from "./draw-mode-preview";
 
 // ---- Public types ---------------------------------------------------
 
-/** The five tool kinds that have a persistent style block. Pointer +
- *  crop are excluded — the parent toolbar simply doesn't mount the
- *  popover for those. */
-export type StyledToolKind = "arrow" | "text" | "shape" | "blur" | "highlight";
+/** The tool kinds that have a persistent style block. Pointer + crop
+ *  are excluded — the parent toolbar simply doesn't mount the popover
+ *  for those. */
+export type StyledToolKind = "arrow" | "text" | "shape" | "blur" | "highlight" | "draw";
 
 export type ToolStylePopoverStyle =
   | ArrowToolStyle
   | TextToolStyle
   | ShapeToolStyle
   | BlurToolStyle
-  | HighlightToolStyle;
+  | HighlightToolStyle
+  | DrawToolStyle;
 
 export interface ToolStylePopoverProps {
   /** Anchor element to position alongside (typically the toolbar's
@@ -90,10 +108,10 @@ export interface ToolStylePopoverProps {
   style: ToolStylePopoverStyle;
   /** Called on click-outside, Escape, or any caller-driven dismiss
    *  reason. Parent toolbar hides the popover. */
-  onClose(): void;
+  onClose(this: void): void;
   /** Style change callback. The parent wires this through to
    *  `setStyleField(tool, field, value)` on `useEditorToolState`. */
-  onStyleFieldChange<F extends string, V>(field: F, value: V): void;
+  onStyleFieldChange<F extends string, V>(this: void, field: F, value: V): void;
   /** Stable id for the selected layer being styled. This lets controls with
    *  local draft state reset when the inspector moves to another layer whose
    *  persisted value happens to be the same. Omitted for new-tool defaults. */
@@ -176,7 +194,8 @@ const END_STYLES: ReadonlyArray<{
   { id: "filled-triangle", label: "Filled triangle", Icon: FilledTriangleIcon },
   { id: "open-triangle", label: "Open triangle", Icon: OpenTriangleIcon },
   { id: "line", label: "Line", Icon: LineIcon },
-  { id: "dot", label: "Dot", Icon: DotIcon }
+  { id: "dot", label: "Dot", Icon: DotIcon },
+  { id: "bar", label: "Bar (range end)", Icon: BarIcon }
 ];
 
 const STEM_STYLES: ReadonlyArray<{
@@ -188,6 +207,45 @@ const STEM_STYLES: ReadonlyArray<{
   { id: "dashed", label: "Dashed", dash: "5,3" },
   { id: "dotted", label: "Dotted", dash: "1,3" }
 ];
+
+/** Draw family modes. The eraser is a mode of the tool, not a style a
+ *  stroke can carry, so a selected stroke's bar offers only the first
+ *  three (`ToolStyleBody`'s `allowEraser`). The buttons are icons, so
+ *  the tooltip carries the name, `hint`, and a picture of the stroke
+ *  (draw-mode-preview.tsx). */
+const DRAW_MODES: ReadonlyArray<{
+  id: DrawToolMode;
+  label: string;
+  hint: string;
+  Icon: () => ReactElement;
+}> = [
+  { id: "pen", label: "Pen", hint: "A thin, crisp line, for writing and circling.", Icon: PenModeIcon },
+  {
+    id: "marker",
+    label: "Marker",
+    hint: "Wide and see-through, for highlighting. Overlapping passes darken.",
+    Icon: MarkerModeIcon
+  },
+  {
+    id: "airbrush",
+    label: "Airbrush",
+    hint: "A soft-edged line, for a glow or gentle emphasis.",
+    Icon: AirbrushModeIcon
+  },
+  {
+    id: "eraser",
+    label: "Eraser",
+    hint: "Cuts Draw strokes where you drag. Arrows, boxes and text stay.",
+    Icon: EraserModeIcon
+  }
+];
+
+/** A Draw mode's name and one-line hint, for a tooltip outside the bar
+ *  (the toolbar's Draw button names the mode it would draw with). */
+export function drawModeHint(mode: DrawToolMode): { label: string; hint: string } {
+  const opt = DRAW_MODES.find((m) => m.id === mode) ?? DRAW_MODES[0]!;
+  return { label: opt.label, hint: opt.hint };
+}
 
 const TEXT_WEIGHTS: ReadonlyArray<{ id: TextFontWeight; label: string }> = [
   { id: "regular", label: "Regular" },
@@ -523,8 +581,14 @@ export function ToolStylePopover(props: ToolStylePopoverProps): ReactElement | n
     };
   }, [anchorRef]);
 
-  // Click-outside + Escape → onClose. Pointerdown rather than click so
-  // dismissal feels instant (matches every other popover in the app).
+  // Focus in once positioned (the first frame is `visibility: hidden`, and
+  // a hidden control cannot take focus), Tab stays inside, focus back to
+  // the caret on close; Escape → onClose.
+  useFocusTrap({ open: position.visibility !== "hidden", containerRef: rootRef });
+  useDismissable({ open: true, onDismiss: onClose, surfaceRef: rootRef });
+
+  // Click-outside → onClose. Pointerdown rather than click so dismissal
+  // feels instant (matches every other popover in the app).
   useEffect(() => {
     const onPointerDown = (e: MouseEvent): void => {
       const root = rootRef.current;
@@ -548,17 +612,9 @@ export function ToolStylePopover(props: ToolStylePopoverProps): ReactElement | n
       if (anchor !== null && anchor.parentElement?.contains(target)) return;
       onClose();
     };
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
-      }
-    };
     document.addEventListener("pointerdown", onPointerDown, true);
-    document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown, true);
-      document.removeEventListener("keydown", onKey);
     };
   }, [anchorRef, onClose]);
 
@@ -597,6 +653,8 @@ export function ToolStylePopover(props: ToolStylePopoverProps): ReactElement | n
       onStyleFieldChange={onStyleFieldChange}
       {...(styleTargetKey !== undefined ? { styleTargetKey } : {})}
       {...(customTextSizeLabel !== undefined ? { customTextSizeLabel } : {})}
+      // A selected stroke cannot become an eraser.
+      allowEraser={!isSelectedMode}
     />
   );
 
@@ -608,7 +666,9 @@ export function ToolStylePopover(props: ToolStylePopoverProps): ReactElement | n
       data-tool={tool}
       data-testid="tool-style-popover"
       role="dialog"
+      aria-modal="true"
       aria-label={`${tool} style options`}
+      tabIndex={-1}
     >
       {/* Outer inline-block measurer per AGENTS.md "Tray + float-over
           popover sizing — outer inline-block measurer". The styled
@@ -684,6 +744,14 @@ export interface ToolStyleBodyProps {
   /** pwrdrvr/PwrSnap#110 — pass-through to TextBody's Custom indicator
    *  (see `ToolStylePopoverProps.customTextSizeLabel`). */
   customTextSizeLabel?: string;
+  /** The docked property bar hides the blur-mode rows' hint text for
+   *  width; it moves to each row's tooltip there. Elsewhere the hint is
+   *  on screen, and a tooltip would only repeat it. */
+  hintsInTooltips?: boolean;
+  /** Draw only: offer the Eraser mode. True for the tool's own style;
+   *  a selected stroke passes false, because a stroke cannot BE an
+   *  eraser. */
+  allowEraser?: boolean;
 }
 
 /**
@@ -703,7 +771,9 @@ export function ToolStyleBody({
   style,
   onStyleFieldChange,
   styleTargetKey,
-  customTextSizeLabel
+  customTextSizeLabel,
+  hintsInTooltips = false,
+  allowEraser = true
 }: ToolStyleBodyProps): ReactElement {
   switch (tool) {
     case "arrow":
@@ -733,6 +803,7 @@ export function ToolStyleBody({
         <BlurBody
           style={style as BlurToolStyle}
           onStyleFieldChange={onStyleFieldChange}
+          hintsInTooltips={hintsInTooltips}
         />
       );
     case "highlight":
@@ -743,10 +814,68 @@ export function ToolStyleBody({
           {...(styleTargetKey !== undefined ? { styleTargetKey } : {})}
         />
       );
+    case "draw":
+      return (
+        <DrawBody
+          style={style as DrawToolStyle}
+          allowEraser={allowEraser}
+          onStyleFieldChange={onStyleFieldChange}
+        />
+      );
   }
 }
 
 // ---- Body components ------------------------------------------------
+
+/** Solid / dashed / dotted icon row. The arrow's stem and the shape's
+ *  outline share one value space (`ArrowStemStyle` = `ShapeStrokeStyle`)
+ *  and one control, so the two read as the same setting — which is what
+ *  the tool bag's paste treats them as. */
+function StrokeStyleRow({
+  label,
+  testid,
+  value,
+  onChange
+}: {
+  label: string;
+  testid: string;
+  value: ArrowStemStyle;
+  onChange: (value: ArrowStemStyle) => void;
+}): ReactElement {
+  return (
+    <FieldGroup label={label} testid={testid}>
+      <div className="pse-icon-row" role="radiogroup" aria-label={label}>
+        {STEM_STYLES.map((opt) => {
+          const active = value === opt.id;
+          return (
+            <button
+              key={opt.id}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              aria-label={opt.label}
+              className={"pse-icon-btn pse-stem-btn" + (active ? " is-on" : "")}
+              onClick={() => onChange(opt.id)}
+            >
+              <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
+                <line
+                  x1="2"
+                  y1="5"
+                  x2="34"
+                  y2="5"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeDasharray={opt.dash}
+                  strokeLinecap="round"
+                />
+              </svg>
+            </button>
+          );
+        })}
+      </div>
+    </FieldGroup>
+  );
+}
 
 interface ArrowBodyProps {
   style: ArrowToolStyle;
@@ -788,37 +917,12 @@ function ArrowBody({ style, onStyleFieldChange }: ArrowBodyProps): ReactElement 
           })}
         </div>
       </FieldGroup>
-      <FieldGroup label="Stem style" testid="arrow-stem-style">
-        <div className="pse-icon-row" role="radiogroup" aria-label="Stem style">
-          {STEM_STYLES.map((opt) => {
-            const active = style.stemStyle === opt.id;
-            return (
-              <button
-                key={opt.id}
-                type="button"
-                role="radio"
-                aria-checked={active}
-                aria-label={opt.label}
-                className={"pse-icon-btn pse-stem-btn" + (active ? " is-on" : "")}
-                onClick={() => onStyleFieldChange("stemStyle", opt.id)}
-              >
-                <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
-                  <line
-                    x1="2"
-                    y1="5"
-                    x2="34"
-                    y2="5"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeDasharray={opt.dash}
-                    strokeLinecap="round"
-                  />
-                </svg>
-              </button>
-            );
-          })}
-        </div>
-      </FieldGroup>
+      <StrokeStyleRow
+        label="Stem style"
+        testid="arrow-stem-style"
+        value={style.stemStyle}
+        onChange={(v) => onStyleFieldChange("stemStyle", v)}
+      />
       <FieldGroup label="" testid="arrow-double-ended">
         <label className="pse-checkbox">
           <input
@@ -942,7 +1046,7 @@ function ShapeBody({ style, onStyleFieldChange }: ShapeBodyProps): ReactElement 
                 role="radio"
                 aria-checked={active}
                 aria-label={opt.label}
-                title={opt.label}
+                data-tip={opt.label}
                 className={"pse-icon-btn" + (active ? " is-on" : "")}
                 onClick={() => onStyleFieldChange("shape", opt.id)}
                 data-testid={`shape-kind-${opt.id}`}
@@ -960,6 +1064,17 @@ function ShapeBody({ style, onStyleFieldChange }: ShapeBodyProps): ReactElement 
         value={style.thickness}
         onChange={(v) => onStyleFieldChange("thickness", v)}
       />
+      {/* A filled shape has no outline stroke to pattern, so the row
+          steps aside while Filled is on — the value is kept, the same
+          way skew is kept for non-parallelograms. */}
+      {style.filled ? null : (
+        <StrokeStyleRow
+          label="Stroke style"
+          testid="shape-stroke-style"
+          value={style.strokeStyle}
+          onChange={(v) => onStyleFieldChange("strokeStyle", v)}
+        />
+      )}
       <FieldGroup label="" testid="shape-filled">
         <label className="pse-checkbox">
           <input
@@ -996,12 +1111,70 @@ function ShapeBody({ style, onStyleFieldChange }: ShapeBodyProps): ReactElement 
   );
 }
 
-interface BlurBodyProps {
-  style: BlurToolStyle;
+interface DrawBodyProps {
+  style: DrawToolStyle;
+  allowEraser: boolean;
   onStyleFieldChange: ToolStylePopoverProps["onStyleFieldChange"];
 }
 
-function BlurBody({ style, onStyleFieldChange }: BlurBodyProps): ReactElement {
+function DrawBody({ style, allowEraser, onStyleFieldChange }: DrawBodyProps): ReactElement {
+  const modes = allowEraser ? DRAW_MODES : DRAW_MODES.filter((m) => m.id !== "eraser");
+  const erasing = style.mode === "eraser";
+  return (
+    <>
+      <FieldGroup label="Mode" testid="draw-mode">
+        <div className="pse-icon-row" role="radiogroup" aria-label="Draw mode">
+          {modes.map((opt) => {
+            const Icon = opt.Icon;
+            const active = style.mode === opt.id;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                aria-label={opt.label}
+                // The picture paints with this bar's color and weight: on
+                // a selected stroke, what that stroke would become.
+                data-tip={opt.label}
+                data-tip-detail={opt.hint}
+                {...drawModeTipProps(opt.id, style)}
+                className={"pse-icon-btn" + (active ? " is-on" : "")}
+                onClick={() => onStyleFieldChange("mode", opt.id)}
+                data-testid={`draw-mode-${opt.id}`}
+              >
+                <Icon />
+              </button>
+            );
+          })}
+        </div>
+      </FieldGroup>
+      {/* The eraser paints nothing, so a color would be a control that
+          does nothing. Its size still matters: it is the eraser's width. */}
+      {!erasing && (
+        <ColorRow
+          value={style.color}
+          onChange={(c) => onStyleFieldChange("color", c)}
+        />
+      )}
+      <Segmented
+        label={erasing ? "Eraser size" : "Weight"}
+        testid="draw-thickness"
+        options={THICKNESS_PRESETS}
+        value={style.thickness}
+        onChange={(v) => onStyleFieldChange("thickness", v)}
+      />
+    </>
+  );
+}
+
+interface BlurBodyProps {
+  style: BlurToolStyle;
+  onStyleFieldChange: ToolStylePopoverProps["onStyleFieldChange"];
+  hintsInTooltips: boolean;
+}
+
+function BlurBody({ style, onStyleFieldChange, hintsInTooltips }: BlurBodyProps): ReactElement {
   const isCustom = style.radius.mode === "px";
   const customValue = style.radius.mode === "px" ? style.radius.value : 0;
   return (
@@ -1028,6 +1201,10 @@ function BlurBody({ style, onStyleFieldChange }: BlurBodyProps): ReactElement {
                 role="radio"
                 aria-checked={active}
                 aria-label={opt.label}
+                // Its description in the docked bar, where the hint text
+                // is hidden. Elsewhere both lines are on screen already.
+                data-tip={hintsInTooltips ? opt.label : undefined}
+                data-tip-detail={hintsInTooltips ? opt.hint : undefined}
                 data-testid={`blur-mode-${opt.id}`}
                 className={"pse-mode-row" + (active ? " is-on" : "")}
                 onClick={() => onStyleFieldChange("mode", opt.id)}
@@ -1293,7 +1470,7 @@ interface SegmentedProps<T extends string> {
   testid: string;
   options: ReadonlyArray<{ id: T; label: string }>;
   value: T | number;
-  onChange(value: T): void;
+  onChange(this: void, value: T): void;
 }
 
 function Segmented<T extends string>({
@@ -1379,7 +1556,7 @@ interface OutlineRowProps {
   value: OverlayOutlineMode;
   /** Text hides the stripe option (illegible at glyph stroke widths). */
   allowStripe: boolean;
-  onChange(mode: OverlayOutlineMode): void;
+  onChange(this: void, mode: OverlayOutlineMode): void;
 }
 
 /** Border (contrast outline) picker — Off / Auto plus the White /
@@ -1401,7 +1578,8 @@ function OutlineRow({ value, allowStripe, onChange }: OutlineRowProps): ReactEle
               role="radio"
               aria-checked={active}
               aria-label={OUTLINE_LABELS[mode]}
-              title={OUTLINE_LABELS[mode]}
+              // Off and Auto say so on the button; the swatches say nothing.
+              data-tip={mode === "none" || mode === "auto" ? undefined : OUTLINE_LABELS[mode]}
               data-testid={`outline-${mode}`}
               className={
                 "pse-seg-btn" +
@@ -1427,13 +1605,24 @@ function OutlineRow({ value, allowStripe, onChange }: OutlineRowProps): ReactEle
 
 interface ColorRowProps {
   value: ToolColor;
-  onChange(color: ToolColor): void;
+  onChange(this: void, color: ToolColor): void;
 }
 
 function ColorRow({ value, onChange }: ColorRowProps): ReactElement {
   const groupId = useId();
-  const dialogRef = useRef<HTMLDialogElement | null>(null);
   const swatchRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const customBtnRef = useRef<HTMLButtonElement | null>(null);
+  // The native dialog is modal (showModal), so it is its own overlay layer:
+  // it is deeper than the popover, so Escape and Tab inside it are its own.
+  // Claiming Escape suppresses the browser's own close, hence the explicit
+  // close() here. Focus goes back to Custom… — named, because showModal()
+  // has already moved focus inside by the time this renders open.
+  const [customOpen, setCustomOpen] = useState(false);
+  const dialogRef = useModal<HTMLDialogElement>({
+    open: customOpen,
+    onClose: () => dialogRef.current?.close(),
+    returnFocusRef: customBtnRef
+  });
 
   const onKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLDivElement>): void => {
@@ -1467,7 +1656,8 @@ function ColorRow({ value, onChange }: ColorRowProps): ReactElement {
     } else {
       dlg.show?.();
     }
-  }, []);
+    setCustomOpen(true);
+  }, [dialogRef]);
 
   return (
     <FieldGroup label="Color" testid="color-row">
@@ -1490,6 +1680,9 @@ function ColorRow({ value, onChange }: ColorRowProps): ReactElement {
               role="radio"
               aria-checked={active}
               aria-label={COLOR_LABELS[token]}
+              // A swatch is a color and nothing else; its name was only
+              // in the accessible tree. The tooltip says it on hover.
+              data-tip={COLOR_LABELS[token]}
               className={"pse-sw" + (active ? " is-on" : "")}
               data-color={token}
               data-testid={`swatch-${token}`}
@@ -1500,6 +1693,7 @@ function ColorRow({ value, onChange }: ColorRowProps): ReactElement {
           );
         })}
         <button
+          ref={customBtnRef}
           type="button"
           className="pse-custom-btn"
           data-testid="color-custom"
@@ -1507,7 +1701,12 @@ function ColorRow({ value, onChange }: ColorRowProps): ReactElement {
         >
           Custom…
         </button>
-        <dialog ref={dialogRef} className="pse-color-dialog">
+        <dialog
+          ref={dialogRef}
+          className="pse-color-dialog"
+          aria-label="Custom color"
+          onClose={() => setCustomOpen(false)}
+        >
           <form
             method="dialog"
             onSubmit={(e) => {
@@ -1572,11 +1771,82 @@ function LineIcon(): ReactElement {
   );
 }
 
+/** Crossbar ON the endpoint — with both ends set, a range. */
+function BarIcon(): ReactElement {
+  return (
+    <svg width="20" height="14" viewBox="0 0 20 14" aria-hidden="true">
+      <line x1="1" y1="7" x2="18" y2="7" stroke="currentColor" strokeWidth="2" />
+      <line x1="18" y1="2" x2="18" y2="12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function DotIcon(): ReactElement {
   return (
     <svg width="20" height="14" viewBox="0 0 20 14" aria-hidden="true">
       <line x1="1" y1="7" x2="15" y2="7" stroke="currentColor" strokeWidth="2" />
       <circle cx="17" cy="7" r="2.5" fill="currentColor" />
+    </svg>
+  );
+}
+
+// ---- Draw mode icons ------------------------------------------------
+
+function PenModeIcon(): ReactElement {
+  return (
+    <svg width="20" height="16" viewBox="0 0 20 16" aria-hidden="true">
+      <path
+        d="M2 12c3-8 6-8 7.5-3s4 5 8.5-4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function MarkerModeIcon(): ReactElement {
+  return (
+    <svg width="20" height="16" viewBox="0 0 20 16" aria-hidden="true">
+      <line x1="2" y1="9" x2="18" y2="9" stroke="currentColor" strokeWidth="6" opacity="0.5" />
+    </svg>
+  );
+}
+
+/** A soft line: the same path stroked wide and faint, then narrower and
+ *  stronger — the airbrush's bands in miniature. */
+function AirbrushModeIcon(): ReactElement {
+  return (
+    <svg
+      width="20"
+      height="16"
+      viewBox="0 0 20 16"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <path d="M4 10c3-4 8-4 12-2" strokeWidth="7" opacity="0.2" />
+      <path d="M4 10c3-4 8-4 12-2" strokeWidth="4.5" opacity="0.35" />
+      <path d="M4 10c3-4 8-4 12-2" strokeWidth="2.2" />
+    </svg>
+  );
+}
+
+function EraserModeIcon(): ReactElement {
+  return (
+    <svg width="20" height="16" viewBox="0 0 20 16" aria-hidden="true">
+      <path
+        d="M7.5 13.5 3 9l7-7 6.5 6.5-5 5z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+      <path d="M5.5 6.5 12 13" stroke="currentColor" strokeWidth="1.6" />
+      <line x1="7.5" y1="14" x2="18" y2="14" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
     </svg>
   );
 }
@@ -1632,7 +1902,14 @@ function RedactIcon(): ReactElement {
 
 // Re-export so a test or a panel can use the same type without
 // reaching back into the popover module.
-export type { ArrowToolStyle, TextToolStyle, ShapeToolStyle, BlurToolStyle, HighlightToolStyle };
+export type {
+  ArrowToolStyle,
+  TextToolStyle,
+  ShapeToolStyle,
+  BlurToolStyle,
+  HighlightToolStyle,
+  DrawToolStyle
+};
 // Suppress unused-symbol churn for the type-narrow helper retained
 // for future "polymorphic body" tunings.
 void styleHasColor;

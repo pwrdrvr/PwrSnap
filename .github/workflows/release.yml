@@ -1,4 +1,4 @@
-name: Release Desktop (macOS universal + Windows; Linux-gated)
+name: Release Desktop (macOS universal + Apple Silicon + Windows; Linux-gated)
 
 on:
   push:
@@ -25,11 +25,21 @@ permissions:
   id-token: none
 
 jobs:
+  distribution-audit:
+    name: Inspect Winget and Homebrew before release
+    if: ${{ github.event_name != 'pull_request' }}
+    uses: ./.github/workflows/distribution-audit.yml
+    with:
+      stage: before-release
+    secrets:
+      DISTRIBUTION_READ_TOKEN: ${{ secrets.DISTRIBUTION_READ_TOKEN }}
+
   prepare:
     name: Test and prepare signing input
     if: ${{ github.event_name != 'pull_request' }}
-    runs-on: macos-26 # Icon Composer's actool requires the matching macOS 26 host.
-    timeout-minutes: 45
+    needs: distribution-audit
+    runs-on: [self-hosted, macOS, ARM64, pwrdrvr-macos]
+    timeout-minutes: 75
     permissions:
       contents: read
       id-token: none
@@ -43,9 +53,12 @@ jobs:
           persist-credentials: false
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@e1bd1cc1494a20f0ee91dae622b0d2523b6fb53c # v1.4.0
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
+        timeout-minutes: 10
         with:
-          node-version: "24.14.1"
+          node-version: "^24.22.0"
+          persistent-store-dir: ~/Library/Caches/pwrsnap-ci/${{ runner.name }}
+          cache-electron: "true"
 
       - name: Check release metadata
         env:
@@ -56,10 +69,10 @@ jobs:
         run: pnpm typecheck
 
       # electron-builder compiles build/icon.icon with actool 26+. The
-      # macos-26 runner's default Xcode matches the AssetCatalogAgent host;
-      # the action verifies it and returns its Developer directory. See
+      # self-hosted runner must provide macOS 26 and a stable Xcode 26+.
+      # Select the toolchain only for icon compilation/packaging. See
       # AGENTS.md "macOS app icon".
-      - name: Verify the macOS 26 runner actool
+      - name: Select Xcode for macOS 26 packaging
         id: xcode
         uses: ./.github/actions/select-xcode-for-actool
 
@@ -72,7 +85,9 @@ jobs:
         run: pnpm test
 
       - name: Prepare release stage
-        run: node apps/desktop/scripts/release.mjs --prepare-only
+        run: |
+          node apps/desktop/scripts/release.mjs --prepare-only
+          node apps/desktop/scripts/release.mjs --prepare-only --arch=arm64
 
       - name: Archive signing input
         id: archive
@@ -83,18 +98,26 @@ jobs:
             package.json \
             pnpm-lock.yaml \
             pnpm-workspace.yaml \
-            .npmrc \
+            .pnpmfile.cjs \
+            .pnpmfile-global.cjs \
             CHANGELOG.md \
             scripts/check-desktop-release-metadata.mjs \
+            scripts/check-app-metadata-policy.mjs \
+            scripts/check-electron-fuses-policy.mjs \
             scripts/check-bundled-ffmpeg-notice.mjs \
             scripts/lib/cli-entrypoint.mjs \
+            scripts/release/cleanup-macos-signing.py \
             apps/desktop/package.json \
             apps/desktop/electron-builder.yml \
             apps/desktop/release-stage \
+            apps/desktop/release-stage-arm64 \
             .github/actions/select-xcode-for-actool \
             apps/desktop/scripts/release.mjs \
-            apps/desktop/scripts/rebuild-native-for-electron.mjs \
+            apps/desktop/scripts/staged-pnpm-config.mjs \
+            apps/desktop/scripts/macos-release-artifacts.mjs \
+            apps/desktop/scripts/better-sqlite3-prebuilds.mjs \
             apps/desktop/scripts/sharp-platform-packages.mjs \
+            apps/desktop/scripts/packaged-html-rules.mjs \
             apps/desktop/scripts/verify-asar-contents.mjs \
             apps/desktop/node_modules \
             node_modules
@@ -114,19 +137,35 @@ jobs:
 
   sign:
     name: Sign, notarize, package macOS
-    runs-on: macos-26
+    runs-on: [self-hosted, macOS, ARM64, pwrdrvr-macos]
     needs: prepare
-    timeout-minutes: 60
+    timeout-minutes: 120
     environment: apple-signing
+    defaults:
+      run:
+        working-directory: release-signing
     permissions:
       contents: read
       id-token: none
     steps:
+      # Persistent runners retain prior checkouts. Signing reads only this
+      # job's verified artifact in a fresh workspace, without a source checkout.
+      - name: Initialize isolated signing workspace
+        working-directory: .
+        run: |
+          set -euo pipefail
+          umask 077
+          rm -rf -- release-signing
+          mkdir release-signing
+          signing_temp="$(mktemp -d "$RUNNER_TEMP/pwrsnap-signing.XXXXXX")"
+          echo "PWRSNAP_SIGNING_TEMP_DIR=$signing_temp" >> "$GITHUB_ENV"
+          security list-keychains -d user > "$signing_temp/keychains-before.txt"
+
       - name: Download signing input
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: desktop-release-signing-input
-          path: .release-input
+          path: release-signing/.release-input
 
       - name: Verify signing input
         env:
@@ -260,15 +299,21 @@ jobs:
           cp "$manifest" apps/desktop/release-stage/build/ffmpeg-source/ffmpeg-8.1.1-macos-universal-manifest.json
           cp "$dir/SOURCE-OFFER.txt" apps/desktop/release-stage/build/ffmpeg-source/ffmpeg-8.1.1-macos-universal-SOURCE-OFFER.txt
           cp "$dir/LGPL-NOTICE.txt" apps/desktop/release-stage/build/ffmpeg-source/ffmpeg-8.1.1-macos-universal-LGPL-NOTICE.txt
+          # Copy only the verified controlled payload. ARM64 extraction records
+          # both hashes before the ARM64 app is signed; source offers stay intact.
+          cp -R apps/desktop/release-stage/build/ffmpeg apps/desktop/release-stage-arm64/build/
+          cp -R apps/desktop/release-stage/build/ffmpeg-source apps/desktop/release-stage-arm64/build/
 
       # No checkout in this job: the action arrives inside the signing input
       # tarball the prepare job archived (see its tar list).
-      - name: Verify the macOS 26 runner actool
+      - name: Select Xcode for macOS 26 packaging
         id: xcode
-        uses: ./.github/actions/select-xcode-for-actool
+        uses: ./release-signing/.github/actions/select-xcode-for-actool
 
       - name: Sign, notarize, package macOS
         env:
+          # Confine decoded .p8/.p12 files and temporary keychains to this job.
+          TMPDIR: ${{ env.PWRSNAP_SIGNING_TEMP_DIR }}
           # electron-builder compiles build/icon.icon with this Xcode's actool.
           DEVELOPER_DIR: ${{ steps.xcode.outputs.developer-dir }}
 
@@ -288,18 +333,33 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_TEAM_ID: T44CNHC4UH
 
-        run: node apps/desktop/scripts/release.mjs --sign-stage-only --no-publish
+        run: |
+          node apps/desktop/scripts/release.mjs --sign-stage-only --no-publish
+          node apps/desktop/scripts/release.mjs --sign-stage-only --no-publish --arch=arm64
 
-      - name: Prepare stable-name DMG alias
-        # PwrSnap.dmg is the canonical download URL referenced from
-        # docs.pwrsnap.com and pwrsnap.com — it always points at the
-        # latest promoted release. Copy the versioned DMG under the alias name;
-        # the final publication job uploads both only after every gate passes.
+      - name: Remove temporary signing credentials
+        if: always()
         run: |
           set -euo pipefail
-          cd apps/desktop/release-stage/dist
-          versioned=$(ls PwrSnap-*-universal.dmg | head -n 1)
-          cp "$versioned" PwrSnap.dmg
+          if [ -n "${PWRSNAP_SIGNING_TEMP_DIR:-}" ]; then
+            if [ -f scripts/release/cleanup-macos-signing.py ]; then
+              python3 scripts/release/cleanup-macos-signing.py "$PWRSNAP_SIGNING_TEMP_DIR"
+            else
+              # Expansion failed before the signing code could decode secrets.
+              rm -rf -- "$PWRSNAP_SIGNING_TEMP_DIR"
+            fi
+          fi
+
+      - name: Validate paired macOS assets and assemble shared updater metadata
+        # One writer preserves the universal legacy path while adding ARM64.
+        # PwrSnap.dmg stays universal; the new alias is PwrSnap-arm64.dmg.
+        run: |
+          node apps/desktop/scripts/macos-release-artifacts.mjs \
+            apps/desktop/release-stage/dist \
+            apps/desktop/release-stage-arm64/dist \
+            "$(node -p 'JSON.parse(require("fs").readFileSync("apps/desktop/package.json", "utf8")).version')"
+          cp apps/desktop/release-stage-arm64/build/ffmpeg-source/ffmpeg-macos-arm64-slice.json \
+            apps/desktop/release-stage/build/ffmpeg-source/
 
       # Required input to the publication job. This is not a best-effort debug
       # upload: no GitHub Release exists until all platform gates succeed.
@@ -308,12 +368,18 @@ jobs:
         with:
           name: desktop-release-macos-artifacts
           path: |
-            apps/desktop/release-stage/dist/*.dmg
-            apps/desktop/release-stage/dist/*.zip
-            apps/desktop/release-stage/dist/*.blockmap
-            apps/desktop/release-stage/dist/latest-mac.yml
-            apps/desktop/release-stage/build/ffmpeg-source/*
-          retention-days: 30
+            release-signing/apps/desktop/release-stage/dist/*.dmg
+            release-signing/apps/desktop/release-stage/dist/*.zip
+            release-signing/apps/desktop/release-stage/dist/*.blockmap
+            release-signing/apps/desktop/release-stage/dist/latest-mac.yml
+            release-signing/apps/desktop/release-stage/dist/macos-artifact-sizes.json
+            release-signing/apps/desktop/release-stage/build/ffmpeg-source/*
+          retention-days: 90
+
+      - name: Remove isolated signing workspace
+        if: always()
+        working-directory: .
+        run: rm -rf -- release-signing
 
   linux-build:
     name: Validate Linux desktop build
@@ -331,9 +397,10 @@ jobs:
           persist-credentials: false
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@e1bd1cc1494a20f0ee91dae622b0d2523b6fb53c # v1.4.0
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
+        timeout-minutes: 10
         with:
-          node-version: "24.14.1"
+          node-version: "^24.22.0"
 
       # Linux distribution remains Phase 8b, but a tag cannot create a release
       # unless the desktop code builds successfully on Linux.
@@ -380,9 +447,10 @@ jobs:
           persist-credentials: false
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@e1bd1cc1494a20f0ee91dae622b0d2523b6fb53c # v1.4.0
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
+        timeout-minutes: 10
         with:
-          node-version: "24.14.1"
+          node-version: "^24.22.0"
           cache-electron: "true"
 
       - name: Check release metadata
@@ -450,7 +518,7 @@ jobs:
       id-token: none
     steps:
       - name: Download Windows signing input
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: windows-release-signing-input
           path: .release-input
@@ -721,60 +789,31 @@ jobs:
             github.event_name != 'pull_request'
             || contains(github.event.pull_request.labels.*.name, 'ci:windows-signing')
           }}
-        # PwrSnap-windows-x64-setup.exe is the canonical Windows download URL
-        # for docs.pwrsnap.com and pwrsnap.com — it always points at the latest
-        # promoted release, mirroring PwrSnap.dmg on macOS. Without it the
-        # website has to call the GitHub Releases API from the browser just to
-        # learn the versioned installer's name. Copy the versioned installer
-        # under the alias name; the final publication job uploads both only
-        # after every gate passes.
+        # A byte-for-byte copy of the installer under a stable, version-free
+        # name, so README's "Download for Windows" and pwrsnap.com can point at
+        # releases/latest/download/PwrSnap.Setup.exe instead of the releases
+        # page. It must be cut here, from the installer that just passed
+        # Authenticode verification, and never from an unsigned intermediate.
+        # The versioned installer stays: latest.yml names it and
+        # electron-updater fetches it by that name.
         #
-        # A copy, never a re-sign: the bytes are identical, so the Authenticode
-        # signature verified in the step above carries over untouched.
-        # latest.yml and the .blockmap keep naming the versioned file on
-        # purpose — electron-updater resolves updates through those, and
-        # aiming them at a moving name would break update resolution and delta
-        # downloads.
+        # The naming rule, why the alias stays out of SHA256SUMS, and every
+        # refusal live in the script, next to the unit tests that pin them.
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          $dist = "apps/desktop/release-stage/dist"
-          $aliasName = "PwrSnap-windows-x64-setup.exe"
-          $versioned = Get-ChildItem $dist -File -Filter "*-setup.exe" |
-            Where-Object { $_.Name -ne $aliasName } |
-            Sort-Object Name |
-            Select-Object -First 1
-          if ($null -eq $versioned) {
-            throw "No versioned Windows installer found under $dist."
+          node apps/desktop/scripts/windows-release-artifacts.mjs apps/desktop/release-stage
+          if ($LASTEXITCODE -ne 0) {
+            throw "Cutting the stable Windows alias failed (exit code $LASTEXITCODE)."
           }
-          $aliasPath = Join-Path $dist $aliasName
-          Copy-Item -LiteralPath $versioned.FullName -Destination $aliasPath -Force
-
-          # PwrSnap-windows-SHA256SUMS stays authoritative for every published
-          # installer, so the alias needs its own line — the same digest as the
-          # versioned file. Hash the copy rather than reusing the recorded
-          # digest, so a truncated copy fails the release instead of shipping a
-          # checksum that does not describe the file people download.
-          $checksums = (Resolve-Path (Join-Path $dist "SHA256SUMS")).Path
-          $expected = (Get-FileHash -LiteralPath $versioned.FullName -Algorithm SHA256).Hash.ToLower()
-          $actual = (Get-FileHash -LiteralPath $aliasPath -Algorithm SHA256).Hash.ToLower()
-          if ($actual -ne $expected) {
-            throw "Stable-name Windows alias is not byte-identical to $($versioned.Name): expected $expected, got $actual."
+          # Assert the file exists rather than trusting the exit code: a script
+          # that no-ops still exits 0, and the upload step only warns when one
+          # of several globs matches nothing. Without this the release ships
+          # without its stable URL and nothing goes red.
+          $aliases = @(Get-ChildItem "apps/desktop/release-stage/dist" -File -Filter "PwrSnap.Setup*.exe")
+          if ($aliases.Count -eq 0) {
+            throw "No PwrSnap.Setup*.exe was produced; the stable download URL would 404."
           }
-          $lines = [System.IO.File]::ReadAllLines($checksums)
-          if ($lines -notcontains "$expected  $($versioned.Name)") {
-            throw "SHA256SUMS does not record $($versioned.Name) with digest $expected."
-          }
-          # Rewrite the whole file with LF endings and no BOM. package-win.mjs
-          # wrote it that way; Add-Content would append a CRLF line, and
-          # `sha256sum -c` reads a stray CR as part of the filename.
-          $lines += "$actual  $aliasName"
-          [System.IO.File]::WriteAllText(
-            $checksums,
-            ($lines -join "`n") + "`n",
-            [System.Text.UTF8Encoding]::new($false)
-          )
-          Write-Host "  alias: $aliasName ($expected)"
+          $aliases | ForEach-Object { "cut alias $($_.Name) ($($_.Length) bytes)" }
 
       - name: Upload Windows installer artifact
         if: >-
@@ -785,15 +824,17 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ github.event_name == 'pull_request' && 'windows-signed-installer-pr' || 'windows-installer' }}
-          # The *-setup.exe glob carries both the versioned installer and the
-          # stable-name alias prepared above. The alias deliberately has no
-          # .blockmap: only the versioned file is an updater target.
+          # PwrSnap.Setup*.exe is listed on its own: the stable alias drops the
+          # "-setup.exe" suffix, so the glob above no longer carries it. The
+          # alias deliberately has no .blockmap and no SHA256SUMS line — only
+          # the versioned file is an updater target.
           path: |
             apps/desktop/release-stage/dist/*-setup.exe
             apps/desktop/release-stage/dist/*-setup.exe.blockmap
+            apps/desktop/release-stage/dist/PwrSnap.Setup*.exe
             apps/desktop/release-stage/dist/latest.yml
             apps/desktop/release-stage/dist/SHA256SUMS
-          retention-days: 7
+          retention-days: 90
 
   windows-updater-smoke:
     name: Exercise signed Windows packaged updater
@@ -870,13 +911,13 @@ jobs:
           persist-credentials: false
 
       - name: Download macOS release artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: desktop-release-macos-artifacts
           path: mac-dist
 
       - name: Download Windows installer artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: windows-installer
           path: windows-dist
@@ -930,7 +971,8 @@ jobs:
           # signing jobs, so an upload-glob change there would otherwise break
           # a download button silently.
           for stable_alias in mac-dist/dist/PwrSnap.dmg \
-            windows-dist/PwrSnap-windows-x64-setup.exe; do
+            mac-dist/dist/PwrSnap-arm64.dmg \
+            windows-dist/PwrSnap.Setup.exe; do
             if [ ! -f "$stable_alias" ]; then
               echo "::error::Stable-name download alias is missing: $stable_alias" >&2
               exit 1
@@ -943,8 +985,12 @@ jobs:
             --title "$RELEASE_TAG" \
             --notes-file "$notes" \
             --prerelease \
+            --draft \
             "${mac_assets[@]}" \
             "${windows_assets[@]}"
+
+          # Hide the shared manifest until every ZIP upload has completed.
+          gh release edit "$RELEASE_TAG" --repo pwrdrvr/PwrSnap --draft=false --prerelease
 
           body_length="$(gh release view "$RELEASE_TAG" \
             --repo pwrdrvr/PwrSnap \
@@ -957,3 +1003,12 @@ jobs:
             --json isPrerelease \
             --jq '.isPrerelease')"
           test "$is_prerelease" = "true"
+
+  distribution-audit-after:
+    name: Inspect Winget and Homebrew after publication
+    needs: publish-release-assets
+    uses: ./.github/workflows/distribution-audit.yml
+    with:
+      stage: after-publication
+    secrets:
+      DISTRIBUTION_READ_TOKEN: ${{ secrets.DISTRIBUTION_READ_TOKEN }}

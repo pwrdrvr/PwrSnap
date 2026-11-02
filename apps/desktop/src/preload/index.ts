@@ -16,6 +16,12 @@
 
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import { shortcutPlatformFromString } from "@pwrsnap/shared/shortcut-semantics";
+import {
+  WINDOW_CONTROL_CHANNEL,
+  WINDOW_FRAME_STATE_CHANNEL,
+  type WindowControlAction,
+  type WindowFrameState
+} from "@pwrsnap/shared/ipc";
 
 // **Re-enable pinch gestures.** Electron disables visual zoom by
 // default, and "disabled" here means more than "no zooming
@@ -59,6 +65,7 @@ import {
   EVENT_CHANNELS,
   IPC_CAPTURE_DRAG_START,
   IPC_CART_ZIP_DRAG_START,
+  IPC_PERMISSION_GUIDE_DRAG_START,
   IPC_CMD,
   IPC_VIDEO_DRAG_START
 } from "@pwrsnap/shared/ipc";
@@ -69,6 +76,7 @@ import type {
 import type { PerfMarkPayload } from "@pwrsnap/shared/ipc";
 import { parseAppearanceArg } from "@pwrsnap/shared/appearance-arg";
 import { resolveDroppedFilePath } from "./dropped-file-path";
+import { createEventSubscriber, LATCHED_EVENT_CHANNELS } from "./latched-events";
 
 // Internal (non-command-bus) channel for the region selector to commit
 // its result back to main. Kept narrow: the preload exposes one
@@ -92,11 +100,13 @@ const REGION_SELECTOR_KEY_CHANNEL = "region-selector:key";
 // `win.show()` so the selector renderer can configure UI for
 // 'auto' | 'region' | 'window' before the first paint.
 const REGION_SELECTOR_MODE_CHANNEL = "region-selector:mode";
-// Renderer → main: the selector acks that the frozen-snapshot <img>
-// for a given screenUrl has loaded/decoded. Main waits for this before
+// Renderer → main: the selector acks that the frozen snapshot has painted
+// through either the raw RGBA canvas path or the PNG <img> fallback.
+// Main waits for this before
 // showing the (still-hidden) selector window, so it never appears as an
 // empty transparent overlay flashing the live screen behind it.
 const REGION_SELECTOR_PAINTED_CHANNEL = "region-selector:painted";
+const REGION_SELECTOR_SNAPSHOT_READ_CHANNEL = "region-selector:snapshot-read";
 const REGION_SELECTOR_PRESENTATION_REQUEST_CHANNEL = "region-selector:presentation-request";
 const REGION_SELECTOR_PRESENTED_CHANNEL = "region-selector:presented";
 
@@ -105,6 +115,11 @@ const REGION_SELECTOR_PRESENTED_CHANNEL = "region-selector:presented";
 // Settings recorder lease. This distinguishes delayed IPC from a document
 // that has already navigated away even when Chromium reuses a renderer PID.
 const rendererDocumentId = crypto.randomUUID().replaceAll("-", "");
+
+// Installed now, at preload evaluation, so a latched channel is listened
+// to before the page's own scripts run. See latched-events.ts for why a
+// one-shot intent cannot wait for the renderer's React subscriber.
+const subscribeToEvent = createEventSubscriber(ipcRenderer, LATCHED_EVENT_CHANNELS);
 
 // Tray content auto-sizes to fit. The renderer measures itself with a
 // ResizeObserver and asks main to setContentSize so the popover never
@@ -118,6 +133,15 @@ const TRAY_RESIZE_CHANNEL = "tray:resize";
 // "tail" (its box-shadow bleeding into transparent space) and from
 // extending the window's bottom edge into the Dock area.
 const FLOAT_OVER_RESIZE_CHANNEL = "float-over:resize";
+// Float-over renderer → main: "I am subscribed to `floatOverState`; send
+// me the current state." Main answers on that channel. See
+// wireFloatOverStateRequestChannel in main/float-over.ts.
+const FLOAT_OVER_STATE_REQUEST_CHANNEL = "float-over:request-state";
+// Float-over renderer → main: a drag of the screen-edge dock (start /
+// move / end). Main reads the cursor itself and moves the window. See
+// wireFloatOverDockDragChannel in main/float-over.ts.
+const FLOAT_OVER_DOCK_DRAG_CHANNEL = "float-over:dock-drag";
+const FLOAT_OVER_PASS_THROUGH_CHANNEL = "float-over:pass-through";
 // Failed recording cards are content-sized as well. This channel is accepted
 // only from the live recording-controller webContents in main.
 const RECORDING_CONTROLLER_RESIZE_CHANNEL = "recording-controller:resize";
@@ -154,6 +178,77 @@ export type WindowSnapEntry = {
   rawRect: { x: number; y: number; w: number; h: number };
 };
 
+export type SelectorRawSnapshotDescriptor = {
+  id: string;
+  transport: "raw-rgba";
+  version: 1;
+  width: number;
+  height: number;
+  stride: number;
+  pixelFormat: 1;
+  byteLength: number;
+};
+
+type SelectorRawSnapshotReadResult =
+  | {
+      ok: true;
+      header: Omit<SelectorRawSnapshotDescriptor, "id" | "transport">;
+      data: Uint8Array;
+    }
+  | { ok: false; code: string };
+
+function validatedSelectorSnapshotRead(value: unknown): SelectorRawSnapshotReadResult {
+  if (typeof value !== "object" || value === null) {
+    return { ok: false, code: "malformed" };
+  }
+  const result = value as Record<string, unknown>;
+  if (result.ok !== true) {
+    return {
+      ok: false,
+      code: typeof result.code === "string" ? result.code.slice(0, 64) : "read_failed"
+    };
+  }
+  if (typeof result.header !== "object" || result.header === null) {
+    return { ok: false, code: "malformed" };
+  }
+  const header = result.header as Record<string, unknown>;
+  const width = header.width;
+  const height = header.height;
+  const stride = header.stride;
+  const byteLength = header.byteLength;
+  if (
+    header.version !== 1 ||
+    header.pixelFormat !== 1 ||
+    !Number.isSafeInteger(width) ||
+    !Number.isSafeInteger(height) ||
+    !Number.isSafeInteger(stride) ||
+    !Number.isSafeInteger(byteLength) ||
+    (width as number) <= 0 ||
+    (height as number) <= 0 ||
+    (width as number) > 32_768 ||
+    (height as number) > 32_768 ||
+    (stride as number) !== (width as number) * 4 ||
+    BigInt(stride as number) * BigInt(height as number) !== BigInt(byteLength as number) ||
+    (byteLength as number) > 512 * 1024 * 1024 ||
+    !(result.data instanceof Uint8Array) ||
+    result.data.byteLength !== byteLength
+  ) {
+    return { ok: false, code: "malformed" };
+  }
+  return {
+    ok: true,
+    header: {
+      version: 1,
+      width: width as number,
+      height: height as number,
+      stride: stride as number,
+      pixelFormat: 1,
+      byteLength: byteLength as number
+    },
+    data: result.data
+  };
+}
+
 const pwrsnapApi = {
   platform: shortcutPlatformFromString(process.platform),
   versions: {
@@ -167,7 +262,7 @@ const pwrsnapApi = {
    * Expose this one operation, never the Electron or webUtils objects.
    */
   getPathForFile(file: File): string {
-    return resolveDroppedFilePath(file, webUtils.getPathForFile);
+    return resolveDroppedFilePath(file, (droppedFile) => webUtils.getPathForFile(droppedFile));
   },
   /**
    * Dispatch a command-bus command. Returns the typed Result envelope
@@ -181,13 +276,11 @@ const pwrsnapApi = {
   /**
    * Subscribe to a server → client event. Returns an unsubscribe
    * function. Used by `useLibrary.ts` etc. with `useSyncExternalStore`.
+   * On a latched channel the first subscriber is handed, synchronously,
+   * the latest event that arrived before anyone subscribed.
    */
   on(channel: string, handler: (payload: unknown) => void): () => void {
-    const wrapped = (_event: unknown, payload: unknown) => handler(payload);
-    ipcRenderer.on(channel, wrapped);
-    return () => {
-      ipcRenderer.off(channel, wrapped);
-    };
+    return subscribeToEvent(channel, handler);
   },
   /**
    * Region-selector renderer → main signal. Called on commit (with rect
@@ -215,6 +308,13 @@ const pwrsnapApi = {
     /** Recording-only: whether the recording bakes in the mouse cursor,
      *  from the selector's `C` toggle. Omitted for image captures. */
     captureCursor?: boolean;
+    /** Recording-only: the audio sources the user armed on the
+     *  selector's source chips. Seeded from `settings.recording.*` per
+     *  show; the chip decides for THIS take and never writes back.
+     *  Omitted for image captures, and omitted by any selector show
+     *  that never offered the chips — main then falls back to the
+     *  persisted defaults, which is the pre-chip behavior. */
+    sources?: import("@pwrsnap/shared").RecordingCapabilities;
     /** Multi-window pick. Each entry is one picked window's EXTENT —
      *  a rectangle on the frozen screen, in the same global logical-px
      *  space as `rect`. `rect` is ALWAYS the union bounding box of
@@ -239,8 +339,26 @@ const pwrsnapApi = {
    * painted. Carries `screenUrl` so a stale ack from a superseded
    * capture can't satisfy the current wait.
    */
-  notifySelectorSnapshotPainted(screenUrl: string): void {
-    ipcRenderer.send(REGION_SELECTOR_PAINTED_CHANNEL, { screenUrl });
+  notifySelectorSnapshotPainted(payload: {
+    screenUrl: string;
+    transport: "img" | "raw-rgba";
+    decodeMs: number;
+    mainToRendererBytes: number;
+    canvasUploadBytes: number;
+    readRoundTripMs?: number;
+    canvasUploadMs?: number;
+  }): void {
+    ipcRenderer.send(REGION_SELECTOR_PAINTED_CHANNEL, payload);
+  },
+  /** Read one IPC copy of the currently active raw selector snapshot. Main
+   * authenticates this exact webContents/top-level frame. The retained buffer
+   * remains private to main; IPC and contextBridge copy the returned bytes. */
+  async readSelectorSnapshot(id: string): Promise<SelectorRawSnapshotReadResult> {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) return { ok: false, code: "invalid_id" };
+    const value: unknown = await ipcRenderer.invoke(REGION_SELECTOR_SNAPSHOT_READ_CHANNEL, {
+      id
+    });
+    return validatedSelectorSnapshotRead(value);
   },
   /** Diagnostic-only post-show acknowledgement. Main authenticates the
    * sender webContents plus invocation/generation before accepting it. */
@@ -248,6 +366,16 @@ const pwrsnapApi = {
     invocationId: string;
     generation: number;
     screenUrl: string;
+    snapshotWaitMs?: number;
+    firstFrameWaitMs?: number;
+    secondFrameWaitMs?: number;
+    rendererTotalMs?: number;
+    firstTimerWaitMs?: number;
+    secondTimerWaitMs?: number;
+    firstTimerFired?: number;
+    secondTimerFired?: number;
+    hiddenAtFrames?: number;
+    hiddenAtAck?: number;
   }): void {
     ipcRenderer.send(REGION_SELECTOR_PRESENTED_CHANNEL, payload);
   },
@@ -302,12 +430,61 @@ const pwrsnapApi = {
    * window always tracks the visible toast and the Dock-overlap +
    * shadow-tail artifacts both go away.
    */
-  requestFloatOverResize(payload: { width: number; height: number }): void {
+  requestFloatOverResize(payload: {
+    width: number;
+    height: number;
+    /** Which shape the renderer drew: the toast, or the screen-edge
+     *  dock. Main drops a post for the shape it is not in. */
+    mode?: "toast" | "dock";
+  }): void {
     ipcRenderer.send(FLOAT_OVER_RESIZE_CHANNEL, payload);
   },
-  /** Failed recording HUD renderer → main content measurement. Main converts
-   * CSS pixels through the inherited page zoom before resizing the window. */
-  requestRecordingControllerResize(payload: { height: number }): void {
+  /**
+   * Float-over renderer → main: the user is dragging the screen-edge
+   * dock. Main follows the cursor and flips the dock to the other edge
+   * past the middle of the display.
+   */
+  requestFloatOverDockDrag(phase: "start" | "move" | "end"): void {
+    ipcRenderer.send(FLOAT_OVER_DOCK_DRAG_CHANNEL, { phase });
+  },
+  /**
+   * Float-over renderer → main: the pointer is over a see-through part of
+   * the window (`through: true`) or back over something drawn. Main lets
+   * clicks fall through to the app behind while it is see-through.
+   */
+  setFloatOverPassThrough(through: boolean): void {
+    ipcRenderer.send(FLOAT_OVER_PASS_THROUGH_CHANNEL, { through });
+  },
+  /**
+   * Float-over renderer → main: ask for the current toast state. Call it
+   * AFTER subscribing to `floatOverState`, because main replies on that
+   * channel and an event with no subscriber is dropped.
+   */
+  requestFloatOverState(): void {
+    ipcRenderer.send(FLOAT_OVER_STATE_REQUEST_CHANNEL);
+  },
+  /**
+   * The current page zoom factor, read fresh on every call.
+   *
+   * The self-sizing popovers measure in CSS pixels and main converts to
+   * DIP by multiplying by `webContents.zoomFactor`; a renderer that
+   * needs to express a DIP ceiling (the float-over's scroll cap) as a
+   * CSS `max-height` has to divide by the same number. Nothing
+   * page-visible carries it: `window.devicePixelRatio` is
+   * displayScale × zoom and the display's scale is unknown to the page,
+   * and `window.screen` is reported in DIP and does not move with zoom
+   * at all (measured on Electron 41). `webFrame` has it exactly.
+   *
+   * Not cached: zoom changes out from under this window whenever the
+   * user presses ⌘+ in the Library, because Chromium's HostZoomMap is
+   * per-origin and every PwrSnap window shares one.
+   */
+  getZoomFactor(): number {
+    return webFrame.getZoomFactor();
+  },
+  /** Recording HUD renderer → main: fit the BrowserWindow to the measured
+   * outer wrapper so status, confirmations, and failure actions cannot be clipped. */
+  requestRecordingControllerResize(payload: { width?: number; height: number }): void {
     ipcRenderer.send(RECORDING_CONTROLLER_RESIZE_CHANNEL, payload);
   },
   /**
@@ -326,6 +503,26 @@ const pwrsnapApi = {
   popupAppMenu(payload: { index: number; x: number; y: number }): void {
     ipcRenderer.send(APP_MENU_POPUP_CHANNEL, payload);
   },
+
+  /**
+   * Linux painted caption buttons: run one window-control action.
+   *
+   * macOS insets its traffic lights into our title bar and Windows fills the
+   * `titleBarOverlay` strip it reserves; a frameless Linux window has neither,
+   * so nothing minimizes, maximizes or closes it from inside the app but this.
+   *
+   * `invoke`, not `send`: a control that never reached a handler should reject
+   * rather than look like it worked. It resolves with nothing — the button
+   * redraws from the frame-state pushes, never from its own click.
+   */
+  runWindowControl(action: WindowControlAction): Promise<void> {
+    return ipcRenderer.invoke(WINDOW_CONTROL_CHANNEL, action) as Promise<void>;
+  },
+  /** This window's maximize state right now. The changes that follow arrive
+   *  on `EVENT_CHANNELS.windowFrameState` through the generic `on()`. */
+  readWindowFrameState(): Promise<WindowFrameState | null> {
+    return ipcRenderer.invoke(WINDOW_FRAME_STATE_CHANNEL) as Promise<WindowFrameState | null>;
+  },
   /**
    * Renderer -> main native file drag. Main validates the capture id,
    * prepares the rendered file, and calls WebContents.startDrag using
@@ -333,6 +530,14 @@ const pwrsnapApi = {
    */
   startCaptureDrag(payload: { captureId: string; preset: RenderPreset }): void {
     ipcRenderer.send(IPC_CAPTURE_DRAG_START, payload);
+  },
+  /**
+   * Permission guide → main: drag the running app bundle into System
+   * Settings. No payload: main drags the path it resolved itself, and only
+   * for the guide window's own WebContents.
+   */
+  startPermissionGuideDrag(): void {
+    ipcRenderer.send(IPC_PERMISSION_GUIDE_DRAG_START);
   },
   /**
    * Renderer -> main native file drag for a VIDEO export. Sibling of
@@ -348,6 +553,10 @@ const pwrsnapApi = {
     preset: VideoPreset;
     /** Optional explicit trim range; omitted = record's defaultRange. */
     range?: { start: number; end: number };
+    /** Export spans for an edit with cuts; wins over `range`. */
+    segments?: Array<{ start: number; end: number }>;
+    /** Optional MP4 audio choice; omitted = the saved MP4 audio preference. */
+    audio?: { includeSystemAudio: boolean; includeMicrophone: boolean };
   }): void {
     ipcRenderer.send(IPC_VIDEO_DRAG_START, payload);
   },
@@ -384,8 +593,8 @@ const pwrsnapApi = {
    *   1. Reconfigure between 'auto' (snap + drag), 'region' (drag-
    *      only, no snap candidates), and 'window' (snap-only, no
    *      drag).
-   *   2. Mount the frozen-screen snapshot via `<img src=screenUrl>`
-   *      as a full-window background. The renderer paints the
+   *   2. Mount the frozen-screen snapshot via raw RGBA canvas when a
+   *      descriptor is present, or `<img src=screenUrl>` otherwise. The renderer paints the
    *      snapshot, the user drags against it, and on commit the
    *      capture handler crops THAT snapshot (not the live screen).
    *
@@ -396,6 +605,7 @@ const pwrsnapApi = {
     handler: (payload: {
       mode: "auto" | "region" | "window";
       screenUrl?: string;
+      snapshot?: SelectorRawSnapshotDescriptor;
       /** Visual intent: `"video"` triggers the "Recording video"
        *  badge + alternate hint copy so the user knows commit
        *  starts a recording instead of taking a snap. Default
@@ -408,6 +618,9 @@ const pwrsnapApi = {
       /** Snap-vs-Record policy for this show, from
        *  `settings.recording.quickCaptureAction`. `undefined` = "ask". */
       quickCaptureAction?: "ask" | "snap" | "record";
+      /** HUD style for this show, from `settings.recording.selectorHud`.
+       *  `undefined` = "shutter". */
+      hudStyle?: "shutter" | "clapperboard";
     }) => void
   ): () => void {
     const wrapped = (_event: unknown, payload: unknown) =>
@@ -415,11 +628,13 @@ const pwrsnapApi = {
         payload as {
           mode: "auto" | "region" | "window";
           screenUrl?: string;
+          snapshot?: SelectorRawSnapshotDescriptor;
           intent?: "snap" | "video";
           cursor?: boolean;
           invocationId?: string;
           generation?: number;
           quickCaptureAction?: "ask" | "snap" | "record";
+          hudStyle?: "shutter" | "clapperboard";
         }
       );
     ipcRenderer.on(REGION_SELECTOR_MODE_CHANNEL, wrapped);

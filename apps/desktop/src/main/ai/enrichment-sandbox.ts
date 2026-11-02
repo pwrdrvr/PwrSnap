@@ -107,9 +107,17 @@ export type EnrichmentSandboxKind = "permissions" | "sandbox";
  * EVERYTHING, including the jail.
  */
 export function codexEnrichmentPermissionProfile(
-  workspaceDir: string
+  workspaceDir: string,
+  kind: EnrichmentSandboxKind = "permissions"
 ): Record<string, unknown> {
   return {
+    // Codex 0.160 reloads the retained config during workspace routing without
+    // thread/start's permissions override. Keep the selection in that config,
+    // too, or the profile table fails validation before inference can start.
+    // The legacy sandbox fallback must leave this profile unselected.
+    ...(kind === "permissions"
+      ? { default_permissions: ENRICHMENT_PERMISSION_PROFILE_ID }
+      : {}),
     permissions: {
       [ENRICHMENT_PERMISSION_PROFILE_ID]: {
         filesystem: {

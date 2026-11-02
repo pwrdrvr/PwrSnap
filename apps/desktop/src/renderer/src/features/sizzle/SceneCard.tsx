@@ -7,7 +7,10 @@
 
 import type { ReactElement } from "react";
 import {
+  SIZZLE_SCENE_MEDIA_MAX_SEC,
   SIZZLE_TRANSITIONS,
+  sizzleLibraryCutSummary,
+  sizzleUsesCaptureCuts,
   type CaptureRecord,
   type SizzleAudioSource,
   type SizzleScene,
@@ -79,7 +82,6 @@ export type SequenceSceneCardProps = {
   scene: SizzleScene;
   idx: number;
   sceneCount: number;
-  captureMap: Map<string, CaptureRecord>;
   onEditScene: (patch: Partial<SizzleScene>) => void;
   onPickSequenceBeat: () => void;
   /** Seek the ONE reel player to this scene and play. There is no
@@ -96,7 +98,6 @@ export function SequenceSceneCard(props: SequenceSceneCardProps): ReactElement {
     scene,
     idx,
     sceneCount,
-    captureMap,
     onEditScene,
     onPickSequenceBeat,
     onPlayFrom,
@@ -152,15 +153,16 @@ export function SequenceSceneCard(props: SequenceSceneCardProps): ReactElement {
             className="szl__scene-mini szl__scene-mini--play"
             onClick={onPlayFrom}
             type="button"
-            title="Play the reel from this scene"
+            aria-label="Play the reel from this scene"
+            data-tip="Play the reel from this scene"
             data-testid={`sizzle-play-from-${scene.id}`}
           >
             ▶
           </button>
           <span className="szl__spacer" />
-          <button className="szl__scene-mini" onClick={() => onMoveScene(-1)} disabled={idx === 0} type="button" title="Move up">↑</button>
-          <button className="szl__scene-mini" onClick={() => onMoveScene(1)} disabled={idx === sceneCount - 1} type="button" title="Move down">↓</button>
-          <button className="szl__scene-mini szl__scene-mini--danger" onClick={onRemoveScene} type="button" title="Remove scene">✕</button>
+          <button className="szl__scene-mini" onClick={() => onMoveScene(-1)} disabled={idx === 0} type="button" aria-label="Move scene up" data-tip="Move up">↑</button>
+          <button className="szl__scene-mini" onClick={() => onMoveScene(1)} disabled={idx === sceneCount - 1} type="button" aria-label="Move scene down" data-tip="Move down">↓</button>
+          <button className="szl__scene-mini szl__scene-mini--danger" onClick={onRemoveScene} type="button" aria-label="Remove scene" data-tip="Remove scene">✕</button>
         </div>
       </div>
     </li>
@@ -200,6 +202,7 @@ export function SimpleSceneCard(props: SimpleSceneCardProps): ReactElement {
     onRemoveScene
   } = props;
   const isVideo = capture?.kind === "video";
+  const cuts = libraryCutsFor(scene, capture);
   const thumb =
     capture?.edits_version !== undefined
       ? cacheUrl(scene.captureId, 320, "webp", capture.edits_version)
@@ -326,6 +329,19 @@ export function SimpleSceneCard(props: SimpleSceneCardProps): ReactElement {
                 <option value="muted">Muted</option>
               </select>
             </label>
+            {cuts !== null ? (
+              <label className="szl__scene-dur">
+                <span>Library cuts</span>
+                <select
+                  value={cuts.skipping ? "skip" : "play"}
+                  onChange={(e) => onEditScene({ useCaptureCuts: e.target.value === "skip" })}
+                  data-testid="sizzle-scene-cuts"
+                >
+                  <option value="skip">Skip (−{cuts.removedSec.toFixed(1)} s)</option>
+                  <option value="play">Play</option>
+                </select>
+              </label>
+            ) : null}
           </div>
         ) : null}
 
@@ -341,12 +357,14 @@ export function SimpleSceneCard(props: SimpleSceneCardProps): ReactElement {
           const audioDur = measuredVoiceoverDurationSec;
           if (audioDur === undefined) return null;
           const trimDur =
-            (scene.mediaTrim?.endSec ??
-              capture?.video?.defaultRange.end ??
-              0) -
-            (scene.mediaTrim?.startSec ??
-              capture?.video?.defaultRange.start ??
-              0);
+            cuts !== null && cuts.skipping
+              ? cuts.keptSec
+              : (scene.mediaTrim?.endSec ??
+                  capture?.video?.defaultRange.end ??
+                  0) -
+                (scene.mediaTrim?.startSec ??
+                  capture?.video?.defaultRange.start ??
+                  0);
           if (audioDur + 0.35 <= trimDur + 0.1) return null;
           const padSec = audioDur + 0.35 - trimDur;
           return (
@@ -395,7 +413,8 @@ export function SimpleSceneCard(props: SimpleSceneCardProps): ReactElement {
             className="szl__scene-mini szl__scene-mini--play"
             onClick={onPlayFrom}
             type="button"
-            title="Play the reel from this scene"
+            aria-label="Play the reel from this scene"
+            data-tip="Play the reel from this scene"
             data-testid={`sizzle-play-from-${scene.id}`}
           >
             ▶
@@ -405,7 +424,8 @@ export function SimpleSceneCard(props: SimpleSceneCardProps): ReactElement {
             onClick={() => onMoveScene(-1)}
             disabled={idx === 0}
             type="button"
-            title="Move up"
+            aria-label="Move scene up"
+            data-tip="Move up"
           >
             ↑
           </button>
@@ -414,7 +434,8 @@ export function SimpleSceneCard(props: SimpleSceneCardProps): ReactElement {
             onClick={() => onMoveScene(1)}
             disabled={idx === sceneCount - 1}
             type="button"
-            title="Move down"
+            aria-label="Move scene down"
+            data-tip="Move down"
           >
             ↓
           </button>
@@ -422,7 +443,8 @@ export function SimpleSceneCard(props: SimpleSceneCardProps): ReactElement {
             className="szl__scene-mini szl__scene-mini--danger"
             onClick={onRemoveScene}
             type="button"
-            title="Remove scene"
+            aria-label="Remove scene"
+            data-tip="Remove scene"
           >
             ✕
           </button>
@@ -430,4 +452,24 @@ export function SimpleSceneCard(props: SimpleSceneCardProps): ReactElement {
       </div>
     </li>
   );
+}
+
+/** The Library cuts inside a video scene's trim, or `null` when there are
+ *  none — a scene with nothing to skip gets no control. */
+function libraryCutsFor(
+  scene: SizzleScene,
+  capture: CaptureRecord | null
+): { skipping: boolean; keptSec: number; removedSec: number } | null {
+  const video = capture?.kind === "video" ? capture.video ?? null : null;
+  if (video === null) return null;
+  const trim = scene.mediaTrim ?? { startSec: video.defaultRange.start, endSec: video.defaultRange.end };
+  const summary = sizzleLibraryCutSummary(trim, video.segments);
+  if (summary === null) return null;
+  const { keptSec, removedSec } = summary;
+  return {
+    skipping: sizzleUsesCaptureCuts(scene),
+    // What the scene plays, capped as the render caps it.
+    keptSec: Math.min(keptSec, SIZZLE_SCENE_MEDIA_MAX_SEC),
+    removedSec
+  };
 }

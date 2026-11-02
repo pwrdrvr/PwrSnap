@@ -62,10 +62,7 @@ vi.mock("../../editor/useEditorToolState", () => ({
     activeStyle: { tool: "pointer" },
     setActiveTool: vi.fn(),
     isSingleShot: false,
-    matchingText: { kind: "idle" },
     onAnnotationPlaced: vi.fn(),
-    armMatchingText: vi.fn(),
-    dismissMatchingText: vi.fn(),
     updateActiveStyle: vi.fn()
   })
 }));
@@ -139,6 +136,7 @@ const videoRecord: CaptureRecord = {
   sha256: "sha_cap_video",
   source_app_bundle_id: "com.example.app",
   source_app_name: "Example",
+  source_window_title: null,
   edits_version: 0,
   has_alpha: false,
   deleted_at: null,
@@ -147,13 +145,20 @@ const videoRecord: CaptureRecord = {
     containerFormat: "mp4",
     hasSystemAudio: false,
     hasMicrophoneAudio: false,
+    requestedSystemAudio: false,
+    requestedMicrophone: false,
     defaultRange: { start: 0, end: 12 },
+    segments: [{ start: 0, end: 12 }],
     previewPath: null,
     previewStatus: "pending"
   }
 };
 
 const settings = {
+  // `satisfies` so a new `Settings["hotkeys"]` field is a compile error
+  // here rather than reaching the renderer as `undefined` — the outer
+  // object is a deliberate partial behind the cast below, but this block
+  // is read key-by-key by useHotkeys.
   hotkeys: {
     quickCapture: "",
     region: "",
@@ -162,8 +167,9 @@ const settings = {
     allScreens: "",
     timed: "",
     videoCapture: "",
-    reshowFloatOver: ""
-  },
+    reshowFloatOver: "",
+    openLibrary: ""
+  } satisfies Settings["hotkeys"],
   ai: {
     enabled: false,
     consentAcceptedAt: null,

@@ -26,13 +26,14 @@ beforeAll(() => {
 });
 
 import { EditorChrome, type EditorPanel } from "../EditorChrome";
+import { defaultEditorToolBag } from "@pwrsnap/shared";
 
 // ---------------------------------------------------------------- fixtures
 
 const baseSettings: Settings = {
   schemaVersion: 1,
   codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
-  ai: { enabled: false, consentAcceptedAt: null, budgetSafetyDisabledAt: null, autoAcceptSuggestions: false, chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false }, defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} }, acp: { enabledAgentIds: [] } },
+  ai: { enabled: false, consentAcceptedAt: null, budgetSafetyDisabledAt: null, enrichmentRateLimit: null, autoAcceptSuggestions: false, chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false }, defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} }, acp: { enabledAgentIds: [] } },
   hotkeys: {
     quickCapture: "CommandOrControl+Shift+C",
     region: "",
@@ -41,7 +42,8 @@ const baseSettings: Settings = {
     allScreens: "",
     timed: "",
     videoCapture: "CommandOrControl+Alt+C",
-    reshowFloatOver: "CommandOrControl+Alt+Shift+F"
+    reshowFloatOver: "CommandOrControl+Alt+Shift+F",
+    openLibrary: ""
   },
   general: {
     developerMode: false,
@@ -59,9 +61,16 @@ const baseSettings: Settings = {
   storage: { filenameTimestampZone: "local", capturesLocation: "documents" },
   recording: {
     quickCaptureAction: "ask",
+    selectorHud: "shutter",
     includeSystemAudio: false,
     includeMicrophone: false,
+    mp4IncludeMicrophone: true,
+    mp4IncludeSystemAudio: true,
     videoCaptureCursor: true,
+    showRegionFrame: true,
+    showRecentCaptureSidebar: true,
+    microphoneDevice: null,
+    cameraDevice: null,
     imageCaptureCursor: true,
     lastRoutedPermissionFingerprint: "",
     screenCapturePrompted: false
@@ -77,15 +86,16 @@ const baseSettings: Settings = {
         outline: "auto"
       },
       text: { color: "accent", fontSize: "auto", weight: "regular", outline: "auto" },
-      shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15, outline: "auto" },
+      shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15, strokeStyle: "solid", outline: "auto" },
       blur: { mode: "gaussian", radius: { mode: "auto" } },
-      highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
+      highlight: { color: "yellow", opacity: 0.3, blend: "multiply" },
+      draw: { mode: "pen", color: "accent", thickness: "auto" }
     },
+    toolBag: defaultEditorToolBag(),
     coachmarks: { stoplightSeen: false },
-    matchingText: { enabled: true },
     sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
   },
-  library: { detailRail: { pinned: true, lastSelectedTab: "info" }, gridCopyPalette: { anchor: "follow" }, confirmBeforeTrash: true, gridZoom: 180 },
+  library: { detailRail: { pinned: true, lastSelectedTab: "info" }, gridCopyPalette: { anchor: "follow" }, confirmBeforeTrash: true, gridZoom: 180, duplicateWithEdits: { image: true, video: true }, editToolbarDock: "float" },
   localAgents: { enabled: false, grants: [], roles: [], audit: [] }
 };
 
@@ -267,7 +277,8 @@ describe("EditorChrome", () => {
     // Activity bar buttons render.
     expect(findButton("info")).toBeTruthy();
     expect(findButton("chat")).toBeTruthy();
-    expect(findButton("chat").title).toBe("Chat with AI");
+    expect(findButton("chat").dataset.tip).toBe("Chat with AI");
+    expect(findButton("chat").hasAttribute("title")).toBe(false);
     expect(findButton("toolConfig")).toBeTruthy();
     expect(findButton("help")).toBeTruthy();
 
@@ -479,7 +490,7 @@ describe("EditorChrome", () => {
     });
     expect(sidebarWrites.length).toBeGreaterThan(0);
     expect(
-      (sidebarWrites[sidebarWrites.length - 1]?.req as {
+      (sidebarWrites[sidebarWrites.length - 1]!.req as {
         editor: { sidebar: { pinned: boolean } };
       }).editor.sidebar.pinned
     ).toBe(true);

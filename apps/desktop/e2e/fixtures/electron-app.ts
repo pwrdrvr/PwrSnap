@@ -563,6 +563,11 @@ async function launchPwrSnapCore(
   // settings read in every spec of the run and fail dozens of
   // unrelated specs with baffling default-styled-annotation diffs.
   delete env.PWRSNAP_E2E_SETTINGS_READ_DELAY_MS;
+  // Same rule for the update fake: inherited, it would put every spec's app on
+  // a simulated update walk and raise the update card over whatever the spec
+  // was actually looking at.
+  delete env.PWRSNAP_E2E_UPDATE_FAKE;
+  delete env.PWRSNAP_E2E_UPDATE_STEP_MS;
 
   for (const [key, value] of Object.entries(options.env ?? {})) {
     if (value === undefined) {

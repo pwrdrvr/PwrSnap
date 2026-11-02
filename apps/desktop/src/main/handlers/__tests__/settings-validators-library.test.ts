@@ -62,3 +62,23 @@ describe("validateSettingsWrite — library.gridCopyPalette", () => {
     expect(writeGridCopyPalette([]).ok).toBe(false);
   });
 });
+
+function writeEditToolbarDock(editToolbarDock: unknown) {
+  return validateSettingsWrite({ library: { editToolbarDock } });
+}
+
+describe("validateSettingsWrite — library.editToolbarDock", () => {
+  test("accepts floating and every edge", () => {
+    for (const dock of ["float", "top", "bottom", "left", "right"]) {
+      expect(writeEditToolbarDock(dock).ok).toBe(true);
+    }
+  });
+
+  test("rejects anything else", () => {
+    for (const bad of ["Top", "center", "", null, 0, {}]) {
+      const result = writeEditToolbarDock(bad);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.code).toBe("invalid_library_editToolbarDock");
+    }
+  });
+});

@@ -63,7 +63,7 @@ describe("AppDocumentWindow", () => {
       ok: true as const,
       value: {
         kind: "third-party-licenses",
-        title: "Third-Party Licenses",
+        title: "Third-Party Notices",
         content: "PwrSnap Third-Party Licenses\n\n@fontsource/geist-sans"
       }
     }));
@@ -74,7 +74,7 @@ describe("AppDocumentWindow", () => {
     expect(dispatch).toHaveBeenCalledWith("app:readDocument", {
       kind: "third-party-licenses"
     });
-    expect(container?.querySelector("[aria-label='Third-Party Licenses']")?.textContent).toContain(
+    expect(container?.querySelector("[aria-label='Third-Party Notices']")?.textContent).toContain(
       "@fontsource/geist-sans"
     );
   });

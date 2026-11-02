@@ -44,7 +44,6 @@ function textOverlay(
 }
 
 const DIMS = {
-  renderWidthPx: 800,
   renderHeightPx: 600,
   canvasWidthPx: 800,
   canvasHeightPx: 600,

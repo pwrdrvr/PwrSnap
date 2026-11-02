@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 import { describe, expect, test } from "vitest";
 import { BUNDLED_FFMPEG } from "../../../scripts/generate-third-party-licenses.mjs";
+import { WINDOWS_ALIAS_NAMES } from "./windows-release-artifacts.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
 
@@ -64,20 +65,23 @@ describe("Windows release configuration", () => {
     expect(script).toContain("assertRequiredWindowsResources();");
     expect(script).toContain("build/native/window-list.exe");
     expect(script).toContain('"native", "verified-file.exe"');
+    expect(script).toContain('"native", "screen-snapshot.exe"');
     expect(script).toContain("PWRSNAP_WINDOWS_FFMPEG_PATH");
     expect(script).toContain('to: "PwrSnapFFmpeg.exe"');
     expect(script).toContain('from "./sharp-platform-packages.mjs"');
+    expect(script).toContain('from "./better-sqlite3-prebuilds.mjs"');
     expect(script).not.toContain("WIN_CSC_LINK");
     expect(script).not.toContain("--unsigned-release");
 
     const injection = script.indexOf("injectWin32PlatformPackages();");
     const pruning = script.indexOf("pruneSharpNativePackages({", injection);
-    const nativeRebuild = script.indexOf("prepare staged better-sqlite3", pruning);
+    const sqlitePruning = script.indexOf("pruneBetterSqlite3Prebuilds({", pruning);
     const prepareOnlyExit = script.indexOf("if (prepareOnly) {", pruning);
     const electronBuilder = script.indexOf("const builderCli = resolveElectronBuilderCli();", pruning);
     expect(injection).toBeGreaterThan(-1);
     expect(pruning).toBeGreaterThan(injection);
-    expect(nativeRebuild).toBeGreaterThan(pruning);
+    expect(sqlitePruning).toBeGreaterThan(pruning);
+    expect(prepareOnlyExit).toBeGreaterThan(sqlitePruning);
     expect(prepareOnlyExit).toBeGreaterThan(pruning);
     expect(electronBuilder).toBeGreaterThan(pruning);
   });
@@ -106,6 +110,72 @@ describe("Windows release configuration", () => {
     expect(builder).toContain('join(buildRoot, "verified-file.exe")');
   });
 
+  test("the packaged native helper owns real CF_HDROP file copy and Explorer readback", () => {
+    const source = read("apps/desktop/native/window-list-win/main.cpp");
+    const fileClipboard = read("apps/desktop/src/main/clipboard/file-clipboard.ts");
+
+    // CF_HDROP is predefined numeric format 15. A named Electron custom
+    // format called "CF_HDROP" is not equivalent and must never replace this
+    // Win32 write/read path.
+    expect(source).toContain("--write-file-clipboard");
+    expect(source).toContain("#include <shlobj.h>");
+    expect(source).toContain('static_assert(CF_HDROP == 15');
+    expect(source).toContain("SetClipboardData(CF_HDROP, dropMemory)");
+    expect(source).toContain("drop->fWide = TRUE");
+    expect(source).toContain("GMEM_MOVEABLE | GMEM_ZEROINIT");
+    expect(source).toContain('RegisterClipboardFormatW(L"Preferred DropEffect")');
+    expect(source).toContain("*effect = DROPEFFECT_COPY");
+    expect(source).toContain("OpenClipboard(owner)");
+    expect(source).toContain("DragQueryFileW(writtenDrop");
+
+    expect(source).toContain("--read-file-clipboard");
+    expect(source).toContain("GetClipboardData(CF_HDROP)");
+    expect(source).toContain("IsFullyQualifiedWindowsPath");
+    expect(source).toContain("CF_HDROP contains no files");
+
+    expect(fileClipboard).toContain('format: "CF_HDROP"');
+    expect(fileClipboard).toContain('["--write-file-clipboard", filePath]');
+    expect(fileClipboard).not.toContain('writeBuffer("CF_HDROP"');
+
+    // The same binary is already a required, packaged extraResource; the
+    // clipboard commands must not become a dev-only helper.
+    const config = read("apps/desktop/electron-builder.yml");
+    expect(config).toContain('to: "PwrSnapWindowList.exe"');
+
+    const ci = read(".github/workflows/ci.yml");
+    expect(ci).toContain('PWRSNAP_WINDOWS_NATIVE_CLIPBOARD_SMOKE: "1"');
+    expect(ci).toContain("windows-file-clipboard-native.test.ts");
+    expect(ci.indexOf("Build native Windows clipboard helper")).toBeLessThan(
+      ci.indexOf("Smoke-test native CF_HDROP round trip")
+    );
+  });
+
+  test("Windows media export and packaging agree on the controlled h264_mf artifact", () => {
+    const exporter = read("apps/desktop/src/main/recording/recording-exporter.ts");
+    const resolver = read("apps/desktop/src/main/recording/ffmpeg-resolver.ts");
+    const workflow = read(".github/workflows/release.yml");
+
+    expect(exporter).toContain('["-c:v", "h264_mf"]');
+    expect(exporter).toContain('platform === "win32"');
+    expect(resolver).toContain('"PwrSnapFFmpeg.exe"');
+    expect(workflow).toContain('foreach ($encoder in @("h264_mf", "aac"))');
+    expect(workflow).toContain("PWRSNAP_WINDOWS_FFMPEG_PATH=$ffmpeg");
+
+    const packager = read("apps/desktop/scripts/package-win.mjs");
+    expect(packager).toContain('to: "PwrSnapFFmpeg.exe"');
+    expect(packager).toContain("assertRequiredWindowsResources();");
+  });
+
+  test("Windows builds and packages the shared snapshot helper", () => {
+    const config = read("apps/desktop/electron-builder.yml");
+    const builder = read("apps/desktop/scripts/build-native.mjs");
+
+    expect(config).toContain('from: "build/native/screen-snapshot.exe"');
+    expect(config).toContain('to: "PwrSnapScreenSnapshot.exe"');
+    expect(builder).toContain('join(nativeRoot, "screen-snapshot-win", "main.cpp")');
+    expect(builder).toContain('join(buildRoot, "screen-snapshot.exe")');
+  });
+
   test("macOS release preparation always defers FFmpeg to the injected artifact", () => {
     const script = read("apps/desktop/scripts/release.mjs");
 
@@ -132,20 +202,39 @@ describe("Windows release configuration", () => {
     expect(script).not.toContain("process.env.CSC_KEYCHAIN");
   });
 
-  test("macOS Icon Composer packaging uses a macOS 26 runner with its default Xcode", () => {
+  test("macOS Icon Composer packaging selects stable Xcode on restricted macOS 26 runners", () => {
     const action = read(".github/actions/select-xcode-for-actool/action.yml");
     const releaseWorkflow = read(".github/workflows/release.yml");
     const previewWorkflow = read(".github/workflows/preview-build.yml");
 
-    // Any Xcode 26 actool crashes its AssetCatalogAgent against macos-15's
-    // host frameworks. Compile Icon Composer only where the host and selected
-    // default Xcode are from macOS 26; overriding DEVELOPER_DIR to another
-    // side-by-side Xcode recreates the mismatch.
-    expect(releaseWorkflow.match(/runs-on: macos-26/g)).toHaveLength(2);
-    expect(previewWorkflow).toContain("runs-on: macos-26");
-    expect(action).toContain('developer_dir="$(xcode-select -p)"');
-    expect(action).toContain("AssetCatalogAgent must match the macOS 26 host");
-    expect(action).not.toContain("/Applications/Xcode_");
+    expect(releaseWorkflow.match(/runs-on: \[self-hosted, macOS, ARM64, pwrdrvr-macos\]/g)).toHaveLength(2);
+    expect(previewWorkflow).toContain("runs-on: [self-hosted, macOS, ARM64, pwrdrvr-macos]");
+    expect(action).toContain('host_version="$(sw_vers -productVersion)"');
+    expect(action).toContain('if [ "$host_major" -lt 26 ]');
+    expect(action).toContain("/Applications/Xcode*.app");
+    expect(action).toContain("grep -viE '[_-](beta|rc)'");
+    expect(action).not.toContain("sudo xcode-select");
+  });
+
+  test("persistent macOS signing isolates the artifact and always removes credentials", () => {
+    const workflow = read(".github/workflows/release.yml");
+    const signing = workflow.split("  sign:\n")[1].split("  linux-build:\n")[0];
+    expect(signing).toContain("working-directory: release-signing");
+    expect(signing).toContain("umask 077");
+    expect(signing).toContain('mktemp -d "$RUNNER_TEMP/pwrsnap-signing.XXXXXX"');
+    expect(signing).toContain('security list-keychains -d user > "$signing_temp/keychains-before.txt"');
+    expect(signing).toContain("TMPDIR: ${{ env.PWRSNAP_SIGNING_TEMP_DIR }}");
+    expect(signing).toContain("path: release-signing/.release-input");
+    expect(signing).toContain("uses: ./release-signing/.github/actions/select-xcode-for-actool");
+    expect(signing).toContain("release-signing/apps/desktop/release-stage/dist/*.dmg");
+    expect(signing).toMatch(/name: Remove temporary signing credentials\n        if: always\(\)/);
+    expect(signing).toMatch(/name: Remove isolated signing workspace\n        if: always\(\)/);
+    expect(signing.indexOf("Remove temporary signing credentials")).toBeLessThan(signing.indexOf("Upload macOS release assets"));
+    expect(signing).not.toContain("uses: actions/checkout");
+    expect(signing).not.toContain("configure-nodejs@");
+    expect(workflow).toContain("scripts/release/cleanup-macos-signing.py");
+    const preview = read(".github/workflows/preview-build.yml").split("  preview-windows:")[0];
+    expect(preview).toContain("github.event.pull_request.head.repo.full_name == github.repository");
   });
 
   test("tagged release workflow gates publication on Linux, macOS, and Azure-signed Windows", () => {
@@ -256,6 +345,73 @@ describe("Windows release configuration", () => {
     expect(harness).toContain("127.0.0.1");
   });
 
+  test("pull-request previews use hash-pinned FFmpeg release build artifacts without secrets", () => {
+    const preview = read(".github/workflows/preview-build.yml");
+
+    // PR-authored workflow code must never receive the private build-repo App
+    // credentials or enter a signing environment. The tagged release workflow
+    // retains that protected path; previews consume only already-public bytes.
+    expect(preview).not.toContain("actions/create-github-app-token");
+    expect(preview).not.toContain("FFMPEG_BUILDS_APP_CLIENT_ID");
+    expect(preview).not.toContain("FFMPEG_BUILDS_APP_PRIVATE_KEY");
+    expect(preview).not.toContain("pwrsnap-ffmpeg-builds");
+    expect(preview).not.toContain("gh run download");
+    expect(preview).not.toContain("curl --fail");
+    expect(preview).not.toContain("Invoke-WebRequest");
+    expect(preview.match(/python3? scripts\/preview-build-assets\.py/g) ?? []).toHaveLength(2);
+    expect(preview).toContain("actions: read");
+    expect(preview.match(/GH_TOKEN: \$\{\{ github.token \}\}/g) ?? []).toHaveLength(2);
+    expect(preview).not.toMatch(/\$\{\{\s*(?:secrets|vars)\./);
+
+    expect(
+      preview.match(
+        /FFMPEG_RELEASE_BASE_URL:\s*https:\/\/github\.com\/pwrdrvr\/PwrSnap\/releases\/download\/v1\.1\.19/g,
+      ) ?? [],
+    ).toHaveLength(2);
+    expect(preview).toContain("PwrSnap-1.1.19-universal-mac.zip");
+    expect(preview).toContain(
+      "0bf4690e07456acd5bb309c3a74f6ca45538eb1f3ff47f7f56d7f9720b32e0c5",
+    );
+    expect(preview).toContain(
+      "8b1a77b5990eaa20770259e28bb415ec7dddd3db4f9137676722a64c3f441daa",
+    );
+    expect(preview).toContain("PwrSnap-1.1.19-windows-x64-setup.exe");
+    expect(preview).toContain(
+      "7eed072111f2a1666800b5337ed9814104e05b8c6bacc84155e8a0abc65e821f",
+    );
+    expect(preview.match(/FFMPEG_RELEASE_PAYLOAD_SHA256:\s*[0-9a-f]{64}/g) ?? []).toHaveLength(2);
+    expect(preview).toContain("shasum -a 256");
+    expect(preview).toContain("Get-FileHash -Algorithm SHA256");
+
+    // release.mjs removes stale FFmpeg while preparing the stage. Injection
+    // must therefore happen between prepare and the actual ad-hoc package,
+    // never before a one-shot package:dryrun invocation that would delete it.
+    expect(preview.indexOf("Prepare preview package stage")).toBeLessThan(
+      preview.indexOf("Stage controlled macOS FFmpeg from release build artifacts"),
+    );
+    expect(preview.indexOf("Stage controlled macOS FFmpeg from release build artifacts")).toBeLessThan(
+      preview.indexOf("Build preview package (unsigned)"),
+    );
+    expect(preview).toContain("release.mjs --prepare-only");
+    expect(preview).toContain("release.mjs --sign-stage-only --dryrun");
+    expect(preview).toContain('CSC_FOR_PULL_REQUEST: "true"');
+    expect(read("apps/desktop/scripts/release.mjs")).toContain(
+      'builderArgs.push("--config.mac.identity=-", "--config.mac.notarize=false")',
+    );
+    expect(preview).not.toContain("package:dryrun");
+
+    // Keep both expensive product checks: real installers are still built and
+    // the extracted Windows binary still performs production-args encodes.
+    expect(preview).toContain("Build preview installer (unsigned)");
+    expect(preview).toContain("windows-ffmpeg-export-smoke.test.ts");
+    expect(preview.indexOf("Stage controlled Windows FFmpeg from release build artifacts")).toBeLessThan(
+      preview.indexOf("windows-ffmpeg-export-smoke.test.ts"),
+    );
+    expect(preview.indexOf("windows-ffmpeg-export-smoke.test.ts")).toBeLessThan(
+      preview.indexOf("Build preview installer (unsigned)"),
+    );
+  });
+
   test("the signed Windows installer also publishes under a stable alias", () => {
     const workflow = read(".github/workflows/release.yml");
 
@@ -263,7 +419,7 @@ describe("Windows release configuration", () => {
     // platform attaches one version-free copy. Without the Windows half the
     // site has to call the GitHub Releases API from the browser just to learn
     // the installer's URL.
-    expect(workflow).toContain("Prepare stable-name DMG alias");
+    expect(workflow).toContain("Validate paired macOS assets and assemble shared updater metadata");
     expect(workflow).toContain("Prepare stable-name Windows installer alias");
 
     const protectedWindowsJob = workflow
@@ -278,6 +434,11 @@ describe("Windows release configuration", () => {
     expect(order("Prepare stable-name Windows installer alias")).toBeGreaterThan(
       order("--sign-stage-only --release --require-signing"),
     );
+    // Specifically after Authenticode verification, not merely after packaging:
+    // the alias is a copy and inherits whatever it copies, unsigned included.
+    expect(order("Prepare stable-name Windows installer alias")).toBeGreaterThan(
+      order("Verify Authenticode signatures"),
+    );
     expect(order("Prepare stable-name Windows installer alias")).toBeLessThan(
       order("Upload Windows installer artifact"),
     );
@@ -286,20 +447,37 @@ describe("Windows release configuration", () => {
       .split("- name: Prepare stable-name Windows installer alias")[1]
       .split("\n      - name:")[0];
 
-    expect(aliasStep).toContain('$aliasName = "PwrSnap-windows-x64-setup.exe"');
+    // The naming rule and every refusal live in the script, where unit tests
+    // can reach them; the workflow only invokes it. Re-inlining the logic as
+    // PowerShell would put it back beyond the reach of `pnpm test`.
+    expect(aliasStep).toContain(
+      "node apps/desktop/scripts/windows-release-artifacts.mjs apps/desktop/release-stage",
+    );
     // A copy, never a second trip through Azure signing — identical bytes keep
     // the Authenticode signature the previous step just verified.
-    expect(aliasStep).toContain("Copy-Item -LiteralPath $versioned.FullName");
     expect(aliasStep).not.toContain("Invoke-TrustedSigning");
-    // PwrSnap-windows-SHA256SUMS stays authoritative for every installer that
-    // ships, alias included.
-    expect(aliasStep).toContain('$lines += "$actual  $aliasName"');
-    // ...but the alias must never reach updater metadata. electron-updater
-    // resolves latest.yml and the .blockmap by exact filename, so aiming
-    // either at a name that moves every release breaks update resolution and
-    // delta downloads for everyone already installed. Assert against the
-    // executable lines only — the comment explaining the rule names both
-    // files, and should keep naming them.
+    // The workflow spells the alias three times — this presence filter, the
+    // upload glob, and the publication guard — and the script spells it once.
+    // Bind them to WINDOWS_ALIAS_NAMES: a rename there must not be able to
+    // leave the workflow checking a stale name, which fails the release inside
+    // the protected Windows job after Azure signing has already run, or worse
+    // publishes with no alias at all and 404s the stable URL.
+    const aliasGlob = "PwrSnap.Setup*.exe";
+    const globPattern = new RegExp(`^${aliasGlob.replace(/[.]/g, "\\.").replace(/\*/g, ".*")}$`);
+    for (const name of Object.values(WINDOWS_ALIAS_NAMES)) {
+      expect(name, `the ${aliasGlob} glob must carry ${name}`).toMatch(globPattern);
+    }
+
+    // A script that no-ops still exits 0, so the step asserts the file landed.
+    expect(aliasStep).toContain(`Filter "${aliasGlob}"`);
+    expect(aliasStep).toContain("the stable download URL would 404");
+
+    // The alias must never reach updater metadata. electron-updater resolves
+    // latest.yml and the .blockmap by exact filename, so aiming either at a
+    // name that moves every release breaks update resolution and delta
+    // downloads for everyone already installed. Assert against the executable
+    // lines only — the comment explaining the rule names both files, and
+    // should keep naming them.
     const aliasScript = aliasStep
       .split("\n")
       .filter((line) => !/^\s*#/.test(line))
@@ -311,10 +489,27 @@ describe("Windows release configuration", () => {
     // that carries the Windows one is easy to narrow by accident. Anchor to
     // end-of-line: a plain toContain("...dist/*-setup.exe") is also satisfied
     // by the "...dist/*-setup.exe.blockmap" line below it, so deleting the
-    // installer glob outright would still have passed.
+    // installer glob outright would still have passed. PwrSnap.Setup.exe does
+    // not end in "-setup.exe", so it needs its own line.
     expect(workflow).toMatch(/release-stage\/dist\/\*-setup\.exe\r?$/m);
+    expect(workflow).toMatch(
+      new RegExp(`release-stage/dist/${aliasGlob.replace(/[.*]/g, "\\$&")}\\r?$`, "m"),
+    );
     expect(workflow).toContain("mac-dist/dist/PwrSnap.dmg");
-    expect(workflow).toContain("windows-dist/PwrSnap-windows-x64-setup.exe");
+    expect(workflow).toContain(`windows-dist/${WINDOWS_ALIAS_NAMES.x64}`);
+
+    // The signing job has no checkout, so the script only exists there if the
+    // archive carries it — an omission that fails after Azure signing has run.
+    expect(read("scripts/release/archive-windows-signing-input.ps1")).toContain(
+      '"apps/desktop/scripts/windows-release-artifacts.mjs"',
+    );
+
+    // PwrSnap-windows-x64-setup.exe (#463) named an architecture no download
+    // button mentions and never resolved at releases/latest/download: it
+    // shipped from v1.1.0-alpha.6 while v1.0.3 held the Latest marker, and
+    // neither website ever linked it. Publishing both would give Windows two
+    // competing "canonical" stable URLs.
+    expect(workflow).not.toContain("PwrSnap-windows-x64-setup.exe");
   });
 
   test("install and support docs describe the shipping Windows contract", () => {
@@ -345,8 +540,20 @@ describe("Windows release configuration", () => {
     expect(rootReadme).toContain("Linux desktop support is not shipped");
     expect(rootReadme).toContain("Developer ID signed, hardened, and Apple-notarized");
     expect(rootReadme).toContain("Authenticode-signed");
-    expect(rootReadme).toMatch(/To install a\s+1\.1 prerelease/);
-    expect(rootReadme).toMatch(/Once 1\.1 is promoted\s+stable/);
+    // The Windows stable alias was forbidden in user-facing docs while no
+    // promoted release carried it — releases/latest/download/ resolves only
+    // for the release marked Latest, so a button pointing there 404'd. v1.0.4
+    // carries the alias #597 added (verified: 206), so the README may now link
+    // it, and this asserts the link the download chip depends on.
+    expect(rootReadme).toContain(
+      "https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.Setup.exe"
+    );
+    // v1.1.0 is the first stable release carrying the native Apple Silicon
+    // alias, so the primary download chip may now resolve it through Latest.
+    expect(rootReadme).toContain(
+      "https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap-arm64.dmg"
+    );
+    expect(rootReadme).toMatch(/For\s+prerelease testing/);
 
     for (const docs of [rootReadme, windowsReadme]) {
       expect(docs).toContain("PwrSnap-<version>-windows-x64-setup.exe");
@@ -366,11 +573,15 @@ describe("Windows release configuration", () => {
     expect(windowsReadme).toContain("Windows video capture records the screen");
     expect(windowsReadme).toContain("Arm64 is not packaged");
     expect(windowsReadme).toContain("Help → Logs");
-    expect(windowsReadme).toMatch(/To install a\s+1\.1 prerelease/);
-    expect(windowsReadme).toMatch(/Once 1\.1 is promoted\s+stable/);
+    expect(windowsReadme).toContain("For prerelease testing");
     expect(windowsReadme).toContain("preserves the previous working binding");
     expect(windowsReadme).toContain("Full-window capture on Windows depends on Electron");
-    expect(wingetReadme).toContain("PwrSnap is not published there yet");
+    // Publication is rechecked remotely for each release; the historical
+    // starter must route operators to that procedure instead of pinning prose
+    // about the catalog's state at the time this test was written.
+    expect(wingetReadme).toContain(
+      "[package-manager release runbook](../../package-manager-release-runbook.md)",
+    );
     expect(windowsReadme).toContain("not currently published in the Windows Package Manager");
 
     for (const stale of [
@@ -379,7 +590,6 @@ describe("Windows release configuration", () => {
       "The real public release still needs final Authenticode signing",
       "Settings → Experimental",
       "Captures land under `~/Library/Application Support/PwrSnap/`",
-      "https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap-windows-x64-setup.exe",
       "The 1.1 line is currently a prerelease",
       "For the current 1.1 prerelease line",
       "Windows video currently includes the pointer",
@@ -422,12 +632,16 @@ describe("Windows release configuration", () => {
   });
 
   test("every FFmpeg build pin agrees across workflows and docs", () => {
-    // The macOS release job, the Windows release job, and (once the preview
-    // build consumes the controlled artifact) the preview job each pin
-    // FFMPEG_BUILD_SHA independently. If they drift, macOS and Windows ship
-    // binaries built from different sources and preview DMGs diverge from
-    // release DMGs — which is exactly what hid the missing PNG decoder.
+    // The protected macOS + Windows release jobs and the reference doc pin the
+    // private build-repo commit independently. PR previews intentionally use
+    // no private-repo credential; the public-release digest contract above
+    // pins their exact derived payloads instead.
     const found = [];
+
+    const devProvisioner = read("apps/desktop/scripts/dev-ffmpeg.mjs");
+    for (const match of devProvisioner.matchAll(/buildSha:\s*["']([0-9a-f]{40})["']/g)) {
+      found.push({ source: "apps/desktop/scripts/dev-ffmpeg.mjs", sha: match[1] });
+    }
 
     const workflowDir = resolve(repoRoot, ".github/workflows");
     for (const entry of readdirSync(workflowDir)) {
@@ -493,6 +707,11 @@ describe("Windows release configuration", () => {
       push(`workflow-env:${entry}`, text, envPattern);
       push(`workflow-artifact:${entry}`, text, artifactPattern);
     }
+    push(
+      "script:apps/desktop/scripts/dev-ffmpeg.mjs",
+      read("apps/desktop/scripts/dev-ffmpeg.mjs"),
+      artifactPattern
+    );
 
     // Read the docs unconditionally. Wrapping these in existsSync() means a
     // rename silently drops their pins with a green build.
@@ -515,6 +734,7 @@ describe("Windows release configuration", () => {
       "workflow-env:release.yml",
       "workflow-artifact:release.yml",
       "workflow-artifact:preview-build.yml",
+      "script:apps/desktop/scripts/dev-ffmpeg.mjs",
       "doc:docs/ffmpeg-build-reference.md",
       "doc:docs/desktop-release-runbook.md",
     ]) {
@@ -542,10 +762,15 @@ describe("Windows release configuration", () => {
     expect(linuxSection).not.toMatch(/ffmpeg-[0-9][0-9A-Za-z.+-]*-linux/);
   });
 
-  test("all three signing/preview jobs reconcile the artifact against the shipped notice", () => {
+  test("release signing and public preview jobs reconcile artifacts against the shipped notice", () => {
     const workflow = read(".github/workflows/release.yml");
     const preview = read(".github/workflows/preview-build.yml");
     const archiveScript = read("scripts/release/archive-windows-signing-input.ps1");
+
+    // Early-exit grep can kill unzip with SIGPIPE and fail a valid archive
+    // under pipefail. Consume the complete listing while suppressing output.
+    expect(preview).toContain('grep -Fx "$ffmpeg_entry" > /dev/null');
+    expect(preview).not.toContain('grep -Fxq "$ffmpeg_entry"');
 
     // Static agreement above only proves this repo is self-consistent. It
     // cannot see the build repo, so it cannot catch an artifact whose manifest
@@ -553,9 +778,18 @@ describe("Windows release configuration", () => {
     // comparing the manifest shipped with the binary against the notice being
     // packaged alongside it.
     expect(workflow.match(/node scripts\/check-bundled-ffmpeg-notice\.mjs/g) ?? []).toHaveLength(2);
-    // The preview job is the only site that can fire before a tag exists; both
-    // docs advertise it, so assert it rather than letting it be deleted silently.
-    expect(preview).toContain("node scripts/check-bundled-ffmpeg-notice.mjs");
+    // Preview jobs are the only sites that can fire before a tag exists; both
+    // platforms must reconcile their artifact rather than relying on PATH.
+    expect(preview.match(/node scripts\/check-bundled-ffmpeg-notice\.mjs/g) ?? []).toHaveLength(2);
+    expect(preview).toContain("resources/PwrSnapFFmpeg.exe");
+    expect(preview).toContain('PWRSNAP_WINDOWS_FFMPEG_SMOKE: "1"');
+    expect(preview).toContain("windows-ffmpeg-export-smoke.test.ts");
+    expect(preview.indexOf("windows-ffmpeg-export-smoke.test.ts")).toBeGreaterThan(
+      preview.indexOf("Stage controlled Windows FFmpeg from release build artifacts"),
+    );
+    expect(preview.indexOf("windows-ffmpeg-export-smoke.test.ts")).toBeLessThan(
+      preview.indexOf("Build preview installer (unsigned)"),
+    );
 
     // Both signing jobs check the STAGED notice — the bytes about to be packaged
     // — not the repo copy. Assert per job: a single toContain is satisfied by
@@ -582,25 +816,16 @@ describe("Windows release configuration", () => {
     expect(archiveScript).toContain("scripts/check-bundled-ffmpeg-notice.mjs");
   });
 
-  test("windows signing input covers every transitive import", () => {
-    // The windows-sign job has no checkout: it unpacks this allowlist and
-    // nothing else. A script whose import is missing does not fail lint, it
-    // throws ERR_MODULE_NOT_FOUND inside the protected job AFTER Azure signing.
-    // That is not hypothetical — verify-asar-contents.mjs gained an import of
-    // scripts/lib/cli-entrypoint.mjs in #426, which updated the macOS allowlist
-    // in release.yml and missed this one, breaking every Windows release.
-    const listed = [
-      ...read("scripts/release/archive-windows-signing-input.ps1")
-        .split("$paths = @(")[1]
-        .split(")")[0]
-        .matchAll(/"([^"]+)"/g),
-    ].map((match) => match[1]);
-
-    // The allowlist is written with forward slashes (it is consumed by tar and
-    // by PowerShell string matching), but node:path yields native separators —
-    // on Windows `relative()` returns "scripts\\lib\\cli-entrypoint.mjs", which
-    // matches no entry and reports every import as missing. Compare in one
-    // separator style.
+  // Neither signing job has a checkout: each unpacks an allowlist and nothing
+  // else. A script whose import is missing does not fail lint — it throws
+  // ERR_MODULE_NOT_FOUND inside the protected job AFTER signing has run.
+  //
+  // The allowlists are written with forward slashes (consumed by tar and by
+  // PowerShell string matching) but node:path yields native separators — on
+  // Windows `relative()` returns "scripts\\lib\\cli-entrypoint.mjs", which
+  // matches no entry and would report every import as missing. Compare in one
+  // separator style.
+  function findMissingTransitiveImports(listed) {
     const posix = (path) => path.split(sep).join("/");
     const covered = (path) =>
       listed.some((entry) => path === entry || path.startsWith(`${entry}/`));
@@ -617,7 +842,48 @@ describe("Windows release configuration", () => {
       }
     };
     for (const entry of listed.filter((path) => path.endsWith(".mjs"))) walk(entry);
+    return missing;
+  }
 
-    expect(missing, `Windows signing input is missing transitive imports`).toEqual([]);
+  test("windows signing input covers every transitive import", () => {
+    // Not hypothetical — verify-asar-contents.mjs gained an import of
+    // scripts/lib/cli-entrypoint.mjs in #426, which updated the macOS allowlist
+    // in release.yml and missed this one, breaking every Windows release.
+    const listed = [
+      ...read("scripts/release/archive-windows-signing-input.ps1")
+        .split("$paths = @(")[1]
+        .split(")")[0]
+        .matchAll(/"([^"]+)"/g),
+    ].map((match) => match[1]);
+
+    expect(
+      findMissingTransitiveImports(listed),
+      `Windows signing input is missing transitive imports`,
+    ).toEqual([]);
+  });
+
+  test("macOS signing input covers every transitive import", () => {
+    // The mirror of the test above, and the half that had no guard. #426 broke
+    // the Windows release by updating only this list; the reverse — updating
+    // only the PowerShell one — would break the macOS release the same way,
+    // after notarization, with the Windows test still green. Both lists are
+    // hand-maintained allowlists, so both need the same walk.
+    const listed = read(".github/workflows/release.yml")
+      .split("tar -czf")[1]
+      .split("sha256=")[0]
+      .split("\n")
+      .map((line) => line.replace(/\\$/, "").trim())
+      .filter((line) => /^[\w.@][\w./@-]*$/.test(line));
+
+    // Guard the parse itself: a reformatted workflow that yields an empty or
+    // tiny list would make this assertion pass by inspecting nothing.
+    expect(listed, "could not parse the macOS tar list from release.yml").toContain(
+      "apps/desktop/scripts/verify-asar-contents.mjs",
+    );
+
+    expect(
+      findMissingTransitiveImports(listed),
+      `macOS signing input is missing transitive imports`,
+    ).toEqual([]);
   });
 });

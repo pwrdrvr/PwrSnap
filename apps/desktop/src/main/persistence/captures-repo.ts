@@ -31,6 +31,7 @@ import type {
 } from "@pwrsnap/shared";
 import { normalizeTagLabel } from "@pwrsnap/shared";
 import { getDb } from "./db";
+import { notifyFamiliesChanged } from "./family-change-signal";
 import {
   capturePathReferencePredicate,
   capturePathReferencePrefix,
@@ -40,12 +41,52 @@ import { prepareCached } from "./prepare-cached";
 import { listEnrichmentsByCaptureIds } from "./enrichment-repo";
 import { getVideoMetadata, listVideoMetadata } from "./video-repo";
 
+/** Persisted window titles are metadata, not unbounded document content. */
+export const SOURCE_WINDOW_TITLE_MAX_CODE_POINTS = 512;
+
+const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/gu;
+
+function preserveTitleJoinerOrVariationSelector(value: string): boolean {
+  const codePoint = value.codePointAt(0);
+  return (
+    codePoint === 0x200c ||
+    codePoint === 0x200d ||
+    (codePoint !== undefined && codePoint >= 0xfe00 && codePoint <= 0xfe0f) ||
+    (codePoint !== undefined && codePoint >= 0xe0100 && codePoint <= 0xe01ef)
+  );
+}
+
+/**
+ * Normalize whitespace/control text and remove invisible formatting controls,
+ * while retaining joiners/variation selectors inside visible Unicode titles.
+ * The code-point bound avoids splitting a surrogate pair; a title that contains
+ * no displayable content becomes NULL.
+ */
+export function normalizeSourceWindowTitle(
+  value: unknown
+): string | null {
+  if (typeof value !== "string") return null;
+  const safeFormatCharacters = value.replace(DEFAULT_IGNORABLE, (character) =>
+    preserveTitleJoinerOrVariationSelector(character) ? character : ""
+  );
+  const normalized = safeFormatCharacters
+    .replace(/[\p{White_Space}\p{Cc}]+/gu, " ")
+    .trim();
+  const visibleContent = normalized.replace(DEFAULT_IGNORABLE, "");
+  if (visibleContent.length === 0) return null;
+  return [...normalized]
+    .slice(0, SOURCE_WINDOW_TITLE_MAX_CODE_POINTS)
+    .join("")
+    .trimEnd();
+}
+
 type CaptureRow = {
   id: string;
   kind: "image" | "video";
   captured_at: string;
   source_app_bundle_id: string | null;
   source_app_name: string | null;
+  source_window_title: string | null;
   legacy_src_path: string | null;
   bundle_path: string | null;
   flat_png_path: string | null;
@@ -60,6 +101,8 @@ type CaptureRow = {
   edits_version: number;
   deleted_at: string | null;
   has_alpha: number;
+  family_id: string | null;
+  duplicated_from: string | null;
 };
 
 function rowToRecord(row: CaptureRow): CaptureRecord {
@@ -80,9 +123,12 @@ function rowToRecord(row: CaptureRow): CaptureRecord {
     sha256: row.sha256,
     source_app_bundle_id: row.source_app_bundle_id,
     source_app_name: row.source_app_name,
+    source_window_title: row.source_window_title,
     edits_version: row.edits_version,
     deleted_at: row.deleted_at,
     has_alpha: row.has_alpha === 1,
+    family_id: row.family_id,
+    duplicated_from: row.duplicated_from,
     // video metadata is hydrated separately by the read APIs below —
     // rowToRecord is shared with insert paths where the metadata
     // doesn't exist yet, so we default to null here.
@@ -96,6 +142,11 @@ export type InsertCapture = {
   captured_at: string;
   source_app_bundle_id: string | null;
   source_app_name: string | null;
+  /**
+   * Exact selected-window title. Omitted and null values persist as NULL;
+   * non-null values are normalized and bounded before binding to SQLite.
+   */
+  source_window_title?: string | null;
   /**
    * Pre-bundle-migration source path. New captures (post-bundle-flow
    * rewire) pass `null` here and populate `bundle_path` instead. The
@@ -129,6 +180,9 @@ export type InsertCapture = {
    * to 0 (opaque). See migration 0025.
    */
   has_alpha?: boolean;
+  /** Duplicate lineage — see CaptureRecord.family_id. Omitted = NULL. */
+  family_id?: string | null;
+  duplicated_from?: string | null;
 };
 
 /**
@@ -182,7 +236,10 @@ function insertCaptureInTx(
     bundle_modified_at: input.bundle_modified_at ?? null,
     bundle_format_version: input.bundle_format_version ?? 1,
     bundle_edits_version: input.bundle_edits_version ?? 0,
+    source_window_title: normalizeSourceWindowTitle(input.source_window_title),
     has_alpha: input.has_alpha === true ? 1 : 0,
+    family_id: input.family_id ?? null,
+    duplicated_from: input.duplicated_from ?? null,
     legacy_composite_v2_migrated_at:
       input.bundle_path === null || input.bundle_path === undefined
         ? null
@@ -192,26 +249,29 @@ function insertCaptureInTx(
     .prepare(
       `INSERT INTO captures (
         id, kind, captured_at,
-        source_app_bundle_id, source_app_name, legacy_src_path,
+        source_app_bundle_id, source_app_name, source_window_title, legacy_src_path,
         bundle_path, flat_png_path, bundle_modified_at,
         bundle_format_version, bundle_edits_version,
         legacy_composite_v2_migrated_at,
         width_px, height_px, device_pixel_ratio,
-        byte_size, sha256, has_alpha, edits_version, deleted_at
+        byte_size, sha256, has_alpha, family_id, duplicated_from,
+        edits_version, deleted_at
       ) VALUES (
         @id, @kind, @captured_at,
-        @source_app_bundle_id, @source_app_name, @legacy_src_path,
+        @source_app_bundle_id, @source_app_name, @source_window_title, @legacy_src_path,
         @bundle_path, @flat_png_path, @bundle_modified_at,
         @bundle_format_version, @bundle_edits_version,
         @legacy_composite_v2_migrated_at,
         @width_px, @height_px, @device_pixel_ratio,
-        @byte_size, @sha256, @has_alpha, 0, NULL
+        @byte_size, @sha256, @has_alpha, @family_id, @duplicated_from,
+        0, NULL
       )
       RETURNING *`
     )
     .get(params) as CaptureRow;
 
   bumpAppStat(input.source_app_bundle_id, +1);
+  notifyFamiliesChanged([inserted.family_id]);
   return { record: rowToRecord(inserted) };
 }
 
@@ -585,7 +645,7 @@ export function listCaptures(filter: ListCapturesArgs): ListCapturesResult {
  * Two query plans share one filter spec:
  *
  *   - `query` set → JOIN `capture_search_fts` (FTS5 virtual table
- *     populated by migration 0017), MATCH the sanitized query,
+ *     populated by migration 0032), MATCH the sanitized query,
  *     extract `snippet(...)` for the matched fragment. Results default
  *     to FTS5 rank (relevance), with explicit chronological overrides.
  *   - `query` absent → no JOIN. Filter-only scan ordered by
@@ -943,11 +1003,14 @@ export function softDeleteCapture(id: string): void {
   const db = getDb();
   db.transaction(() => {
     const row = db
-      .prepare("SELECT source_app_bundle_id FROM captures WHERE id = ? AND deleted_at IS NULL")
-      .get(id) as { source_app_bundle_id: string | null } | undefined;
+      .prepare(
+        "SELECT source_app_bundle_id, family_id FROM captures WHERE id = ? AND deleted_at IS NULL"
+      )
+      .get(id) as { source_app_bundle_id: string | null; family_id: string | null } | undefined;
     if (row === undefined) return; // already deleted or unknown id
     db.prepare("UPDATE captures SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").run(id);
     bumpAppStat(row.source_app_bundle_id, -1);
+    notifyFamiliesChanged([row.family_id]);
   })();
 }
 
@@ -965,12 +1028,13 @@ export function restoreCapture(id: string): void {
   db.transaction(() => {
     const row = db
       .prepare(
-        "SELECT source_app_bundle_id FROM captures WHERE id = ? AND deleted_at IS NOT NULL"
+        "SELECT source_app_bundle_id, family_id FROM captures WHERE id = ? AND deleted_at IS NOT NULL"
       )
-      .get(id) as { source_app_bundle_id: string | null } | undefined;
+      .get(id) as { source_app_bundle_id: string | null; family_id: string | null } | undefined;
     if (row === undefined) return; // already live or unknown id
     db.prepare("UPDATE captures SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL").run(id);
     bumpAppStat(row.source_app_bundle_id, +1);
+    notifyFamiliesChanged([row.family_id]);
   })();
 }
 
@@ -986,14 +1050,17 @@ export function hardDeleteCapture(id: string): void {
   const db = getDb();
   db.transaction(() => {
     const row = db
-      .prepare("SELECT source_app_bundle_id, deleted_at FROM captures WHERE id = ?")
-      .get(id) as { source_app_bundle_id: string | null; deleted_at: string | null } | undefined;
+      .prepare("SELECT source_app_bundle_id, deleted_at, family_id FROM captures WHERE id = ?")
+      .get(id) as
+      | { source_app_bundle_id: string | null; deleted_at: string | null; family_id: string | null }
+      | undefined;
     if (row === undefined) return;
     if (row.deleted_at === null) {
       bumpAppStat(row.source_app_bundle_id, -1);
     }
     // ON DELETE CASCADE removes the render_cache + layers rows.
     db.prepare("DELETE FROM captures WHERE id = ?").run(id);
+    notifyFamiliesChanged([row.family_id]);
   })();
 }
 

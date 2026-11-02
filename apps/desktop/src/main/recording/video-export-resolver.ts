@@ -6,9 +6,8 @@
 // path to the encoded file, encoding it if the cache misses.
 //
 // Centralizing the resolution here keeps the cache-key derivation
-// in one place. If we ever decide to surface the optional range +
-// audio defaults differently (e.g. read from a persisted "last
-// export choices" Settings field), there's one function to update.
+// in one place. The omitted-audio default is the persisted MP4 audio
+// preference, read through `resolveExportAudio` (mp4-export-audio.ts).
 
 import type {
   CaptureRecord,
@@ -18,8 +17,9 @@ import type {
   VideoExportResult
 } from "@pwrsnap/shared";
 import { getCaptureById } from "../persistence/captures-repo";
-import { normalizeRange } from "../persistence/video-repo";
+import { resolveExportAudio } from "./mp4-export-audio";
 import { exportVideoRange } from "./recording-exporter";
+import { resolveVideoExportSpans } from "./video-export-spans";
 
 export type ResolvedVideoExport = {
   /** The full export result — `path` is the on-disk file location;
@@ -37,6 +37,7 @@ export type ResolvedVideoExport = {
 };
 
 export type ResolveVideoExportError =
+  | { kind: "invalid_segments"; message: string }
   | { kind: "not_found" }
   | { kind: "not_a_video" }
   | { kind: "audio_track_missing"; track: "system" | "microphone" };
@@ -59,24 +60,18 @@ export async function resolveVideoExport(
     return { ok: false, error: { kind: "not_a_video" } };
   }
 
-  const range = coords.range ?? record.video.defaultRange;
-  const audio: VideoExportAudio =
-    coords.audio ??
-    (coords.format === "gif"
-      ? { includeSystemAudio: false, includeMicrophone: false }
-      : {
-          // Default for MP4: copy whatever tracks the source recorded.
-          // Matches the existing 2-card hook's behavior.
-          includeSystemAudio: record.video.hasSystemAudio,
-          includeMicrophone: record.video.hasMicrophoneAudio
-        });
-
-  // GIF is always silent regardless of caller intent — match
-  // recording-handlers.ts::video:export's normalization.
-  const effectiveAudio: VideoExportAudio =
-    coords.format === "gif"
-      ? { includeSystemAudio: false, includeMicrophone: false }
-      : audio;
+  const resolved = resolveVideoExportSpans(record.video, coords);
+  if (!resolved.ok) return { ok: false, error: { kind: "invalid_segments", message: resolved.error.message } };
+  const { range, spans } = resolved.value;
+  // GIF is always silent regardless of caller intent; an MP4 with no
+  // explicit choice keeps what the user's MP4 audio preference keeps.
+  // `video:export` resolves through the same function, so its preflight
+  // lands on the cache key this copy / path / drag then hits.
+  const effectiveAudio: VideoExportAudio = await resolveExportAudio(
+    coords.format,
+    coords.audio,
+    record.video
+  );
 
   if (coords.format === "mp4") {
     if (effectiveAudio.includeSystemAudio && !record.video.hasSystemAudio) {
@@ -92,7 +87,8 @@ export async function resolveVideoExport(
     video: record.video,
     format: coords.format,
     preset: coords.preset,
-    range: normalizeRange(range, record.video.durationSec),
+    range,
+    spans,
     audio: effectiveAudio
   });
 
@@ -109,6 +105,7 @@ export function mapVideoResolveError(
   verb: string,
   captureId: string
 ): { kind: "validation"; code: string; message: string } {
+  if (error.kind === "invalid_segments") return { kind: "validation", code: "invalid_segments", message: `${verb}: ${error.message}` };
   if (error.kind === "not_found") {
     return {
       kind: "validation",

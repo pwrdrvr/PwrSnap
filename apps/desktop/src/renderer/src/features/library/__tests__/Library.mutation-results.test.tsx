@@ -87,10 +87,7 @@ vi.mock("../../editor/useEditorToolState", () => ({
     activeStyle: { tool: "pointer" },
     setActiveTool: vi.fn(),
     isSingleShot: false,
-    matchingText: { kind: "idle" },
     onAnnotationPlaced: vi.fn(),
-    armMatchingText: vi.fn(),
-    dismissMatchingText: vi.fn(),
     updateActiveStyle: vi.fn()
   })
 }));
@@ -203,6 +200,7 @@ function record(id: string, minute: number, deletedAt: string | null = null): Ca
     sha256: `sha_${id}`,
     source_app_bundle_id: "com.example.app",
     source_app_name: "Example",
+    source_window_title: null,
     edits_version: 0,
     has_alpha: false,
     deleted_at: deletedAt

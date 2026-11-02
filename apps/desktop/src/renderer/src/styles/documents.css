@@ -2,7 +2,8 @@
   width: 100vw;
   height: 100vh;
   display: grid;
-  grid-template-rows: 52px 1fr;
+  /* 41px title strip: 40px fill + 1px divider below (Pwr-family strip). */
+  grid-template-rows: 41px 1fr;
   background: var(--bg-app);
   color: var(--text-primary);
 }
@@ -12,7 +13,9 @@
   display: flex;
   align-items: center;
   gap: 18px;
-  padding: 0 20px 0 92px; /* left pad clears the OS traffic lights */
+  /* Reserve nothing for OS chrome — Linux has an ordinary window frame. macOS
+     and Windows opt in below. */
+  padding: 0 20px;
   border-bottom: 1px solid var(--border-subtle);
   /* Match every other window's title bar (--bg-sidebar). The document windows
      previously used --bg-surface, which left their title bar a different shade
@@ -20,10 +23,14 @@
      overlay (whose color tracks --bg-sidebar). */
   background: var(--bg-sidebar);
 }
+/* macOS: `titleBarStyle: "hiddenInset"` draws the real traffic lights inside
+   this bar — left pad clears them. */
+:root[data-platform="darwin"] .ps-doc__titlebar {
+  padding-left: var(--mac-traffic-light-reserve);
+}
 /* Windows: no macOS stoplights on the left; native caption buttons drawn
    top-right via titleBarOverlay (menu hidden on this window) — reserve right. */
 :root[data-platform="win32"] .ps-doc__titlebar {
-  padding-left: 20px;
   padding-right: var(--win-caption-reserve);
 }
 
@@ -33,7 +40,7 @@
   gap: 8px;
   min-width: 0;
   color: var(--text-primary);
-  font: 700 14px/1 var(--font-display);
+  font: 700 17px/1 var(--font-display);
   letter-spacing: -0.01em;
 }
 
@@ -46,6 +53,16 @@
   font: 500 12px/1 var(--font-sans);
 }
 
+/* Strip text centres by its cap height (Pwr-family strip): flex centres a
+   text element's line box, and Geist's ascent/descent put the capitals off
+   the middle of it. `text-box` trimming (Chromium 133+) centres the ink that
+   is actually drawn instead, at any size, so the capitals share the y=20
+   line with the stoplights, the mark and the controls — no pixel nudges. */
+.ps-doc__brand .pwrsnap-wordmark,
+.ps-doc__crumb > * {
+  text-box: trim-both cap alphabetic;
+}
+
 .ps-doc__crumb b {
   color: var(--text-primary);
   font-weight: 600;
@@ -55,6 +72,13 @@
   min-height: 0;
   overflow: auto;
   padding: 28px;
+}
+
+/* Chromium makes an overflowing scroller a Tab stop of its own when it
+   holds nothing focusable, so a long changelog is one. It fills the
+   window, and `body` clipped an outset ring to its top edge. Inset. */
+.ps-doc__main:focus-visible {
+  outline-offset: -2px;
 }
 
 .ps-doc__body {

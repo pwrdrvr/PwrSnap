@@ -1,5 +1,6 @@
 // Transport row for the video stage — one 36 px line:
-//   ▶/⏸ · `0:03.4 / 0:16.0` (mono, tabular) · ⟲ loop-in-range · mute · ⛶
+//   ▶/⏸ · `0:03.4 / 0:16.0` (mono, tabular) · ✂ split · ⟲ loop-in-range
+//   · mute · ⛶
 // Buttons carry the keyboard hints in their `title`s. Follows the
 // EditToolbar button language (`.psl__et-btn`-like sizing, mono
 // eyebrow type) but sits in-flow under the video, not floating.
@@ -25,9 +26,16 @@ export type VideoTransportProps = {
   durationSec: number;
   loopInRange: boolean;
   muted: boolean;
+  /** 0..1. The element's own level, independent of `muted`. */
+  volume: number;
   onTogglePlay: () => void;
   onToggleLoop: () => void;
+  /** The recording's presenter (camera track). Omitted → no button. */
+  presenter?: { visible: boolean; onToggle: () => void } | undefined;
+  /** Split at the playhead. Omitted → no split button. */
+  onSplit?: (() => void) | undefined;
   onToggleMute: () => void;
+  onVolumeChange: (next: number) => void;
   onFullscreen: () => void;
   shortcutPlatform?: ShortcutPlatform;
 };
@@ -65,17 +73,31 @@ function TransportTimecode({
   return <b ref={ref}>{formatTimecode(currentTime)}</b>;
 }
 
+/** A key hint ("Play / pause (space) · J shuttle back · …") as the fast
+ *  tooltip's first line and its further lines. */
+function tipLines(hint: string): { first: string; rest: string | undefined } {
+  const [first = hint, ...rest] = hint.split(" · ");
+  return { first, rest: rest.length > 0 ? rest.join("\n") : undefined };
+}
+
 export function VideoTransport(props: VideoTransportProps): ReactElement {
-  const { playing, currentTime, playhead, durationSec, loopInRange, muted } = props;
+  const { playing, currentTime, playhead, durationSec, loopInRange, muted, volume } = props;
   const keyHints = videoTransportKeyHints(
     props.shortcutPlatform ?? rendererShortcutPlatform()
   );
+  // Icon buttons: the tooltip is their only visible label, so it is the
+  // app's fast one (lib/useFastTooltip), not `title`.
+  const playTip = tipLines(keyHints.play);
+  const stepTip = tipLines(keyHints.step);
+  const splitTip = tipLines(keyHints.split);
+  const loopTip = tipLines(`${keyHints.loop} · ${keyHints.trim}`);
   return (
     <div className="psl__vt" role="toolbar" aria-label="Video transport" data-testid="video-transport">
       <button
         type="button"
         className="psl__vt-btn is-play"
-        title={keyHints.play}
+        data-tip={playTip.first}
+        data-tip-detail={playTip.rest}
         aria-label={playing ? "Pause" : "Play"}
         aria-pressed={playing}
         onMouseDown={keepFocus}
@@ -94,7 +116,12 @@ export function VideoTransport(props: VideoTransportProps): ReactElement {
         )}
       </button>
 
-      <span className="psl__vt-time" title={keyHints.step} data-testid="video-transport-time">
+      <span
+        className="psl__vt-time"
+        data-tip={stepTip.first}
+        data-tip-detail={stepTip.rest}
+        data-testid="video-transport-time"
+      >
         <TransportTimecode currentTime={currentTime} playhead={playhead} />
         <i>/</i>
         <span>{formatTimecode(durationSec)}</span>
@@ -102,10 +129,83 @@ export function VideoTransport(props: VideoTransportProps): ReactElement {
 
       <span className="psl__vt-spacer" />
 
+      {props.presenter !== undefined && (
+        <button
+          type="button"
+          className={`psl__vt-btn${props.presenter.visible ? " is-on" : ""}`}
+          data-tip={props.presenter.visible ? "Hide presenter" : "Show presenter"}
+          data-tip-keys="H"
+          aria-label="Show presenter"
+          aria-pressed={props.presenter.visible}
+          onMouseDown={keepFocus}
+          onClick={props.presenter.onToggle}
+          data-testid="video-transport-presenter"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            {props.presenter.visible ? (
+              <>
+                <rect x="1.4" y="4" width="9.2" height="8" rx="2" />
+                <path d="M10.6 7.6l4-2.2v5.2l-4-2.2z" />
+              </>
+            ) : (
+              <>
+                <rect x="1.4" y="4" width="9.2" height="8" rx="2" />
+                <path d="M10.6 7.6l4-2.2v5.2l-4-2.2z" />
+                <path d="M1.5 2.5l12 11" />
+              </>
+            )}
+          </svg>
+          <span className="psl__vt-btn-label">presenter</span>
+        </button>
+      )}
+
+      {props.onSplit !== undefined && (
+        <button
+          type="button"
+          className="psl__vt-btn"
+          data-tip={splitTip.first}
+          data-tip-detail={splitTip.rest}
+          aria-label="Split at playhead"
+          onMouseDown={keepFocus}
+          onClick={props.onSplit}
+          data-testid="video-transport-split"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="6" cy="6" r="3" />
+            <circle cx="6" cy="18" r="3" />
+            <path d="M20 4L8.12 15.88" />
+            <path d="M14.47 14.48L20 20" />
+            <path d="M8.12 8.12L12 12" />
+          </svg>
+          <span className="psl__vt-btn-label">split</span>
+        </button>
+      )}
+
       <button
         type="button"
         className={`psl__vt-btn${loopInRange ? " is-on" : ""}`}
-        title={`${keyHints.loop} · ${keyHints.trim}`}
+        data-tip={loopTip.first}
+        data-tip-detail={loopTip.rest}
         aria-label="Loop in range"
         aria-pressed={loopInRange}
         onMouseDown={keepFocus}
@@ -131,10 +231,15 @@ export function VideoTransport(props: VideoTransportProps): ReactElement {
         <span className="psl__vt-btn-label">loop</span>
       </button>
 
+      {/* Mute and level as one group: the slider reveals on hover or focus,
+          so the resting row keeps its single-line shape while the level is
+          still reachable — and reachable by keyboard, which a hover-only
+          affordance would not be. */}
+      <span className="psl__vt-vol" data-testid="video-transport-volume">
       <button
         type="button"
         className={`psl__vt-btn${muted ? " is-on" : ""}`}
-        title={keyHints.mute}
+        data-tip={keyHints.mute}
         aria-label={muted ? "Unmute" : "Mute"}
         aria-pressed={muted}
         onMouseDown={keepFocus}
@@ -174,11 +279,37 @@ export function VideoTransport(props: VideoTransportProps): ReactElement {
           </svg>
         )}
       </button>
+        {/* This element deliberately carries NO `onMouseDown={keepFocus}`,
+            unlike every button around it. On a <button> that handler only
+            suppresses focus, because a button acts on `click`. On a range
+            input the value change IS the default action — Blink gates
+            `RangeInputType::HandleMouseDownEvent` on
+            `!event.DefaultPrevented()` — so preventing it leaves the
+            slider completely inert to click and drag, keyboard-only, while
+            looking entirely normal. Measured in Chromium with two
+            otherwise identical inputs and the same click: guarded stayed
+            at 1.0 with zero `input` events, unguarded moved to 0.26.
+            Pinned by video-transport-volume.test.ts. */}
+        <input
+          type="range"
+          className="psl__vt-vol-slider"
+          min={0}
+          max={1}
+          step={0.01}
+          // Muted reads as zero: the thumb must not sit at 80% while
+          // nothing is audible.
+          value={muted ? 0 : volume}
+          aria-label="Volume"
+          aria-valuetext={`${Math.round((muted ? 0 : volume) * 100)}%`}
+          onChange={(e) => props.onVolumeChange(Number(e.target.value))}
+          data-testid="video-transport-volume-slider"
+        />
+      </span>
 
       <button
         type="button"
         className="psl__vt-btn"
-        title={keyHints.fullscreen}
+        data-tip={keyHints.fullscreen}
         aria-label="Fullscreen"
         onMouseDown={keepFocus}
         onClick={props.onFullscreen}

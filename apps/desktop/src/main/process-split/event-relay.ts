@@ -112,7 +112,7 @@ export function onRelayedRendererEvent(
   };
 }
 
-export function deliverRelayedRendererEventToMain(channel: string, payload: unknown): void {
+function deliverRelayedRendererEventToMain(channel: string, payload: unknown): void {
   const listeners = relayedEventListeners.get(channel);
   if (listeners === undefined) return;
   for (const listener of [...listeners]) listener(payload);

@@ -3,11 +3,28 @@ import type { Dirent } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
-import type { BundleDocumentV2, BundleLayerNode, CaptureRecord } from "@pwrsnap/shared";
+import type {
+  BundleDocumentV2,
+  BundleLayerNode,
+  BundleManifestV2,
+  CaptureRecord
+} from "@pwrsnap/shared";
 
 import { runWithCapturesDirFallback } from "../capture/capture-storage-gate";
 import { getMainLogger } from "../log";
-import { buildCompositeThumbnail, packBundleV2 } from "../persistence/bundle-store";
+import {
+  buildCompositeThumbnail,
+  manifestLineage,
+  packBundleV2,
+  scheduleRepack
+} from "../persistence/bundle-store";
+import {
+  lineageClaimFromManifest,
+  logLineageIssues,
+  markResolvedRoot,
+  resolveLineageClaim,
+  type LineageClaim
+} from "../persistence/capture-lineage";
 import { getCaptureById, insertCapture } from "../persistence/captures-repo";
 import { getDb } from "../persistence/db";
 import { acceptDescription, addUserTag } from "../persistence/enrichment-repo";
@@ -93,6 +110,11 @@ async function importPwrsnapBundleExclusive(
     if (identity.outcome !== null) return identity.outcome;
 
     const captureId = identity.captureId;
+    // Lineage is resolved against the library now so the manifest written
+    // below already says what the row will; persistImportedBundle resolves
+    // it again inside its transaction and repacks if the answer moved.
+    const lineageClaim = lineageClaimFromManifest(bundle.manifest, captureId);
+    const lineage = resolveLineageClaim(captureId, lineageClaim);
     const remapped = remapCollidingLayerIds(bundle.document, bundle.layerBytes, {
       captureId,
       contentDigest: bundle.contentDigest,
@@ -111,15 +133,25 @@ async function importPwrsnapBundleExclusive(
     const pairedFilename = `${destinationStem}.png`;
     const now = new Date().toISOString();
     const captureIdChanged = captureId !== bundle.manifest.capture_id;
+    const lineageChanged =
+      lineage.familyId !== (bundle.manifest.family_id ?? null) ||
+      lineage.duplicatedFrom !== (bundle.manifest.duplicated_from ?? null);
     const manifestChanged =
       captureIdChanged ||
+      lineageChanged ||
       remapped.remappedCount > 0 ||
       pairedFilename !== bundle.manifest.paired_png_filename;
-    const copiedManifest = {
-      ...bundle.manifest,
+    const copiedManifest: BundleManifestV2 = {
+      bundle_format_version: 2,
       capture_id: captureId,
+      canvas_dimensions: bundle.manifest.canvas_dimensions,
+      created_at: bundle.manifest.created_at,
       paired_png_filename: pairedFilename,
-      bundle_modified_at: manifestChanged ? now : bundle.manifest.bundle_modified_at
+      bundle_modified_at: manifestChanged ? now : bundle.manifest.bundle_modified_at,
+      ...manifestLineage({
+        family_id: lineage.familyId,
+        duplicated_from: lineage.duplicatedFrom
+      })
     };
 
     let copiedBytes = bundle.sourceBytes;
@@ -170,6 +202,8 @@ async function importPwrsnapBundleExclusive(
       try {
         record = persistImportedBundle({
           captureId,
+          lineageClaim,
+          packedLineage: lineage,
           bundlePath: destinationPath,
           bundleModifiedAt: copiedManifest.bundle_modified_at,
           document: remapped.document,
@@ -358,6 +392,13 @@ async function reconcilePendingPwrsnapImportsExclusive(): Promise<string[]> {
       }
       const record = persistImportedBundle({
         captureId: intent.captureId,
+        // The published manifest already carries the lineage the import
+        // resolved before packing; its claim restates it unchanged.
+        lineageClaim: lineageClaimFromManifest(bundle.manifest, intent.captureId),
+        packedLineage: {
+          familyId: bundle.manifest.family_id ?? null,
+          duplicatedFrom: bundle.manifest.duplicated_from ?? null
+        },
         bundlePath: intent.bundlePath,
         bundleModifiedAt: bundle.manifest.bundle_modified_at,
         document: bundle.document,
@@ -583,6 +624,10 @@ async function recordMatchesContent(record: CaptureRecord, expectedDigest: strin
 
 function persistImportedBundle(input: {
   captureId: string;
+  /** What the manifest claims, restated for `captureId`. */
+  lineageClaim: LineageClaim;
+  /** What the published bundle's manifest actually carries. */
+  packedLineage: LineageClaim;
   bundlePath: string;
   bundleModifiedAt: string;
   document: BundleDocumentV2;
@@ -596,7 +641,17 @@ function persistImportedBundle(input: {
   intentId: string;
 }): CaptureRecord {
   const db = getDb();
-  return db.transaction(() => {
+  let rootedId: string | null = null;
+  let manifestStale = false;
+  const record = db.transaction(() => {
+    // Resolved again here, not trusted from before the publish: a root
+    // purged or rooted in the meantime changes the answer, and the cycle
+    // check has to see the table this row is committed into.
+    const lineage = resolveLineageClaim(input.captureId, input.lineageClaim);
+    logLineageIssues("import", input.captureId, input.lineageClaim, lineage);
+    manifestStale =
+      lineage.familyId !== input.packedLineage.familyId ||
+      lineage.duplicatedFrom !== input.packedLineage.duplicatedFrom;
     insertCapture({
       id: input.captureId,
       kind: "image",
@@ -614,8 +669,11 @@ function persistImportedBundle(input: {
       device_pixel_ratio: 1,
       byte_size: input.baseSourceByteSize,
       sha256: input.baseSourceSha256,
-      has_alpha: input.hasAlpha
+      has_alpha: input.hasAlpha,
+      family_id: lineage.familyId,
+      duplicated_from: lineage.duplicatedFrom
     });
+    rootedId = markResolvedRoot(lineage);
     insertImportedLayerTreeForCapture(input.captureId, input.document.layers);
 
     for (const tag of input.document.tags) {
@@ -644,6 +702,11 @@ function persistImportedBundle(input: {
     deletePwrsnapImportIntentInCurrentTransaction(input.intentId);
     return record;
   })();
+  // Both manifests mirror lineage. A root rooted by this import owes one;
+  // so does the imported bundle if the in-transaction answer moved.
+  if (rootedId !== null) scheduleRepack(rootedId);
+  if (manifestStale) scheduleRepack(input.captureId);
+  return record;
 }
 
 export function remapCollidingLayerIds(

@@ -176,6 +176,13 @@
   border-color: var(--accent-border);
   box-shadow: 0 0 0 1px var(--accent-border);
 }
+/* That tint and its 1px halo are 42% accent, 2.2:1 against the field.
+   The field draws the house ring instead of the halo. */
+.ed-zoom-input input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  box-shadow: none;
+}
 .ed-zoom-input-pct {
   position: absolute;
   right: 8px;

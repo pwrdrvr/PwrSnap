@@ -1,7 +1,7 @@
 // Searchable dropdown over the timed transcript phrases a preview
-// produced, used by the legacy beat row's `phrase` timing arm. The
-// timeline's word ribbon (plan PR 4) supersedes it as the primary way to
-// anchor a clip; this stays for the form-row fallback until PR 6.
+// produced — the clip inspector's "Word" timing arm. The timeline's word
+// ribbon is the primary way to anchor a clip; this is the searchable
+// fallback.
 
 import {
   useEffect,
@@ -13,7 +13,59 @@ import {
   type ReactElement
 } from "react";
 import type { SizzleSequenceTranscriptPhrase } from "@pwrsnap/shared";
+import { useDismissable } from "../../lib/useDismissable";
+import { useFocusReturn } from "../../lib/useFocusReturn";
 import { formatTranscriptPhraseOptionLabel, transcriptPhraseMatches } from "./sizzle-helpers";
+
+/** The popover's height ceiling. Keep in step with
+ *  `.szl__sequence-phrase-popover { max-height }` in sizzle.css. */
+export const PHRASE_POPOVER_MAX_HEIGHT_PX = 320;
+const POPOVER_GAP_PX = 4;
+const VIEWPORT_GUTTER_PX = 8;
+
+/**
+ * Where the fixed-position popover goes, in viewport coordinates.
+ *
+ * It opens below the button when the full-height popover fits there, and
+ * otherwise on whichever side has more room — capped to that room, so it
+ * never runs off the window. The inspector is a drawer at the BOTTOM of the
+ * Sizzle rail, which puts the button in the lower third of the window:
+ * always opening downward left most of the phrase list off-screen.
+ *
+ * The side is decided against the popover's CEILING, not its current
+ * height: the list grows and shrinks as the user types in the search box,
+ * and a popover placed for a short list would overflow once they clear it.
+ * Anchoring an upward popover by `bottom` keeps it against the button
+ * while it grows.
+ */
+export function phrasePopoverStyle(
+  anchor: DOMRect,
+  boundary: DOMRect,
+  viewport: { width: number; height: number }
+): CSSProperties {
+  const gutter = VIEWPORT_GUTTER_PX;
+  const width = Math.max(240, Math.min(420, boundary.width - gutter * 2, viewport.width - 32));
+  const minLeft = boundary.left + gutter;
+  const maxLeft = boundary.right - gutter - width;
+  const left = Math.min(Math.max(anchor.left, minLeft), Math.max(minLeft, maxLeft));
+
+  const spaceBelow = viewport.height - anchor.bottom - POPOVER_GAP_PX - gutter;
+  const spaceAbove = anchor.top - POPOVER_GAP_PX - gutter;
+  if (spaceBelow >= PHRASE_POPOVER_MAX_HEIGHT_PX || spaceBelow >= spaceAbove) {
+    return {
+      left,
+      width,
+      top: anchor.bottom + POPOVER_GAP_PX,
+      maxHeight: Math.max(0, Math.min(PHRASE_POPOVER_MAX_HEIGHT_PX, spaceBelow))
+    };
+  }
+  return {
+    left,
+    width,
+    bottom: viewport.height - anchor.top + POPOVER_GAP_PX,
+    maxHeight: Math.min(PHRASE_POPOVER_MAX_HEIGHT_PX, spaceAbove)
+  };
+}
 
 export function TranscriptPhrasePicker(props: {
   currentPhrase: string;
@@ -22,6 +74,8 @@ export function TranscriptPhrasePicker(props: {
 }): ReactElement {
   const { currentPhrase, phrases, onSelect } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState(currentPhrase);
   const [popoverStyle, setPopoverStyle] = useState<CSSProperties>({});
@@ -30,6 +84,20 @@ export function TranscriptPhrasePicker(props: {
     const filtered = phrases.filter((phrase) => transcriptPhraseMatches(phrase, query));
     return filtered.slice(0, 12);
   }, [phrases, query]);
+  // Escape closes the picker and nothing else: the old document listener
+  // did not stop the event, so from a phrase button (not a typing target)
+  // the Sizzle editor's window listener ALSO closed the whole inspector the
+  // picker lives in. Focus goes back to the trigger — on Escape, on a pick,
+  // and on Tab out past the list, which now closes it too.
+  const close = (): void => setOpen(false);
+  useDismissable({
+    open,
+    onDismiss: close,
+    surfaceRef: popoverRef,
+    triggerRef,
+    dismissOnFocusLeave: true
+  });
+  useFocusReturn({ open, containerRef: popoverRef, returnFocusRef: triggerRef });
   useEffect(() => {
     if (!open) return undefined;
     const onPointerDown = (event: PointerEvent): void => {
@@ -38,14 +106,9 @@ export function TranscriptPhrasePicker(props: {
       if (containerRef.current?.contains(target) === true) return;
       setOpen(false);
     };
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") setOpen(false);
-    };
     document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
     };
   }, [open]);
   useLayoutEffect(() => {
@@ -53,26 +116,18 @@ export function TranscriptPhrasePicker(props: {
     const updatePosition = (): void => {
       const container = containerRef.current;
       if (container === null) return;
-      const rect = container.getBoundingClientRect();
       const boundary =
         container.closest<HTMLElement>(".szl__scene--sequence") ??
         container.closest<HTMLElement>(".szl__editor");
       const boundaryRect =
         boundary?.getBoundingClientRect() ??
         new DOMRect(0, 0, window.innerWidth, window.innerHeight);
-      const gutter = 8;
-      const width = Math.max(
-        240,
-        Math.min(420, boundaryRect.width - gutter * 2, window.innerWidth - 32)
+      setPopoverStyle(
+        phrasePopoverStyle(container.getBoundingClientRect(), boundaryRect, {
+          width: window.innerWidth,
+          height: window.innerHeight
+        })
       );
-      const minLeft = boundaryRect.left + gutter;
-      const maxLeft = boundaryRect.right - gutter - width;
-      const left = Math.min(Math.max(rect.left, minLeft), Math.max(minLeft, maxLeft));
-      setPopoverStyle({
-        left,
-        top: rect.bottom + 4,
-        width
-      });
     };
     updatePosition();
     window.addEventListener("resize", updatePosition);
@@ -99,7 +154,9 @@ export function TranscriptPhrasePicker(props: {
   return (
     <div ref={containerRef} className="szl__sequence-phrase-control">
       <button
+        ref={triggerRef}
         className="szl__sequence-phrase-button"
+        aria-expanded={open}
         onClick={() => {
           setQuery(currentPhrase);
           setOpen((value) => !value);
@@ -111,7 +168,7 @@ export function TranscriptPhrasePicker(props: {
         <span aria-hidden="true">▾</span>
       </button>
       {open ? (
-        <div className="szl__sequence-phrase-popover" style={popoverStyle}>
+        <div ref={popoverRef} className="szl__sequence-phrase-popover" style={popoverStyle}>
           <input
             className="szl__sequence-phrase-search"
             autoFocus

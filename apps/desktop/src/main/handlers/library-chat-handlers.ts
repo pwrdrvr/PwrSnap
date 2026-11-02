@@ -120,7 +120,9 @@ const LIBRARY_TOOL_LABELS: Record<string, string> = {
   reorder_layer: "Reordered a layer",
   reorder_layers: "Reordered layers",
   add_tag: "Added a tag",
-  remove_tag: "Removed a tag"
+  remove_tag: "Removed a tag",
+  inspect_video: "Read the video's timeline",
+  edit_video: "Edited the video's cuts"
 };
 
 /** The per-turn active-capture context (L3), sent as its own leading
@@ -134,9 +136,10 @@ function buildCurrentCaptureContext(captureId: string): string {
     `<runtime_context source="pwrsnap" note="runtime-generated, not user-authored">\n` +
     `<current_capture id="${captureId}">\n` +
     `The user is viewing this capture right now. "this", "this image", ` +
-    `"this capture", "here", "it" all refer to ${captureId}. Pass ` +
-    `capture_id="${captureId}" to your edit / redact / draw / metadata ` +
-    `tools unless the user explicitly names a different capture — do NOT ` +
+    `"this video", "this capture", "here", "it" all refer to ${captureId}. ` +
+    `Pass capture_id="${captureId}" to your edit / redact / draw / ` +
+    `metadata / video tools unless the user explicitly names a different ` +
+    `capture — do NOT ` +
     `pick a capture from library_list when this block is present.\n` +
     `</current_capture>\n` +
     `</runtime_context>`
@@ -237,6 +240,8 @@ export function registerLibraryChatHandlers(params?: {
         profile: s.codex.profile ?? null,
         acpAgents: s.ai.acp.agents ?? null,
         acpEnabled: s.ai.acp.enabledAgentIds ?? null,
+        customConnections: s.ai.customConnections ?? [],
+        customModels: s.ai.customModels ?? [],
         // The chats root moves at runtime when a Documents denial flips the
         // captures-location fallback. Keying on it disposes + rebuilds every
         // controller against the new root, instead of leaving cached ones
@@ -394,9 +399,20 @@ export function registerLibraryChatHandlers(params?: {
         ...(ctx.sourceWindowId !== undefined ? { sourceWindowId: ctx.sourceWindowId } : {}),
         ...(ctx.sourceBounds !== undefined ? { sourceBounds: ctx.sourceBounds } : {})
       };
+      const directImages: string[] = [];
+      if (authorized.value.provider?.startsWith("custom:")) {
+        const custom = (await settingsReader()).ai.customModels?.find((m) => `custom:${m.id}` === authorized.value.provider);
+        const anchor = req.anchorCaptureId ?? authorized.value.anchorCaptureId;
+        if (custom?.capabilities.vision && anchor) {
+          const rendered = await bus.dispatch("render:composite", { captureId: anchor, maxEdgePx: 1600 }, commandContext);
+          if (!rendered.ok) return rendered;
+          directImages.push(`data:${rendered.value.mimeType};base64,${rendered.value.base64}`);
+        }
+      }
       const result = await c.sendMessage({
         threadId: req.threadId,
         text: req.text,
+        ...(directImages.length ? { imagePaths: directImages } : {}),
         ...(req.anchorCaptureId !== undefined ? { anchorId: req.anchorCaptureId } : {})
       });
       activeToolContexts.commit(req.threadId, result.turnId, commandContext);

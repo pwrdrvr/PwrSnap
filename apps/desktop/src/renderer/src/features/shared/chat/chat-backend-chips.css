@@ -22,6 +22,12 @@
 .ps-bchip-field:hover {
   border-color: var(--accent-border);
 }
+/* The select is borderless inside the chip, so the chip rings while the
+   select has focus. Focused, it had no signal at all. */
+.ps-bchip-field:has(.ps-bchip-select:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
 .ps-bchip-label {
   font: 500 10px/1 var(--font-sans);
   text-transform: uppercase;

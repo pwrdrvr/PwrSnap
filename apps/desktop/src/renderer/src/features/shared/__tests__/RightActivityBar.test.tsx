@@ -101,12 +101,14 @@ async function renderBar(params: RenderParams = {}): Promise<RenderResult> {
       onTabChange: (id) => {
         current = { ...current, active: id };
         onTabChange(id);
-        void rerender();
+        // The triggering interaction already owns an act scope. Render
+        // synchronously so tab + pin callbacks cannot overlap async scopes.
+        root?.render(paint(current));
       },
       onPinChange: (p) => {
         current = { ...current, pinned: p };
         onPinChange(p);
-        void rerender();
+        root?.render(paint(current));
       },
       renderPanel,
       testIdPrefix: "rab-test",
@@ -514,7 +516,10 @@ describe("RightActivityBar", () => {
       const ocrTab = getTab(el, "ocr");
       const dot = ocrTab.querySelector(".rab__act-badge");
       expect(dot).not.toBeNull();
-      expect(dot?.getAttribute("title")).toBe("extracted text available");
+      // The legend rides the tab's fast tooltip; the 6px dot itself is no
+      // hover target worth a tooltip of its own.
+      expect(ocrTab.dataset.tipDetail).toBe("extracted text available");
+      expect(dot?.hasAttribute("title")).toBe(false);
       // aria-hidden on the dot: the legend is in the button's name, so
       // exposing the dot too would announce it twice.
       expect(dot?.getAttribute("aria-hidden")).toBe("true");
@@ -526,9 +531,7 @@ describe("RightActivityBar", () => {
     test("a badge with no label still gets a legend rather than a bare dot", async () => {
       const { el } = await renderBar({ active: "info", badges: { ocr: true } });
       const ocrTab = getTab(el, "ocr");
-      expect(ocrTab.querySelector(".rab__act-badge")?.getAttribute("title")).toBe(
-        "has content"
-      );
+      expect(ocrTab.dataset.tipDetail).toBe("has content");
       expect(ocrTab.getAttribute("aria-label")).toBe("OCR — has content");
     });
 

@@ -64,6 +64,8 @@ import {
   serializeStyleAttribute
 } from "@pwrsnap/shared";
 
+import { linuxSquareCorners } from "../linux-window-corners";
+
 /** Auto-resolved color hex when an overlay carries `color: "auto"`.
  *  Matches the editor's `--accent` value so display + bake agree on
  *  the default. Kept in lockstep with `compose.ts AUTO_ACCENT_HEX`. */
@@ -106,6 +108,7 @@ function ensurePoolWindow(): BrowserWindow {
     return poolWindow;
   }
   poolWindow = new BrowserWindow({
+    ...linuxSquareCorners(),
     width: 100, // resized per-bake via setContentSize
     height: 100,
     show: false,
@@ -137,15 +140,13 @@ function ensurePoolWindow(): BrowserWindow {
  *  pixel-identical to what the editor shows. */
 export function buildBakeHtml(args: {
   data: Extract<Overlay, { kind: "text" }>;
-  renderWidthPx: number;
   renderHeightPx: number;
   canvasWidthPx: number;
   canvasHeightPx: number;
   sourceWidthPx: number;
   sourceHeightPx: number;
 }): string {
-  const { data, renderWidthPx, renderHeightPx, canvasWidthPx, canvasHeightPx, sourceWidthPx, sourceHeightPx } =
-    args;
+  const { data, renderHeightPx, canvasWidthPx, canvasHeightPx, sourceWidthPx, sourceHeightPx } = args;
   const colorHex = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
   const style = computeTextHtmlStyle({
     point: data.point,
@@ -253,7 +254,6 @@ export async function rasterizeTextHtmlForV2(
     win.setContentSize(renderWidthPx, renderHeightPx);
     const html = buildBakeHtml({
       data,
-      renderWidthPx,
       renderHeightPx,
       canvasWidthPx,
       canvasHeightPx,

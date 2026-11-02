@@ -16,7 +16,6 @@ import { BridgeEndpoint } from "../process-bridge/endpoint";
 import { processRoleFlag } from "../process-role";
 import {
   deliverRelayedProcessEvent,
-  deliverRelayedRendererEventToMain,
   LIBRARY_WINDOW_READY_CHANNEL
 } from "./event-relay";
 
@@ -47,6 +46,7 @@ const LIBRARY_WINDOW_WATCHDOG_MS = 20_000;
 const LIBRARY_WINDOW_SPAWN_VERBS: ReadonlySet<string> = new Set([
   "library:focus",
   "library:openInLibrary",
+  "library:openEnrichmentRepair",
   "editor:open"
 ]);
 

@@ -1,3 +1,7 @@
+import { AvatarStyleSchema, PresenterSpansSchema, RecordingCameraSchema, RecordingMicrophoneSchema } from "@pwrsnap/shared";
+import { acceptCameraChunk } from "../recording/camera-recording";
+import { prepareAvatarVideo } from "../recording/avatar-video";
+import { setVideoAvatar, setVideoAvatarSpans } from "../persistence/video-repo";
 // Command-bus handlers for the `permissions:*`, `recording:*`, and
 // `video:*` namespaces. Splits cleanly off settings-handlers and
 // capture-handlers because:
@@ -9,34 +13,56 @@
 //   • Video export is a derived-artifact path keyed by the same
 //     command bus the renderer uses for image clipboard/drag.
 
-import { copyFile, mkdir, rename, stat } from "node:fs/promises";
+import { copyFile, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { ok, err, recordingFailureSummary } from "@pwrsnap/shared";
+import { ok, err, recordingFailureSummary,
+  describeVideoEdit,
+  normalizeVideoSegments,
+  VIDEO_SEGMENTS_MAX,
+  subtractVideoSpans,
+  VIDEO_ACTIVITY_LEVEL_LEGEND,
+  videoActivityLevelString,
+  videoActivityRuns,
+  videoKeptDurationSec,
+  videoPlaybackNeedsPreparation,
+  videoStillCuts,
+  videoStillSpans
+} from "@pwrsnap/shared";
 import type {
+  CaptureRecord,
+  Commands,
   PwrSnapError,
   RecordingCapabilities,
   RecordingFailureCode,
   RecordingPermission,
   Result,
+  VideoCaptureMetadata,
+  VideoEditState,
   VideoExportRequest,
+  VideoInspectResult,
   VideoPreset,
-  VideoPresetMetric
+  VideoPresetMetric,
+  VideoRange
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import { getCaptureById } from "../persistence/captures-repo";
+import { runGatedCacheWrite } from "../persistence/derived-cache-gate";
 import {
   getVideoMetadata,
   lookupExport,
   normalizeRange,
-  setDefaultRange
+  setDefaultRange,
+  setVideoSegments
 } from "../persistence/video-repo";
 import {
+  openSoundSettings,
   openSystemSettingsFor,
   readRecordingPermissionEvidence,
   readRecordingReadiness,
   requestPermission,
-  UnsupportedPermissionSettingsError
+  UnsupportedPermissionSettingsError,
+  UnsupportedSoundSettingsError
 } from "../recording/recording-permissions";
 import {
   guardScreenCapture,
@@ -45,29 +71,64 @@ import {
 } from "../capture/screen-permission-gate";
 import { ensureCapturesDirReady } from "../capture/capture-storage-gate";
 import {
+  closePermissionGuide,
+  getPermissionGuideState,
+  isPermissionGuideSupported,
+  relaunchFromPermissionGuide,
+  resetPermissionGuideGrant,
+  reopenPermissionGuideSettings,
+  resizePermissionGuide,
+  showPermissionGuide
+} from "../capture/permission-guide";
+import {
   getRecordingService,
   type RecordingService
 } from "../recording/recording-service";
 import { getRecordingState } from "../recording/recording-state";
 import {
+  canRunRecordingControl,
+  recordingBackendCapabilities
+} from "../recording/recording-capabilities";
+import {
   computeOutputDimensions,
   exportVideoRange,
+  exportSegmentsKey,
   GIF_PRESETS,
+  MP4_AUDIO_BITRATE,
   MP4_PRESETS
 } from "../recording/recording-exporter";
+import { narrowAudioToRecorded, resolveExportAudio } from "../recording/mp4-export-audio";
+import { resolveVideoExportSpans } from "../recording/video-export-spans";
 import {
   mapVideoResolveError,
   resolveVideoExport
 } from "../recording/video-export-resolver";
-import { validateVideoExportRequest } from "../recording/video-export-validation";
+import {
+  validateVideoExportRequest,
+  validateVideoSpanList,
+  videoExportAudioError
+} from "../recording/video-export-validation";
+import { ensureVideoActivity } from "../recording/video-activity";
+import { createVideoExportProgressObserver } from "../recording/video-export-progress";
 import { ensureVideoPoster } from "../recording/video-poster";
 import { ensureVideoFrames, videoAssetDir } from "../recording/video-frames";
-import { extractVideoAudio } from "../sizzle/audio-extract";
-import { videoAssetUrl } from "../protocols-parse";
+import {
+  AUDIO_PIPELINE_VERSION,
+  extractVideoAudio,
+  computeVideoPlaybackCacheKey,
+  prepareVideoPlayback
+} from "../sizzle/audio-extract";
+import {
+  captureSrcUrl,
+  isDerivedAudioAsset,
+  isDerivedPlaybackAsset,
+  videoAssetUrl
+} from "../protocols-parse";
 import { broadcastCapturesChanged } from "../events";
 import { prepareRenderedFileAlias } from "../render/file-alias";
 import { buildPresetExportDisplayName } from "../render/export-filename";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
+import { relayCancellationToPeer } from "../process-split/event-relay";
 
 const log = getMainLogger("pwrsnap:recording-handlers");
 
@@ -112,16 +173,51 @@ function failedSessionId(req: unknown): string | null {
 async function guardRecordingAttempt(
   capabilities: RecordingCapabilities
 ): Promise<Result<never, PwrSnapError> | null> {
+  if (process.platform !== "darwin" && (capabilities.microphone || capabilities.systemAudio)) {
+    return err(validationError(
+      "recording_audio_unsupported",
+      "Audio recording is currently available only on macOS. Turn off Microphone and System audio to record video on this platform."
+    ));
+  }
   const blocked = await guardScreenCapture();
   if (blocked) return blocked;
   const storageBlocked = await ensureCapturesDirReady();
   if (storageBlocked) return storageBlocked;
   const readiness = readRecordingReadiness();
+  if (capabilities.microphone && readiness.microphone === "not-determined") {
+    try {
+      // Wait for the user's decision before starting the countdown or helper.
+      readiness.microphone = (await requestPermission("microphone")).status;
+    } catch (cause) {
+      log.warn("recording microphone permission request failed", { cause });
+      return err(permissionError(
+        "microphone_request_failed",
+        "PwrSnap couldn't request microphone access. Check Settings > System Permissions, then record again."
+      ));
+    }
+  }
+  // Nothing is opened from here. A guard decides; it does not act.
+  //
+  // This used to `void bus.dispatch("settings:open", ...)` for every
+  // non-`not-determined` microphone status — `denied`, `restricted`,
+  // `unavailable` AND `unknown` — so a hotkey-driven recording threw a
+  // PwrSnap window the user had not asked for on top of the error
+  // below, which sends them to *macOS* System Settings instead. For
+  // `restricted` (MDM-managed) and `unavailable` that page has nothing
+  // actionable on it at all, and the dispatch re-fired on every press
+  // of Retry on the failure card. It was also `void`-ed with no
+  // `.catch`.
+  //
+  // The caller that CAN offer it as a choice already does:
+  // `record-from-selection.ts` puts the message in a dialog with
+  // "Open System Permissions" / "Dismiss" and dispatches `settings:open`
+  // on the first button, logging a failure. Doing it here as well only
+  // took the choice away and got there first.
   if (capabilities.microphone && readiness.microphone !== "granted") {
     return err(
       permissionError(
         "microphone_not_granted",
-        "Microphone permission is required for the selected recording options."
+        "Allow PwrSnap in System Settings > Privacy & Security > Microphone, then record again. If you just enabled access, relaunch PwrSnap."
       )
     );
   }
@@ -136,16 +232,186 @@ async function guardRecordingAttempt(
   return null;
 }
 
+type RecordingStartRequest = Commands["recording:start"]["req"];
+
+const RECORDING_COUNTDOWN_MAX_SECONDS = 30;
+const RECORDING_APP_NAME_MAX_CODE_POINTS = 512;
+const RECORDING_APP_ID_MAX_CODE_POINTS = 2_048;
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[]
+): boolean {
+  const allowedSet = new Set(allowed);
+  return Object.keys(value).every((key) => allowedSet.has(key));
+}
+
+function isFiniteRect(value: unknown): boolean {
+  if (!isObjectRecord(value) || !hasOnlyKeys(value, ["x", "y", "w", "h"])) {
+    return false;
+  }
+  return (
+    typeof value.x === "number" &&
+    Number.isFinite(value.x) &&
+    typeof value.y === "number" &&
+    Number.isFinite(value.y) &&
+    typeof value.w === "number" &&
+    Number.isFinite(value.w) &&
+    value.w > 0 &&
+    typeof value.h === "number" &&
+    Number.isFinite(value.h) &&
+    value.h > 0
+  );
+}
+
+function isOptionalBoundedMetadata(
+  value: unknown,
+  maxCodePoints: number
+): boolean {
+  if (value === undefined || value === null) return true;
+  if (typeof value !== "string" || /\p{Cc}/u.test(value)) return false;
+  let codePoints = 0;
+  for (const _character of value) {
+    codePoints += 1;
+    if (codePoints > maxCodePoints) return false;
+  }
+  return true;
+}
+
+/** Runtime gate shared by IPC, HTTP, and future command transports. */
+export function validateRecordingStartRequest(
+  value: unknown
+): Result<RecordingStartRequest, PwrSnapError> {
+  const invalid = (): Result<RecordingStartRequest, PwrSnapError> =>
+    err(
+      validationError(
+        "invalid_recording_start",
+        "recording:start requires a valid subject, capabilities, countdown, and cursor option."
+      )
+    );
+
+  if (
+    !isObjectRecord(value) ||
+    !hasOnlyKeys(value, [
+      "subject",
+      "capabilities",
+      "countdownSeconds",
+      "captureCursor"
+    ])
+  ) {
+    return invalid();
+  }
+
+  const subject = value.subject;
+  if (!isObjectRecord(subject) || typeof subject.kind !== "string") return invalid();
+  if (!Number.isSafeInteger(subject.displayId)) return invalid();
+
+  if (subject.kind === "region") {
+    if (
+      !hasOnlyKeys(subject, ["kind", "rect", "displayId"]) ||
+      !isFiniteRect(subject.rect)
+    ) {
+      return invalid();
+    }
+  } else if (subject.kind === "window") {
+    if (
+      !hasOnlyKeys(subject, [
+        "kind",
+        "windowId",
+        "rect",
+        "displayId",
+        "appName",
+        "appBundleId"
+      ]) ||
+      !Number.isSafeInteger(subject.windowId) ||
+      (subject.windowId as number) <= 0 ||
+      !isFiniteRect(subject.rect) ||
+      !isOptionalBoundedMetadata(
+        subject.appName,
+        RECORDING_APP_NAME_MAX_CODE_POINTS
+      ) ||
+      !isOptionalBoundedMetadata(
+        subject.appBundleId,
+        RECORDING_APP_ID_MAX_CODE_POINTS
+      )
+    ) {
+      return invalid();
+    }
+  } else if (subject.kind === "display") {
+    if (!hasOnlyKeys(subject, ["kind", "displayId"])) return invalid();
+  } else {
+    return invalid();
+  }
+
+  const capabilities = value.capabilities;
+  if (
+    !isObjectRecord(capabilities) ||
+    !hasOnlyKeys(capabilities, ["systemAudio", "microphone", "camera", "microphoneDevice"]) ||
+    typeof capabilities.systemAudio !== "boolean" ||
+    typeof capabilities.microphone !== "boolean"
+  ) {
+    return invalid();
+  }
+
+  if (capabilities.camera !== undefined && !RecordingCameraSchema.safeParse(capabilities.camera).success) return invalid();
+  // A named input with the microphone off records nothing from it, and a
+  // caller that sent one meant something else. Refuse rather than guess.
+  if (
+    capabilities.microphoneDevice !== undefined &&
+    (capabilities.microphone !== true ||
+      !RecordingMicrophoneSchema.safeParse(capabilities.microphoneDevice).success)
+  ) {
+    return invalid();
+  }
+
+  if (
+    value.countdownSeconds !== undefined &&
+    (!Number.isInteger(value.countdownSeconds) ||
+      (value.countdownSeconds as number) < 0 ||
+      (value.countdownSeconds as number) > RECORDING_COUNTDOWN_MAX_SECONDS)
+  ) {
+    return invalid();
+  }
+  if (
+    value.captureCursor !== undefined &&
+    typeof value.captureCursor !== "boolean"
+  ) {
+    return invalid();
+  }
+
+  return ok(value as RecordingStartRequest);
+}
+
 /** Filename of the extracted full-clip audio under the video asset dir.
  *  Must stay in the `parseVideoAssetUrl` whitelist. */
-const VIDEO_AUDIO_ASSET = "audio.m4a";
+/**
+ * Derived from the pipeline version so a mixing change cannot leave a stale
+ * derivative addressable under a name that no longer describes its contents.
+ * Hand-versioning it meant two tokens for one fact, and they had already
+ * drifted (`audio-mixed-v2` against `mixed-audio-v1`).
+ */
+export const VIDEO_AUDIO_ASSET = `${AUDIO_PIPELINE_VERSION}.m4a`;
+/**
+ * Filename of the prepared playback rendition, for one source revision.
+ *
+ * Carries a content key as well as the pipeline version, because the two
+ * invalidate on different facts. The waveform asset is a pure function of
+ * the pipeline, so its name needs only the version. The rendition is a
+ * function of the SOURCE — its bytes and the four track flags — and #496
+ * left that out, so `fileHasBytes` short-circuited on a name that could
+ * no longer describe its contents and nothing ever revalidated. A key in
+ * the name makes the short-circuit correct again: different inputs, and
+ * the lookup simply misses.
+ */
+export function videoPlaybackAsset(cacheKey: string): string {
+  return `playback-${AUDIO_PIPELINE_VERSION}-${cacheKey}.mp4`;
+}
 /** Matches the timeline's smallest supported trim span. */
 const MIN_VIDEO_RANGE_SEC = 0.1;
-
-// The Library and float-over can ask for the same waveform asset at once.
-// Coalesce extraction + the final atomic copy so they never race on the
-// per-process temporary filename.
-const videoAudioInFlight = new Map<string, Promise<void>>();
 
 async function fileHasBytes(path: string): Promise<boolean> {
   try {
@@ -156,36 +422,183 @@ async function fileHasBytes(path: string): Promise<boolean> {
   }
 }
 
+/**
+ * Prepare the playback rendition if this recording needs one, and answer
+ * with the asset name to serve (or `null` for "play the original").
+ *
+ * Single-flighted per ARTIFACT, like the waveform asset: opening a video
+ * mounts the stage and the timeline together, and a second remux of the
+ * same file is pure waste.
+ *
+ * This handler's single-flighting is the derived-cache gate's, not a local
+ * map of its own. The gate has to know about every in-flight write anyway —
+ * it is what aborts and drains them when a purge or a Clear arrives — so a
+ * second map here would be a registry that must agree with it about what is
+ * running, and could not be relied on to. (`prepareVideoPlayback` keeps its
+ * own `coalesce`; that is audio-extract's module-level contract, shared with
+ * `extractVideoAudio` and `synthesizeSilence` and pinned by its own tests.)
+ */
+async function ensureVideoPlaybackAsset(input: {
+  captureId: string;
+  videoPath: string;
+  hasSystemAudio: boolean;
+  hasMicrophoneAudio: boolean;
+  requestedSystemAudio: boolean;
+  requestedMicrophone: boolean;
+}): Promise<string | null> {
+  // Answer the cheap question first. A recording whose audible audio is
+  // already the track a player takes needs no rendition, no cache key, and
+  // so no `stat` of the source at all.
+  if (!videoPlaybackNeedsPreparation(input)) return null;
+  const dir = videoAssetDir(input.captureId);
+  // Resolve the identity BEFORE joining the in-flight map, so the map can be
+  // keyed by the artifact rather than by the capture. Keying it by capture
+  // made a coalesced caller adopt whatever the first caller's source state
+  // produced — invisible while the name was a constant, wrong once the name
+  // encodes a revision. The cost is one extra `stat` per concurrent caller.
+  //
+  // The `stat` behind the cache key happens before the gate admits this
+  // write, so a cleanup can start in between — and is caught, because
+  // admission stays closed for the whole cleanup including its `rm`s. What
+  // is NOT covered is a write admitted after a purge has fully finished; the
+  // `getCaptureById` in `video:playback` is the guard there, and the window
+  // it leaves is the synchronous gap between `purgeCacheForCapture` and
+  // `hardDeleteCapture` in `library:purge`.
+  const asset = videoPlaybackAsset(await computeVideoPlaybackCacheKey(input));
+  try {
+    const outPath = join(dir, asset);
+    // The output path IS the artifact identity — same bytes wanted, same key.
+    const produced = await runGatedCacheWrite(input.captureId, outPath, async (signal) => {
+      if (await fileHasBytes(outPath)) return asset;
+      await mkdir(dir, { recursive: true });
+      const played = await prepareVideoPlayback(outPath, input, signal);
+      // The probe can still say the file disagrees with its metadata, in
+      // which case nothing was written and the original is correct.
+      const produced = played === outPath ? asset : null;
+      // Retire renditions of every OTHER revision of this source. Each is a
+      // full copy of a recording, so leaving them costs source-sized bytes
+      // per stale revision — the reason this lane sweeps itself rather than
+      // riding along with the waveform lane's pipeline-version sweep.
+      //
+      // Outside the success branch on purpose. When preparation declines
+      // (`produced === null`) the ORIGINAL is what plays, so every rendition
+      // present is stale — and that is exactly the state an early return
+      // stranded: metadata disagreeing with the file makes the decline
+      // permanent, so nothing would ever have collected them, including the
+      // unkeyed rendition #496 left behind.
+      //
+      // INSIDE the gated work, so it runs once per artifact rather than once
+      // per coalesced caller: opening a video mounts the stage and the
+      // timeline together, and each extra caller was another `readdir` plus
+      // `rm` pass over the same directory. It is also a delete under
+      // `<cacheRoot>`, so it belongs inside the admission the gate is
+      // already holding.
+      await sweepStalePlaybackRenditions(dir, produced);
+      return produced;
+    });
+    return produced;
+  } catch (cause) {
+    // A cleanup owns this capture's cache right now (or took it mid-encode).
+    // There is nothing to serve but the original, and nothing went wrong.
+    if (cause instanceof Error && cause.name === "AbortError") {
+      log.debug("video:playback: preparation yielded to a cache cleanup", {
+        captureId: input.captureId
+      });
+      return null;
+    }
+    throw cause;
+  }
+}
+
+/**
+ * Delete every prepared rendition in `dir` except `keep` (pass `null` to
+ * remove all of them, i.e. when the original is what plays).
+ *
+ * Deliberately unconditional about whether another window currently has one
+ * of those URLs loaded: a rendition is only swept once the source it was
+ * derived from has changed, so it no longer describes the recording, and a
+ * window still streaming it is already being served the wrong bytes. Leaving
+ * it would cost a source-sized file per stale revision. Recovering is a
+ * reload, which the next `video:playback` answers with the current rendition.
+ */
+async function sweepStalePlaybackRenditions(dir: string, keep: string | null): Promise<void> {
+  await Promise.all(
+    (await readdir(dir).catch(() => [] as string[]))
+      .filter((name) => name !== keep && isDerivedPlaybackAsset(name))
+      .map((name) => rm(join(dir, name), { force: true }).catch(() => undefined))
+  );
+}
+
 async function ensureVideoAudioAsset(input: {
   captureId: string;
   videoPath: string;
   durationSec: number;
+  hasSystemAudio: boolean;
+  hasMicrophoneAudio: boolean;
+  requestedSystemAudio: boolean;
+  requestedMicrophone: boolean;
 }): Promise<void> {
-  const existing = videoAudioInFlight.get(input.captureId);
-  if (existing !== undefined) return existing;
-
-  const work = (async () => {
-    const target = join(videoAssetDir(input.captureId), VIDEO_AUDIO_ASSET);
+  const target = join(videoAssetDir(input.captureId), VIDEO_AUDIO_ASSET);
+  // Through the gate, for the same reason the playback lane is: this lane
+  // also publishes into `<cacheRoot>/video/<id>/` by `rename`, so ungated it
+  // recreates a directory a purge has just removed. The gate also supplies
+  // the in-flight de-dup this function used to keep for itself — the Library
+  // and the float-over can ask for the same waveform at once.
+  await runGatedCacheWrite(input.captureId, target, async (signal) => {
     if (await fileHasBytes(target)) return;
 
     const extracted = await extractVideoAudio({
       videoPath: input.videoPath,
+      hasSystemAudio: input.hasSystemAudio,
+      hasMicrophoneAudio: input.hasMicrophoneAudio,
+      requestedSystemAudio: input.requestedSystemAudio,
+      requestedMicrophone: input.requestedMicrophone,
       startSec: 0,
       durationSec: input.durationSec
-    });
-    await mkdir(videoAssetDir(input.captureId), { recursive: true });
+    }, signal);
+    const dir = videoAssetDir(input.captureId);
+    await mkdir(dir, { recursive: true });
+    // Drop derivatives from an earlier pipeline version. Without this each
+    // bump left a full-clip audio file per capture that nothing reads and
+    // nothing sweeps until the capture is hard-deleted.
+    //
+    // `isDerivedAudioAsset` is the SAME list the protocol resolver serves
+    // from, deliberately. Re-spelling it here is what let `audio-mixed-v2`
+    // — still servable, so still a real orphan — slip through every sweep.
+    //
+    // Scoped to the waveform lane: playback renditions are swept by
+    // `ensureVideoPlaybackAsset`, against a key this function cannot
+    // compute, so a name it does not recognise must be left alone.
+    await Promise.all(
+      (await readdir(dir).catch(() => [] as string[]))
+        .filter((name) => name !== VIDEO_AUDIO_ASSET && isDerivedAudioAsset(name))
+        .map((name) => rm(join(dir, name), { force: true }).catch(() => undefined))
+    );
     const tmp = `${target}.${process.pid}.tmp`;
     await copyFile(extracted, tmp);
+    // Last check before the asset becomes visible to readers.
+    signal.throwIfAborted();
     await rename(tmp, target);
-  })();
-  videoAudioInFlight.set(input.captureId, work);
-  try {
-    await work;
-  } finally {
-    if (videoAudioInFlight.get(input.captureId) === work) {
-      videoAudioInFlight.delete(input.captureId);
-    }
+  });
+}
+
+/** The live video record for an edit/inspect verb, or the validation
+ *  error the caller returns as-is. */
+function videoRecordFor(
+  captureId: unknown,
+  verb: string
+): Result<{ record: CaptureRecord; video: VideoCaptureMetadata }, PwrSnapError> {
+  if (typeof captureId !== "string" || captureId.length === 0) {
+    return err(validationError("invalid_capture_id", `${verb}: captureId must be a non-empty string`));
   }
+  const record = getCaptureById(captureId);
+  if (record === null || record.deleted_at !== null) {
+    return err(validationError("not_found", `${verb}: capture not found: ${captureId}`));
+  }
+  if (record.kind !== "video" || record.video === null || record.video === undefined) {
+    return err(validationError("not_a_video", `${verb}: ${captureId} is not a video capture`));
+  }
+  return ok({ record, video: record.video });
 }
 
 /**
@@ -210,6 +623,73 @@ function getService(): RecordingService {
 }
 
 export function registerRecordingHandlers(): void {
+  bus.register("recording:cameraChunk", async (req, ctx) => {
+    if (ctx.principal !== "ipc") return ok({ accepted: false });
+    return ok({ accepted: await acceptCameraChunk(req.token, ctx.sourceWindowId, req.bytes) });
+  });
+  bus.register("video:camera", async req => {
+    const capture = getCaptureById(req.captureId);
+    const camera = capture?.video?.camera;
+    return ok(capture && !capture.deleted_at && camera ? { camera, url: `pwrsnap-capture://c/${capture.id}` } : null);
+  });
+  bus.register("video:setAvatar", async req => {
+    const capture = getCaptureById(req.captureId);
+    const avatar = req.avatar === undefined ? undefined : AvatarStyleSchema.safeParse(req.avatar);
+    const spans = req.spans === undefined ? undefined : PresenterSpansSchema.safeParse(req.spans);
+    if (
+      (avatar === undefined && spans === undefined) ||
+      avatar?.success === false ||
+      spans?.success === false ||
+      !capture?.video?.camera ||
+      capture.deleted_at
+    ) {
+      return err(validationError("invalid_avatar", "Choose a recording with a camera and valid presenter settings."));
+    }
+    if (avatar?.success) setVideoAvatar(capture.id, avatar.data);
+    if (spans?.success) setVideoAvatarSpans(capture.id, spans.data, capture.video.durationSec);
+    broadcastCapturesChanged([capture.id]);
+    return ok({ saved: true as const });
+  });
+  bus.register("video:prepareAvatar", async (req, ctx) => {
+    if (ctx.principal !== "bridge") {
+      return err({
+        kind: "permission",
+        code: "internal_command",
+        message: "video:prepareAvatar is main-process-only"
+      });
+    }
+    if (typeof req.captureId !== "string" || req.captureId.length === 0) {
+      return err(validationError("invalid_capture_id", "Choose a recording to prepare."));
+    }
+    const capture = getCaptureById(req.captureId);
+    if (!capture || capture.deleted_at || capture.kind !== "video" || !capture.video) {
+      return err(validationError("not_a_video", "That recording is unavailable."));
+    }
+    const avatar = req.avatar === undefined ? undefined : AvatarStyleSchema.safeParse(req.avatar);
+    if (avatar && !avatar.success) {
+      return err(validationError("invalid_avatar", "Choose valid presenter settings."));
+    }
+    if (req.canvas !== undefined && (
+      !req.canvas || ![req.canvas.width, req.canvas.height].every(
+        (value) => Number.isInteger(value) && value >= 2 && value <= 8192
+      )
+    )) {
+      return err(validationError("invalid_canvas", "Choose valid presenter canvas dimensions."));
+    }
+    try {
+      const path = await prepareAvatarVideo(capture, avatar?.data, ctx.signal, req.canvas);
+      return ok({ path });
+    } catch (cause) {
+      const cancelled = ctx.signal.aborted || (cause as Error)?.name === "AbortError";
+      if (!cancelled) log.error("presenter preparation failed", { captureId: capture.id, cause });
+      return err({
+        kind: "render",
+        code: cancelled ? "cancelled" : "avatar_preparation_failed",
+        message: "Presenter preparation did not complete."
+      });
+    }
+  });
+
   // ---- permissions ----
 
   bus.register("permissions:readiness", async () => {
@@ -234,19 +714,26 @@ export function registerRecordingHandlers(): void {
         )
       );
     }
-    const result = await requestPermission(req.permission);
-    if (
-      process.platform === "darwin" &&
-      (req.permission === "screen" || req.permission === "systemAudio")
-    ) {
-      // We just drove the macOS screen-capture prompt (which also
-      // registers PwrSnap in the Privacy pane). Remember it so the UI
-      // switches to the "Open System Settings" path next time — macOS
-      // won't prompt twice. Off Darwin, `requestPermission` is unsupported
-      // and returns `unknown`, so there is no prompt attempt to remember.
-      await markScreenCapturePrompted();
+    // Screen and system audio only report status here; their prompt is the
+    // permission guide (`permissions:showGuide`), never macOS's alert.
+    return ok(await requestPermission(req.permission));
+  });
+
+  bus.register("permissions:openSoundSettings", async () => {
+    try {
+      await openSoundSettings();
+      return ok(undefined);
+    } catch (cause) {
+      if (cause instanceof UnsupportedSoundSettingsError) {
+        return err(permissionError("permission_settings_unsupported", cause.message));
+      }
+      log.warn("permissions:openSoundSettings failed", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err(
+        permissionError("open_settings_failed", cause instanceof Error ? cause.message : String(cause))
+      );
     }
-    return ok(result);
   });
 
   bus.register("permissions:openSystemSettings", async (req) => {
@@ -280,9 +767,100 @@ export function registerRecordingHandlers(): void {
     }
   });
 
+  // The macOS permission guide (capture/permission-guide.ts). Screen and
+  // system audio share one grant and one list; microphone and camera lists
+  // take no drops, so they keep `permissions:request`'s macOS prompt.
+  bus.register("permissions:showGuide", async (req) => {
+    if (!isKnownPermission(req.permission)) {
+      return err(
+        validationError(
+          "unknown_permission",
+          `permissions:showGuide: unknown permission (got ${JSON.stringify(req.permission)})`
+        )
+      );
+    }
+    if (!isPermissionGuideSupported() || req.permission === "microphone") {
+      return err(
+        permissionError(
+          "permission_guide_unsupported",
+          `PwrSnap has no permission guide for ${req.permission} on ${process.platform}.`
+        )
+      );
+    }
+    try {
+      await showPermissionGuide();
+      // The user has now been asked, PwrSnap's way. Startup routing and the
+      // System Permissions page read this to tell "blocked" from "never
+      // tried".
+      await markScreenCapturePrompted();
+      return ok(undefined);
+    } catch (cause) {
+      log.warn("permissions:showGuide failed", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err(
+        permissionError(
+          "open_settings_failed",
+          cause instanceof Error ? cause.message : String(cause)
+        )
+      );
+    }
+  });
+
+  bus.register("permissions:guideState", async () => ok(getPermissionGuideState()));
+
+  bus.register("permissions:guideResize", async (req) => {
+    if (typeof req?.height !== "number" || !Number.isFinite(req.height)) {
+      return err(validationError("invalid_height", "permissions:guideResize: height must be a finite number"));
+    }
+    resizePermissionGuide(req.height);
+    return ok(undefined);
+  });
+
+  bus.register("permissions:guideReopenSettings", async () => {
+    try {
+      await reopenPermissionGuideSettings();
+      return ok(undefined);
+    } catch (cause) {
+      return err(
+        permissionError(
+          "open_settings_failed",
+          cause instanceof Error ? cause.message : String(cause)
+        )
+      );
+    }
+  });
+
+  bus.register("permissions:guideResetGrant", async () => {
+    try {
+      await resetPermissionGuideGrant();
+      return ok(undefined);
+    } catch (cause) {
+      return err(
+        permissionError(
+          "permission_reset_failed",
+          cause instanceof Error ? cause.message : String(cause)
+        )
+      );
+    }
+  });
+
+  bus.register("permissions:guideRelaunch", async () => {
+    relaunchFromPermissionGuide();
+    return ok(undefined);
+  });
+
+  bus.register("permissions:guideClose", async () => {
+    closePermissionGuide();
+    return ok(undefined);
+  });
+
   // ---- recording lifecycle ----
 
   bus.register("recording:start", async (req) => {
+    const validated = validateRecordingStartRequest(req);
+    if (!validated.ok) return validated;
+    const request = validated.value;
     if (getRecordingState().phase === "failed") {
       return err(
         validationError(
@@ -295,16 +873,19 @@ export function registerRecordingHandlers(): void {
     // never staring at "3, 2, 1, …" only to hit a permission wall.
     // Screen Recording is required: the gate fires the macOS prompt on
     // the first-ever attempt and routes to System Settings thereafter
-    // (see screen-permission-gate.ts). Missing audio is a degraded
-    // continuation that the selector dialog handled before calling us.
-    const blocked = await guardRecordingAttempt(req.capabilities);
+    // (see screen-permission-gate.ts). Requested audio is mandatory —
+    // never silently downgrade an explicitly enabled microphone — and
+    // interactive callers surface the rejection with recovery
+    // instructions. The selector's source chips make this rare: they
+    // show the grant state, and offer it, before the user commits.
+    const blocked = await guardRecordingAttempt(request.capabilities);
     if (blocked) return blocked;
     try {
       const session = await getService().start({
-        subject: req.subject,
-        capabilities: req.capabilities,
-        captureCursor: req.captureCursor,
-        countdownSeconds: req.countdownSeconds ?? 3
+        subject: request.subject,
+        capabilities: request.capabilities,
+        captureCursor: request.captureCursor,
+        countdownSeconds: request.countdownSeconds ?? 3
       });
       return ok({ sessionId: session.sessionId });
     } catch (cause) {
@@ -334,6 +915,20 @@ export function registerRecordingHandlers(): void {
   });
 
   bus.register("recording:stop", async () => {
+    if (
+      !canRunRecordingControl(
+        getRecordingState(),
+        recordingBackendCapabilities(),
+        "stop"
+      )
+    ) {
+      return err(
+        validationError(
+          "control_unavailable",
+          "Stop is only available while a recording is actively capturing."
+        )
+      );
+    }
     try {
       const { captureId } = await getService().stop();
       return ok({ captureId });
@@ -347,11 +942,32 @@ export function registerRecordingHandlers(): void {
   });
 
   bus.register("recording:cancel", async () => {
-    if (getRecordingState().phase === "failed") {
+    const state = getRecordingState();
+    if (state.phase === "failed") {
       return err(
         validationError(
           "failure_action_required",
           "Use the failed recording's Dismiss action instead of Cancel."
+        )
+      );
+    }
+    if (state.phase === "stopping" || state.phase === "processing") {
+      return err(
+        validationError(
+          "control_unavailable",
+          "Cancel is unavailable while the recording is being finalized."
+        )
+      );
+    }
+    if (
+      state.phase !== "idle" &&
+      state.phase !== "ready" &&
+      !canRunRecordingControl(state, recordingBackendCapabilities(), "cancel")
+    ) {
+      return err(
+        validationError(
+          "control_unavailable",
+          "Cancel is unavailable for the active recording backend."
         )
       );
     }
@@ -371,6 +987,20 @@ export function registerRecordingHandlers(): void {
         validationError(
           "failure_action_required",
           "Use the failed recording's Retry action instead of Restart."
+        )
+      );
+    }
+    if (
+      !canRunRecordingControl(
+        getRecordingState(),
+        recordingBackendCapabilities(),
+        "restart"
+      )
+    ) {
+      return err(
+        validationError(
+          "control_unavailable",
+          "Restart is only available while a recording is actively capturing."
         )
       );
     }
@@ -456,6 +1086,10 @@ export function registerRecordingHandlers(): void {
     return ok(getRecordingState());
   });
 
+  bus.register("recording:capabilities", async () => {
+    return ok(recordingBackendCapabilities());
+  });
+
   // ---- video metadata + export ----
 
   bus.register("video:setDefaultRange", async (req) => {
@@ -493,6 +1127,157 @@ export function registerRecordingHandlers(): void {
     // (float-over) pick up the new `defaultRange` without polling.
     broadcastCapturesChanged([req.captureId]);
     return ok(undefined);
+  });
+
+  // ── video:edit / video:inspect / video:activity ──────────────────
+  //
+  // The edit verbs behind the Library timeline AND the agent tools (MCP
+  // and the in-app chat). One normalizer, one validator, one broadcast:
+  // an agent's cut reaches an open Library through the same
+  // `events:captures:changed` revalidation as the user's own drag, and
+  // lands on the Library's undo stack like one.
+  bus.register("video:edit", async (req) => {
+    const verb = "video:edit";
+    const resolved = videoRecordFor(req?.captureId, verb);
+    if (!resolved.ok) return resolved;
+    const { record, video } = resolved.value;
+    const ops = [
+      req.keep !== undefined,
+      req.cut !== undefined,
+      req.cutStill !== undefined,
+      req.reset === true
+    ].filter(Boolean).length;
+    if (ops !== 1) {
+      return err(
+        validationError("invalid_edit", `${verb}: set exactly one of keep, cut, cutStill, reset`)
+      );
+    }
+    const d = video.durationSec;
+    let next: VideoRange[];
+    if (req.reset === true) {
+      next = [{ start: 0, end: d }];
+    } else if (req.keep !== undefined) {
+      const keep = validateVideoSpanList(req.keep, verb, "keep");
+      if (!keep.ok) return keep;
+      next = normalizeVideoSegments(keep.value, d);
+      if (next.length === 0) {
+        return err(
+          validationError(
+            "invalid_segments",
+            `${verb}: nothing to keep — every span is outside the ${d.toFixed(3)} s recording or shorter than 0.1 s`
+          )
+        );
+      }
+    } else if (req.cut !== undefined) {
+      const cut = validateVideoSpanList(req.cut, verb, "cut");
+      if (!cut.ok) return cut;
+      next = subtractVideoSpans(video.segments, cut.value, d);
+      if (next.length === 0) {
+        return err(validationError("invalid_segments", `${verb}: that cut would remove the whole video`));
+      }
+    } else {
+      const options = req.cutStill ?? {};
+      const minStillSec = options.minStillSec ?? 3;
+      const paddingSec = options.paddingSec ?? 0.5;
+      if (!Number.isFinite(minStillSec) || minStillSec < 0.5 || minStillSec > 3600) {
+        return err(validationError("invalid_edit", `${verb}: cutStill.minStillSec must be 0.5–3600`));
+      }
+      if (!Number.isFinite(paddingSec) || paddingSec < 0 || paddingSec > 10) {
+        return err(validationError("invalid_edit", `${verb}: cutStill.paddingSec must be 0–10`));
+      }
+      let analysis;
+      try {
+        analysis = await ensureVideoActivity(record, video);
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        log.error("video:edit activity analysis failed", { captureId: record.id, message });
+        return err({ kind: "render", code: "video_activity_failed", message, cause });
+      }
+      // Analysis yields to other UI/chat/MCP edits. Compose with the live edit.
+      const live = videoRecordFor(record.id, verb);
+      if (!live.ok) return live;
+      const current = live.value.video.segments;
+      const cuts = videoStillCuts(analysis.track, {
+        minStillSec,
+        paddingSec,
+        maxLevel: options.treatMinorAsStill === true ? 1 : 0,
+        durationSec: d
+      });
+      next = cuts.length === 0 ? current : subtractVideoSpans(current, cuts, d);
+      // Everything was still: leave the edit alone rather than refuse —
+      // "cut the boring parts" of a video with nothing but boring parts
+      // is a no-op, not an error the caller must handle.
+      if (next.length === 0) next = current;
+    }
+    if (next.length > VIDEO_SEGMENTS_MAX) {
+      return err(validationError("invalid_segments", `This edit would exceed ${VIDEO_SEGMENTS_MAX} kept spans. Join splits or make fewer cuts; no changes were saved.`));
+    }
+    const stored = setVideoSegments(record.id, next);
+    if (stored === null) {
+      return err(validationError("not_a_video", `${verb}: ${record.id} is not a video capture`));
+    }
+    broadcastCapturesChanged([record.id]);
+    return ok(describeVideoEdit(record.id, d, stored) satisfies VideoEditState);
+  });
+
+  bus.register("video:inspect", async (req) => {
+    const verb = "video:inspect";
+    const resolved = videoRecordFor(req?.captureId, verb);
+    if (!resolved.ok) return resolved;
+    const { record, video } = resolved.value;
+    const minStillSec = req.minStillSec ?? 3;
+    if (typeof minStillSec !== "number" || !Number.isFinite(minStillSec) || minStillSec < 0.2 || minStillSec > 3600) {
+      return err(validationError("invalid_request", `${verb}: minStillSec must be 0.2–3600`));
+    }
+    const state = describeVideoEdit(record.id, video.durationSec, video.segments);
+    try {
+      const { track } = await ensureVideoActivity(record, video);
+      const { resolutionSec, runs } = videoActivityRuns(track, { maxRuns: 200 });
+      const stillSpans = videoStillSpans(track, {
+        minStillSec,
+        maxLevel: req.treatMinorAsStill === true ? 1 : 0
+      }).map((span) => ({ ...span, durationSec: Math.round((span.end - span.start) * 1000) / 1000 }));
+      const result: VideoInspectResult = {
+        ...state,
+        activity: {
+          sampleHz: track.sampleHz,
+          levels: { ...VIDEO_ACTIVITY_LEVEL_LEGEND },
+          resolutionSec,
+          runs,
+          stillSpans,
+          stillTotalSec:
+            Math.round(stillSpans.reduce((sum, span) => sum + span.durationSec, 0) * 1000) / 1000,
+          ...(req.includeTrack === true ? { track: videoActivityLevelString(track) } : {})
+        }
+      };
+      return ok(result);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      log.warn("video:inspect activity analysis failed", { captureId: record.id, message });
+      return ok({ ...state, activity: null, activityError: message });
+    }
+  });
+
+  bus.register("video:activity", async (req) => {
+    const verb = "video:activity";
+    const resolved = videoRecordFor(req?.captureId, verb);
+    if (!resolved.ok) return resolved;
+    const { record, video } = resolved.value;
+    try {
+      const analysis = await ensureVideoActivity(record, video);
+      return ok({
+        captureId: record.id,
+        sampleHz: analysis.track.sampleHz,
+        magnitudes: [...analysis.track.magnitudes],
+        ...(analysis.track.sound !== undefined ? { sound: [...analysis.track.sound] } : {}),
+        analysisWidthPx: analysis.width,
+        analysisHeightPx: analysis.height
+      });
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      log.error("video:activity failed", { captureId: record.id, message });
+      return err({ kind: "render", code: "video_activity_failed", message, cause });
+    }
   });
 
   // ── video:frames ──────────────────────────────────────────────────
@@ -539,12 +1324,55 @@ export function registerRecordingHandlers(): void {
     }
   });
 
+  // ── video:playback ────────────────────────────────────────────────
+  //
+  // What a player should load. The recorder keeps each source as its own
+  // audio track and players take only the first, so a take whose audible
+  // audio is not track 0 needs a stream-copied rendition to be heard at
+  // all. That is the ordinary case for "system audio armed, nothing
+  // playing": a silent track sits in front of a good microphone.
+  bus.register("video:playback", async (req) => {
+    if (typeof req.captureId !== "string" || req.captureId.length === 0) {
+      return err(
+        validationError("invalid_capture_id", "video:playback: captureId must be a non-empty string")
+      );
+    }
+    const record = getCaptureById(req.captureId);
+    if (record === null) {
+      return err(validationError("not_found", `video:playback: capture not found: ${req.captureId}`));
+    }
+    const original = { url: captureSrcUrl(record.id), prepared: false };
+    const video = record.video;
+    if (record.kind !== "video" || video === null || video === undefined) return ok(original);
+    if (record.legacy_src_path === null) return ok(original);
+    try {
+      const asset = await ensureVideoPlaybackAsset({
+        captureId: record.id,
+        videoPath: record.legacy_src_path,
+        hasSystemAudio: video.hasSystemAudio,
+        hasMicrophoneAudio: video.hasMicrophoneAudio,
+        requestedSystemAudio: video.requestedSystemAudio,
+        requestedMicrophone: video.requestedMicrophone
+      });
+      if (asset === null) return ok(original);
+      return ok({ url: videoAssetUrl(record.id, asset), prepared: true });
+    } catch (cause) {
+      // Never fail the player over this. A recording the user can watch
+      // with one source audible beats an error where a video should be.
+      log.warn("video:playback preparation failed; serving the original", {
+        captureId: record.id,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return ok(original);
+    }
+  });
+
   // ── video:audio ───────────────────────────────────────────────────
   //
   // Full-clip audio for the waveform lane. Reuses the sizzle
   // native-audio extractor (content-addressed under sizzle-cache) and
   // mirrors the result into the per-capture video asset dir so the
-  // `pwrsnap-cache://v/<id>/audio.m4a` arm can serve it.
+  // `pwrsnap-cache://v/<id>/<AUDIO_PIPELINE_VERSION>.m4a` arm can serve it.
   bus.register("video:audio", async (req) => {
     if (typeof req.captureId !== "string" || req.captureId.length === 0) {
       return err(validationError("invalid_capture_id", "video:audio: captureId must be a non-empty string"));
@@ -566,7 +1394,11 @@ export function registerRecordingHandlers(): void {
       await ensureVideoAudioAsset({
         captureId: record.id,
         videoPath: record.legacy_src_path,
-        durationSec: record.video.durationSec
+        durationSec: record.video.durationSec,
+        hasSystemAudio: record.video.hasSystemAudio,
+        hasMicrophoneAudio: record.video.hasMicrophoneAudio,
+        requestedSystemAudio: record.video.requestedSystemAudio,
+        requestedMicrophone: record.video.requestedMicrophone
       });
       return ok({
         hasAudio: true as const,
@@ -580,64 +1412,143 @@ export function registerRecordingHandlers(): void {
     }
   });
 
-  bus.register("video:export", async (req) => {
+  bus.register("video:export", async (req, ctx) => {
     const validated = validateExportRequest(req);
     if (!validated.ok) return validated;
-    const record = getCaptureById(req.captureId);
-    if (record === null) {
-      return err(validationError("not_found", `video:export: capture not found: ${req.captureId}`));
-    }
-    if (record.kind !== "video" || record.video === null || record.video === undefined) {
-      return err(validationError("not_a_video", `video:export: ${req.captureId} is not a video capture`));
-    }
-    const range = req.range ?? record.video.defaultRange;
-    const audio =
-      req.audio ??
-      ({ includeSystemAudio: false, includeMicrophone: false } as const);
-    // Source metadata is the source of truth for whether a track
-    // even exists in the file. Toggling a missing track on is a
-    // validator-level rejection, not a silent normalisation, so the
-    // renderer can tell the user precisely what went wrong.
-    if (req.format === "mp4") {
-      if (audio.includeSystemAudio && !record.video.hasSystemAudio) {
-        return err(
-          validationError(
-            "audio_track_missing",
-            "video:export: cannot include system audio — source recording has no system-audio track."
-          )
-        );
+    const baseProgress = createVideoExportProgressObserver(req);
+    let terminalEmitted = false;
+    const progress =
+      baseProgress === undefined
+        ? undefined
+        : {
+            runId: baseProgress.runId,
+            emit: (update: Parameters<typeof baseProgress.emit>[0]) => {
+              if (update.phase === "done") terminalEmitted = true;
+              try {
+                baseProgress.emit(update);
+              } catch (cause) {
+                // A renderer can disappear between the window liveness check
+                // and webContents.send(). Progress delivery must never replace
+                // the command's real success/failure Result.
+                log.warn("video export progress delivery failed", {
+                  runId: baseProgress.runId,
+                  message: cause instanceof Error ? cause.message : String(cause)
+                });
+              }
+            }
+          };
+    const failBeforeTerminal = (error: PwrSnapError): Result<never, PwrSnapError> => {
+      if (!terminalEmitted && progress !== undefined) {
+        progress.emit({
+          phase: "done",
+          ratio: null,
+          outcome: "failed",
+          error: { code: error.code, message: error.message }
+        });
       }
-      if (audio.includeMicrophone && !record.video.hasMicrophoneAudio) {
-        return err(
-          validationError(
-            "audio_track_missing",
-            "video:export: cannot include microphone — source recording has no microphone track."
-          )
-        );
-      }
-    }
+      return err(error);
+    };
+
     try {
+      const record = getCaptureById(req.captureId);
+      if (record === null) {
+        return failBeforeTerminal(
+          validationError("not_found", `video:export: capture not found: ${req.captureId}`)
+        );
+      }
+      if (record.kind !== "video" || record.video === null || record.video === undefined) {
+        return failBeforeTerminal(
+          validationError("not_a_video", `video:export: ${req.captureId} is not a video capture`)
+        );
+      }
+      const resolvedSpans = resolveVideoExportSpans(record.video, req);
+      if (!resolvedSpans.ok) return failBeforeTerminal(resolvedSpans.error);
+      const { range, spans } = resolvedSpans.value;
+      // Same resolution as resolveVideoExport, so the visible preflight
+      // lands on the cache key copy / path / drag then hit instead of
+      // encoding twice. An omitted MP4 choice is the user's preference.
+      const audio = await resolveExportAudio(req.format, req.audio, record.video);
+      // Source metadata is the source of truth for whether a track exists.
+      if (req.format === "mp4") {
+        if (audio.includeSystemAudio && !record.video.hasSystemAudio) {
+          return failBeforeTerminal(
+            validationError(
+              "audio_track_missing",
+              "video:export: cannot include system audio — source recording has no system-audio track."
+            )
+          );
+        }
+        if (audio.includeMicrophone && !record.video.hasMicrophoneAudio) {
+          return failBeforeTerminal(
+            validationError(
+              "audio_track_missing",
+              "video:export: cannot include microphone — source recording has no microphone track."
+            )
+          );
+        }
+      }
       const result = await exportVideoRange({
         record,
         video: record.video,
         format: req.format,
         preset: req.preset,
-        range: normalizeRange(range, record.video.durationSec),
-        audio: req.format === "gif"
-          ? { includeSystemAudio: false, includeMicrophone: false }
-          : audio
+        range,
+        spans,
+        audio,
+        signal: ctx.signal,
+        ...(progress === undefined ? {} : { progress })
       });
       return ok(result);
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
-      log.error("video:export failed", {
+      const cancelled = cause instanceof Error && cause.name === "AbortError";
+      const details = {
         captureId: req.captureId,
         format: req.format,
         preset: req.preset,
         message
-      });
-      return err({ kind: "render", code: "video_export_failed", message, cause });
+      };
+      if (cancelled) log.info("video:export cancelled", details);
+      else log.error("video:export failed", details);
+      const error: PwrSnapError = {
+        kind: "render",
+        code: cancelled ? "video_export_cancelled" : "video_export_failed",
+        message,
+        cause
+      };
+      if (!terminalEmitted && progress !== undefined) {
+        progress.emit(
+          cancelled
+            ? { phase: "done", ratio: null, outcome: "cancelled" }
+            : {
+                phase: "done",
+                ratio: null,
+                outcome: "failed",
+                error: { code: error.code, message }
+              }
+        );
+      }
+      return err(error);
     }
+  });
+
+  bus.register("video:cancelExport", async (req) => {
+    if (
+      typeof req.runId !== "string" ||
+      req.runId.length === 0 ||
+      req.runId.length > 128
+    ) {
+      return err(
+        validationError(
+          "invalid_run_id",
+          "video:cancelExport: runId must be a non-empty string of at most 128 characters"
+        )
+      );
+    }
+    const key = `video-export:${req.runId}`;
+    bus.cancel(key);
+    relayCancellationToPeer(key);
+    return ok(undefined);
   });
 
   // ── video:presetMetrics ───────────────────────────────────────────
@@ -676,18 +1587,28 @@ export function registerRecordingHandlers(): void {
         );
       }
     }
-    const range = req.range ?? record.video.defaultRange;
-    const normalized = normalizeRange(range, record.video.durationSec);
-    const durationSec = normalized.end - normalized.start;
-    // Default audio choice mirrors the same fallback the encoder
-    // uses when audio is omitted: GIF silent, MP4 inherits the
-    // recorded tracks. We compute metrics against this default so
-    // cache lookups land on the same row a default-args click would
-    // populate.
-    const mp4Audio = {
-      includeSystemAudio: record.video.hasSystemAudio,
-      includeMicrophone: record.video.hasMicrophoneAudio
-    };
+    if (req.segments !== undefined) {
+      const segments = validateVideoSpanList(req.segments, "video:presetMetrics", "segments");
+      if (!segments.ok) return segments;
+    }
+    const audioError = videoExportAudioError(req.audio, "video:presetMetrics");
+    if (audioError !== null) return err(audioError);
+    const resolvedSpans = resolveVideoExportSpans(record.video, req);
+    if (!resolvedSpans.ok) return resolvedSpans;
+    const { range: normalized, spans } = resolvedSpans.value;
+    const durationSec = videoKeptDurationSec(spans);
+    // The cache key the exporter would use for these spans — see
+    // `exportSegmentsKey` in recording-exporter.ts.
+    const segmentsKey = exportSegmentsKey({ record, spans });
+    // The MP4 audio the grid is showing — or, when omitted, the same
+    // preference an export with no `audio` resolves — so a cache lookup
+    // lands on the row the next click would populate. Narrowed to the
+    // recorded tracks: metrics describe a choice, they do not reject one.
+    const mp4Audio = narrowAudioToRecorded(
+      await resolveExportAudio("mp4", req.audio, record.video),
+      record.video
+    );
+    const mp4HasAudio = mp4Audio.includeSystemAudio || mp4Audio.includeMicrophone;
     const presets: readonly VideoPreset[] = ["low", "med", "high"];
     const metrics: VideoPresetMetric[] = [];
     for (const format of ["gif", "mp4"] as const) {
@@ -696,6 +1617,8 @@ export function registerRecordingHandlers(): void {
         const cached = lookupExport({
           captureId: record.id,
           range: normalized,
+          segmentsKey,
+          durationSec,
           format,
           preset,
           audio: format === "gif" ? { includeSystemAudio: false, includeMicrophone: false } : mp4Audio
@@ -703,7 +1626,14 @@ export function registerRecordingHandlers(): void {
         const byteSize =
           cached !== null
             ? cached.byteSize
-            : estimateVideoByteSize(format, preset, dims.widthPx, dims.heightPx, durationSec);
+            : estimateVideoByteSize(
+                format,
+                preset,
+                dims.widthPx,
+                dims.heightPx,
+                durationSec,
+                format === "mp4" && mp4HasAudio
+              );
         metrics.push({
           format,
           preset,
@@ -731,11 +1661,11 @@ export function registerRecordingHandlers(): void {
     // MCP), so the verb validates for itself too.
     const valid = validateVideoExportRequest(req, "video:prepareDrag");
     if (!valid.ok) return valid;
-    const resolved = await resolveVideoExport(req);
-    if (!resolved.ok) {
-      return err(mapVideoResolveError(resolved.error, "video:prepareDrag", req.captureId));
-    }
     try {
+      const resolved = await resolveVideoExport(req);
+      if (!resolved.ok) {
+        return err(mapVideoResolveError(resolved.error, "video:prepareDrag", req.captureId));
+      }
       const { result, record, video } = resolved.value;
       const displayName = buildPresetExportDisplayName({
         record,
@@ -801,7 +1731,8 @@ function estimateVideoByteSize(
   preset: VideoPreset,
   widthPx: number,
   heightPx: number,
-  durationSec: number
+  durationSec: number,
+  withAudio: boolean
 ): number {
   if (format === "gif") {
     const pixels = widthPx * heightPx;
@@ -814,15 +1745,17 @@ function estimateVideoByteSize(
   // MP4 — model bitrate from the encoder presets. Numbers are deliberate
   // ballpark; the renderer surfaces these as `~N MB` so a 30% miss
   // is acceptable.
-  const bitrateBps = mp4PresetBitrateBps(preset);
+  // The AAC track counts only when the export keeps one, so turning the
+  // grid's audio off visibly shrinks the estimate.
+  const bitrateBps =
+    kbpsToBps(MP4_PRESETS[preset].bitrate) + (withAudio ? kbpsToBps(MP4_AUDIO_BITRATE) : 0);
   return Math.round((bitrateBps / 8) * durationSec);
 }
 
-function mp4PresetBitrateBps(preset: VideoPreset): number {
-  const bitrate = MP4_PRESETS[preset].bitrate;
+function kbpsToBps(bitrate: string): number {
   const match = /^(\d+)k$/.exec(bitrate);
   if (match === null) {
-    throw new Error(`recording-handlers: unsupported MP4 preset bitrate ${bitrate}`);
+    throw new Error(`recording-handlers: unsupported MP4 bitrate ${bitrate}`);
   }
   return Number(match[1]) * 1000;
 }

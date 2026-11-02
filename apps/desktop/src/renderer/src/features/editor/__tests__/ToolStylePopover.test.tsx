@@ -32,7 +32,7 @@ import type {
   Settings,
   TextToolStyle
 } from "@pwrsnap/shared";
-import { MAX_HIGHLIGHT_OPACITY } from "@pwrsnap/shared";
+import { MAX_HIGHLIGHT_OPACITY, defaultEditorToolBag } from "@pwrsnap/shared";
 
 // ---- Mocks ----------------------------------------------------------
 
@@ -91,6 +91,7 @@ function makeSettings(overrides?: {
       enabled: false,
       consentAcceptedAt: null,
       budgetSafetyDisabledAt: null,
+      enrichmentRateLimit: null,
       autoAcceptSuggestions: false,
       chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false },
       defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} },
@@ -104,7 +105,8 @@ function makeSettings(overrides?: {
       allScreens: "",
       timed: "",
       videoCapture: "CommandOrControl+Alt+C",
-      reshowFloatOver: "CommandOrControl+Alt+Shift+F"
+      reshowFloatOver: "CommandOrControl+Alt+Shift+F",
+      openLibrary: ""
     },
     general: {
     developerMode: false,
@@ -122,9 +124,16 @@ function makeSettings(overrides?: {
     storage: { filenameTimestampZone: "local", capturesLocation: "documents" },
     recording: {
       quickCaptureAction: "ask",
+      selectorHud: "shutter",
       includeSystemAudio: false,
       includeMicrophone: false,
+      mp4IncludeMicrophone: true,
+      mp4IncludeSystemAudio: true,
       videoCaptureCursor: true,
+      showRegionFrame: true,
+      showRecentCaptureSidebar: true,
+      microphoneDevice: null,
+      cameraDevice: null,
       imageCaptureCursor: true,
       lastRoutedPermissionFingerprint: "",
       screenCapturePrompted: false
@@ -140,15 +149,16 @@ function makeSettings(overrides?: {
           outline: "auto"
         },
         text: { color: "accent", fontSize: "auto", weight: "regular", outline: "auto" },
-        shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15, outline: "auto" },
+        shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15, strokeStyle: "solid", outline: "auto" },
         blur: { mode: "gaussian", radius: { mode: "auto" } },
-        highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
+        highlight: { color: "yellow", opacity: 0.3, blend: "multiply" },
+        draw: { mode: "pen", color: "accent", thickness: "auto" }
       },
+      toolBag: defaultEditorToolBag(),
       coachmarks: { stoplightSeen: overrides?.stoplightSeen ?? false },
-      matchingText: { enabled: true },
       sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
     },
-    library: { detailRail: { pinned: true, lastSelectedTab: "info" }, gridCopyPalette: { anchor: "follow" }, confirmBeforeTrash: true, gridZoom: 180 },
+    library: { detailRail: { pinned: true, lastSelectedTab: "info" }, gridCopyPalette: { anchor: "follow" }, confirmBeforeTrash: true, gridZoom: 180, duplicateWithEdits: { image: true, video: true }, editToolbarDock: "float" },
   localAgents: { enabled: false, grants: [], roles: [], audit: [] }
   };
 }
@@ -185,6 +195,7 @@ const DEFAULT_RECT_STYLE: ShapeToolStyle = {
   color: "accent",
   thickness: "auto",
   filled: false, shape: "rect", skewDeg: 15,
+  strokeStyle: "solid",
   outline: "auto"
 };
 const DEFAULT_BLUR_STYLE: BlurToolStyle = {
@@ -598,6 +609,36 @@ describe("ToolStylePopover", () => {
     expect(openTriangleBtn).not.toBeNull();
     fireClick(openTriangleBtn!);
     expect(onChange).toHaveBeenCalledWith("endStyle", "open-triangle");
+  });
+
+  test("8a. shape stroke style row reuses the arrow's icons and emits strokeStyle", () => {
+    const onChange = vi.fn();
+    render(
+      createElement(Harness, {
+        tool: "shape",
+        style: { ...DEFAULT_RECT_STYLE, strokeStyle: "dashed" },
+        onStyleFieldChange: onChange
+      })
+    );
+    const group = queryPopover().querySelector('[data-testid="shape-stroke-style"]');
+    expect(group).not.toBeNull();
+    const labels = Array.from(group!.querySelectorAll('[role="radio"]')).map((b) =>
+      b.getAttribute("aria-label")
+    );
+    expect(labels).toEqual(["Solid", "Dashed", "Dotted"]);
+    expect(group!.querySelector('[aria-label="Dashed"]')!.getAttribute("aria-checked")).toBe("true");
+    fireClick(group!.querySelector('[aria-label="Dotted"]')!);
+    expect(onChange).toHaveBeenCalledWith("strokeStyle", "dotted");
+  });
+
+  test("8b. a filled shape has no outline to pattern, so the stroke style row steps aside", () => {
+    render(
+      createElement(Harness, {
+        tool: "shape",
+        style: { ...DEFAULT_RECT_STYLE, filled: true }
+      })
+    );
+    expect(queryPopover().querySelector('[data-testid="shape-stroke-style"]')).toBeNull();
   });
 
   test("9. arrow double-ended checkbox click → onStyleFieldChange('doubleEnded', true)", () => {
@@ -1122,5 +1163,78 @@ describe("ToolStylePopover", () => {
       badge,
       "Custom badge must NOT render when row is in-bucket — would falsely tell the user their text is custom-sized."
     ).toBeNull();
+  });
+});
+
+// Keyboard containment. The popover is portalled away from the caret that
+// opened it and closes on any outside pointerdown, so it traps like a modal.
+// Before: focus never moved in (Tab from the caret walked the toolbar with
+// the popover still open), and Escape — from anywhere, including inside the
+// Custom… colour dialog — closed the WHOLE popover and let the editor's own
+// window-capture Escape clear the canvas selection as well.
+describe("ToolStylePopover — keyboard", () => {
+  function press(key: string, shiftKey = false): KeyboardEvent {
+    const target = (document.activeElement as HTMLElement | null) ?? document.body;
+    const e = new KeyboardEvent("keydown", { key, shiftKey, bubbles: true, cancelable: true });
+    act(() => {
+      target.dispatchEvent(e);
+    });
+    return e;
+  }
+
+  test("focus moves into the popover once it is positioned, and Tab wraps inside", () => {
+    render(createElement(Harness, { tool: "arrow", style: DEFAULT_ARROW_STYLE }));
+    const popover = queryPopover();
+    expect(popover.getAttribute("aria-modal")).toBe("true");
+    expect(popover.contains(document.activeElement)).toBe(true);
+    // From the last control, Tab comes back to the first rather than
+    // walking out to the toolbar behind.
+    const stops = [...popover.querySelectorAll<HTMLElement>("button, input, select")].filter(
+      (el) => el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled && el.closest("dialog") === null
+    );
+    act(() => stops[stops.length - 1]!.focus());
+    expect(press("Tab").defaultPrevented).toBe(true);
+    expect(popover.contains(document.activeElement)).toBe(true);
+  });
+
+  test("Escape closes the popover and goes no further — the editor never sees it", () => {
+    const editor = vi.fn();
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") editor();
+    };
+    window.addEventListener("keydown", onKey, true);
+    try {
+      const onClose = vi.fn();
+      render(createElement(Harness, { tool: "arrow", style: DEFAULT_ARROW_STYLE, onClose }));
+      press("Escape");
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(editor).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("keydown", onKey, true);
+    }
+  });
+
+  test("Escape inside the Custom… colour dialog closes the dialog only, and focus returns to Custom…", () => {
+    const onClose = vi.fn();
+    render(createElement(Harness, { tool: "arrow", style: DEFAULT_ARROW_STYLE, onClose }));
+    const customBtn = queryPopover().querySelector<HTMLButtonElement>('[data-testid="color-custom"]')!;
+    act(() => customBtn.focus());
+    fireClick(customBtn);
+    const dialog = queryPopover().querySelector<HTMLDialogElement>(".pse-color-dialog")!;
+    // A real dialog fires `close` after close(); jsdom's may not.
+    const realClose = dialog.close.bind(dialog);
+    vi.spyOn(dialog, "close").mockImplementation(() => {
+      realClose();
+      dialog.dispatchEvent(new Event("close"));
+    });
+    const input = queryPopover().querySelector<HTMLInputElement>('[data-testid="color-custom-input"]')!;
+    act(() => input.focus());
+    press("Escape");
+    expect(dialog.close).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(customBtn);
+    // …and the next Escape closes the popover.
+    press("Escape");
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

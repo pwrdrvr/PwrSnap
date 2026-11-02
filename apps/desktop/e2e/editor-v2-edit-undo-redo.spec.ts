@@ -33,6 +33,7 @@ import path from "node:path";
 import { type Page } from "@playwright/test";
 import { expect, type LaunchedApp, launchPwrSnap, test } from "./fixtures/electron-app";
 import { openEditor, selectTool } from "./fixtures/editor";
+import { expectPlacedLayerCount, placedLayers } from "./fixtures/editor-helpers";
 
 test.setTimeout(90_000);
 
@@ -43,30 +44,30 @@ test("editor-v2-edit-undo-redo: draw → undo → redo round-trips through layer
     const editorWindow = await openEditor(app, captureId);
 
     // Fresh capture: nothing placed, nothing to undo/redo.
-    await expectLayerCount(app, captureId, 0);
+    await expectPlacedLayerCount(app, captureId, 0);
 
     // Place an arrow.
     await selectTool(editorWindow, "arrow");
     await drawOnCanvas(editorWindow);
 
     // The placement persisted.
-    await expectLayerCount(app, captureId, 1);
+    await expectPlacedLayerCount(app, captureId, 1);
 
     // And it actually hit the DB through the v2 write path (layers:*,
-    // NOT the deleted overlays:*). The fresh layer tree was empty, so a
-    // non-empty list proves layers:upsert wrote.
+    // NOT the deleted overlays:*). The fresh tree held only the root
+    // group + Source raster, so a placed layer proves layers:upsert wrote.
     const afterDraw = await app.dispatch("layers:list", { captureId });
     expect(afterDraw.ok).toBe(true);
-    if (afterDraw.ok) expect(afterDraw.value.length).toBeGreaterThan(0);
+    if (afterDraw.ok) expect(placedLayers(afterDraw.value).length).toBeGreaterThan(0);
 
     // Undo → the arrow is removed (useUndoRedo dispatches layers:delete).
     await editorWindow.keyboard.press(`${accel()}+Z`);
-    await expectLayerCount(app, captureId, 0);
+    await expectPlacedLayerCount(app, captureId, 0);
 
     // Redo → the arrow comes back (useUndoRedo dispatches layers:upsert
     // with the original node, preserving z_index).
     await editorWindow.keyboard.press(`${accel()}+Shift+Z`);
-    await expectLayerCount(app, captureId, 1);
+    await expectPlacedLayerCount(app, captureId, 1);
 
     // Never tipped into the error model, never silently fell back off v2.
     await expect(
@@ -88,12 +89,12 @@ test("editor-v2-edit-undo-redo: a placed annotation survives an editor reopen", 
 
     await selectTool(firstWindow, "arrow");
     await drawOnCanvas(firstWindow);
-    await expectLayerCount(app, captureId, 1);
+    await expectPlacedLayerCount(app, captureId, 1);
 
     // Persisted to the DB.
     const persisted = await app.dispatch("layers:list", { captureId });
     expect(persisted.ok).toBe(true);
-    if (persisted.ok) expect(persisted.value.length).toBeGreaterThan(0);
+    if (persisted.ok) expect(placedLayers(persisted.value).length).toBeGreaterThan(0);
 
     // Close Focus and reopen it. The reopened
     // editor must reload the persisted layer through useCaptureModel's
@@ -101,7 +102,7 @@ test("editor-v2-edit-undo-redo: a placed annotation survives an editor reopen", 
     await firstWindow.getByTestId("focus-back").click();
     await expect(firstWindow.locator(".psl__focus")).toHaveCount(0);
     const reopened = await openEditor(app, captureId);
-    await expectLayerCount(app, captureId, 1);
+    await expectPlacedLayerCount(app, captureId, 1);
     await expect(
       reopened.locator('[data-testid="editor-error"]')
     ).toHaveCount(0);
@@ -116,25 +117,12 @@ function accel(): "Meta" | "Control" {
   return process.platform === "darwin" ? "Meta" : "Control";
 }
 
-async function expectLayerCount(
-  app: LaunchedApp,
-  captureId: string,
-  count: number
-): Promise<void> {
-  await expect
-    .poll(async () => {
-      const result = await app.dispatch("layers:list", { captureId });
-      if (!result.ok) return -1;
-      return result.value.length;
-    })
-    .toBe(count);
-}
 
 async function seedCapture(app: LaunchedApp): Promise<string> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-edit-undo-spec-"));
   const pngPath = path.join(dir, "fixture.png");
-  // 1×1 transparent PNG — the canvas <img> loads it via
-  // pwrsnap-capture://; the bytes are never decoded for the assertions.
+  // 1×1 transparent PNG — the seeder stretches it into the capture's
+  // 800×600 Source raster; no assertion reads its pixels.
   const pngBytes = Buffer.from(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c63000100000005000158d57340000000049454e44ae426082",
     "hex"
@@ -145,7 +133,7 @@ async function seedCapture(app: LaunchedApp): Promise<string> {
     .toString(36)
     .slice(2, 8)}`;
   await app.electronApp.evaluate(
-    (_electron, payload: { id: string; pngPath: string }) => {
+    async (_electron, payload: { id: string; pngPath: string }) => {
       const bridge = (
         globalThis as unknown as {
           __PWRSNAP_TEST__: {
@@ -162,11 +150,11 @@ async function seedCapture(app: LaunchedApp): Promise<string> {
               byte_size: number;
               sha256: string;
               bundle_format_version?: number;
-            }) => unknown;
+            }) => Promise<unknown>;
           };
         }
       ).__PWRSNAP_TEST__;
-      bridge.seedCapture({
+      await bridge.seedCapture({
         id: payload.id,
         kind: "image",
         captured_at: new Date().toISOString(),

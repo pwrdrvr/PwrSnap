@@ -12,6 +12,7 @@ type EnrichmentRow = {
   latest_ai_run_id: string | null;
   status: CaptureEnrichment["status"];
   error: string | null;
+  fallback_from: string | null;
   ocr_text: string | null;
   suggested_title: string | null;
   accepted_title: string | null;
@@ -96,6 +97,7 @@ export function getCaptureEnrichment(captureId: string): CaptureEnrichment | nul
               capture_enrichments.latest_ai_run_id,
               ai_runs.status,
               ai_runs.error,
+              ai_runs.fallback_from,
               capture_enrichments.ocr_text,
               capture_enrichments.suggested_title,
               capture_enrichments.accepted_title,
@@ -129,6 +131,7 @@ export function getCaptureEnrichment(captureId: string): CaptureEnrichment | nul
     latestRunId: row.latest_ai_run_id,
     status: row.status,
     error: row.error,
+    fallbackFrom: row.fallback_from,
     ocrText: row.ocr_text,
     suggestedTitle: row.suggested_title,
     acceptedTitle: row.accepted_title,
@@ -205,6 +208,7 @@ export function listEnrichmentsByCaptureIds(
               capture_enrichments.latest_ai_run_id,
               ai_runs.status,
               ai_runs.error,
+              ai_runs.fallback_from,
               capture_enrichments.ocr_text,
               capture_enrichments.suggested_title,
               capture_enrichments.accepted_title,
@@ -278,6 +282,7 @@ export function listEnrichmentsByCaptureIds(
         latestRunId: row.latest_ai_run_id,
         status: row.status,
         error: row.error,
+        fallbackFrom: row.fallback_from,
         ocrText: row.ocr_text,
         suggestedTitle: row.suggested_title,
         acceptedTitle: row.accepted_title,

@@ -39,13 +39,20 @@ const EMPTY_CART: DraftCart = {
 
 const CartStateContext = createContext<DraftCart>(EMPTY_CART);
 const CartEmptyContext = createContext<boolean>(true);
+// Whether the first `cart:get` has answered. Until it has, the cart reads
+// as EMPTY_CART, so the 0 → N step when a saved cart arrives is a load,
+// not the user adding something. Defaults to true outside a provider so
+// an isolated test's cart is taken as loaded.
+const CartLoadedContext = createContext<boolean>(true);
 
 export function CartProvider({ children }: { children: ReactNode }): ReactElement {
-  const { cart } = useDraftCart();
+  const { cart, loading } = useDraftCart();
   return (
-    <CartEmptyContext.Provider value={cart.captureIds.length === 0}>
-      <CartStateContext.Provider value={cart}>{children}</CartStateContext.Provider>
-    </CartEmptyContext.Provider>
+    <CartLoadedContext.Provider value={!loading}>
+      <CartEmptyContext.Provider value={cart.captureIds.length === 0}>
+        <CartStateContext.Provider value={cart}>{children}</CartStateContext.Provider>
+      </CartEmptyContext.Provider>
+    </CartLoadedContext.Provider>
   );
 }
 
@@ -60,4 +67,10 @@ export function useCart(): DraftCart {
  *  empty↔non-empty transition (primitive context value). */
 export function useCartIsEmpty(): boolean {
   return useContext(CartEmptyContext);
+}
+
+/** Whether the saved cart has been read. Before that, `useCart()` is the
+ *  empty placeholder, not the user's cart. */
+export function useCartLoaded(): boolean {
+  return useContext(CartLoadedContext);
 }

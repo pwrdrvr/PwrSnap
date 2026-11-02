@@ -8,20 +8,32 @@ import {
   IPC_CAPTURE_DRAG_START,
   IPC_CART_ZIP_DRAG_START,
   IPC_CMD,
+  IPC_PERMISSION_GUIDE_DRAG_START,
   IPC_VIDEO_DRAG_START
 } from "@pwrsnap/shared";
 import type { RenderPreset, VideoExportCoordinates, VideoPreset } from "@pwrsnap/shared";
 import { bus } from "./command-bus";
 import { getMainLogger } from "./log";
 import { admitHotkeyRecorderDocument } from "./hotkeys/hotkey-recorder-document";
+import { startPermissionGuideDrag } from "./capture/permission-guide";
+import { relayCancellationToPeer } from "./process-split/event-relay";
+import { validateVideoSpanList, videoExportAudioError } from "./recording/video-export-validation";
 
 const log = getMainLogger("pwrsnap:ipc");
 
 function ipcCancellationKey(name: string, req: unknown): string | undefined {
-  if (name !== "codex:enrich") return undefined;
-  if (typeof req !== "object" || req === null || !("captureId" in req)) return undefined;
-  const captureId = (req as { captureId?: unknown }).captureId;
-  return typeof captureId === "string" ? captureId : undefined;
+  if (typeof req !== "object" || req === null) return undefined;
+  if (name === "codex:enrich" && "captureId" in req) {
+    const captureId = (req as { captureId?: unknown }).captureId;
+    return typeof captureId === "string" ? captureId : undefined;
+  }
+  if (name === "video:export" && "runId" in req) {
+    const runId = (req as { runId?: unknown }).runId;
+    return typeof runId === "string" && runId.length > 0
+      ? `video-export:${runId}`
+      : undefined;
+  }
+  return undefined;
 }
 
 export function registerIpcDispatcher(): void {
@@ -61,8 +73,33 @@ export function registerIpcDispatcher(): void {
         dispatchOptions.sourceDocumentId = admittedDocumentId;
       }
     }
-    const result = await bus.dispatch(name, req as never, dispatchOptions);
-    return result;
+    const exportCancellationKey =
+      name === "video:export" ? dispatchOptions.cancellationKey : undefined;
+    const cancelExport = (): void => {
+      if (exportCancellationKey === undefined) return;
+      bus.cancel(exportCancellationKey);
+      relayCancellationToPeer(exportCancellationKey);
+    };
+    if (exportCancellationKey !== undefined) {
+      event.sender.once("destroyed", cancelExport);
+    }
+    try {
+      return await bus.dispatch(name, req as never, dispatchOptions);
+    } finally {
+      if (exportCancellationKey !== undefined) {
+        event.sender.removeListener("destroyed", cancelExport);
+        // Run-scoped keys are one-shot. Cancelling after settlement is a
+        // harmless way to discard both local and split-peer controllers.
+        cancelExport();
+      }
+    }
+  });
+
+  // Permission guide: drag the running app bundle into System Settings.
+  // No payload — main drags the path it resolved, and only for the guide's
+  // own WebContents (checked inside).
+  ipcMain.on(IPC_PERMISSION_GUIDE_DRAG_START, (event) => {
+    startPermissionGuideDrag(event.sender);
   });
 
   ipcMain.on(IPC_CAPTURE_DRAG_START, (event, req: unknown) => {
@@ -246,6 +283,8 @@ function parseVideoDragRequest(req: unknown): VideoExportCoordinates | null {
     format?: unknown;
     preset?: unknown;
     range?: unknown;
+    segments?: unknown;
+    audio?: unknown;
   };
   if (typeof value.captureId !== "string" || value.captureId.length === 0) return null;
   if (value.format !== "gif" && value.format !== "mp4") return null;
@@ -272,10 +311,27 @@ function parseVideoDragRequest(req: unknown): VideoExportCoordinates | null {
       range = { start: r.start, end: r.end };
     }
   }
+  // The live edit's kept spans. Same rule as the range: whatever the
+  // verb would reject is dropped here, so the drag falls back to the
+  // persisted edit instead of dying.
+  const segments = validateVideoSpanList(value.segments, "video:drag-start", "segments");
+  // Optional explicit MP4 audio choice — the toggle the grid is showing.
+  // Unlike a malformed range, a malformed one REFUSES the drag: treating
+  // it as omitted would still honor the saved preference, but a payload
+  // we cannot read is not one to guess at when the question is whether
+  // to ship someone's microphone.
+  let audio: VideoExportCoordinates["audio"];
+  if (value.audio !== undefined) {
+    if (videoExportAudioError(value.audio, IPC_VIDEO_DRAG_START) !== null) return null;
+    const a = value.audio as NonNullable<VideoExportCoordinates["audio"]>;
+    audio = { includeSystemAudio: a.includeSystemAudio, includeMicrophone: a.includeMicrophone };
+  }
   return {
     captureId: value.captureId,
     format: value.format,
     preset: value.preset as VideoPreset,
-    ...(range !== undefined ? { range } : {})
+    ...(range !== undefined ? { range } : {}),
+    ...(value.segments !== undefined && segments.ok ? { segments: segments.value } : {}),
+    ...(audio !== undefined ? { audio } : {})
   };
 }

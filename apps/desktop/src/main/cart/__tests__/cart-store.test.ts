@@ -2,7 +2,7 @@
 // sizzle-store.test.ts — real temp files, no mocks, exercising the
 // atomic-write + in-memory-cache + parse-fail-quarantine machinery.
 
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";

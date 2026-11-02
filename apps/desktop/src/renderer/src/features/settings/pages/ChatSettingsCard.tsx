@@ -1,4 +1,4 @@
-// Settings → AI → Chat card. Surfaces the three Library-chat
+// Settings → AI Features → Guidance card. Surfaces the three Library-chat
 // preferences from `Settings.ai.chat`:
 //   • a first-launch disclosure banner (storage location + iCloud +
 //     Spotlight + FileVault), dismissible (persists the flag)
@@ -18,12 +18,20 @@ import {
   type SensitiveDataPattern
 } from "@pwrsnap/shared";
 import { Card, Row } from "../components";
+import { AI_FEATURE_SECTION_LABELS } from "../settings-nav";
 import { useSettingsContext } from "../SettingsContext";
 import { useCapturesLocationDisplayState } from "../../../lib/useCapturesLocationDisplayState";
 
 const USER_GUIDANCE_MAX = 8192;
 
-export function ChatSettingsCard(): ReactElement | null {
+type ChatSettingsCardProps = {
+  /** DOM id the sidebar's "Guidance" jump link lands on. */
+  id: string;
+  /** See `Card.focusRequest`. */
+  focusRequest: number | undefined;
+};
+
+export function ChatSettingsCard({ id, focusRequest }: ChatSettingsCardProps): ReactElement | null {
   const { settings, patch } = useSettingsContext();
   const capturesDisplay = useCapturesLocationDisplayState(
     settings?.storage?.capturesLocation ?? "documents"
@@ -32,6 +40,8 @@ export function ChatSettingsCard(): ReactElement | null {
   return (
     <ChatSettingsCardBody
       key="chat-settings"
+      id={id}
+      focusRequest={focusRequest}
       patch={patch}
       chat={settings.ai.chat}
       capturesLocation={capturesDisplay.location}
@@ -43,18 +53,25 @@ export function ChatSettingsCard(): ReactElement | null {
 type PatchFn = ReturnType<typeof useSettingsContext>["patch"];
 
 function ChatSettingsCardBody({
+  id,
+  focusRequest,
   chat,
   patch,
   capturesLocation,
   capturesRootOverridden
-}: {
+}: ChatSettingsCardProps & {
   chat: import("@pwrsnap/shared").ChatSettings;
   patch: PatchFn;
   capturesLocation: "documents" | "home";
   capturesRootOverridden: boolean;
 }): ReactElement {
   return (
-    <Card eyebrow="PROVIDER" title="Library Chat">
+    <Card
+      id={id}
+      focusRequest={focusRequest}
+      eyebrow="CHAT"
+      title={AI_FEATURE_SECTION_LABELS.guidance}
+    >
       {!chat.firstLaunchBannerDismissed ? (
         <DisclosureBanner
           capturesLocation={capturesLocation}

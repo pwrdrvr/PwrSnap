@@ -17,7 +17,6 @@ import type {
   CaptureExportFormat,
   CaptureExportRequest,
   CaptureExportResult,
-  CaptureExportVariant,
   ExportStrategy
 } from "@pwrsnap/shared";
 import { resolveExportRung } from "@pwrsnap/shared";

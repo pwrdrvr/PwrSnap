@@ -519,7 +519,7 @@ export function Composer(props: ComposerProps): ReactElement {
             className="ps-composer__send"
             disabled={!canSubmit}
             aria-label="Send"
-            title="Send"
+            data-tip="Send"
             data-testid={`${testIdPrefix}-send`}
             onClick={doSubmit}
           >
@@ -532,7 +532,7 @@ export function Composer(props: ComposerProps): ReactElement {
             disabled={turnState === "stopping"}
             aria-label="Stop response"
             aria-busy={turnState === "stopping"}
-            title="Stop response"
+            data-tip="Stop response"
             data-testid={`${testIdPrefix}-stop`}
             onClick={doStop}
           >

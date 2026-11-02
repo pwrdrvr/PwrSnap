@@ -32,6 +32,9 @@ export default defineConfig({
           name: "desktop-main",
           globals: true,
           environment: "node",
+          // Transform the real discovery engine so its Node imports use the
+          // filesystem/process fixtures in codex-discovery-real.test.ts.
+          server: { deps: { inline: ["@pwrdrvr/codex-discovery"] } },
           include: [
             "scripts/**/*.test.mjs",
             "apps/desktop/scripts/**/*.test.mjs",
@@ -39,12 +42,18 @@ export default defineConfig({
             "apps/desktop/src/preload/**/__tests__/**/*.test.ts",
             "apps/desktop/src/test-setup/**/__tests__/**/*.test.ts"
           ],
-          setupFiles: ["apps/desktop/src/test-setup/outbound-fetch-guard.ts"]
+          // electron-log-isolation keeps fixture warnings out of the
+          // operator's real ~/Library/Logs/PwrSnap/main.log.
+          setupFiles: [
+            "apps/desktop/src/test-setup/outbound-fetch-guard.ts",
+            "apps/desktop/src/test-setup/electron-log-isolation.ts"
+          ]
         }
       },
       {
         test: {
           name: "desktop-renderer",
+          runner: "apps/desktop/src/test-setup/act-warning-runner.ts",
           globals: true,
           environment: "jsdom",
           include: [
@@ -55,7 +64,10 @@ export default defineConfig({
           // egress `fetch` call site today — but jsdom inherits a live
           // `fetch` from Node, so the guard covers a violation nothing
           // else here would catch.
-          setupFiles: ["apps/desktop/src/test-setup/outbound-fetch-guard.ts"]
+          setupFiles: [
+            "apps/desktop/src/test-setup/outbound-fetch-guard.ts",
+            "apps/desktop/src/test-setup/react-act-environment.ts"
+          ]
         }
       }
     ]

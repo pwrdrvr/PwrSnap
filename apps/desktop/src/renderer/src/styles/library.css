@@ -104,7 +104,9 @@
 .ps-app-tag.is-lg .ps-app-tag__tile { width: 26px; height: 26px; }
 .ps-app-tag.is-sm { height: 18px; font-size: 9px; padding-right: 6px; gap: 4px; }
 .ps-app-tag.is-sm .ps-app-tag__tile { width: 18px; height: 18px; }
-.ps-app-tag.is-sm .ps-app-tag__tile svg { width: 10px; height: 10px; }
+/* Glyphs only: an svg wearing `ps-app-icon-img` (the initials squircle,
+   the clipboard glyph) is an app icon and fills the tile like an <img>. */
+.ps-app-tag.is-sm .ps-app-tag__tile svg:not(.ps-app-icon-img) { width: 10px; height: 10px; }
 /* Real-bundle full-color icons (extracted from the installed .app
    via the pwrsnap-app-icon:// protocol). macOS app icons carry their
    own squircle + bezel — the copper-bordered tile chrome that frames
@@ -163,24 +165,23 @@
      content off-center within its window, clipping the right
      column at the body's right edge.
 
-     overflow: hidden keeps the rounded corners crisp; the
-     BrowserWindow itself is transparent so the corners read
-     correctly against whatever's behind.
+     overflow: hidden keeps the rounded corners crisp; outside the
+     radius the window shows through (transparent on Windows and
+     Linux, the native popover vibrancy on macOS).
 
      Surface pairing mirrors the library window: body = canvas
      black (--bg-app), header = chrome lift (--bg-sidebar, on
      .ps-tray__hdr). Don't paint this with --bg-panel-hover — it's
      the warm hover-state token, and as a primary fill it pushes
      the popover into a different color family than the library.
-     Slight translucency + blur (no saturate — it pulls color from
-     the desktop behind) keeps the floating edge readable over dark
-     wallpapers. The float-over (.fo) uses the same pairing; keep
-     them in sync. */
+     OPAQUE, no backdrop-filter — see .fo in float-over.css for why
+     a translucent fill leaks sharp, unblurred shapes from the
+     windows behind a transparent BrowserWindow (the Windows and Linux
+     tray). Pinned by popover-surface-contract.test.ts.
+     The float-over (.fo) uses the same pairing; keep them in sync. */
   position: relative;
   width: 100%;
-  background: color-mix(in srgb, var(--bg-app) 94%, transparent);
-  backdrop-filter: blur(28px);
-  -webkit-backdrop-filter: blur(28px);
+  background: var(--bg-app);
   border: 1px solid var(--border-subtle);
   border-radius: 12px;
   box-shadow: var(--shadow-lg), var(--shadow-inset);
@@ -259,6 +260,16 @@
 }
 .ps-tray__quick:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
 .ps-tray__quick:active { transform: translateY(1px); }
+/* The resting ring above is decoration, drawn focused or not, so on its
+   own it says nothing about focus. Focused, it goes full strength and
+   steps out to 3px. Recolouring it in place is not enough: 42% accent to
+   full accent is only 2.5:1 on the light tray. Stepping out puts the ring
+   on pixels the resting ring never covered, where it contrasts with the
+   tray background instead. */
+.ps-tray__quick:focus-visible {
+  outline-color: var(--focus-ring);
+  outline-offset: 3px;
+}
 .ps-tray__quick-l { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .ps-tray__quick-eyebrow {
   font: 700 12px/1 var(--font-display);
@@ -298,12 +309,20 @@
   border-color: var(--accent);
 }
 .ps-tray__quick--video:active { transform: translateY(1px); }
-/* The orange Quick Capture button reads as focused via its always-on
-   accent ring; the video variant drops that ring (outline: none above),
-   so it needs an explicit keyboard-focus indicator of its own. Mouse
-   focus stays clean — :focus-visible only. */
+.ps-tray__quick--video:disabled,
+.ps-tray__quick--video:disabled:hover,
+.ps-tray__quick--video:disabled:active {
+  background: var(--bg-panel-elevated);
+  border-color: var(--accent-border);
+  cursor: default;
+  opacity: 0.45;
+  transform: none;
+}
+/* The video variant drops the orange button's resting ring (outline:
+   none above), so its focus ring is the house ring at the usual 1px.
+   Mouse focus stays clean — :focus-visible only. */
 .ps-tray__quick--video:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .ps-tray__quick--video .ps-tray__quick-l { flex: 1; min-width: 0; }
@@ -354,7 +373,7 @@
    accent ring so a11y tab navigation still has a visible target. */
 .ps-mode:focus { outline: none; }
 .ps-mode:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .ps-mode__icon {
@@ -474,9 +493,38 @@
      and behaves consistently. */
   aspect-ratio: 16 / 10;
 }
+[data-popover-density="compact"] .ps-tray__last-preview { aspect-ratio: 2 / 1; }
+/* The mode rows have no room for their chord next to an icon and a label,
+   and none of those chords is bound by default. */
+[data-popover-density="compact"] .ps-mode__hk { display: none; }
+/* Quick Capture and Record Video carry the chords a new user actually has, so
+   they keep them: the chip moves onto the eyebrow row and the sub-line takes
+   the full width beneath it. `display: contents` on the label column lets the
+   eyebrow and sub-line be grid items of the button itself. */
+[data-popover-density="compact"] .ps-tray__quick {
+  display: grid;
+  grid-template: "e k" auto "s s" auto / 1fr auto;
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 3px;
+}
+[data-popover-density="compact"] .ps-tray__quick-l { display: contents; }
+[data-popover-density="compact"] .ps-tray__quick-eyebrow { grid-area: e; }
+[data-popover-density="compact"] .ps-tray__quick-hk { grid-area: k; }
+[data-popover-density="compact"] .ps-tray__quick-sub { grid-area: s; }
+[data-popover-density="compact"] .ps-tray__quick--video {
+  grid-template: "i e k" auto "i s s" auto / auto 1fr auto;
+}
+[data-popover-density="compact"] .ps-tray__quick--video .ps-tray__quick-icon { grid-area: i; }
 /* `contain` to match the library + float-over thumbnail policy —
    preserve the capture's true aspect ratio. */
 .ps-tray__last-preview img { width: 100%; height: 100%; object-fit: contain; display: block; }
+/* As `.fo__preview video`: the native controls make the video a Tab stop,
+   and this box clips at its rounded border. Inset, at the inner radius. */
+.ps-tray__last-preview video:focus-visible {
+  outline-offset: -2px;
+  border-radius: 5px;
+}
 
 /* Edit overlay — top-right corner of the last-snap preview. Always
    visible (the tray popover is already focused, so an opacity-on-
@@ -541,9 +589,15 @@
      shrink (the grid-wrap inside scrolls/reflows its own cells) so the
      left + right columns always stay on-screen. */
   grid-template-columns: var(--left-col) minmax(0, 1fr) var(--right-col);
-  grid-template-rows: 52px 1fr 32px;
+  /* 41px title strip: the Pwr-family 40px fill with its 1px divider below
+     (see "The Pwr-family title strip" in AGENTS.md). No outer border: the
+     strip has to start at the window's y=0 so its fill centres on y=20, the
+     line the macOS stoplights sit on, and its brand at x=96. A 1px frame here
+     put both one pixel off, and the window already has an edge — the OS draws
+     it on macOS and Windows, `#root::after` on Linux. Settings, Sizzle and the
+     document windows never had one. */
+  grid-template-rows: 41px 1fr 32px;
   background: var(--bg-app);
-  border: 1px solid var(--border-default);
   border-radius: 12px;
   overflow: hidden;
   font-family: var(--font-sans);
@@ -625,19 +679,136 @@
      internal rhythm. */
   gap: 12px;
   position: relative;
-  /* leave room for the macOS traffic-light buttons under hiddenInset */
-  padding: 0 16px 0 92px;
+  /* Reserve nothing for OS chrome — Linux has an ordinary window frame, so its
+     buttons are outside this bar entirely. macOS and Windows opt in below. */
+  padding: 0 16px;
   background: var(--bg-sidebar);
   border-bottom: 1px solid var(--border-subtle);
   -webkit-app-region: drag;
 }
+/* macOS: `titleBarStyle: "hiddenInset"` insets the traffic lights INTO this
+   bar, so reserve room on the left for them. Scoped to darwin rather than left
+   on the base rule — unscoped, it spent 92px of every Linux top bar on buttons
+   that platform never draws. */
+:root[data-platform="darwin"] .psl__topbar {
+  padding-left: var(--mac-traffic-light-reserve);
+}
+/* ---------- Linux caption buttons + window edge ----------
+
+   A frameless Linux window gets neither of the two things the other platforms
+   hand us: no traffic lights inset into the strip (macOS) and no
+   `titleBarOverlay` reserved at the right edge (Windows). So the strip paints
+   min/max/close itself — GNOME's side, order and roundness, in our palette —
+   and the window paints its own border.
+
+   These live in library.css rather than each window's own stylesheet because
+   all four title bars mount the same `<WindowControls />`, and the hairline is
+   on `#root`, which every window kind shares. library.css is the one sheet all
+   of them load. */
+.ps-wincontrols {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* Pins the cluster to the right edge of bars that have no spacer element of
+     their own — `.pss__titlebar`, `.szl__titlebar`, `.ps-doc__titlebar` are
+     brand + crumb and nothing else. */
+  margin-left: auto;
+  /* The bar is a drag region; the buttons inside it must not be. */
+  -webkit-app-region: no-drag;
+}
+/* Not in the Library's right cluster, though. `.psl__topbar-r` is
+   `flex: 1 1 auto` with `justify-content: flex-end` and nothing inside it
+   grows (`.psl__search-wrap` is `flex: 0 1 220px`), so there is real free
+   space in it — and `margin: auto` claims free space BEFORE `justify-content`
+   gets to distribute it. The auto margin would have absorbed the lot and
+   shoved search, the layout toggles, the gear and both capture buttons away
+   from the caption buttons, across the middle of the bar. The container's own
+   `gap` is all the separation this needs. */
+.psl__topbar-r .ps-wincontrols {
+  margin-left: 0;
+}
+.ps-wincontrols__btn {
+  appearance: none;
+  border: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--bg-panel-hover);
+  color: var(--text-secondary);
+  cursor: default;
+}
+.ps-wincontrols__btn:hover {
+  background: var(--bg-row-active);
+  color: var(--text-primary);
+}
+/* Close hovers to the danger wash rather than a solid red fill: the glyph has
+   to stay legible in both themes, and `--danger` is a mid red in one and a
+   deeper red in the other. */
+.ps-wincontrols__btn--close:hover {
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+.ps-wincontrols__btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+/* Every window's own edge, on the one platform that draws us none.
+
+   Electron gives a frameless Linux window an `OpaqueFrameView`: no border and
+   no X11 drop shadow. Electron 43+ would round its corners, but main opts
+   every window out (`linuxSquareCorners()` in linux-window-corners.ts), so the
+   corners stay square and the edge is a hairline we paint.
+
+   Fixed and `pointer-events: none` so it costs no layout and swallows no
+   clicks, including the frameless resize border Electron keeps just inside
+   these bounds (`FramelessView::ResizingBorderHitTest`). It goes away when the
+   frame is flush with the screen — a maximized window has no edge to show, and
+   `data-window-frame` is stamped by `lib/window-frame.ts` from main's own
+   maximize/unmaximize events.
+
+   On Wayland Electron does give frameless windows a GTK drop shadow, which is
+   what really separates a GNOME window from the one behind it; on X11 this
+   hairline is all there is.
+
+   Scoped by `body[data-chrome="window"]` — App.tsx stamps that from the
+   shared `WINDOW_CHROME_STAGES` list, which is also what decides who gets a
+   drag region, caption buttons and a frame-state subscription. The popover
+   surfaces share this stylesheet and this `#root`: the tray popover, the
+   float-over toast, the region selector, the recording HUD and the recording
+   frame. Each of those already paints its own rounded, shadowed shape — or,
+   in the recording frame's case, may not paint inside the recorded rect at
+   all — and a 1px box drawn around its full viewport would be a rectangle
+   where the design has none. An allow-list rather than a deny-list, so a
+   stage added later has to opt in rather than inherit an edge nobody looked
+   at — and one list rather than a copy of it here, so a stage cannot be added
+   to the chrome and forgotten by the edge.
+
+   Top of the stack, because it is the WINDOW's edge and not part of any pane:
+   `.pss__modal-backdrop` is `inset: 0` at 2147483646, so anything lower has
+   the scrim painted over the hairline and the window loses its only border
+   for as long as a modal is open. */
+:root[data-platform="linux"]:not([data-window-frame="maximized"])
+  body[data-chrome="window"]
+  #root::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  border: 1px solid var(--border-strong);
+  pointer-events: none;
+  z-index: 2147483647;
+}
+
 /* Windows: the native title bar is reclaimed via titleBarOverlay — no macOS
    stoplights to clear on the left. We custom-render the menu bar INSIDE this
    toolbar (AppMenuBar), so the native min/max/close buttons overlay the
    top-right of this same bar — reserve room on the right so the toolbar's
    right-aligned content (search, toggles, gear) clears them. */
 :root[data-platform="win32"] .psl__topbar {
-  padding-left: 16px;
   padding-right: var(--win-caption-reserve);
   column-gap: 12px;
 }
@@ -652,7 +823,13 @@
 .psl__topbar .lyt-toggle,
 .psl__topbar .psl__search-wrap { -webkit-app-region: no-drag; }
 .psl__topbar-l { display: flex; align-items: center; gap: 12px; }
-.psl__title { font: 700 14px/1 var(--font-display); letter-spacing: -0.01em; display: flex; align-items: center; gap: 8px; }
+.psl__title { font: 700 17px/1 var(--font-display); letter-spacing: -0.01em; display: flex; align-items: center; gap: 8px; }
+/* Strip text centres by its cap height (Pwr-family strip): flex centres a
+   text element's line box, and Geist's ascent/descent put the capitals off
+   the middle of it. `text-box` trimming (Chromium 133+) centres the ink that
+   is actually drawn instead, at any size, so the capitals share the y=20
+   line with the stoplights, the mark and the controls — no pixel nudges. */
+.psl__title .pwrsnap-wordmark { text-box: trim-both cap alphabetic; }
 
 /* Windows custom title-bar menu bar (File / Edit / View / …). Painted only on
    win32, where titleBarStyle:"hidden" removes the native menu bar. Buttons opt
@@ -765,6 +942,12 @@
 .psl__search:focus {
   border-color: var(--accent-border);
 }
+/* The border tint alone measured 2.2:1 against the field. It stays, and
+   the field draws the house ring too. */
+.psl__search:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
 .psl__search:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -785,7 +968,7 @@
 
 /* Responsive toolbar — the tier classes are set by Library.tsx from one
    atomic media-query set. On Windows that calculation first reserves the
-   width of the custom File / Edit / View / Window / Library / Help menu;
+   width of the custom File / Edit / View / Library / Window / Help menu;
    elsewhere the renderer viewport is the available toolbar width. Actions
    step down from labelled buttons → icon buttons → video hidden → both
    hidden. Secondary chrome yields after that so the supported 480px minimum
@@ -794,7 +977,10 @@
 .psl__topbar.is-narrow .psl__search-wrap { flex-basis: 150px; }
 .psl__topbar.is-tight .psl__topbar-r { gap: 6px; }
 .psl__topbar.is-tight .psl__search-wrap { flex-basis: 120px; }
-:root:not([data-platform="win32"]) .psl__topbar.is-tight .psl__topbar-c {
+/* Absolute-centring the REEL/GRID pair only works when nothing else is
+   competing for the left half of the bar. macOS is the only platform where
+   that holds — Windows and Linux both paint the app menu there. */
+:root[data-platform="darwin"] .psl__topbar.is-tight .psl__topbar-c {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
@@ -814,14 +1000,15 @@
 .psl__topbar.is-minimal .psl__search-wrap,
 .psl__topbar.is-minimal .lyt-toggle { display: none; }
 
-/* Windows spends substantially more title-bar width on the custom menu and
-   native caption-button overlay. Shed low-priority left/center chrome one
-   tier earlier there so the actions never slide beneath min/max/close. */
-:root[data-platform="win32"] .psl__topbar.is-compact .psl__history,
-:root[data-platform="win32"] .psl__topbar.is-compact .psl__count,
-:root[data-platform="win32"] .psl__topbar.is-compact .psl__search-wrap,
-:root[data-platform="win32"] .psl__topbar.is-compact .psl__topbar-c { display: none; }
-:root[data-platform="win32"] .psl__topbar.is-tiny .psl__title { display: none; }
+/* Windows and Linux spend substantially more title-bar width on the custom
+   menu bar plus caption buttons — the native overlay on Windows, the ones we
+   paint on Linux. Shed low-priority left/center chrome one tier earlier on
+   both so the actions never slide beneath min/max/close. */
+:root:is([data-platform="win32"], [data-platform="linux"]) .psl__topbar.is-compact .psl__history,
+:root:is([data-platform="win32"], [data-platform="linux"]) .psl__topbar.is-compact .psl__count,
+:root:is([data-platform="win32"], [data-platform="linux"]) .psl__topbar.is-compact .psl__search-wrap,
+:root:is([data-platform="win32"], [data-platform="linux"]) .psl__topbar.is-compact .psl__topbar-c { display: none; }
+:root:is([data-platform="win32"], [data-platform="linux"]) .psl__topbar.is-tiny .psl__title { display: none; }
 
 /* Left: Source Apps.
  *
@@ -864,25 +1051,39 @@
    inconsistent measurements: top was measured from the cell top,
    bottom from `.psl`'s padding edge. The fix: clear the grid
    placement (`grid-area: auto`) when absolute so the CB falls back
-   cleanly to `.psl`. Then top: 52px (below topbar) and bottom: 32px
+   cleanly to `.psl`. Then top: 41px (below topbar) and bottom: 32px
    (above status bar) work as expected. */
 .psl[data-left="collapsed"] .psl__left,
 .psl[data-left="peek"] .psl__left {
   position: absolute;
   grid-area: auto;
-  top: 52px;
+  top: 41px;
   left: 0;
   bottom: 32px;
   width: 220px;
   z-index: 30;
   transform: translateX(-100%);
+  /* Parked off-canvas is not hidden: without `visibility` every filter
+     button stayed in the Tab order, taking focus nowhere on screen.
+     Narrow windows now collapse the nav by default (Library.tsx
+     `leftAutoCollapsed`), so that was most keyboard users' first dozen
+     Tab presses. `visibility` flips at the END of the slide-out (delayed
+     step) and at the START of the peek (below), so the motion is
+     unchanged. */
+  visibility: hidden;
   transition:
     transform 160ms ease,
-    box-shadow 140ms ease;
+    box-shadow 140ms ease,
+    visibility 0s linear 160ms;
 }
 .psl[data-left="peek"] .psl__left {
   transform: translateX(0);
   box-shadow: 8px 0 24px color-mix(in srgb, var(--shadow-base) 45%, transparent);
+  visibility: visible;
+  transition:
+    transform 160ms ease,
+    box-shadow 140ms ease,
+    visibility 0s linear 0s;
 }
 /* Spine — the 36px sliver that's the only visible part of the left
    column when collapsed. Hover over it (or the panel area) reveals
@@ -1135,18 +1336,15 @@
   width: 18px; height: 18px;
   display: inline-flex; align-items: center; justify-content: center;
   flex-shrink: 0;
-  color: var(--accent);
-  border-radius: 4px;
-  border: 1px solid var(--accent-border);
-  background: var(--bg-panel-elevated);
+  color: var(--text-secondary);
 }
-.psl__nav-icon svg { width: 11px; height: 11px; }
-/* Real-bundle icons in the Source App sidebar list — drop tile chrome
-   so the macOS squircle stands on its own (see .ps-app-tag__tile note). */
-.psl__nav-icon:has(> .ps-app-icon-img) {
-  border-color: transparent;
-  background: transparent;
-}
+/* Bare 16px glyphs, no tile: the Source App rows below are app icons
+   with no ring, so a framed tile on every scope row made the column
+   two different controls. Accent is reserved for the row that is
+   selected (and the CTA). Glyphs come from PsIcon, whose stroke is
+   sized for 16px — do not shrink them here with a CSS width. */
+.psl__nav-icon > svg { display: block; }
+.psl__nav.is-active .psl__nav-icon { color: var(--accent-bright); }
 .psl__nav-icon > .ps-app-icon-img {
   width: 16px;
   height: 16px;
@@ -1333,6 +1531,17 @@
     0 8px 24px var(--accent-shadow);
   z-index: 2;
 }
+/* Tab onto a frame is revealed by `revealKeyboardFocusedFrame` in
+   Library.tsx, which honours this margin: the ring's reach (3px) + 1. */
+.psl__frame:focus-visible { scroll-margin-inline: 4px; }
+/* The selected frame's 1px halo sits exactly where a 1px-offset ring
+   starts, so the ring would only thicken the selection. Step it out to
+   leave a gap. Being lifted (z-index 2), it paints over the 3px gap to
+   its neighbours. */
+.psl__frame.is-selected:focus-visible {
+  outline-offset: 3px;
+  scroll-margin-inline: 6px;
+}
 .psl__frame.is-in-reel {
   border-color: var(--success-border);
   box-shadow: 0 0 0 1px var(--success);
@@ -1377,7 +1586,7 @@
 .psl__frame-trash {
   position: absolute; top: 2px; right: 2px;
   display: flex; align-items: center; justify-content: center;
-  width: 16px; height: 16px;
+  width: 18px; height: 18px;
   border-radius: 3px;
   background: color-mix(in srgb, var(--bg-app) 78%, transparent);
   border: 1px solid var(--border-subtle);
@@ -1503,6 +1712,15 @@
   color: var(--text-primary);
   background: var(--bg-panel-hover);
 }
+/* The row has no bottom padding, so a focused chip's ring reaches into
+   `.psl__grid-wrap`, where the sticky `.psl__day-hdr` (z-index 2) paints
+   over it. Lift the row above it while focus is inside. */
+.psl__chips:has(:focus-visible) {
+  position: relative;
+  z-index: 3;
+}
+/* The × rests at 0.7, and opacity fades an element's outline with it. */
+.psl__chip-x:focus-visible { opacity: 1; }
 
 /* Grid below reel — day-grouped traditional */
 .psl__grid-wrap {
@@ -1525,6 +1743,15 @@
      the saved position. The virtualizer is already authoritative
      for which rows render where — let it own the scroll geometry. */
   overflow-anchor: none;
+  /* Where focus scrolling and `scrollIntoView` may put a cell. The top
+     reserves the pinned `.psl__day-hdr` (32px) plus a focus ring's reach
+     (3px) + 1. Without it, Shift+Tab up the grid scrolled each tile's
+     cart button to the scrollport's top edge, entirely under the header,
+     and the arrow keys' `block: "nearest"` did the same to a selected
+     row. The bottom keeps a ring on the last row from being cut 3px
+     short when Tab scrolls down to it. The virtualizer's `scrollTo`
+     ignores scroll-padding. */
+  scroll-padding-block: 36px 4px;
 }
 .psl__day-hdr {
   display: flex; align-items: center; gap: 10px;
@@ -1600,6 +1827,10 @@
 }
 .psl__action-error {
   margin: 0;
+  /* It floats over the grid, so it needs a surface of its own: the banner's
+     --danger-soft is a 12-16% tint, and alone it let the tiles and sidebar
+     show through the text. Same tint, laid over an opaque panel. */
+  background: linear-gradient(var(--danger-soft), var(--danger-soft)), var(--bg-panel);
   max-width: min(420px, calc(100vw - 32px));
   display: flex;
   flex-direction: column;
@@ -1691,13 +1922,13 @@
 
    CORNER CHROME — the four corners share ONE chrome so they read
    as a matched set rather than four separate widgets:
-     top-left     cart checkbox   (24px, 2px stroke, over a scrim)
+     top-left     cart checkbox   (24px, 2px stroke, dark fill + ring)
      top-right    time badge      (10px mono chip)
      bottom-left  app pill        (the ONE emphasized element —
                                    keeps its accent outline)
      bottom-right rail: action buttons + duration chip
 
-   `--psl-chip-bg` / `--psl-chip-radius` below are the shared
+   `--psl-ov-*` / `--psl-chip-radius` below are the shared
    values. Change them here, not per-corner.
    ============================================================ */
 .psl__cell {
@@ -1746,8 +1977,25 @@
      Windows, Linux, or macOS. Explicit interactive children opt back in. */
   pointer-events: none;
   /* Shared corner-chrome values — see the ring-states block above. */
-  --psl-chip-bg: color-mix(in srgb, var(--bg-app) 85%, transparent);
   --psl-chip-radius: 5px;
+  /* ONE treatment for every control drawn over a thumbnail (cart box,
+     Edit / Trash, time, duration). Theme-stable (derived from
+     --shadow-base / --media-scrim-text, not --bg-app, which flips to
+     white). OPAQUE dark fill + light hairline + thin dark halo: on a
+     white capture the fill and halo carry it, on a black capture the
+     hairline does, and it never depends on a smoky scrim behind it. The
+     fill is opaque on purpose — a translucent one lets the capture (and,
+     under the rail, the app name) show through, and the controls get
+     lost. Glyphs are the full-strength media-scrim text, never the accent
+     at rest: the accent is for state (hover) and the app pill. */
+  --psl-ov-bg: color-mix(in srgb, var(--media-scrim-text) 4%, var(--shadow-base));
+  --psl-ov-fg: var(--media-scrim-text);
+  --psl-ov-ring: 0 0 0 1px color-mix(in srgb, var(--media-scrim-text) 30%, transparent),
+    0 1px 4px color-mix(in srgb, var(--shadow-base) 55%, transparent);
+  /* The same hairline + lift for something with no box of its own (the
+     collapsed app icon): drop-shadows follow the element's alpha. */
+  --psl-ov-halo: drop-shadow(0 0 0.5px color-mix(in srgb, var(--media-scrim-text) 45%, transparent))
+    drop-shadow(0 1px 2px color-mix(in srgb, var(--shadow-base) 60%, transparent));
 }
 /* Transparency checker behind the thumbnail for captures whose source PNG
    has alpha (`Capture.hasAlpha`). Gated, not blanket: a blanket checker
@@ -1781,20 +2029,43 @@
    content honest (a tiny menu-bar region capture should look small,
    not zoomed-and-cropped to fill the cell). */
 .psl__cell-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
-/* Time badge — shares `--psl-chip-bg` / `--psl-chip-radius` / 10px mono
+/* Time badge — shares `--psl-ov-*` / `--psl-chip-radius` / 10px mono
    with the duration chip and the action pills (see the ring-states
-   block). z-index 2 keeps it above the corner scrims: the rail's paints
-   at z-index 1 in this cell's stacking context, the cart's at -1 inside
-   the cart's own. */
+   block). z-index 2 keeps it above the cart box on a narrow tile. */
 .psl__cell-time {
   position: absolute; top: 5px; right: 5px;
   z-index: 2;
   font: 600 10px/1 var(--font-mono);
-  background: var(--psl-chip-bg);
-  color: var(--text-secondary);
+  background: var(--psl-ov-bg);
+  box-shadow: var(--psl-ov-ring);
+  color: var(--psl-ov-fg);
   padding: 3px 5px;
   border-radius: var(--psl-chip-radius);
-  backdrop-filter: blur(6px);
+}
+/* ⧉ N family glyph — rides INSIDE the time pill (grid) and the frame
+   number (reel) as a prefix, so it never needs its own corner or moves the
+   pill. Accent so it reads as a status, not part of the timestamp. */
+.psl__family-glyph {
+  color: var(--accent);
+  margin-right: 5px;
+  padding-right: 5px;
+  border-right: 1px solid color-mix(in srgb, currentColor 45%, transparent);
+}
+.psl__frame-num .psl__family-glyph {
+  margin-right: 3px;
+  padding-right: 3px;
+}
+
+/* Bottom row: app pill on the left, action rail on the right, in ONE flex
+   row so the two can never overlap. The pill takes what the rail leaves
+   and ellipsizes its name; below 240px (hovered) it collapses to its icon
+   instead — see the container query below. The wrapper takes no clicks
+   itself; the rail's buttons re-enable their own. */
+.psl__cell-foot {
+  position: absolute; left: 5px; right: 5px; bottom: 5px;
+  z-index: 2;
+  display: flex; align-items: flex-end; gap: 6px;
+  pointer-events: none;
 }
 /* App-source chip overlay — mirrors .psl__cell-time but bottom-left,
    so each cell shows app + time as two corner pills over the thumb
@@ -1804,20 +2075,21 @@
    own over any thumb. Adding lift would visually mismatch the flat
    time pill in the opposite corner. */
 .psl__cell-app-overlay {
-  position: absolute; bottom: 5px; left: 5px;
-  /* Middle of the cell's three overlay tiers: above the bottom-right
-     rail scrim (z-index 1) — on a narrow tile the two overlap, and the
-     pill's opaque fill must not get tinted — but BELOW the rail's own
-     28px action buttons (z-index 3), which the pill would otherwise
-     bury on a narrow tile with a long app name.
-     pointer-events:none on the WRAPPER, not just the inner pill: the
-     wrapper's box is what actually overlaps the Edit / Trash buttons,
-     and an `auto` wrapper swallows those clicks (they then bubble to
-     the cell and merely select the capture). Nothing in here has an
-     onClick, so hit-testing should always fall through — to the button
-     underneath when there is one, to the cell otherwise. */
-  z-index: 2;
+  /* A flex item of `.psl__cell-foot`: `min-width: 0` lets it shrink below
+     the pill's content width, and the name inside does the ellipsizing.
+     pointer-events:none, as on the foot: nothing in here has an onClick,
+     so hit-testing falls through to the cell. */
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
   pointer-events: none;
+}
+.psl__cell-app-overlay > .ps-app-tag { min-width: 0; max-width: 100%; }
+.psl__cell-app-overlay .ps-app-tag__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* 10px mono to match the time badge / duration chip. The app pill keeps
    its accent outline: it's the ONE emphasized corner. */
@@ -1826,6 +2098,46 @@
    either, so clicks pass through to the cell underneath and the rounded
    corners aren't dead zones for selection. */
 .psl__cell-app-overlay > .ps-app-tag { pointer-events: none; }
+/* Narrow tile + Edit / Trash revealed: the pill would ellipsize down to a
+   stub beside the rail, so it collapses to just the app icon for as long
+   as the buttons are showing. At rest the full name stays (the buttons are
+   invisible then), so nothing shifts until the pointer arrives. The
+   selector mirrors the reveal rule on `.psl__cell-trash` below. 240px is
+   where a ~90px name plus the rail's two 28px buttons and a duration chip
+   stop fitting. `.psl__cell-thumb` is the size container: it takes its
+   width from the grid, so inline-size containment costs it nothing.
+   With the name gone, the copper pill outline would wrap only the icon and
+   read as a ring around it — the one ringed app icon left in the app (the
+   sidebar's are ringless). So the collapsed chip drops the pill entirely
+   and the icon stands alone, wearing `--psl-ov-halo`: the overlay chips'
+   light hairline + dark lift, as a filter that follows the icon's own
+   squircle instead of a box. It cannot go bare: an app icon's colors are
+   unknown, and with nothing around it a white icon vanishes on a white
+   capture and a dark one on a dark capture. The tile keeps its size, so
+   nothing moves when the pointer arrives. */
+.psl__cell-thumb { container: psl-thumb / inline-size; }
+@container psl-thumb (width < 240px) {
+  .psl__cell:is(:hover, :has(.psl__cell-trash:focus-visible))
+    .psl__cell-app-overlay > .ps-app-tag.is-sm {
+    padding: 0;
+    gap: 0;
+    border-color: transparent;
+    background: transparent;
+  }
+  .psl__cell:is(:hover, :has(.psl__cell-trash:focus-visible))
+    .psl__cell-app-overlay .ps-app-tag__name { display: none; }
+  /* `--ps-app-glyph-fg`: the clipboard glyph is a bare stroke, not a
+     filled icon, so it takes the overlay glyph color like Edit / Trash —
+     its own `--text-secondary` is dark in the light theme. */
+  .psl__cell:is(:hover, :has(.psl__cell-trash:focus-visible))
+    .psl__cell-app-overlay .ps-app-tag__tile {
+    border-right: 0;
+    border-radius: 4px;
+    background: transparent;
+    filter: var(--psl-ov-halo);
+    --ps-app-glyph-fg: var(--psl-ov-fg);
+  }
+}
 /* Center play button — the primary, at-a-glance "this is a video" cue
    (a duration chip alone is too easy to miss). Translucent so it never
    fights the frame; fades out on cell hover (the `.psl__cell:hover`
@@ -1877,63 +2189,21 @@
    `.psl__cell-thumb` is pointer-transparent, so the native video surface
    is not a hit-test target at all. */
 .psl__cell-rail {
-  position: absolute; bottom: 5px; right: 5px;
+  flex: none; margin-left: auto;
   display: flex; align-items: center; gap: 4px;
   pointer-events: none;
-}
-/* Rail contents (action buttons + duration chip) sit ABOVE the app pill:
-   on a narrow tile with a long app name the pill's box reaches into the
-   rail, and a hover-revealed 28px Edit / Trash button must never end up
-   painted under it. Pairs with `pointer-events: none` on the pill
-   wrapper, so hit-testing agrees with the paint order. */
-.psl__cell-rail > * {
-  position: relative;
-  z-index: 3;
-}
-/* Bottom-right corner scrim. The action pills are translucent and sit
-   over an arbitrary thumbnail — on a white screenshot they'd be a pale
-   chip on white. The scrim is theme-STABLE (derived from
-   `--shadow-base`, not `--bg-app`, which flips to white in light
-   theme), so the pills read on any capture in either theme. Reveal is
-   gated on the same `.psl__cell:hover` / `:focus-within` conditions as
-   the buttons, so the scrim can never linger without them.
-   NOTE the duration chip stays legible at rest on its own `--psl-chip-bg`
-   fill — it does not depend on this scrim. */
-.psl__cell-rail::before {
-  content: "";
-  position: absolute;
-  right: -5px; bottom: -5px;
-  width: 108px; height: 52px;
-  /* Bottom tier of the cell's overlay stack (see .psl__cell-rail): below
-     the app pill at 2 so it can't tint the pill's opaque fill, and below
-     the rail's own contents at 3 so it can't tint the buttons or the
-     duration chip it exists to back. */
-  z-index: 1;
-  pointer-events: none;
-  opacity: 0;
-  background: radial-gradient(
-    farthest-corner at 100% 100%,
-    color-mix(in srgb, var(--shadow-base) 62%, transparent) 0%,
-    color-mix(in srgb, var(--shadow-base) 34%, transparent) 55%,
-    transparent 100%
-  );
-  transition: opacity 120ms var(--ease-out);
-}
-.psl__cell:hover .psl__cell-rail::before,
-.psl__cell-rail:focus-within::before {
-  opacity: 1;
 }
 /* Duration chip — mirrors the .psl__cell-time pill in the opposite
    corner so the two read as a matched set. */
 .psl__cell-duration {
   font: 600 10px/1 var(--font-mono);
-  background: var(--psl-chip-bg);
-  color: var(--text-secondary);
+  background: var(--psl-ov-bg);
+  box-shadow: var(--psl-ov-ring);
+  color: var(--psl-ov-fg);
   padding: 3px 5px;
   border-radius: var(--psl-chip-radius);
   white-space: nowrap;
   pointer-events: none;
-  backdrop-filter: blur(6px);
 }
 /* Hover-revealed action affordance inside the rail (edit / trash /
    restore / purge / duplicate). 28×28 target with a 16px glyph — the
@@ -1947,9 +2217,10 @@
   display: flex; align-items: center; justify-content: center;
   width: 28px; height: 28px;
   border-radius: var(--psl-chip-radius);
-  background: var(--psl-chip-bg);
+  background: var(--psl-ov-bg);
+  box-shadow: var(--psl-ov-ring);
   border: 1px solid transparent;
-  color: var(--text-secondary);
+  color: var(--psl-ov-fg);
   cursor: pointer;
   opacity: 0;
   transform: translateX(2px);
@@ -1957,7 +2228,11 @@
      28px of rail so the duration chip stays put, but it must not eat
      clicks meant for the tile. */
   pointer-events: none;
-  backdrop-filter: blur(6px);
+  /* At rest the button is invisible, so it must not squeeze the app pill:
+     pull it out of the row's width (28px + the 4px gap). Hover / focus
+     put it back, and the pill gives that room up. The duration chip is
+     last and right-anchored, so it never moves either way. */
+  margin-left: -32px;
   transition: opacity 120ms var(--ease-out), transform 120ms var(--ease-out),
     background 100ms var(--ease-out), color 100ms var(--ease-out),
     border-color 100ms var(--ease-out);
@@ -1965,26 +2240,31 @@
 .psl__cell-trash > svg { width: 16px; height: 16px; }
 .psl__cell:hover .psl__cell-trash,
 .psl__cell-trash:focus-visible {
-  border-color: var(--border-subtle);
+  margin-left: 0;
   opacity: 1;
   transform: none;
   pointer-events: auto;
+}
+/* The focus outline sits outside the chip, on whatever the capture is. A
+   4px `--bg-app` halo outside the chip gives it a background of its own. */
+.psl__cell-trash:focus-visible {
+  box-shadow: var(--psl-ov-ring), 0 0 0 4px var(--bg-app);
 }
 @media (prefers-reduced-motion: reduce) {
   .psl__cell-trash { transform: none; }
 }
 .psl__cell-trash:hover {
-  background: var(--danger-soft);
+  background: color-mix(in srgb, var(--danger) 40%, var(--shadow-base));
   color: var(--danger-text, var(--danger-text));
 }
 /* Restore icon: positive accent on hover (the safe action). */
 .psl__cell-trash--restore:hover {
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent) 40%, var(--shadow-base));
   color: var(--accent-bright, var(--accent));
 }
 
 .psl__cell-duplicate:hover {
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent) 40%, var(--shadow-base));
   color: var(--accent-bright, var(--accent));
 }
 
@@ -1994,10 +2274,10 @@
    "delete" never look alike. Single-click still SELECTS the cell; this
    button is the explicit door into the Focus editor. */
 .psl__cell-edit {
-  color: var(--accent-bright, var(--accent));
+  color: var(--psl-ov-fg);
 }
 .psl__cell-edit:hover {
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent) 40%, var(--shadow-base));
   color: var(--accent-bright, var(--accent));
   border-color: color-mix(in srgb, var(--accent) 50%, transparent);
 }
@@ -2035,6 +2315,64 @@
   color: var(--text-primary);
   outline: 0;
 }
+/* Focus used to be the hover paint alone, so a focused row and a hovered
+   row looked the same. The ring is inset because the rows stack 2px
+   apart. */
+.psl__context-menu-row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+/* Submenu ("Duplicate ▸"). The submenu renders INSIDE the parent menu's
+   root (so outside-click and focus-leave treat it as part of the menu) and
+   is positioned against its row. */
+.psl__context-menu-sub {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.psl__context-menu-row--sub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.psl__context-menu-row--sub[aria-expanded="true"] {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+.psl__context-menu-chevron {
+  color: var(--text-muted);
+  font-size: 14px;
+}
+.psl__context-menu--sub {
+  position: absolute;
+  left: calc(100% + 4px);
+  top: -6px;
+  max-width: 280px;
+}
+.psl__context-menu--sub.is-flipped {
+  left: auto;
+  right: calc(100% + 4px);
+}
+/* A choice with a second line naming what it carries. */
+.psl__context-menu-row--hint {
+  height: auto;
+  min-height: 28px;
+  padding-block: 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+.psl__context-menu-hint {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 500 11px/1.2 var(--font-sans);
+  color: var(--text-muted);
+}
 
 /* Group separator. The capture menu runs three groups — open/copy,
    locate/collect, destroy — and the rule is what keeps "Move to Trash"
@@ -2068,7 +2406,7 @@
    Hover-revealed, but ALSO visible at rest when checked or when the
    grid is in selection mode (`.psl[data-selecting="cart"]`, below). */
 .psl__cell-cart {
-  position: absolute; top: 6px; left: 6px;
+  position: absolute; top: 5px; left: 5px;
   z-index: 1;
   /* `.psl__cell-thumb` is pointer-transparent so the surrounding tile and
      bottom action rail stay clickable; the cart checkbox is the one
@@ -2077,39 +2415,23 @@
   display: flex; align-items: center; justify-content: center;
   width: 24px; height: 24px;
   border-radius: var(--psl-chip-radius);
-  background: color-mix(in srgb, var(--shadow-base) 38%, transparent);
-  border: 2px solid var(--media-scrim-text);
-  color: var(--media-scrim-text);
+  background: var(--psl-ov-bg);
+  box-shadow: var(--psl-ov-ring);
+  border: 2px solid var(--psl-ov-fg);
+  color: var(--psl-ov-fg);
   cursor: pointer;
   opacity: 0;
   transition: opacity 120ms var(--ease-out), background 100ms var(--ease-out),
     border-color 100ms var(--ease-out), color 100ms var(--ease-out);
 }
-/* Top-left corner scrim, painted UNDER the box (z-index -1 inside the
-   box's own stacking context) so it can't be separated from it. This is
-   what buys the unchecked stroke its contrast on a pure-white capture:
-   at the box's inset the scrim is ~72% black, so white-on-scrim clears
-   3:1 even when the underlying thumbnail is #fff. */
-.psl__cell-cart::before {
-  content: "";
-  position: absolute;
-  top: -6px; left: -6px;
-  width: 52px; height: 52px;
-  z-index: -1;
-  pointer-events: none;
-  background: radial-gradient(
-    farthest-corner at 0% 0%,
-    color-mix(in srgb, var(--shadow-base) 72%, transparent) 0%,
-    color-mix(in srgb, var(--shadow-base) 40%, transparent) 55%,
-    transparent 100%
-  );
-}
 .psl__cell:hover .psl__cell-cart,
 .psl__cell-cart:focus-visible {
   opacity: 1;
 }
+/* Mix the accent INTO the dark fill: a bare translucent accent would drop
+   the fill and leave the box unbacked on a white capture. */
 .psl__cell-cart:hover {
-  background: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 55%, var(--shadow-base));
   border-color: var(--accent-bright, var(--accent));
 }
 /* Checked state: filled accent, always visible (overrides the
@@ -2133,6 +2455,8 @@
    by re-rendering the cells: Library re-renders once when the cart goes
    from empty to non-empty, and the class change restyles every tile. */
 .psl[data-selecting="cart"] .psl__cell-cart { opacity: 0.9; }
+/* That 0.9 fades the ring too; a focused box is at full strength. */
+.psl[data-selecting="cart"] .psl__cell-cart:focus-visible { opacity: 1; }
 .psl[data-selecting="cart"] .psl__cell:hover .psl__cell-cart { opacity: 1; }
 /* A subtle accent ring on the whole cell when it's in the cart, so
    collected items read as a set even when the checkbox is small.
@@ -2177,7 +2501,8 @@
 }
 .psl__cart-name:hover { border-color: var(--border-subtle); }
 .psl__cart-name:focus-visible {
-  outline: none;
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
   border-color: var(--accent-border);
   background: var(--bg-panel-elevated);
 }
@@ -2217,8 +2542,8 @@
   background: var(--danger-soft);
 }
 .psl__cart-clear:focus-visible {
-  outline: none;
-  border-color: var(--accent-border);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
 }
 .psl__cart-empty {
   padding: 16px 14px;
@@ -2471,7 +2796,7 @@
                      48px spine peeks in. is-open removes the
                      transform, exposing the full panel.
 
-   Magic numbers (top: 52px / bottom: 32px) are calibrated for the
+   Magic numbers (top: 41px / bottom: 32px) are calibrated for the
    Library's topbar + status bar — future consumers may need to
    override via CSS specificity or a wrapper class. */
 .hover-reveal-panel {
@@ -2489,7 +2814,7 @@
 .hover-reveal-panel.is-collapsed,
 .hover-reveal-panel.is-open {
   position: absolute;
-  top: 52px;
+  top: 41px;
   right: 0;
   bottom: 32px;
   width: 360px;
@@ -2540,6 +2865,12 @@
   background: var(--bg-panel-hover, var(--bg-row-active));
   color: var(--text-primary);
   outline: none;
+}
+/* That shared paint is also the hover and open state, so on its own it
+   does not say which control has focus. */
+.hover-reveal-panel__menu-button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
 }
 .hover-reveal-panel__menu-glyph {
   display: inline-flex;
@@ -2706,6 +3037,20 @@
      row, but allow horizontal overflow so the hover-pop panel can
      paint INTO the canvas area to the left of the rail. */
   overflow: visible;
+}
+/* ...and, while popped, stack above what it paints into. The hover-pop
+   panel's own z-index (3, RightActivityBar.css) lands in `.psl`'s
+   stacking context BELOW the center pane's floating chrome — the Grid
+   copy palette, the edit toolbar and ←/→ (4), Focus's × (5). So a popped
+   rail over a narrow Grid had the palette drawn across its own copy
+   cards, 0% of them topmost. The rail is only popped because the user
+   asked for it; it wins. Still below the left-nav peek (30).
+   Only while popped (`.rab__panel-wrap` exists only then): lifted all
+   the time, the 38px icon bar would also cover the edit toolbar's style
+   popover wherever the viewport clamp pushes it into the rail column. */
+.psl[data-right="collapsed"] .psl__right:has(.rab__panel-wrap) {
+  position: relative;
+  z-index: 6;
 }
 
 /* === Project Assets right-rail tab === */
@@ -2942,7 +3287,7 @@
 }
 .psl__right-tab:hover:not(.is-active) { color: var(--text-secondary); }
 .psl__right-tab:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .psl__right-tab.is-active {
@@ -3026,6 +3371,22 @@
   font-family: var(--font-sans);
 }
 .psl__detail-name:focus, .psl__detail-name:hover { border-color: var(--border-subtle); padding: 4px 6px; border-radius: 4px; }
+.psl__detail-window-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font: 500 10px/1.4 var(--font-mono);
+  color: var(--text-muted);
+}
+.psl__detail-window-label { flex: 0 0 auto; }
+.psl__detail-window-title {
+  min-width: 0;
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  overflow-wrap: anywhere;
+  unicode-bidi: isolate;
+}
 .psl__detail-row {
   display: flex; gap: 14px;
   font: 500 10px/1.4 var(--font-mono);
@@ -3191,7 +3552,7 @@
 }
 .psl__chip-link:hover { color: var(--accent-bright); text-decoration: underline; }
 .psl__chip-link:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -3238,7 +3599,7 @@
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 .psl__field-use:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .psl__field-input,
@@ -3261,6 +3622,16 @@
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent);
+}
+/* The 1px border is the field's own edge, not a focus indicator, so the
+   field draws the house ring as every other control does. The 32% halo
+   would fill the ring's 1px gap, so the ring replaces it. */
+.psl__field-input:focus-visible,
+.psl__field-textarea:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  box-shadow: none;
+  scroll-margin: 4px;
 }
 .psl__field-input.is-suggested,
 .psl__field-textarea.is-suggested {
@@ -3309,7 +3680,7 @@
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 .psl__draft-preview-use:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .psl__draft-preview-text {
@@ -3350,6 +3721,17 @@
   border-color: var(--accent);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent);
 }
+/* `.psl__tag-input` is borderless, so the row it sits in is the field's
+   box and rings while the input holds focus. Keyed on the input, not
+   `:focus-within`: the chips' remove buttons sit in the same row and
+   ring themselves. */
+.psl__tag-row:has(.psl__tag-input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  box-shadow: none;
+}
+/* Row padding 6 + border 1 + ring reach 3 + 1. */
+.psl__tag-input:focus-visible { scroll-margin: 11px; }
 /* The shared .ps-tag::before bullet adds visual noise inside the
    tag editor — every chip starts with a small dot that doesn't
    communicate anything. Hide it within the tag-row context; the
@@ -3381,7 +3763,7 @@
   background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .psl__tag-remove:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .psl__tag-suggest-label {
@@ -3394,7 +3776,7 @@
   border-radius: 3px;
 }
 .psl__tag-suggest-label:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 .psl__tag-suggest-x {
@@ -3413,7 +3795,7 @@
 }
 .psl__tag-suggest-x:hover { opacity: 1; }
 .psl__tag-suggest-x:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
   opacity: 1;
 }
@@ -3578,9 +3960,53 @@
   opacity: 0.62;
 }
 .psl__ai-toggle:focus-visible {
-  outline: 2px solid var(--accent-border);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
   border-radius: 4px;
+}
+/* Footer entry to the AI re-run dialog, quiet beside the toggle. */
+.psl__ai-repair {
+  appearance: none;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  padding: 5px 2px;
+  cursor: pointer;
+}
+.psl__ai-repair:hover {
+  color: var(--text-primary);
+}
+.psl__ai-repair:focus-visible {
+  outline-offset: 2px;
+}
+/* Failed snaps waiting: the count, in the danger tint, is the way in. */
+.psl__ai-repair.has-failed {
+  padding: 4px 7px;
+  background: var(--danger-soft);
+  box-shadow: inset 0 0 0 1px var(--danger-border);
+  color: var(--danger-text);
+}
+.psl__ai-repair.has-failed:hover {
+  color: var(--text-primary);
+}
+.psl__ai-repair b {
+  color: inherit;
+  font-weight: 700;
+}
+.psl__ai-repair.is-running {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-secondary);
+}
+.psl__ai-repair.is-running b {
+  color: var(--text-primary);
+}
+.psl__ai-repair-bar {
+  display: block;
+  width: 44px;
 }
 .psl__ai-toggle-track {
   width: 18px;
@@ -3830,6 +4256,14 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Query container for the edit toolbar's compact mode (below). SIZE,
+     not inline-size: a wide-but-short stage (Reel under its filmstrip at
+     the 480px minimum height) needs it as much as a narrow one. Safe
+     because the stage's box is imposed by its flex parent, never by its
+     content, and Chromium's container-type implies no layout containment
+     — the fixed-position "+ Add label" chip and ToolStylePopover inside
+     stay viewport-relative. */
+  container: psl-stage / size;
   background: radial-gradient(
       ellipse at center,
       color-mix(in srgb, var(--accent) 4%, transparent) 0%,
@@ -3870,6 +4304,14 @@
 .psl__stage-nav:disabled {
   opacity: 0.32;
   cursor: not-allowed;
+}
+/* These float over the capture itself, and over a video frame the ring's
+   outer edge fell to 1.7:1 against the picture. A 1px `--bg-app` halo
+   outside the ring (the spread is the ring's 1px offset + 2px width + 1)
+   gives it a background of our own on both sides, whatever is under it. */
+.psl__stage-nav:focus-visible,
+.psl__focus-close:focus-visible {
+  box-shadow: 0 0 0 4px var(--bg-app);
 }
 .psl__stage-nav.is-prev {
   left: 16px;
@@ -3941,14 +4383,42 @@
   transform: rotate(90deg);
 }
 
-/* Floating bottom-center edit toolbar. Uses position:absolute (not
-   fixed) so it stays anchored to its stage container, including
-   when Reel mode's stage-wrap has its own scroll context. */
-.psl__edit-toolbar {
+/* Floating bottom-center edit dock: the property bar stacked on the
+   edit toolbar. The DOCK is what floats and what the grip drags; uses
+   position:absolute (not fixed) so it stays anchored to its stage
+   container, including when Reel mode's stage-wrap has its own scroll
+   context.
+
+   Two bounds keep it off the stage's own chrome at every stage size:
+     • max-width reserves the ←/→ columns (16px inset + 36px button +
+       ring + gap, each side), so no number of wrapped rows can cover
+       them. This used to apply only in the compact query below, where
+       a height threshold kept two toolbar rows below the buttons; the
+       property bar makes the dock too tall for that argument to hold.
+     • max-height keeps the whole dock inside the stage (24px inset below,
+       8px above). `.psl__stage-wrap` is overflow:hidden, so a dock taller
+       than the stage is clipped off the top without a trace. The
+       property bar is the part that gives: it shrinks and scrolls
+       (`min-height: 0` on it is load-bearing — a flex item's min-height
+       is its content height otherwise), and the toolbar never does. */
+.psl__edit-dock {
   position: absolute;
   bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  max-width: calc(100% - 112px);
+  max-height: calc(100% - 32px);
+  z-index: 4;
+}
+.psl__edit-dock > .psl__edit-toolbar {
+  flex: none;
+}
+.psl__edit-toolbar {
   display: inline-flex;
   align-items: center;
   /* Wrap into a 2nd row when the stage is too narrow to fit every
@@ -3969,7 +4439,7 @@
   flex-wrap: wrap;
   justify-content: center;
   width: max-content;
-  max-width: calc(100% - 24px);
+  max-width: 100%;
   row-gap: 4px;
   column-gap: 2px;
   padding: 6px;
@@ -3980,7 +4450,6 @@
   -webkit-backdrop-filter: blur(20px) saturate(1.2);
   box-shadow: 0 16px 40px color-mix(in srgb, var(--shadow-base) 60%, transparent),
     inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 4%, transparent);
-  z-index: 4;
 }
 .psl__et-btn {
   height: 36px;
@@ -4028,10 +4497,10 @@
   cursor: grabbing;
   color: var(--text-primary);
 }
-/* When a custom position is in effect, the toolbar adds is-positioned.
+/* When a custom position is in effect, the dock adds is-positioned.
    Slight shadow bump signals it's been moved (vs the default chrome
    layer it normally sits on). */
-.psl__edit-toolbar.is-positioned {
+.psl__edit-dock.is-positioned .psl__edit-toolbar {
   box-shadow: 0 20px 56px color-mix(in srgb, var(--shadow-base) 70%, transparent),
     inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 4%, transparent);
 }
@@ -4055,6 +4524,10 @@
   background: var(--border-subtle);
   margin: 0 4px;
 }
+/* First or last on a wrapped row (EditToolbar's useHideDanglingSeparators). */
+.psl__et-sep.is-dangling {
+  visibility: hidden;
+}
 /* Tool button hover — solid `--accent` fill regardless of active
    state. Strong unambiguous "this is clickable" signal that reads
    instantly. Text + key chip flip to `--button-text-on-accent`
@@ -4076,13 +4549,25 @@
   border-color: color-mix(in srgb, var(--button-text-on-accent) 40%, transparent);
   background: color-mix(in srgb, var(--button-text-on-accent) 8%, transparent);
 }
-/* Active styling lives on the WRAPPER (`.psl__et-tool-wrap.is-active`)
-   below, not on the inner button, so the accent-soft box spans both
-   the main button AND the caret as one visually unified control. The
-   button just contributes color when active; background + border come
-   from the wrap. */
+/* Tool family buttons. Icon-only: nine bag slots now sit beside
+   them, and with labels the row ran to ~1300px. The label and key chip
+   stay in the DOM as the accessible name ("Arrow A") and the tooltip
+   carries the same text. */
+.psl__et-btn--tool > span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
 .psl__et-btn.is-active {
   color: var(--accent-bright);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
 }
 .psl__et-btn-key {
   display: inline-flex;
@@ -4102,121 +4587,910 @@
   color: var(--accent-bright);
   border-color: var(--accent-border);
 }
-/* Tool-button + caret pairing. The caret is ALWAYS rendered for
-   styled tools — clicking it activates the tool + opens the style
-   popover in one click. Always-on means no layout shift on activate
-   (the previous "render caret only when active" version made
-   neighboring tools jump as the active tool's caret appeared).
-   When the tool is ALSO active, the wrap + caret get the accent box;
-   when inactive, the caret stays present but subdued. */
-.psl__et-tool-wrap {
+/* ---- Tool bag ------------------------------------------------------
+   Nine slots, each drawing the thing it would draw in its real color
+   (ToolBagGlyph). Hover must NOT flood the slot with accent the way the
+   family buttons do: the glyph's color is the information. */
+.psl__bag {
   display: inline-flex;
-  align-items: stretch;
+  align-items: center;
+  /* On a stage narrower than nine slots the bag wraps inside itself.
+     Unwrapped it was one 340px item in a toolbar clamped narrower than
+     that, and spilled past both of the toolbar's edges. */
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 2px;
+}
+.psl__bag-slot {
   position: relative;
-  border-radius: 6px;
-}
-.psl__et-tool-wrap.is-active {
-  background: var(--accent-soft);
-  box-shadow: inset 0 0 0 1px var(--accent-border);
-}
-/* When the wrap is active, kill the main button's own border-radius
-   on the right so it joins the caret flush. */
-.psl__et-tool-wrap.is-active .psl__et-btn {
-  border-top-right-radius: 0;
-  border-bottom-right-radius: 0;
-}
-.psl__et-caret {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
+  width: 36px;
   height: 36px;
   padding: 0;
   border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.psl__bag-slot:hover {
+  background: var(--bg-panel);
+}
+.psl__bag-slot.is-armed {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+}
+/* Armed, then edited: the working style no longer matches the slot.
+   "Update slot N" in the property bar saves it back. */
+.psl__bag-slot.is-modified::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.psl__bag-slot.is-empty {
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+  color: var(--text-muted);
+}
+.psl__bag-slot.is-empty[aria-disabled="true"] {
+  cursor: default;
+}
+.psl__bag-slot.is-empty[aria-disabled="true"]:hover {
+  background: transparent;
+}
+.psl__bag-plus {
+  font: 500 15px/1 var(--font-sans);
+}
+/* A black or dark-gray glyph on the dark toolbar needs an edge to be
+   seen at all; a faint light rim is enough and leaves bright colors
+   alone. */
+.psl__bag-glyph {
+  filter: drop-shadow(0 0 0.75px color-mix(in srgb, var(--text-primary) 60%, transparent));
+}
+.psl__bag-num {
+  position: absolute;
+  right: 3px;
+  bottom: 2px;
+  font: 700 8px/1 var(--font-mono);
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.psl__bag-slot.is-armed .psl__bag-num {
+  color: var(--accent-bright);
+}
+
+/* ---- Property bar -------------------------------------------------
+   Docked above the toolbar; the same frosted panel. Shows the selected
+   layer's style or the armed tool's (EditPropertyBar.tsx), laid out as
+   one row of the popover's field groups that wraps when the stage is
+   narrow. */
+.psl__et-props {
+  /* Flow layout, not flex: the buttons float to the right end of the
+     FIRST row and the fields wrap around them, the way text wraps a
+     floated figure. As a flex row the buttons were the last item, so
+     whenever the fields filled two rows "Save to bag" took a third row
+     to itself. Flex and grid have no "end of row one" slot; a float is
+     exactly that, and the narrow-stage grid below ignores it. */
+  display: flow-root;
+  /* No right padding: every item's 14px right margin is the gap to the
+     border. With both, a row's last item needed 26px of slack to fit and
+     rows broke 14px before the visible edge. */
+  padding: 4px 0 4px 12px;
+  /* Exactly the toolbar's width. `width: 0` keeps the bar out of the
+     dock's max-content sizing, so the dock is as wide as the toolbar;
+     `min-width: 100%` then fills it. Sized to its own content, the bar
+     ran wider than the toolbar under it and neither edge lined up. */
+  width: 0;
+  min-width: 100%;
+  max-width: 100%;
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  background: color-mix(in srgb, var(--bg-panel-hover) 96%, transparent);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--shadow-base) 50%, transparent);
+}
+.psl__et-props.is-layer {
+  border-color: var(--accent-border);
+}
+/* Every field group, the tag and the hint sit on one line box per row,
+   centered on each other: controls come in three heights (24/28/30px).
+   The 14px right margin is the gap between peers; the vertical margins
+   are the gap between rows. */
+.psl__et-props-tag,
+.psl__et-props-body > *,
+.psl__et-props-hint {
+  vertical-align: middle;
+  margin: 4px 14px 4px 0;
+}
+.psl__et-props-tag {
+  display: inline-block;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--bg-app) 40%, transparent);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font: 700 10px/1 var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.psl__et-props-tag.is-selected {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent-bright);
+}
+/* `display: contents` puts each field group on the bar's own lines, so
+   the tag and the fields wrap as one run of peers. As its own box the
+   body was one item wider than the bar, which stranded the tag alone on
+   the first row. */
+.psl__et-props-body {
+  display: contents;
+}
+.psl__et-props-body .pse-color-row {
+  flex-wrap: nowrap;
+}
+.psl__et-props-body .pse-field-group {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  /* The tallest control, so every row's line box is 38px whatever lands
+     on it — the floated buttons' margin assumes it. Row one of a
+     selected arrow is the 24px color row, and they sat 5px low. */
+  min-height: 30px;
+}
+.psl__et-props-body .pse-icon-btn {
+  width: 30px;
+}
+/* Blur's mode picker is the popover's stack of described cards; stacked
+   in the bar it was 170px of panel for three choices. One row of 28px
+   chips instead, the height of the icon rows beside it. The description
+   moves to the chip's tooltip. */
+.psl__et-props-body .pse-mode-rows {
+  flex-direction: row;
+}
+.psl__et-props-body .pse-mode-row {
+  height: 28px;
+  gap: 6px;
+  padding: 0 10px;
+}
+.psl__et-props-body .pse-mode-row-icon {
+  width: 16px;
+  height: 16px;
+}
+.psl__et-props-body .pse-mode-row-hint {
+  display: none;
+}
+.psl__et-props-actions {
+  display: flex;
+  gap: 6px;
+  float: right;
+  /* Centered on row one's 38px line box (30px groups + 4px margins each
+     side); the buttons are 26px. */
+  margin: 6px 12px 6px 14px;
+}
+.psl__et-props-btn {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 600 11px/1 var(--font-sans);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.psl__et-props-btn:hover:not([aria-disabled="true"]) {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+.psl__et-props-btn.is-primary {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+}
+.psl__et-props-btn[aria-disabled="true"] {
+  color: var(--text-muted);
+  cursor: default;
+}
+.psl__et-props-hint {
+  display: inline-block;
+  color: var(--text-muted);
+  font: 500 11px/1.2 var(--font-sans);
+  white-space: nowrap;
+}
+.psl__et-props-hint kbd {
+  display: inline-block;
+  min-width: 14px;
+  padding: 1px 3px;
+  margin: 0 1px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  font: 700 9px/1.2 var(--font-mono);
+  text-align: center;
+  color: var(--text-secondary);
+}
+/* Two-row property bar on a narrow stage.
+
+   Wrapped one field group at a time, the bar grew a row per group as the
+   stage narrowed: 2 rows (118px) in a 920px stage, 3 (166px) at 664px,
+   6 (280px) at 440px. Floating over the canvas, that covered the bottom
+   of the image, and in the Windows runner's window it sat where tests
+   (and people) click. Below 880px it is two rows at any width instead:
+
+     row 1  the target tag, the hint, Update / Save
+     row 2  every control on ONE line that scrolls sideways
+
+   Color leads row 2, so the most-used control is never scrolled away.
+   The strip pads by the focus ring's reach so a ring on its first and
+   last control is not clipped by the scroller, and EditPropertyBar
+   scrolls a Tab-focused control into view — Chromium will not scroll a
+   partly visible target sideways on its own (AGENTS.md, "Focus rings"). */
+/* The strip's edge fades say "more this way". Driven by the strip's own
+   scroll position, so each fade is there only while there is something
+   past that edge; with nothing to scroll the timeline is inactive and
+   both stay at 0px — no fade. A mask only reads alpha, hence `black`. */
+@property --psl-strip-fade-start {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --psl-strip-fade-end {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@keyframes psl-strip-fade {
+  0% {
+    --psl-strip-fade-start: 0px;
+    --psl-strip-fade-end: 28px;
+  }
+  4% {
+    --psl-strip-fade-start: 28px;
+  }
+  96% {
+    --psl-strip-fade-end: 28px;
+  }
+  100% {
+    --psl-strip-fade-start: 28px;
+    --psl-strip-fade-end: 0px;
+  }
+}
+@container psl-stage (width < 880px) {
+  .psl__et-props {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "tag hint actions"
+      "body body body";
+    align-items: center;
+    gap: 6px 10px;
+    /* The base padding leaves the vertical gaps to item margins, which
+       this grid zeroes. */
+    padding: 8px 12px;
+  }
+  .psl__et-props.is-multi {
+    grid-template-areas: "tag hint actions";
+  }
+  /* The grid's and the strip's gaps space things here, not the flow
+     layout's margins (and a grid item ignores the float). */
+  .psl__et-props-tag,
+  .psl__et-props-body > *,
+  .psl__et-props-hint,
+  .psl__et-props-actions {
+    margin: 0;
+  }
+  .psl__et-props-tag {
+    grid-area: tag;
+    justify-self: start;
+  }
+  .psl__et-props-hint {
+    grid-area: hint;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .psl__et-props-actions {
+    grid-area: actions;
+  }
+  .psl__et-props-body {
+    grid-area: body;
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 3px;
+    margin: -3px;
+    mask-image: linear-gradient(
+      to right,
+      transparent,
+      black var(--psl-strip-fade-start),
+      black calc(100% - var(--psl-strip-fade-end)),
+      transparent
+    );
+    animation: psl-strip-fade linear both;
+    animation-timeline: scroll(self inline);
+  }
+  .psl__et-props-body .pse-field-group {
+    flex: none;
+  }
+}
+/* Compact edit toolbar — every label goes, Reset's too.
+
+   History: with labels + key chips the toolbar was 985px on one row, and
+   in Reel's 220×249 stage at 480×480 it wrapped to 196×330, clipped off
+   the top and painted over both ←/→ buttons. The tool family buttons are
+   icon-only everywhere now (the bag sits beside them), and the dock
+   itself carries the nav-column reserve and the stage-height cap (see
+   `.psl__edit-dock`). What is left for a small stage is Reset's label
+   and the zoom readout's width.
+
+   Labels and key chips are visually hidden, not `display: none`: they are
+   the buttons' accessible names ("Pointer V"), and `title` still carries
+   the tooltip. The armed Reset keeps its "Confirm? · N" label — that text
+   is the second half of a destructive two-click confirm. */
+@container psl-stage (width < 560px) or (height < 300px) {
+  .psl__edit-toolbar .psl__et-btn:not(.is-armed) > span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+}
+
+/* ---- Docked edit toolbar ------------------------------------------
+   `library.editToolbarDock` other than `float` takes the dock out of the
+   overlay and puts it in the stage's own layout: the stage-wrap becomes a
+   grid of a canvas cell and a dock cell, so the canvas fits what is left
+   and nothing covers the snap (it re-fits once, when the dock moves).
+   Keyed off the dock with :has(), so Stage needs no prop for it and a
+   video (no edit toolbar) never takes the grid. In Reel the filmstrip sits
+   above the stage-wrap, so a top dock lands under it. */
+.psl__stage-wrap:has(> .psl__edit-dock.is-docked) {
+  display: grid;
+  /* The flex layout's `align-items: center` would also centre the dock in
+     its cell; a side column has to run the stage's full height. */
+  align-items: stretch;
+  justify-items: stretch;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "canvas";
+}
+.psl__stage-wrap:has(> .psl__edit-dock.is-docked[data-dock="bottom"]) {
+  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-areas: "canvas" "dock";
+}
+.psl__stage-wrap:has(> .psl__edit-dock.is-docked[data-dock="top"]) {
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas: "dock" "canvas";
+}
+.psl__stage-wrap:has(> .psl__edit-dock.is-docked[data-dock="left"]) {
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas: "dock canvas";
+}
+.psl__stage-wrap:has(> .psl__edit-dock.is-docked[data-dock="right"]) {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "canvas dock";
+}
+/* The canvas, ←/→ and × all go in the canvas cell. The buttons are
+   absolutely positioned, and an absolute grid child with a grid-area is
+   placed against that AREA, so their offsets (top: 50%, right: 14px)
+   measure from the canvas cell instead of the whole stage. */
+.psl__stage-wrap:has(> .psl__edit-dock.is-docked) > :not(.psl__edit-dock) {
+  grid-area: canvas;
+}
+.psl__stage-wrap:has(> .psl__edit-dock.is-docked) > .psl__stage-img {
+  place-self: center;
+}
+/* Reel's breathing room under the filmstrip would sit between the strip
+   and a top band or side column; their own borders separate them. */
+.psl__reel-mode .psl__stage-wrap:has(> .psl__edit-dock.is-docked:not([data-dock="bottom"])) {
+  padding-top: 0;
+}
+
+.psl__edit-dock.is-docked {
+  grid-area: dock;
+  position: relative;
+  left: auto;
+  bottom: auto;
+  transform: none;
+  width: auto;
+  max-width: none;
+  max-height: none;
+  min-width: 0;
+  min-height: 0;
+  gap: 0;
+  background: var(--bg-panel);
+}
+.psl__edit-dock.is-docked[data-dock="bottom"] {
+  border-top: 1px solid var(--border-default);
+}
+.psl__edit-dock.is-docked[data-dock="top"] {
+  border-bottom: 1px solid var(--border-default);
+}
+.psl__edit-dock.is-docked[data-dock="left"] {
+  border-right: 1px solid var(--border-default);
+}
+.psl__edit-dock.is-docked[data-dock="right"] {
+  border-left: 1px solid var(--border-default);
+}
+/* The band is the panel now; the rows inside it are flat. */
+.psl__edit-dock.is-docked > .psl__edit-toolbar,
+.psl__edit-dock.is-docked > .psl__et-props {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* Top / bottom: one centred column as wide as the toolbar (the same
+   `width: 0; min-width: 100%` trick the floating dock uses, so the
+   property row is as wide as the tools and never wider). */
+.psl__edit-dock.is-docked:is([data-dock="top"], [data-dock="bottom"]) {
+  display: grid;
+  grid-template-columns: minmax(0, max-content);
+  justify-content: center;
+}
+.psl__edit-dock.is-docked:is([data-dock="top"], [data-dock="bottom"]) > .psl__edit-toolbar {
+  justify-self: center;
+}
+/* The property row has ONE height whatever it holds — the tool, the
+   selection, or nothing — so selecting a layer never re-fits the snap.
+   Its controls sit on one line that scrolls sideways, like the narrow
+   floating bar's second row. */
+.psl__edit-dock.is-docked:is([data-dock="top"], [data-dock="bottom"]) > .psl__et-props {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: "tag body actions";
+  align-items: center;
+  column-gap: 12px;
+  width: 0;
+  min-width: 100%;
+  max-width: 100%;
+  height: 46px;
+  padding: 0 12px;
+  overflow: hidden;
+}
+.psl__edit-dock.is-docked[data-dock="bottom"] > .psl__et-props {
+  border-bottom: 1px solid var(--border-subtle);
+}
+.psl__edit-dock.is-docked[data-dock="top"] > .psl__et-props {
+  border-top: 1px solid var(--border-subtle);
+}
+.psl__edit-dock.is-docked:is([data-dock="top"], [data-dock="bottom"]) > .psl__et-props.is-multi {
+  grid-template-areas: "tag hint actions";
+}
+.psl__edit-dock.is-docked:is([data-dock="top"], [data-dock="bottom"]) > .psl__et-props.is-empty {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "hint";
+  justify-items: center;
+}
+.psl__edit-dock.is-docked:is([data-dock="top"], [data-dock="bottom"]) .psl__et-props-tag {
+  grid-area: tag;
+  margin: 0;
+}
+.psl__edit-dock.is-docked:is([data-dock="top"], [data-dock="bottom"]) .psl__et-props-hint {
+  grid-area: hint;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.psl__edit-dock.is-docked:is([data-dock="top"], [data-dock="bottom"]) .psl__et-props-actions {
+  grid-area: actions;
+  float: none;
+  margin: 0;
+}
+.psl__edit-dock.is-docked:is([data-dock="top"], [data-dock="bottom"]) .psl__et-props-body {
+  grid-area: body;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 3px;
+  margin: -3px;
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    black var(--psl-strip-fade-start),
+    black calc(100% - var(--psl-strip-fade-end)),
+    transparent
+  );
+  animation: psl-strip-fade linear both;
+  animation-timeline: scroll(self inline);
+}
+.psl__edit-dock.is-docked:is([data-dock="top"], [data-dock="bottom"]) .psl__et-props-body > * {
+  flex: none;
+  margin: 0;
+}
+
+/* Left / right: a column beside the canvas. Tools wrap into a grid, the
+   separators become rules across the column, and the properties stack
+   under them. A Reel stage can be ~300px tall, so the whole column
+   scrolls when it has to. */
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) {
+  --psl-dock-col-w: 172px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: var(--psl-dock-col-w);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+/* ...which would clip the dock and zoom menus that open sideways out of
+   it, so nothing between those menus and the stage is positioned: their
+   containing block is `.psl__stage-wrap`, outside the scroller. With
+   `top: auto` each opens at its static position, level with its button,
+   and the column's width carries it clear of the column. */
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]),
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) :is(.psl__et-dockctl, .ed-zoom) {
+  position: static;
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) :is(.psl__et-dockmenu, .ed-zoom-menu) {
+  top: auto;
+  bottom: auto;
+}
+.psl__edit-dock.is-docked[data-dock="right"] :is(.psl__et-dockmenu, .ed-zoom-menu) {
+  left: auto;
+  right: calc(var(--psl-dock-col-w) + 8px);
+}
+.psl__edit-dock.is-docked[data-dock="left"] :is(.psl__et-dockmenu, .ed-zoom-menu) {
+  left: calc(var(--psl-dock-col-w) + 8px);
+  right: auto;
+}
+/* Zoom sits at the foot of the tools; open upward from it so a short
+   stage does not cut the menu off. */
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .ed-zoom-menu {
+  transform: translateY(calc(-100% + 36px));
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) > .psl__edit-toolbar {
+  flex: none;
+  width: auto;
+  max-width: none;
+  justify-content: flex-start;
+  padding: 8px;
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .psl__et-sep,
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .psl__et-sep.is-dangling {
+  flex-basis: 100%;
+  width: auto;
+  height: 1px;
+  margin: 4px 0;
+  visibility: visible;
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .psl__bag {
+  display: grid;
+  grid-template-columns: repeat(3, 36px);
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) > .psl__et-props {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border-subtle);
+  overflow: visible;
+}
+/* The column scrolls; nothing in it shrinks. The tag clips its own text
+   (`overflow: hidden`), which makes its automatic min-height 0, so as a
+   shrinkable flex item it was squashed to a sliver in a short window. */
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) > .psl__et-props > * {
+  flex: none;
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .psl__et-props-tag {
+  align-self: flex-start;
+  margin: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .psl__et-props-hint {
+  margin: 0;
+  white-space: normal;
+}
+/* Save / Update / Add label go last in the column, after the controls. */
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .psl__et-props-actions {
+  order: 1;
+  float: none;
+  flex-wrap: wrap;
+  margin: 0;
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .psl__et-props-body {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .psl__et-props-body > * {
+  margin: 0;
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .psl__et-props-body .pse-field-group {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-height: 0;
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .psl__et-props-body :is(.pse-color-row, .pse-icon-row, .pse-mode-rows) {
+  flex-wrap: wrap;
+}
+.psl__edit-dock.is-docked:is([data-dock="left"], [data-dock="right"]) .psl__et-props-body .pse-seg-btn {
+  padding: 0 6px;
+}
+
+/* The zoom menu opens upward by default, which a top dock would push off
+   the stage. Open it downward there (the side columns are above). */
+.psl__edit-dock.is-docked[data-dock="top"] .ed-zoom-menu {
+  top: calc(100% + 8px);
+  bottom: auto;
+}
+
+/* Drop zones, shown only while the grip is held. The edge the pointer is
+   in is lit; the floating toolbar fades, since the lit edge is where it
+   is about to go. */
+.psl__dock-zone {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px dashed color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  pointer-events: none;
+}
+.psl__dock-zone.is-top {
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  height: 48px;
+}
+.psl__dock-zone.is-bottom {
+  bottom: 8px;
+  left: 8px;
+  right: 8px;
+  height: 48px;
+}
+.psl__dock-zone.is-left {
+  left: 8px;
+  top: 64px;
+  bottom: 64px;
+  width: 48px;
+}
+.psl__dock-zone.is-right {
+  right: 8px;
+  top: 64px;
+  bottom: 64px;
+  width: 48px;
+}
+.psl__dock-zone > span {
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: var(--bg-app);
+  color: var(--accent-bright);
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+/* Side labels sit at the top of their strip: the stage's ←/→ buttons
+   are at mid-height and would cover them. */
+.psl__dock-zone:is(.is-left, .is-right) {
+  align-items: flex-start;
+  padding-top: 16px;
+}
+.psl__dock-zone:is(.is-left, .is-right) > span {
+  writing-mode: vertical-rl;
+}
+.psl__dock-zone.is-hot {
+  border-style: solid;
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.psl__edit-dock.is-over-zone {
+  opacity: 0.55;
+}
+
+/* Dock control, beside the grip. */
+.psl__et-dockctl {
+  position: relative;
+  display: inline-flex;
+}
+.psl__et-dockbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  border-radius: 6px;
-  flex: 0 0 auto;
-  transition: background var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out),
-    transform var(--dur-fast) var(--ease-out);
 }
-/* Caret hover — same solid-accent idiom as the main button so the
-   two halves of the unified box respond to hover identically. */
-.psl__et-caret:hover {
-  background: var(--accent);
-  color: var(--button-text-on-accent);
+.psl__et-dockbtn:hover {
+  background: var(--bg-panel);
+  color: var(--text-primary);
 }
-/* When the tool is active, the caret sits INSIDE the unified accent
-   box. Subtle accent-border separator on its left makes the two
-   zones (icon vs caret) feel like distinct sub-controls within one
-   control. Right side joins the wrap's border-radius. */
-.psl__et-caret.is-tool-active {
-  color: var(--accent-bright);
-  border-left: 1px solid color-mix(in srgb, var(--accent-border) 60%, transparent);
-  border-top-left-radius: 0;
-  border-bottom-left-radius: 0;
-  border-top-right-radius: 6px;
-  border-bottom-right-radius: 6px;
-}
-.psl__et-caret.is-tool-active:hover {
-  background: var(--accent);
-  color: var(--button-text-on-accent);
-}
-/* Open state — accent-filled "I'm controlling an open popover" look.
-   Chevron rotates 180° so it points UP (matches every native dropdown
-   menu pattern when expanded). Applies whether the tool is active or
-   not (clicking the caret on an inactive tool activates AND opens). */
-.psl__et-caret.is-open {
+.psl__et-dockbtn.is-open {
   background: var(--accent-soft);
-  color: var(--accent-strong);
-}
-.psl__et-caret.is-open svg {
-  transform: rotate(180deg);
-}
-/* Suppress the focus-visible ring on the caret. It's a sub-control of
-   the main button and the parent tool-wrap's active state is the
-   visible signal. Without this, the caret flashes a focus outline
-   whenever the renderer's focus shuffles transiently (notably during
-   the Cmd+Shift+C screenshot global-hotkey route, which briefly
-   reshuffles focus across all top-level windows). */
-.psl__et-caret:focus,
-.psl__et-caret:focus-visible {
-  outline: none;
-}
-.psl__et-caret svg {
-  width: 7px;
-  height: 5px;
-  transition: transform var(--dur-fast) var(--ease-out);
-}
-/* "+ Add label" matching-text affordance — chip that pops near a
-   freshly-placed arrow's tail. Positioned via `position: fixed`
-   inline-styled coords from EditToolbar's matchingTextStyle memo.
-   8s auto-dismiss is handled by useEditorToolState's internal timer. */
-.psl__et-matching-text {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--accent-border);
-  background: color-mix(in srgb, var(--bg-panel-hover) 94%, transparent);
   color: var(--accent-bright);
-  border-radius: 14px;
-  cursor: pointer;
-  font: 600 11px/1 var(--font-mono);
-  letter-spacing: 0.03em;
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+}
+.psl__et-dockmenu {
+  position: absolute;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 288px;
+  padding: 6px;
+  background: color-mix(in srgb, var(--bg-panel-hover) 96%, transparent);
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
   backdrop-filter: blur(20px) saturate(1.2);
   -webkit-backdrop-filter: blur(20px) saturate(1.2);
-  box-shadow: 0 8px 24px color-mix(in srgb, var(--shadow-base) 50%, transparent);
+  box-shadow: 0 16px 40px color-mix(in srgb, var(--shadow-base) 60%, transparent);
 }
-.psl__et-matching-text:hover {
-  background: var(--accent-soft);
+.psl__et-dockmenu.is-up {
+  bottom: calc(100% + 8px);
+  left: -6px;
 }
-.psl__et-matching-text > span:first-child {
-  font-size: 14px;
-  line-height: 1;
+.psl__et-dockmenu.is-down {
+  top: calc(100% + 8px);
+  left: -6px;
+}
+.psl__et-dockmenu.is-right {
+  top: -6px;
+  left: calc(100% + 8px);
+}
+.psl__et-dockmenu.is-left {
+  top: -6px;
+  right: calc(100% + 8px);
+}
+.psl__et-dockmenu-head {
+  padding: 6px 8px 4px;
+  color: var(--text-muted);
+  font: 600 9.5px/1 var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+/* A picture of the stage: click an edge, or the bar in the middle. */
+.psl__et-dockmap {
+  position: relative;
+  height: 88px;
+  margin: 2px 4px 6px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--bg-app);
+}
+.psl__et-dockmap > i {
+  position: absolute;
+  inset: 20px 26px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 2px;
+}
+.psl__et-dockmap > b {
+  position: absolute;
+  border-radius: 2px;
+  background: var(--border-default);
+  cursor: pointer;
+}
+.psl__et-dockmap > b.is-top {
+  top: 5px;
+  left: 5px;
+  right: 5px;
+  height: 9px;
+}
+.psl__et-dockmap > b.is-bottom {
+  bottom: 5px;
+  left: 5px;
+  right: 5px;
+  height: 9px;
+}
+.psl__et-dockmap > b.is-left {
+  top: 18px;
+  bottom: 18px;
+  left: 5px;
+  width: 11px;
+}
+.psl__et-dockmap > b.is-right {
+  top: 18px;
+  bottom: 18px;
+  right: 5px;
+  width: 11px;
+}
+.psl__et-dockmap > b.is-float {
+  bottom: 26px;
+  left: 50%;
+  width: 56px;
+  height: 7px;
+  margin-left: -28px;
+  border-radius: 4px;
+}
+.psl__et-dockmap > b.is-hot {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.psl__et-dockmap > b.is-on {
+  background: var(--accent);
+}
+.psl__et-dockmenu-row {
+  display: grid;
+  grid-template-columns: 12px 16px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 8px 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 600 12px/1 var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+.psl__et-dockmenu-row > span {
+  white-space: nowrap;
+}
+.psl__et-dockmenu-row:is(:hover, :focus) {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+.psl__et-dockmenu-row[aria-checked="true"] {
+  color: var(--accent-bright);
+}
+.psl__et-dockmenu-check {
+  color: var(--accent-bright);
+  font: 700 11px/1 var(--font-sans);
+}
+.psl__et-dockmenu-spacer {
+  width: 16px;
+}
+/* The reset row carries its shortcut as a second line under the label;
+   beside it, the pair is wider than the menu. */
+.psl__et-dockmenu-row:has(> .psl__et-dockmenu-meta) {
+  grid-template-columns: 12px 16px 1fr;
+  row-gap: 4px;
+  height: auto;
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+.psl__et-dockmenu-meta {
+  grid-column: 3;
+  color: var(--text-muted);
+  font: 500 10.5px/1 var(--font-mono);
+}
+.psl__et-dockmenu-sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--border-subtle);
 }
 
 /* DetailRail layout — fixed 360px column grid-column 3 in focus +
@@ -4292,23 +5566,27 @@
   width: max-content;
   max-width: calc(100% - 24px);
   padding: 6px 8px 8px 4px;
-  /* Same surface recipe as the post-capture toast (`.fo` in
-     float-over.css) — they are the same kind of object (a floating
-     panel over arbitrary content) and were drifting: this used the warm
-     `--bg-panel-hover` hover-state token plus `saturate()`, which
-     float-over's own comment warns against because the blur then pulls
-     color from whatever is behind it. Over a grid of dark screenshots
+  /* Derived from the post-capture toast's surface (`.fo` in
+     float-over.css) — the same kind of object (a floating panel over
+     arbitrary content). This used the warm `--bg-panel-hover`
+     hover-state token plus `saturate()`, and saturate() pulls color
+     from whatever is behind the blur. Over a grid of dark screenshots
      that left the palette nearly invisible.
 
-     Two deliberate departures from `.fo`, both because this panel
-     floats over the LIBRARY CANVAS rather than the desktop:
+     Three deliberate departures from `.fo`, all because this panel
+     floats over the LIBRARY CANVAS, inside our own page, rather than
+     over the desktop:
 
-     1. `--bg-panel-elevated`, not `--bg-app`. In a dark theme elevation
+     1. Translucent + backdrop-filter. `.fo` is opaque because it is its
+        own transparent BrowserWindow, where a backdrop-filter cannot see
+        the windows behind it (see the comment there). This panel's
+        backdrop is this page — the grid — so the blur really blurs.
+     2. `--bg-panel-elevated`, not `--bg-app`. In a dark theme elevation
         reads as a LIGHTER surface; painting a floating panel with the
         canvas token gives it zero contrast against the canvas it sits
         on. The toast can use `--bg-app` because what's behind it is the
         user's desktop, not our own black.
-     2. `--border-strong`. A subtle hairline is enough over a desktop;
+     3. `--border-strong`. A subtle hairline is enough over a desktop;
         over a grid of dark screenshots it disappears.
 
      The 1px contact ring in the shadow stack does the rest — a border
@@ -4333,6 +5611,23 @@
     0 0 0 1px color-mix(in srgb, var(--shadow-base) 45%, transparent),
     inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 5%, transparent);
 }
+/* The palette covers the tile under the selected one, wherever it was
+   dragged, or (in a window too small to place it beside) the selected
+   tile itself. Tab walks every tile's buttons, and the ones it landed
+   on were drawn under the palette: 0% of the cart button's ring on
+   screen, 25% of Edit's and Trash's. A focused button cannot be lifted
+   above it, because each tile is `contain: paint` inside a transformed
+   virtual row. So while keyboard focus is on a tile, the palette steps
+   aside. Pointer focus never matches, so clicking a tile leaves it alone.
+
+   Faded, not `visibility: hidden`. A hidden palette is not focusable,
+   so the Tab from the last tile skipped straight past it: the palette's
+   buttons were unreachable from the grid. At opacity 0 they stay in the
+   tab order, and the palette comes back as soon as focus enters it. */
+.psl__main:has(.psl__cell :focus-visible) > .psl__grid-copy-palette {
+  opacity: 0;
+  pointer-events: none;
+}
 /* Locator — only rendered while the selected capture is off screen.
    Accent-tinted because it is a call to action, not ambient chrome: it
    is the answer to "where is the thing these buttons act on?". */
@@ -4354,7 +5649,7 @@
   color: var(--accent-bright);
 }
 .psl__grid-copy-palette-locate:focus-visible {
-  outline: 2px solid var(--accent-border);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 
@@ -4393,7 +5688,7 @@
   color: var(--text-primary);
 }
 .psl__grid-copy-palette-anchor:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .psl__grid-copy-palette-anchor[aria-pressed="false"] {
@@ -4437,6 +5732,101 @@
   height: 1px;
   background: var(--border-subtle);
 }
+/* GIF | MP4 switch. Rendered by the popovers' VideoExportPresetsPanel and
+   shown only at compact density, where it replaces the eyebrow label and the
+   inactive format's row is hidden (not unmounted, so its cards keep their
+   state). Everywhere else both rows show and the switch is display: none,
+   which also drops it from the tab order. The buttons sit inside an
+   overflow: hidden pill, so their focus ring is inset. */
+.psl__copy-format-switch {
+  display: none;
+  flex: none;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.psl__copy-format-switch-btn {
+  padding: 4px 9px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: 700 10px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.psl__copy-format-switch-btn:hover { color: var(--text-primary); }
+.psl__copy-format-switch-btn:focus-visible { outline-offset: -2px; }
+.psl__copy-format-switch-btn[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--button-text-on-accent);
+}
+[data-popover-density="compact"] .psl__copy-row-group[data-switchable] .psl__copy-format-eyebrow-label { display: none; }
+[data-popover-density="compact"] .psl__copy-row-group[data-switchable] .psl__copy-format-switch { display: inline-flex; }
+[data-popover-density="compact"] .psl__copy-row-group[data-inactive="true"] { display: none; }
+/* The 10px between the two rows belongs to the pair; with the first one
+   hidden it would be dead space above the switch. */
+[data-popover-density="compact"] .psl__copy-row-group[data-inactive="true"] + .psl__copy-row-group { margin-top: 0; }
+/* MP4 audio toggles at the right end of the MP4 eyebrow — one per track
+   the take recorded. The same 18px mono pill as the trim strip's FULL
+   CLIP chip. Tangerine = in the file; muted + crossed glyph + "off" =
+   left out, so the state never rests on colour alone. Focus uses the
+   global `:focus-visible` ring (a bordered control, 1px out). */
+.psl__copy-audio {
+  display: flex;
+  flex: none;
+  gap: 4px;
+}
+.psl__copy-audio-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 7px 0 5px;
+  border: 1px solid var(--accent-border);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  font: 600 9px/1 var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 120ms var(--ease-out), border-color 120ms var(--ease-out), color 120ms var(--ease-out);
+}
+.psl__copy-audio-toggle > svg {
+  display: block;
+  flex: none;
+  color: var(--accent);
+}
+.psl__copy-audio-toggle:hover {
+  border-color: var(--accent);
+}
+.psl__copy-audio-toggle[aria-pressed="false"] {
+  border-color: var(--border-default);
+  background: transparent;
+  color: var(--text-muted);
+}
+.psl__copy-audio-toggle[aria-pressed="false"] > svg {
+  color: var(--text-muted);
+}
+.psl__copy-audio-toggle[aria-pressed="false"]:hover {
+  border-color: var(--border-strong);
+  color: var(--text-secondary);
+}
+/* A take with no audio: a statement, not a control. */
+.psl__copy-audio-none {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  min-height: 18px;
+  white-space: nowrap;
+}
+.psl__copy-audio-none > svg {
+  display: block;
+  flex: none;
+}
 
 /* Secondary actions row (Share / Editor / trash) */
 .psl__action-row {
@@ -4460,10 +5850,11 @@
   background: var(--bg-panel);
   color: var(--text-primary);
 }
-.psl__action-row button:hover:not(:disabled) {
+.psl__action-row button:hover:not(:disabled, [aria-disabled="true"]) {
   border-color: var(--accent-border);
 }
-.psl__action-row button:disabled {
+.psl__action-row button:disabled,
+.psl__action-row button[aria-disabled="true"] {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -4501,4 +5892,179 @@
   to {
     transform: rotate(360deg);
   }
+}
+
+/* === Inspector ▸ Family tab (features/library/FamilyTab.tsx) === */
+/* Rows mirror the cart list: a 48×32 thumb, a title, one meta line. A
+   copy is indented under the snap it was copied from. */
+.psl__family {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 10px 8px 12px;
+  min-width: 0;
+}
+.psl__family-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 6px;
+}
+.psl__family-head .psl__copy-eyebrow {
+  margin-bottom: 0;
+}
+.psl__family-link {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: 600 11px/1 var(--font-sans);
+  cursor: pointer;
+  padding: 2px 0;
+  border-radius: var(--radius-sm);
+}
+.psl__family-link:hover {
+  text-decoration: underline;
+}
+.psl__family-link:focus-visible {
+  outline-offset: 2px;
+}
+.psl__family-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.psl__family-row {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+/* Rows run edge to edge inside the rail's scroller: inset the ring. */
+.psl__family-row:focus-visible {
+  outline-offset: -2px;
+}
+.psl__family-row:hover:not(:disabled) {
+  background: var(--bg-panel-hover);
+}
+.psl__family-row.is-current {
+  border-color: var(--accent-border);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.psl__family-row.is-trashed {
+  cursor: default;
+  color: var(--text-muted);
+}
+.psl__family-row.is-trashed .psl__family-thumb {
+  opacity: 0.45;
+}
+.psl__family-thumb {
+  flex-shrink: 0;
+  width: 48px;
+  height: 32px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--border-subtle);
+}
+.psl__family-thumb img,
+.psl__family-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.psl__family-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.psl__family-title {
+  font: 500 12px/1.3 var(--font-sans);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.psl__family-meta {
+  font: 500 10px/1.2 var(--font-sans);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.psl__family-count {
+  flex-shrink: 0;
+  font: 600 10px/1 var(--font-mono);
+  color: var(--accent);
+}
+.psl__family-empty {
+  margin: 0;
+  padding: 4px 6px;
+  color: var(--text-muted);
+  font: 400 12px/1.5 var(--font-sans);
+}
+.psl__chip-glyph--family {
+  color: var(--accent);
+  font: 600 11px/1 var(--font-mono);
+}
+
+/* === Duplicate chooser (features/library/DuplicateChooser.tsx) ===
+   Rides DeleteConfirm's `.ps-confirm` shell; only the choices are new. */
+.ps-duplicate {
+  max-width: 280px;
+}
+.ps-duplicate__choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 9px;
+}
+.ps-duplicate__choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  color: var(--text-secondary);
+  font: 500 12px/1.3 var(--font-sans);
+  cursor: pointer;
+}
+.ps-duplicate__choice input {
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.ps-duplicate__choice > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ps-duplicate__label {
+  color: var(--text-primary);
+}
+.ps-duplicate__hint {
+  color: var(--text-muted);
+  font: 500 11px/1.25 var(--font-sans);
+}
+.ps-confirm__btn.is-primary {
+  border-color: var(--accent-border);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--text-primary);
+}
+.ps-confirm__btn.is-primary:hover {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  border-color: var(--accent);
 }

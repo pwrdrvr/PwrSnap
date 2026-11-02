@@ -39,8 +39,6 @@ import type {
   Result,
   Settings
 } from "@pwrsnap/shared";
-import { app } from "electron";
-import { join } from "node:path";
 import { bus } from "../command-bus";
 import { loadAcpModelCacheEntry, saveAcpModelCacheEntry } from "../ai/acp-model-cache";
 import {

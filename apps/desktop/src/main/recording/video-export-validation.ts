@@ -19,11 +19,63 @@
 // and a future MCP transport dispatch through the same bus, so
 // "the UI would never send that" is not a defense.
 
-import { ok, err } from "@pwrsnap/shared";
-import type { PwrSnapError, Result, VideoExportCoordinates } from "@pwrsnap/shared";
+import { ok, err, VIDEO_SEGMENTS_MAX } from "@pwrsnap/shared";
+import type { PwrSnapError, Result, VideoExportCoordinates, VideoRange } from "@pwrsnap/shared";
 
 function validationError(code: string, message: string): PwrSnapError {
   return { kind: "validation", code, message };
+}
+
+/**
+ * Gate a caller-supplied span list — the `segments` of an export or
+ * metrics request, the `keep` / `cut` of `video:edit`. Same rules as a
+ * single range (finite, non-negative, end > start) for every entry,
+ * plus a non-empty list no longer than `VIDEO_SEGMENTS_MAX`. Order and
+ * overlap are NOT errors: `normalizeVideoSegments` sorts and merges,
+ * and a tool call listing cuts out of order means the same thing.
+ */
+export function validateVideoSpanList(
+  value: unknown,
+  verb: string,
+  field: string
+): Result<VideoRange[], PwrSnapError> {
+  if (!Array.isArray(value)) {
+    return err(validationError("invalid_segments", `${verb}: ${field} must be an array`));
+  }
+  if (value.length === 0) {
+    return err(validationError("invalid_segments", `${verb}: ${field} must not be empty`));
+  }
+  if (value.length > VIDEO_SEGMENTS_MAX) {
+    return err(
+      validationError(
+        "invalid_segments",
+        `${verb}: ${field} may list at most ${String(VIDEO_SEGMENTS_MAX)} spans`
+      )
+    );
+  }
+  const out: VideoRange[] = [];
+  for (const entry of value as unknown[]) {
+    const r = entry as { start?: unknown; end?: unknown } | null;
+    if (
+      typeof r !== "object" ||
+      r === null ||
+      typeof r.start !== "number" ||
+      typeof r.end !== "number" ||
+      !Number.isFinite(r.start) ||
+      !Number.isFinite(r.end) ||
+      r.start < 0 ||
+      r.end <= r.start
+    ) {
+      return err(
+        validationError(
+          "invalid_segments",
+          `${verb}: every ${field} entry needs finite start >= 0 and end > start (seconds)`
+        )
+      );
+    }
+    out.push({ start: r.start, end: r.end });
+  }
+  return ok(out);
 }
 
 /**
@@ -36,7 +88,9 @@ function validationError(code: string, message: string): PwrSnapError {
  * a gate, not a normalizer; clamping to the source duration stays in
  * `normalizeRange`, which runs once the values are known-sane.
  */
-export function validateVideoExportRequest<T extends VideoExportCoordinates>(
+export function validateVideoExportRequest<
+  T extends VideoExportCoordinates & { runId?: unknown }
+>(
   req: T,
   verb: string
 ): Result<T, PwrSnapError> {
@@ -54,6 +108,17 @@ export function validateVideoExportRequest<T extends VideoExportCoordinates>(
   if (req.preset !== "low" && req.preset !== "med" && req.preset !== "high") {
     return err(
       validationError("invalid_preset", `${verb}: preset must be "low", "med", or "high"`)
+    );
+  }
+  if (
+    req.runId !== undefined &&
+    (typeof req.runId !== "string" || req.runId.length === 0 || req.runId.length > 128)
+  ) {
+    return err(
+      validationError(
+        "invalid_run_id",
+        `${verb}: runId must be a non-empty string of at most 128 characters`
+      )
     );
   }
   if (req.range !== undefined) {
@@ -79,17 +144,28 @@ export function validateVideoExportRequest<T extends VideoExportCoordinates>(
       return err(validationError("invalid_range", `${verb}: range end must be > start`));
     }
   }
-  if (req.audio !== undefined) {
-    const a = req.audio;
-    if (typeof a !== "object" || a === null) {
-      return err(validationError("invalid_audio", `${verb}: audio must be an object`));
-    }
-    if (
-      typeof a.includeSystemAudio !== "boolean" ||
-      typeof a.includeMicrophone !== "boolean"
-    ) {
-      return err(validationError("invalid_audio", `${verb}: audio toggles must be booleans`));
-    }
+  if (req.segments !== undefined) {
+    const segments = validateVideoSpanList(req.segments, verb, "segments");
+    if (!segments.ok) return segments;
   }
+  const audioError = videoExportAudioError(req.audio, verb);
+  if (audioError !== null) return err(audioError);
   return ok(req);
+}
+
+/**
+ * The `audio` arm on its own, for verbs that take an audio choice
+ * without the rest of the coordinates (`video:presetMetrics`).
+ * `undefined` is valid: it asks for the user's MP4 audio preference.
+ */
+export function videoExportAudioError(audio: unknown, verb: string): PwrSnapError | null {
+  if (audio === undefined) return null;
+  if (typeof audio !== "object" || audio === null) {
+    return validationError("invalid_audio", `${verb}: audio must be an object`);
+  }
+  const a = audio as Record<string, unknown>;
+  if (typeof a.includeSystemAudio !== "boolean" || typeof a.includeMicrophone !== "boolean") {
+    return validationError("invalid_audio", `${verb}: audio toggles must be booleans`);
+  }
+  return null;
 }

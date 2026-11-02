@@ -136,18 +136,18 @@ async function seedCaptureRow(
   app: Awaited<ReturnType<typeof launchPwrSnap>>,
   opts: { captureId: string; bundlePath: string; sourceSha: string }
 ): Promise<void> {
-  await app.electronApp.evaluate((_ctx, payload) => {
+  await app.electronApp.evaluate(async (_ctx, payload) => {
     const bridge = (
       globalThis as unknown as {
         __PWRSNAP_TEST__?: {
-          seedCapture: (input: Record<string, unknown>) => unknown;
+          seedCapture: (input: Record<string, unknown>) => Promise<unknown>;
         };
       }
     ).__PWRSNAP_TEST__;
     if (bridge === undefined) {
       throw new Error("__PWRSNAP_TEST__ bridge not installed");
     }
-    bridge.seedCapture({
+    await bridge.seedCapture({
       id: payload.captureId,
       kind: "image",
       captured_at: "2026-01-01T00:00:00.000Z",

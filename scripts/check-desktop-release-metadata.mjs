@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { checkAppMetadataPolicy } from "./check-app-metadata-policy.mjs";
+import { checkElectronFusesPolicy } from "./check-electron-fuses-policy.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const desktopPackagePath = resolve(repoRoot, "apps/desktop/package.json");
@@ -119,6 +120,15 @@ for (const failure of checkAppMetadataPolicy(repoRoot)) {
   fail(failure);
 }
 
+// Fuses are burned into the packaged binary and cannot be read back from the
+// running app, so a wrong one is invisible until an installer ships. Same
+// belt-and-braces reasoning as the metadata check above: the rule lives in
+// check-electron-fuses-policy.mjs and runs in `pnpm lint`, and re-running it
+// here stops a tag from shipping a flip that reached main another way.
+for (const failure of checkElectronFusesPolicy(repoRoot)) {
+  fail(failure);
+}
+
 const electronBuilder = readFileSync(electronBuilderPath, "utf8");
 if (!/^\s*releaseType:\s*prerelease\s*$/m.test(electronBuilder)) {
   fail("apps/desktop/electron-builder.yml publish.releaseType must be prerelease");
@@ -174,14 +184,18 @@ for (const expected of [
   "find mac-dist/dist mac-dist/build/ffmpeg-source",
   '"${mac_assets[@]}"',
   '"${windows_assets[@]}"',
-  // Both stable-name aliases back a releases/latest/download/<name> URL the
+  // Stable-name aliases back a releases/latest/download/<name> URL the
   // websites can hardcode. Each is produced in its platform's protected
   // signing job and must survive into the release, or a published download
   // button silently 404s.
-  "Prepare stable-name DMG alias",
+  "Validate paired macOS assets and assemble shared updater metadata",
+  "apps/desktop/release-stage-arm64",
+  "apps/desktop/scripts/macos-release-artifacts.mjs",
+  "--sign-stage-only --no-publish --arch=arm64",
+  "mac-dist/dist/PwrSnap-arm64.dmg",
   "Prepare stable-name Windows installer alias",
   "mac-dist/dist/PwrSnap.dmg",
-  "windows-dist/PwrSnap-windows-x64-setup.exe",
+  "windows-dist/PwrSnap.Setup.exe",
 ]) {
   if (!releaseWorkflow.includes(expected)) {
     fail(`.github/workflows/release.yml must contain ${JSON.stringify(expected)}`);

@@ -7,6 +7,10 @@ import { computeTreeRenderHash } from "../render/compose-tree";
 import { getDb } from "./db";
 import { listLayerTree } from "./layers-repo";
 import { getCacheRoot, getLegacyCacheRoot } from "./paths";
+import {
+  forwardDerivedCacheCleanup,
+  withDerivedCacheCleanup
+} from "./derived-cache-gate";
 
 const log = getMainLogger("pwrsnap:render-cache-maintenance");
 const RAPID_RENDER_WIDTHS = [140, 400] as const;
@@ -27,8 +31,15 @@ export type LegacyRenderCacheMigrationResult = {
 };
 
 export async function clearRenderCache(): Promise<void> {
-  await rm(getCacheRoot(), { recursive: true, force: true });
-  await mkdir(getCacheRoot(), { recursive: true });
+  const forwarded = forwardDerivedCacheCleanup({ operation: "clear" });
+  if (forwarded !== null) return forwarded;
+  // `"all"`, not a capture: this empties the whole root, so every in-flight
+  // derivation is about to lose its output directory — including ones for
+  // captures the caller never named.
+  await withDerivedCacheCleanup("all", async () => {
+    await rm(getCacheRoot(), { recursive: true, force: true });
+    await mkdir(getCacheRoot(), { recursive: true });
+  });
 }
 
 /**
@@ -37,6 +48,12 @@ export async function clearRenderCache(): Promise<void> {
  * rebuilt on demand through pwrsnap-cache://.
  */
 export async function trimRenderCache(): Promise<void> {
+  const forwarded = forwardDerivedCacheCleanup({ operation: "trim" });
+  if (forwarded !== null) return forwarded;
+  await withDerivedCacheCleanup("all", trimRenderCacheFiles);
+}
+
+async function trimRenderCacheFiles(): Promise<void> {
   const root = getCacheRoot();
   await mkdir(root, { recursive: true });
   const keepByCaptureId = buildRapidRenderCacheKeepSet();

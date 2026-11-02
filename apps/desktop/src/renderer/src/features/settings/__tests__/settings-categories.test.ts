@@ -21,6 +21,7 @@ const ALL_PAGE_IDS = [
   "updates",
   "hotkeys",
   "ai",
+  "ai-features",
   "local-agents",
   "system-permissions",
   "storage",
@@ -65,6 +66,7 @@ describe("SETTINGS_CATEGORIES", () => {
       "about",
       "hotkeys",
       "ai",
+      "ai-features",
       "local-agents"
     ]);
     expect(byGroup["Capture"]).toEqual(["system-permissions"]);

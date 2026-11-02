@@ -14,7 +14,9 @@ import type {
   PwrSnapError,
   Result,
   ShortcutPlatform,
-  VideoPreset
+  VideoPreset,
+  WindowControlAction,
+  WindowFrameState
 } from "@pwrsnap/shared";
 
 export type WindowSnapEntry = {
@@ -33,6 +35,17 @@ export type WindowSnapEntry = {
   rect: { x: number; y: number; w: number; h: number };
   /** Raw bounds — used for hit-testing in z-order. */
   rawRect: { x: number; y: number; w: number; h: number };
+};
+
+export type SelectorRawSnapshotDescriptor = {
+  id: string;
+  transport: "raw-rgba";
+  version: 1;
+  width: number;
+  height: number;
+  stride: number;
+  pixelFormat: 1;
+  byteLength: number;
 };
 
 declare global {
@@ -58,6 +71,11 @@ declare global {
          *  `action` as `"snap"`. */
         action?: "snap" | "record";
         captureCursor?: boolean;
+        /** Recording-only: the audio sources armed on the selector's
+         *  source chips. Omitted for image captures and for shows that
+         *  never offered the chips. */
+        sources?: import("@pwrsnap/shared").RecordingCapabilities;
+  cameraOffered?: boolean;
         /** Multi-window pick — one entry per picked window extent, in
          *  the same global logical-px space as `rect`. `rect` is always
          *  their union bounding box. */
@@ -67,11 +85,37 @@ declare global {
          *  the whole box opaque. */
         outputMode?: "windows" | "rectangle";
       }): void;
-      notifySelectorSnapshotPainted(screenUrl: string): void;
+      notifySelectorSnapshotPainted(payload: {
+        screenUrl: string;
+        transport: "img" | "raw-rgba";
+        decodeMs: number;
+        mainToRendererBytes: number;
+        canvasUploadBytes: number;
+        readRoundTripMs?: number;
+        canvasUploadMs?: number;
+      }): void;
+      readSelectorSnapshot(id: string): Promise<
+        | {
+            ok: true;
+            header: Omit<SelectorRawSnapshotDescriptor, "id" | "transport">;
+            data: Uint8Array;
+          }
+        | { ok: false; code: string }
+      >;
       notifySelectorPresented(payload: {
         invocationId: string;
         generation: number;
         screenUrl: string;
+        snapshotWaitMs?: number;
+        firstFrameWaitMs?: number;
+        secondFrameWaitMs?: number;
+        rendererTotalMs?: number;
+        firstTimerWaitMs?: number;
+        secondTimerWaitMs?: number;
+        firstTimerFired?: number;
+        secondTimerFired?: number;
+        hiddenAtFrames?: number;
+        hiddenAtAck?: number;
       }): void;
       onSelectorPresentationRequest(
         handler: (payload: {
@@ -92,25 +136,66 @@ declare global {
         handler: (payload: {
           mode: "auto" | "region" | "window";
           screenUrl?: string;
+          snapshot?: SelectorRawSnapshotDescriptor;
           intent?: "snap" | "video";
           cursor?: boolean;
+          /** Per-show seed for the source chips, from
+           *  `settings.recording.includeMicrophone` /
+           *  `.includeSystemAudio`. Absent on a show that offers no
+           *  recording, which is also what leaves the chips hidden. */
+          sources?: import("@pwrsnap/shared").RecordingCapabilities;
+  cameraOffered?: boolean;
+          /** The saved microphone and camera, from
+           *  `settings.recording.microphoneDevice` / `.cameraDevice`. */
+          devices?: import("@pwrsnap/shared").RecordingDeviceDefaults;
           invocationId?: string;
           generation?: number;
           /** Snap-vs-Record policy for this show, from
            *  `settings.recording.quickCaptureAction`. `undefined` = "ask". */
           quickCaptureAction?: "ask" | "snap" | "record";
+          /** HUD style for this show, from `settings.recording.selectorHud`.
+           *  `undefined` = "shutter". */
+          hudStyle?: import("@pwrsnap/shared").SelectorHudStyle;
         }) => void
       ): () => void;
       requestTrayResize(payload: { width: number; height: number }): void;
-      requestFloatOverResize(payload: { width: number; height: number }): void;
-      requestRecordingControllerResize(payload: { height: number }): void;
+      requestFloatOverResize(payload: {
+        width: number;
+        height: number;
+        mode?: "toast" | "dock";
+      }): void;
+      /** Drive a drag of the float-over's screen-edge dock. */
+      requestFloatOverDockDrag(phase: "start" | "move" | "end"): void;
+      /** Tell main whether the pointer is over a see-through part of the
+       *  float-over window, so clicks there reach the app behind it. */
+      setFloatOverPassThrough(through: boolean): void;
+      /** Ask main to send the current float-over state on
+       *  `floatOverState`. Call only after subscribing to that channel. */
+      requestFloatOverState(): void;
+      /** Current page zoom factor (`webFrame.getZoomFactor()`), for
+       *  turning a DIP ceiling into a CSS-pixel one. Read fresh per
+       *  call — session zoom changes without a reload. */
+      getZoomFactor(): number;
+      requestRecordingControllerResize(payload: { width?: number; height: number }): void;
       getAppMenuModel(): Promise<Array<{ index: number; label: string }>>;
       popupAppMenu(payload: { index: number; x: number; y: number }): void;
+      /** Linux painted caption buttons: run one window-control action.
+       *  Resolves with nothing — the button redraws from the frame-state
+       *  pushes on `EVENT_CHANNELS.windowFrameState`, never from its click. */
+      runWindowControl(action: WindowControlAction): Promise<void>;
+      /** This window's maximize state right now, or `null` if the window is
+       *  already gone. */
+      readWindowFrameState(): Promise<WindowFrameState | null>;
       startCaptureDrag(payload: { captureId: string; preset: RenderPreset }): void;
+      /** Permission guide only: drag the running app bundle. */
+      startPermissionGuideDrag(): void;
       startVideoDrag(payload: {
         captureId: string;
         format: "gif" | "mp4";
         preset: VideoPreset;
+        range?: { start: number; end: number };
+        segments?: Array<{ start: number; end: number }>;
+        audio?: { includeSystemAudio: boolean; includeMicrophone: boolean };
       }): void;
       startCartZipDrag(payload: {
         captureIds: string[];

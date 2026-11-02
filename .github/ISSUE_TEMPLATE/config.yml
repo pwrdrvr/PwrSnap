@@ -1,6 +1,21 @@
-blank_issues_enabled: true
+blank_issues_enabled: false
 contact_links:
-  - name: Get PwrSnap (free, macOS)
+  - name: Question, or not sure it's a bug?
+    url: https://github.com/pwrdrvr/PwrSnap/discussions/categories/q-a
+    about: >-
+      Ask in Discussions Q&A — setup, hotkeys, capture folders, connecting
+      Codex, "is it supposed to work this way?". Answers get marked and stay
+      searchable, so the next person with the same question finds yours. If it
+      turns out to be a bug, it can become an issue without losing the thread.
+  - name: Idea or feature you'd like to talk through first
+    url: https://github.com/pwrdrvr/PwrSnap/discussions/categories/ideas
+    about: >-
+      Half-formed ideas are welcome here. Use the Feature request template
+      instead when you already know the specific capability you want.
+  - name: Show what you made
+    url: https://github.com/pwrdrvr/PwrSnap/discussions/categories/show-and-tell
+    about: Annotations, workflows, agent setups — post a snap of it.
+  - name: Get PwrSnap (free, macOS and Windows)
     url: https://pwrsnap.com
     about: >-
       Don't have PwrSnap yet? Install it first — then you can snap the thing

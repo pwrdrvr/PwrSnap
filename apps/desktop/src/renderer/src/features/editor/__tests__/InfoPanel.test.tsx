@@ -66,6 +66,7 @@ function makeRecord(overrides: Partial<CaptureRecord> = {}): CaptureRecord {
     sha256: "deadbeef",
     source_app_bundle_id: "com.apple.Safari",
     source_app_name: "Safari",
+    source_window_title: null,
     edits_version: 1,
     has_alpha: false,
     deleted_at: null,
@@ -438,5 +439,58 @@ describe("InfoPanel", () => {
     expect(
       q('[data-testid="info-source-app-icon"]')?.getAttribute("src")
     ).toBe(`pwrsnap-app-icon://r/${encodeURIComponent(executable)}`);
+  });
+
+  test("15. non-null source window title renders exactly and can wrap", async () => {
+    const windowTitle =
+      "設計レビュー 🚀 — " + "an-uninterrupted-window-title-segment-".repeat(8);
+    dispatchMock.mockImplementation(async (name: string) => {
+      if (name === "library:byId") {
+        return {
+          ok: true,
+          value: makeRecord({ source_window_title: windowTitle })
+        };
+      }
+      if (name === "codex:enrichment") return { ok: true, value: null };
+      return { ok: true, value: undefined };
+    });
+    render(createElement(InfoPanel, { captureId: "cap_1" }));
+    await flush();
+
+    const title = q('[data-testid="info-window-title"]');
+    expect(title?.textContent).toBe(windowTitle);
+    expect(title?.classList.contains("pse-info-window-title")).toBe(true);
+    expect(title?.getAttribute("dir")).toBe("auto");
+  });
+
+  test("16. null source window title omits the metadata row", async () => {
+    dispatchMock.mockImplementation(async (name: string) => {
+      if (name === "library:byId") return { ok: true, value: makeRecord() };
+      if (name === "codex:enrichment") return { ok: true, value: null };
+      return { ok: true, value: undefined };
+    });
+    render(createElement(InfoPanel, { captureId: "cap_1" }));
+    await flush();
+
+    expect(q('[data-testid="info-window-title"]')).toBeNull();
+  });
+
+  test("16. legacy records without the additive field omit the metadata row", async () => {
+    dispatchMock.mockImplementation(async (name: string) => {
+      if (name === "library:byId") {
+        return {
+          ok: true,
+          value: makeRecord({
+            source_window_title: undefined as unknown as null
+          })
+        };
+      }
+      if (name === "codex:enrichment") return { ok: true, value: null };
+      return { ok: true, value: undefined };
+    });
+    render(createElement(InfoPanel, { captureId: "cap_1" }));
+    await flush();
+
+    expect(q('[data-testid="info-window-title"]')).toBeNull();
   });
 });

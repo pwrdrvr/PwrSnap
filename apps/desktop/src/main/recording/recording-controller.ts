@@ -12,6 +12,7 @@
 // This module is the BrowserWindow-side glue.
 
 import {
+  app,
   BrowserWindow,
   dialog,
   globalShortcut,
@@ -19,7 +20,12 @@ import {
   screen,
   type IpcMainEvent
 } from "electron";
-import { recordingFailureSummary, type RecordingState } from "@pwrsnap/shared";
+import {
+  EVENT_CHANNELS,
+  recordingFailureSummary,
+  type RecordingControllerArmEvent,
+  type RecordingState
+} from "@pwrsnap/shared";
 import {
   appWindowsOverlappingRect,
   displayLocalRectToGlobal
@@ -35,6 +41,10 @@ const RECORDING_CONTROLLER_RESIZE_CHANNEL = "recording-controller:resize";
 const FAILED_WIDTH_DIP = 480;
 const FAILED_INITIAL_HEIGHT_CSS = 176;
 const FAILED_RECREATE_DELAYS_MS = [100, 500] as const;
+const RECORDING_CONTROLLER_WIDTH_MIN_CSS_PX = 320;
+const RECORDING_CONTROLLER_WIDTH_MAX_CSS_PX = 560;
+const RECORDING_CONTROLLER_HEIGHT_MIN_CSS_PX = 64;
+const RECORDING_CONTROLLER_HEIGHT_MAX_CSS_PX = 260;
 
 let window: BrowserWindow | null = null;
 let installed = false;
@@ -50,11 +60,29 @@ let failedWindowCrashCount = 0;
 let failedRendererDisabledSessionId: string | null = null;
 let failedFallbackInFlight = false;
 let resizeChannelWired = false;
+let closeCancelPending = false;
+let normalWindowRecreateTimer: ReturnType<typeof setTimeout> | null = null;
+let lastRecordingDisplayId: number | null = null;
+/**
+ * Has the current HUD renderer finished loading, i.e. has it had the
+ * chance to register its `EVENT_CHANNELS.recordingControllerArm`
+ * listener? A `webContents.send` before that is dropped on the floor,
+ * and nothing retries it — the same trap `recording-frame.ts` keeps
+ * `rendererReady` for. Reset whenever a window is created, because a
+ * crash-recreate (or a dev HMR reload) starts a fresh renderer.
+ */
+let normalRendererReady = false;
 
 function clearFailedWindowRecreateTimer(): void {
   if (failedWindowRecreateTimer === null) return;
   clearTimeout(failedWindowRecreateTimer);
   failedWindowRecreateTimer = null;
+}
+
+function clearNormalWindowRecreateTimer(): void {
+  if (normalWindowRecreateTimer === null) return;
+  clearTimeout(normalWindowRecreateTimer);
+  normalWindowRecreateTimer = null;
 }
 
 function resetFailedWindowRecovery(): void {
@@ -171,24 +199,96 @@ function scheduleFailedWindowRecreate(crashedWindow: BrowserWindow): void {
   }, delay);
 }
 
+/** Retry budget for a crashing non-failure HUD renderer, per session. */
+const NORMAL_RECREATE_MAX_ATTEMPTS = 3;
+let normalRecreateAttempts = 0;
+let normalRecreateSessionId: string | null = null;
+
 function ensureWindow(): BrowserWindow {
   if (window !== null && !window.isDestroyed()) return window;
   window = createRecordingControllerWindow();
+  normalRendererReady = false;
   const createdWindow = window;
   window.on("close", (event) => {
-    if (!disposing && !replacingFailedWindow && getRecordingState().phase === "failed") {
-      event.preventDefault();
+    if (disposing || replacingFailedWindow) return;
+    const state = getRecordingState();
+    if (state.phase === "idle" || state.phase === "ready") return;
+    event.preventDefault();
+    if (state.phase === "failed") {
       window?.show();
       window?.focus();
+      return;
     }
+    if (
+      state.phase === "preflight" ||
+      state.phase === "countdown" ||
+      state.phase === "starting"
+    ) {
+      if (closeCancelPending) return;
+      closeCancelPending = true;
+      void bus
+        .dispatch("recording:cancel", {}, { principal: "ipc" })
+        .finally(() => {
+          closeCancelPending = false;
+        });
+    }
+    // Recording close cannot bypass the renderer's two-click destructive
+    // Cancel confirmation. Stopping/processing must finish persistence.
   });
   window.on("closed", () => {
     if (window === createdWindow) window = null;
+    if (window === null) normalRendererReady = false;
+  });
+  // `on`, not `once`: a crash-and-reload or a dev HMR reload fires this
+  // again on the same window, and the flag has to come back with it.
+  window.webContents.on("did-finish-load", () => {
+    if (createdWindow.isDestroyed()) return;
+    normalRendererReady = true;
   });
   window.webContents.on("render-process-gone", () => {
-    scheduleFailedWindowRecreate(createdWindow);
+    const state = getRecordingState();
+    if (state.phase === "failed") {
+      scheduleFailedWindowRecreate(createdWindow);
+      return;
+    }
+    if (disposing || window !== createdWindow || !isControllerPhase(state)) return;
+    if (window === createdWindow) window = null;
+    if (!createdWindow.isDestroyed()) createdWindow.destroy();
+    clearNormalWindowRecreateTimer();
+    // Cap the retries, the way the `failed` path does. A deterministic
+    // crash — GPU process loss, OOM, a throw during module init — made this
+    // an unbounded loop: destroy, wait 100 ms, respawn, crash, repeat, at
+    // roughly ten renderer launches a second for the whole take, competing
+    // for CPU with the recorder the HUD is annotating, and logging nothing.
+    // The recording itself is owned by the recorder process and survives a
+    // missing HUD, so giving up on the overlay is the safe end state.
+    const sessionId = "sessionId" in state ? state.sessionId : null;
+    if (sessionId !== normalRecreateSessionId) {
+      normalRecreateSessionId = sessionId;
+      normalRecreateAttempts = 0;
+    }
+    normalRecreateAttempts += 1;
+    if (normalRecreateAttempts > NORMAL_RECREATE_MAX_ATTEMPTS) {
+      log.error("recording controller renderer crashed repeatedly; leaving it down", {
+        attempts: normalRecreateAttempts,
+        phase: state.phase
+      });
+      return;
+    }
+    normalWindowRecreateTimer = setTimeout(() => {
+      normalWindowRecreateTimer = null;
+      if (disposing) return;
+      const live = getRecordingState();
+      if (isControllerPhase(live)) applyRecordingStateToController(live);
+    }, 100);
   });
   return window;
+}
+
+function isControllerPhase(
+  state: RecordingState
+): state is Exclude<RecordingState, { phase: "idle" | "ready" | "failed" }> {
+  return state.phase !== "idle" && state.phase !== "ready" && state.phase !== "failed";
 }
 
 function resizeFailedWindow(
@@ -216,12 +316,38 @@ function resizeFailedWindow(
 function onRecordingControllerResize(event: IpcMainEvent, payload: unknown): void {
   if (window === null || window.isDestroyed() || event.sender !== window.webContents) return;
   const state = getRecordingState();
-  if (state.phase !== "failed" || payload === null || typeof payload !== "object") return;
-  const { height } = payload as { height?: unknown };
+  if (payload === null || typeof payload !== "object") return;
+  const { width, height } = payload as { width?: unknown; height?: unknown };
   if (typeof height !== "number" || !Number.isFinite(height) || height <= 0) {
     return;
   }
-  resizeFailedWindow(window, height, state.displayId);
+  if (state.phase === "failed") {
+    resizeFailedWindow(window, height, state.displayId);
+    return;
+  }
+  if (
+    (state.phase !== "recording" && state.phase !== "stopping" && state.phase !== "processing") ||
+    typeof width !== "number" ||
+    !Number.isFinite(width) ||
+    width <= 0
+  ) {
+    return;
+  }
+  const [contentWidth, contentHeight] = normalControllerContentSize(
+    window,
+    width,
+    height,
+    state.phase === "recording" ? state.displayId : lastRecordingDisplayId ?? undefined
+  );
+  window.setMinimumSize(0, 0);
+  window.setContentSize(contentWidth, contentHeight, false);
+  if (state.phase === "recording") {
+    if (process.platform === "win32") {
+      anchorAwayFromRecordedRect(window, state.rect, state.displayId);
+    } else {
+      anchorTopCenter(window, state.displayId);
+    }
+  }
 }
 
 function wireRecordingControllerResizeChannel(): void {
@@ -435,6 +561,37 @@ function releaseOwnedLeadInEscapeShortcut(): void {
   escapeShortcutArmed = false;
 }
 
+/** Convert measured CSS pixels to BrowserWindow DIPs. Clamp the content
+ * measurement in CSS space first so the ceiling scales with page zoom, then
+ * cap the converted window against the target display work area. */
+function normalControllerContentSize(
+  win: BrowserWindow,
+  requestedWidthCss: number,
+  requestedHeightCss: number,
+  displayId?: number
+): [number, number] {
+  const zoomFactor = win.webContents.zoomFactor;
+  const zoom = Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1;
+  const target =
+    (displayId !== undefined
+      ? screen.getAllDisplays().find((display) => display.id === displayId)
+      : undefined) ?? screen.getPrimaryDisplay();
+  const availableWidth = Math.max(1, target.workArea.width - 32);
+  const availableHeight = Math.max(1, target.workArea.height - 32);
+  const widthCss = Math.min(
+    RECORDING_CONTROLLER_WIDTH_MAX_CSS_PX,
+    Math.max(RECORDING_CONTROLLER_WIDTH_MIN_CSS_PX, Math.ceil(requestedWidthCss))
+  );
+  const heightCss = Math.min(
+    RECORDING_CONTROLLER_HEIGHT_MAX_CSS_PX,
+    Math.max(RECORDING_CONTROLLER_HEIGHT_MIN_CSS_PX, Math.ceil(requestedHeightCss))
+  );
+  return [
+    Math.min(availableWidth, Math.ceil(widthCss * zoom)),
+    Math.min(availableHeight, Math.ceil(heightCss * zoom))
+  ];
+}
+
 function armLeadInEscapeShortcut(): void {
   escapeShortcutDesired = true;
   registerDesiredLeadInEscapeShortcut();
@@ -456,6 +613,72 @@ hotkeyRecorderSuspension.registerParticipant({
     registerDesiredLeadInEscapeShortcut();
   }
 });
+
+/**
+ * The HUD window that can host a destructive-action confirmation right
+ * now, or null if there is none.
+ *
+ * Three conditions, and the third is the easy one to forget:
+ *   1. a window that exists and is not destroyed;
+ *   2. the `recording` phase — a take that is already finalizing has
+ *      nothing left to discard;
+ *   3. a renderer that has finished loading, so its arm listener is
+ *      registered. `webContents.send` to a booting renderer is dropped
+ *      silently and nothing retries it, which would turn the tray item
+ *      into a no-op that logs nothing. `recording-frame.ts` keeps
+ *      `rendererReady` for the same reason.
+ *
+ * Condition 3 is reachable: the HUD renderer gets up to three
+ * crash-recreates per session, and each one spends ~100ms plus load
+ * time with a live window and a renderer that cannot hear us yet.
+ */
+function discardConfirmationHost(): BrowserWindow | null {
+  if (window === null || window.isDestroyed()) return null;
+  if (!normalRendererReady || window.webContents.isDestroyed()) return null;
+  return getRecordingState().phase === "recording" ? window : null;
+}
+
+/**
+ * Can a destructive-action confirmation run right now?
+ *
+ * The tray asks before offering "Restart Recording…" / "Cancel
+ * Recording…", because the HUD is the only surface allowed to run that
+ * confirm (see `RecordingControllerArmEvent`). When the answer is no
+ * the tray simply does not offer the destructive items — "Stop and
+ * Save" stays available, so a user with a dead HUD can always end the
+ * take and keep the clip. Losing a take needs a confirmation surface;
+ * keeping one does not.
+ */
+export function canRecordingControllerConfirmDiscard(): boolean {
+  return discardConfirmationHost() !== null;
+}
+
+/**
+ * Ask the HUD to arm its own two-press confirm for `action`, exactly
+ * as if the user had clicked that button on the HUD. Returns false if
+ * there was no HUD able to hear the request, in which case nothing was
+ * armed and nothing was dispatched — the caller reports it, so this
+ * does not log.
+ *
+ * Deliberately one-way: the HUD owns the armed state and its
+ * auto-disarm timeout, and the HUD is what ultimately dispatches
+ * `recording:restart` / `recording:cancel`. Main holds no parallel
+ * armed state that could disagree with what the user can see.
+ */
+export function requestRecordingDiscardConfirmation(
+  action: RecordingControllerArmEvent["action"]
+): boolean {
+  const target = discardConfirmationHost();
+  if (target === null) return false;
+  target.webContents.send(EVENT_CHANNELS.recordingControllerArm, {
+    action
+  } satisfies RecordingControllerArmEvent);
+  // The HUD is alwaysOnTop + floating, but a take can run for minutes
+  // with other floating windows arriving; make sure the surface the
+  // user was just sent to is actually the one on top.
+  target.moveTop();
+  return true;
+}
 
 /**
  * React to a recording-state transition. Idempotent — called from
@@ -514,19 +737,64 @@ export function applyRecordingStateToController(state: RecordingState): void {
       for (const otherWin of ourOverlapping) {
         otherWin.moveTop();
       }
+      // Debug-only companion to `video-record post-commit focus policy`
+      // in record-from-selection.ts. That line says the commit-time
+      // raise FIRED; this one says whether it SURVIVED the lead-in —
+      // the half no log covered. Between "raised our windows" and the
+      // first recorded frame sit ~3s of countdown, and the only signal
+      // from inside it was a bare Dock-reclaim line.
+      //
+      // `focusedIsOverlapping: false` is the tell: none of the windows
+      // being recorded holds key. An inactive app's `moveTop()` orders
+      // the window only among our OWN windows, so the loop above can
+      // run every tick, report a healthy overlap set, and change
+      // nothing the user can see.
+      //
+      // The title alone cannot answer that. The Library is titled
+      // "PwrSnap", and so may be any other window of ours — including
+      // the focus-sink, a non-activating panel that can hold key while
+      // PwrSnap is INACTIVE. `focusedWindowTitle` stays for the case
+      // where the key window is something else of ours.
+      const focused = BrowserWindow.getFocusedWindow();
+      log.debug("recording lead-in z-order tick", {
+        phase: state.phase,
+        overlappingCount: ourOverlapping.length,
+        overlappingTitles: ourOverlapping.map((other) => other.getTitle()),
+        focusedWindowTitle: focused?.getTitle() ?? null,
+        focusedIsOverlapping: focused !== null && ourOverlapping.includes(focused),
+        dockVisible: app.dock?.isVisible() ?? null
+      });
       break;
     }
     case "recording": {
       const win = ensureWindow();
+      lastRecordingDisplayId = state.displayId;
       disarmLeadInEscapeShortcut();
       // Recording-phase pill is compact; tuck it top-center of the
-      // recorded display. PID exclusion keeps it out of the captured
+      // recorded display. `setContentProtection(true)` (set once in
+      // createRecordingControllerWindow) keeps it out of the captured
       // pixels. Width fits the three-button row (Stop / Restart /
       // Cancel); height accommodates the "not visible in recording"
       // reassurance caption underneath.
+      //
+      // ⚠️  NEVER setFocusable(true) here. The window is constructed
+      // `focusable: false` and shown with showInactive() precisely so
+      // that clicking Stop / Restart / Cancel cannot activate PwrSnap
+      // mid-take. Only the HUD window is content-protected — the
+      // CONSEQUENCES of activating are not. On macOS the menu bar
+      // switches to PwrSnap, the recorded app's title bar goes
+      // inactive and its text caret disappears, and every one of those
+      // is inside the recorded rect and therefore in the file: the
+      // first frames after a Restart arm-click become a recording of
+      // the user's app losing focus. A focusable HUD shipped briefly
+      // in #496 to let a renderer keydown handler see Escape; the
+      // lead-in's globalShortcut bridge above exists because that
+      // trade is not available to this window.
       win.setFocusable(false);
       win.setIgnoreMouseEvents(false);
-      win.setContentSize(420, 80, false);
+      const [width, height] = normalControllerContentSize(win, 420, 80, state.displayId);
+      win.setMinimumSize(0, 0);
+      win.setContentSize(width, height, false);
       if (process.platform === "win32") {
         anchorAwayFromRecordedRect(win, state.rect, state.displayId);
       } else {
@@ -545,7 +813,14 @@ export function applyRecordingStateToController(state: RecordingState): void {
       disarmLeadInEscapeShortcut();
       win.setFocusable(false);
       win.setIgnoreMouseEvents(false);
-      win.setContentSize(420, 80, false);
+      const [width, height] = normalControllerContentSize(
+        win,
+        420,
+        80,
+        lastRecordingDisplayId ?? undefined
+      );
+      win.setMinimumSize(0, 0);
+      win.setContentSize(width, height, false);
       // Preserve the recording-phase position. On Windows the HUD may be
       // outside the captured rect; moving it while FFmpeg is still exiting
       // can paint it into the final frames.
@@ -573,8 +848,10 @@ export function applyRecordingStateToController(state: RecordingState): void {
     case "idle":
     case "ready": {
       clearFailedWindowRecreateTimer();
+      clearNormalWindowRecreateTimer();
       resetFailedWindowRecovery();
       disarmLeadInEscapeShortcut();
+      lastRecordingDisplayId = null;
       if (window !== null && !window.isDestroyed()) {
         window.hide();
         // Destroying releases the renderer process; the next session
@@ -606,6 +883,8 @@ export function disposeRecordingController(): void {
   installed = false;
   unwireRecordingControllerResizeChannel();
   clearFailedWindowRecreateTimer();
+  clearNormalWindowRecreateTimer();
+  lastRecordingDisplayId = null;
   resetFailedWindowRecovery();
   disarmLeadInEscapeShortcut();
   disposing = true;

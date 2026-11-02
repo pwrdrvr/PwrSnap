@@ -39,6 +39,7 @@
 // the entire feature.
 
 import { BrowserWindow } from "electron";
+import { linuxSquareCorners } from "./linux-window-corners";
 import { getMainLogger } from "./log";
 
 const log = getMainLogger("pwrsnap:focus-sink");
@@ -53,6 +54,7 @@ let sink: BrowserWindow | null = null;
 export function installFocusSink(): void {
   if (sink !== null && !sink.isDestroyed()) return;
   sink = new BrowserWindow({
+    ...linuxSquareCorners(),
     // Non-activating panel — showing the sink doesn't activate the
     // app. Combined with the floating window level, the sink
     // absorbs cascades silently.

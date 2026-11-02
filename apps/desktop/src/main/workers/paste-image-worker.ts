@@ -23,6 +23,9 @@
 // into a sanitized Result error. The worker never logs the file
 // path — it sees only the bytes/buffer; the parent sanitizes.
 
+// ⚠️ Keep this first: a worker thread has its own module loader, so the
+// steer that index.ts installs does not reach it. See sharp-wasm-steer.ts.
+import "../sharp-wasm-steer";
 import { createHash } from "node:crypto";
 import { parentPort, workerData } from "node:worker_threads";
 import { PASTE_IMAGE_MAX_BYTES } from "@pwrsnap/shared";

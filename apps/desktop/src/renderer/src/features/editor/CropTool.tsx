@@ -61,6 +61,7 @@ import {
 } from "react";
 import { acceleratorToDisplayText, type ShortcutPlatform } from "@pwrsnap/shared";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
+import { Z_INDEX_CHROME } from "./OverlaySvg";
 
 // editor.css is loaded once by Editor.tsx at the editor-window root
 // (`./editor.css` at the top of that file). CropTool consumes those
@@ -80,9 +81,9 @@ export interface CropToolProps {
    *  component renders nothing until non-null. */
   canvasRect: DOMRect | null;
   /** Commit (↵). Caller dispatches the overlays:upsert. */
-  onCommit(rect: { x: number; y: number; w: number; h: number }): void;
+  onCommit(this: void, rect: { x: number; y: number; w: number; h: number }): void;
   /** Cancel (Esc, or click outside the canvas + not on a handle). */
-  onCancel(): void;
+  onCancel(this: void): void;
   shortcutPlatform?: ShortcutPlatform;
 }
 
@@ -554,6 +555,12 @@ export function CropTool(props: CropToolProps): ReactElement | null {
       ref={overlayRef}
       className="pse-crop"
       data-testid="crop-tool"
+      // Editor chrome, like the selection outlines and transform handles:
+      // above every persisted layer. Each layer stacks at its own
+      // layer.z_index (1000+) inside the canvas, so the stylesheet's old
+      // z-index: 5 left annotations painting over the dim, the handles
+      // and the Apply / Cancel buttons (and their focus rings).
+      style={{ zIndex: Z_INDEX_CHROME }}
       // Non-tabbable but programmatically focusable so the mount-time
       // .focus() lands on this element (and not on the canvas or some
       // ambient focused control), which ensures the window-level

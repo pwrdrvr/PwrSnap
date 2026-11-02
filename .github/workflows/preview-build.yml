@@ -10,93 +10,36 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   preview:
     name: Build preview DMG
     # Run when the just-applied label is build-preview (labeled event), OR when
     # build-preview is already on the PR (synchronize event).
-    if: |
-      (github.event.action == 'labeled' && github.event.label.name == 'build-preview') ||
-      (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'build-preview'))
-    runs-on: macos-26
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      ((github.event.action == 'labeled' && github.event.label.name == 'build-preview') ||
+       (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'build-preview')))
+    runs-on: [self-hosted, macOS, ARM64, pwrdrvr-macos]
     timeout-minutes: 30
     steps:
       - name: Checkout PR branch
         uses: actions/checkout@v5
 
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@v1
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
+        timeout-minutes: 10
         with:
-          node-version: "24.14.1"
-
-      # Preview DMGs use the SAME controlled ffmpeg as releases. They used to
-      # build one locally from an in-repo script whose flags had drifted, so a
-      # preview DMG and the release DMG from the same commit shipped different
-      # codec sets — that divergence hid a missing PNG decoder in released
-      # builds. See docs/ffmpeg-build-reference.md.
-      - name: Create FFmpeg build repo token
-        id: ffmpeg-builds-token
-        uses: actions/create-github-app-token@v3
-        with:
-          client-id: ${{ vars.FFMPEG_BUILDS_APP_CLIENT_ID }}
-          private-key: ${{ secrets.FFMPEG_BUILDS_APP_PRIVATE_KEY }}
-          owner: pwrdrvr
-          repositories: pwrsnap-ffmpeg-builds
-          permission-actions: read
-          permission-contents: read
-
-      - name: Download controlled macOS FFmpeg artifact
-        shell: bash
-        env:
-          GH_TOKEN: ${{ steps.ffmpeg-builds-token.outputs.token }}
-          FFMPEG_BUILD_REPO: pwrdrvr/pwrsnap-ffmpeg-builds
-          FFMPEG_BUILD_WORKFLOW: build.yml
-          # Keep in lockstep with the two FFMPEG_BUILD_SHA pins in release.yml.
-          FFMPEG_BUILD_SHA: 3d775403a83990a2ad9503d865f5d481d9c0316a
-          FFMPEG_ARTIFACT_NAME: ffmpeg-8.1.1-macos-universal
-        run: |
-          set -euo pipefail
-          run_id="$(
-            gh run list \
-              --repo "$FFMPEG_BUILD_REPO" \
-              --workflow "$FFMPEG_BUILD_WORKFLOW" \
-              --branch main \
-              --limit 100 \
-              --json databaseId,headSha,conclusion \
-              --jq ".[] | select(.headSha == \"$FFMPEG_BUILD_SHA\" and .conclusion == \"success\") | .databaseId" \
-              | head -n 1
-          )"
-          if [ -z "$run_id" ]; then
-            echo "::error::No successful $FFMPEG_BUILD_WORKFLOW run found for $FFMPEG_BUILD_REPO@$FFMPEG_BUILD_SHA" >&2
-            exit 1
-          fi
-          dir="$RUNNER_TEMP/pwrsnap-ffmpeg-artifact"
-          rm -rf "$dir" && mkdir -p "$dir"
-          gh run download "$run_id" --repo "$FFMPEG_BUILD_REPO" --name "$FFMPEG_ARTIFACT_NAME" --dir "$dir"
-          mkdir -p apps/desktop/build/ffmpeg apps/desktop/build/ffmpeg-source
-          cp "$dir/ffmpeg" apps/desktop/build/ffmpeg/ffmpeg
-          chmod 755 apps/desktop/build/ffmpeg/ffmpeg
-          cp "$dir"/source/ffmpeg-*.tar.xz apps/desktop/build/ffmpeg-source/
-          cp "$dir"/source/ffmpeg-*.tar.xz.sha256 apps/desktop/build/ffmpeg-source/
-          cp "$dir/manifest.json" apps/desktop/build/ffmpeg-source/ffmpeg-8.1.1-macos-universal-manifest.json
-          cp "$dir/SOURCE-OFFER.txt" apps/desktop/build/ffmpeg-source/ffmpeg-8.1.1-macos-universal-SOURCE-OFFER.txt
-          cp "$dir/LGPL-NOTICE.txt" apps/desktop/build/ffmpeg-source/ffmpeg-8.1.1-macos-universal-LGPL-NOTICE.txt
-
-          # Preview DMGs bundle the same THIRD_PARTY_LICENSES the release does,
-          # so run the same artifact-vs-notice reconciliation the signing jobs
-          # run. A PR that repins the build repo to a new FFmpeg version fails
-          # here, rather than at tag time.
-          node scripts/check-bundled-ffmpeg-notice.mjs \
-            --manifest "$dir/manifest.json" \
-            --notice THIRD_PARTY_LICENSES \
-            --source-dir "$dir/source"
+          node-version: "^24.22.0"
+          persistent-store-dir: ~/Library/Caches/pwrsnap-ci/${{ runner.name }}
+          cache-electron: "true"
 
       - name: Compute preview version
         id: version
         run: |
           raw=$(node -p "require('./apps/desktop/package.json').version")
-          base=$(echo "$raw" | sed 's/-.*//')
+          base="${raw%%-*}"
           preview="${base}-pr.${{ github.event.pull_request.number }}"
           echo "version=${preview}" >> "$GITHUB_OUTPUT"
           echo "Preview version: ${preview}"
@@ -111,21 +54,117 @@ jobs:
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
 
-      - name: Build native helpers
-        run: pnpm --filter @pwrsnap/desktop build:native
+      # release.mjs deliberately removes FFmpeg from a newly prepared stage so
+      # a stale workspace binary can never slip into a package. Prepare first,
+      # then inject the hash-pinned release build artifact below.
+      - name: Prepare preview package stage
+        run: node apps/desktop/scripts/release.mjs --prepare-only
+
+      # Pull-request workflows must not enter signing environments or receive
+      # the private build-repo GitHub App credentials. v1.1.19 shipped the same
+      # vetted FFmpeg 8.1.1 build. Restore its pinned bytes from Actions artifacts,
+      # never release downloads. Expired artifacts fail closed; refresh these pins
+      # to a retained vetted release rather than falling back to release URLs.
+      - name: Stage controlled macOS FFmpeg from release build artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FFMPEG_RELEASE_BASE_URL: https://github.com/pwrdrvr/PwrSnap/releases/download/v1.1.19
+          FFMPEG_RELEASE_PAYLOAD: PwrSnap-1.1.19-universal-mac.zip
+          FFMPEG_RELEASE_PAYLOAD_SHA256: 0bf4690e07456acd5bb309c3a74f6ca45538eb1f3ff47f7f56d7f9720b32e0c5
+          FFMPEG_SIGNED_BINARY_SHA256: 8b1a77b5990eaa20770259e28bb415ec7dddd3db4f9137676722a64c3f441daa
+          FFMPEG_MANIFEST_ASSET: ffmpeg-8.1.1-macos-universal-manifest.json
+          FFMPEG_MANIFEST_ASSET_SHA256: fd7fe3f07c9c66b344d293f9a8fd3a48b9b30cf5bc5e441d59eb0f967e4db18d
+          FFMPEG_SOURCE_ASSET: ffmpeg-8.1.1.tar.xz
+          FFMPEG_SOURCE_ASSET_SHA256: b6863adde98898f42602017462871b5f6333e65aec803fdd7a6308639c52edf3
+          FFMPEG_SOURCE_SUM_ASSET: ffmpeg-8.1.1.tar.xz.sha256
+          FFMPEG_SOURCE_SUM_ASSET_SHA256: 7cb9f14272b77f0536fef34c1e3cd39be63760aa706c813d90c58b54e084ca93
+          FFMPEG_SOURCE_OFFER_ASSET: ffmpeg-8.1.1-macos-universal-SOURCE-OFFER.txt
+          FFMPEG_SOURCE_OFFER_ASSET_SHA256: 8e10bc94b7788ca035da88bff30b39fe86c3683d660ffdf2ff46bc99bb1403ed
+          FFMPEG_LGPL_NOTICE_ASSET: ffmpeg-8.1.1-macos-universal-LGPL-NOTICE.txt
+          FFMPEG_LGPL_NOTICE_ASSET_SHA256: 9f0c03003dfcce4ecf42a33053f551adef029986dd7315914e0f1d70143ccc29
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s scripts -p 'test_*artifact*.py' -v
+          python3 -m unittest discover -s scripts -p test_preview_build_assets.py -v
+          dir="$RUNNER_TEMP/pwrsnap-ffmpeg-public-release"
+          stage="apps/desktop/release-stage"
+          mkdir -p "$dir" "$stage/build/ffmpeg" "$stage/build/ffmpeg-source"
+
+          download_and_verify() {
+            local name="$1"
+            local expected="$2"
+            local target="$dir/$name"
+            python3 scripts/preview-build-assets.py \
+              --url "$FFMPEG_RELEASE_BASE_URL/$name" --sha256 "$expected" --output "$target"
+            local actual
+            actual="$(shasum -a 256 "$target" | awk '{print $1}')"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::$name SHA-256 mismatch: expected $expected, got $actual" >&2
+              exit 1
+            fi
+          }
+
+          download_and_verify "$FFMPEG_RELEASE_PAYLOAD" "$FFMPEG_RELEASE_PAYLOAD_SHA256"
+          download_and_verify "$FFMPEG_MANIFEST_ASSET" "$FFMPEG_MANIFEST_ASSET_SHA256"
+          download_and_verify "$FFMPEG_SOURCE_ASSET" "$FFMPEG_SOURCE_ASSET_SHA256"
+          download_and_verify "$FFMPEG_SOURCE_SUM_ASSET" "$FFMPEG_SOURCE_SUM_ASSET_SHA256"
+          download_and_verify "$FFMPEG_SOURCE_OFFER_ASSET" "$FFMPEG_SOURCE_OFFER_ASSET_SHA256"
+          download_and_verify "$FFMPEG_LGPL_NOTICE_ASSET" "$FFMPEG_LGPL_NOTICE_ASSET_SHA256"
+
+          ffmpeg_entry="PwrSnap.app/Contents/Resources/PwrSnapFFmpeg"
+          # Drain the listing: grep -q can SIGPIPE unzip under pipefail.
+          if ! unzip -Z1 "$dir/$FFMPEG_RELEASE_PAYLOAD" | grep -Fx "$ffmpeg_entry" > /dev/null; then
+            echo "::error::$FFMPEG_RELEASE_PAYLOAD is missing $ffmpeg_entry" >&2
+            exit 1
+          fi
+          unzip -p "$dir/$FFMPEG_RELEASE_PAYLOAD" "$ffmpeg_entry" \
+            > "$stage/build/ffmpeg/ffmpeg"
+          chmod 755 "$stage/build/ffmpeg/ffmpeg"
+          signed_binary_sha="$(shasum -a 256 "$stage/build/ffmpeg/ffmpeg" | awk '{print $1}')"
+          if [ "$signed_binary_sha" != "$FFMPEG_SIGNED_BINARY_SHA256" ]; then
+            echo "::error::Extracted signed FFmpeg SHA-256 mismatch." >&2
+            exit 1
+          fi
+          codesign --verify --strict --verbose=2 "$stage/build/ffmpeg/ffmpeg"
+          lipo "$stage/build/ffmpeg/ffmpeg" -verify_arch x86_64 arm64
+
+          cp "$dir/$FFMPEG_MANIFEST_ASSET" "$stage/build/ffmpeg-source/"
+          cp "$dir/$FFMPEG_SOURCE_ASSET" "$stage/build/ffmpeg-source/"
+          cp "$dir/$FFMPEG_SOURCE_SUM_ASSET" "$stage/build/ffmpeg-source/"
+          cp "$dir/$FFMPEG_SOURCE_OFFER_ASSET" "$stage/build/ffmpeg-source/"
+          cp "$dir/$FFMPEG_LGPL_NOTICE_ASSET" "$stage/build/ffmpeg-source/"
+          (cd "$stage/build/ffmpeg-source" && shasum -a 256 -c "$FFMPEG_SOURCE_SUM_ASSET")
+
+          encoder_help="$("$stage/build/ffmpeg/ffmpeg" -hide_banner -h encoder=h264_videotoolbox 2>&1)"
+          if [[ "$encoder_help" != *"Encoder h264_videotoolbox"* ]]; then
+            echo "::error::Public-release FFmpeg cannot load encoder h264_videotoolbox." >&2
+            exit 1
+          fi
+
+          # Preview DMGs bundle the same THIRD_PARTY_LICENSES and source offer
+          # as releases. Reconcile the public manifest against those bytes.
+          node scripts/check-bundled-ffmpeg-notice.mjs \
+            --manifest "$stage/build/ffmpeg-source/$FFMPEG_MANIFEST_ASSET" \
+            --notice THIRD_PARTY_LICENSES \
+            --source-dir "$stage/build/ffmpeg-source"
 
       # electron-builder compiles build/icon.icon with actool 26+. The
-      # macos-26 runner's default Xcode matches the AssetCatalogAgent host.
-      # Unlike release.yml this package step also runs build:native. See
+      # Select a stable Xcode 26+ on the self-hosted macOS 26 guest.
+      # Native helpers were built during stage preparation above. See
       # AGENTS.md "macOS app icon".
-      - name: Verify the macOS 26 runner actool
+      - name: Select Xcode for macOS 26 packaging
         id: xcode
         uses: ./.github/actions/select-xcode-for-actool
 
       - name: Build preview package (unsigned)
         env:
           DEVELOPER_DIR: ${{ steps.xcode.outputs.developer-dir }}
-        run: pnpm --filter @pwrsnap/desktop package:dryrun
+          # --dryrun forces identity=- and disables notarization. The builder's
+          # PR guard otherwise skips even ad-hoc signing after modifying fuses,
+          # leaving an invalid Electron signature. This step has no signing secrets.
+          CSC_FOR_PULL_REQUEST: "true"
+        run: node apps/desktop/scripts/release.mjs --sign-stage-only --dryrun
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v7
@@ -133,7 +172,7 @@ jobs:
           name: PwrSnap-${{ steps.version.outputs.version }}-preview
           path: |
             apps/desktop/release-stage/dist/*.dmg
-            apps/desktop/build/ffmpeg-source/*
+            apps/desktop/release-stage/build/ffmpeg-source/*
           retention-days: 14
 
   preview-windows:
@@ -154,9 +193,97 @@ jobs:
       # No cache-priming gate job here (unlike ci.yml): this is a label-gated
       # one-off build, so there is no fan-out to prime for.
       - name: Install Node.js and dependencies
-        uses: pwrdrvr/configure-nodejs@v1
+        uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
+        timeout-minutes: 10
         with:
-          node-version: "24.14.1"
+          node-version: "^24.22.0"
+
+      # Pull-request code receives no build-repo or signing secrets. Instead,
+      # extract the exact FFmpeg binary already shipped inside the public,
+      # signed v1.1.19 installer and pin the whole installer by SHA-256.
+      - name: Stage controlled Windows FFmpeg from release build artifacts
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FFMPEG_RELEASE_BASE_URL: https://github.com/pwrdrvr/PwrSnap/releases/download/v1.1.19
+          FFMPEG_RELEASE_PAYLOAD: PwrSnap-1.1.19-windows-x64-setup.exe
+          FFMPEG_RELEASE_PAYLOAD_SHA256: 7eed072111f2a1666800b5337ed9814104e05b8c6bacc84155e8a0abc65e821f
+          FFMPEG_MANIFEST_ASSET: ffmpeg-8.1.1-macos-universal-manifest.json
+          FFMPEG_MANIFEST_ASSET_SHA256: fd7fe3f07c9c66b344d293f9a8fd3a48b9b30cf5bc5e441d59eb0f967e4db18d
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ProgressPreference = "SilentlyContinue"
+          python -m unittest discover -s scripts -p test_preview_build_assets.py -v
+          if ($LASTEXITCODE -ne 0) { throw "Preview artifact tests failed." }
+          $dir = Join-Path $env:RUNNER_TEMP "pwrsnap-windows-ffmpeg-preview"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+
+          function Get-VerifiedReleaseAsset([string]$Name, [string]$ExpectedSha256) {
+            $target = Join-Path $dir $Name
+            python scripts/preview-build-assets.py `
+              --url "$env:FFMPEG_RELEASE_BASE_URL/$Name" `
+              --sha256 $ExpectedSha256 --output $target | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw "Failed to restore $Name from release build artifacts." }
+            $actual = (Get-FileHash -Algorithm SHA256 $target).Hash.ToLowerInvariant()
+            if ($actual -ne $ExpectedSha256.ToLowerInvariant()) {
+              throw "$Name SHA-256 mismatch: expected $ExpectedSha256, got $actual"
+            }
+            return $target
+          }
+
+          $installer = Get-VerifiedReleaseAsset `
+            $env:FFMPEG_RELEASE_PAYLOAD `
+            $env:FFMPEG_RELEASE_PAYLOAD_SHA256
+          $manifestPath = Get-VerifiedReleaseAsset `
+            $env:FFMPEG_MANIFEST_ASSET `
+            $env:FFMPEG_MANIFEST_ASSET_SHA256
+
+          $sevenZip = (Get-Command "7z").Source
+          $installerDir = Join-Path $dir "installer"
+          New-Item -ItemType Directory -Force -Path $installerDir | Out-Null
+          & $sevenZip x -y "-o$installerDir" $installer
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to extract the pinned public Windows installer."
+          }
+
+          $embeddedArchive = Join-Path $installerDir '$PLUGINSDIR/app-64.7z'
+          if (-not (Test-Path -LiteralPath $embeddedArchive -PathType Leaf)) {
+            throw "Pinned public Windows installer is missing its embedded app-64.7z payload."
+          }
+          $appDir = Join-Path $dir "app"
+          New-Item -ItemType Directory -Force -Path $appDir | Out-Null
+          & $sevenZip x -y "-o$appDir" $embeddedArchive "resources/PwrSnapFFmpeg.exe"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to extract PwrSnapFFmpeg.exe from the pinned public installer."
+          }
+
+          $ffmpeg = Join-Path $appDir "resources/PwrSnapFFmpeg.exe"
+          if (-not (Test-Path -LiteralPath $ffmpeg -PathType Leaf)) {
+            throw "Pinned public Windows installer contains no resources/PwrSnapFFmpeg.exe."
+          }
+
+          # Ask the extracted executable itself, then run the production-args
+          # encode/decode smoke below. The release manifest is separately
+          # hash-pinned for notice/version reconciliation.
+          $encoderHelp = (& $ffmpeg -hide_banner -h encoder=h264_mf 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0 -or $encoderHelp -notmatch "Encoder h264_mf") {
+            throw "Public-release Windows FFmpeg cannot load encoder h264_mf."
+          }
+
+          node scripts/check-bundled-ffmpeg-notice.mjs `
+            --manifest $manifestPath `
+            --notice THIRD_PARTY_LICENSES
+          if ($LASTEXITCODE -ne 0) {
+            throw "Bundled FFmpeg notice check failed (exit code $LASTEXITCODE)."
+          }
+          "PWRSNAP_WINDOWS_FFMPEG_PATH=$ffmpeg" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Smoke controlled Windows FFmpeg media exports
+        env:
+          PWRSNAP_WINDOWS_FFMPEG_SMOKE: "1"
+        run: >-
+          pnpm exec vitest run --config vitest.workspace.ts
+          apps/desktop/src/main/recording/__tests__/windows-ffmpeg-export-smoke.test.ts
 
       # windows-latest defaults to pwsh; force bash for the version-stamp steps
       # so they stay identical to the macOS preview job above.
@@ -165,7 +292,7 @@ jobs:
         shell: bash
         run: |
           raw=$(node -p "require('./apps/desktop/package.json').version")
-          base=$(echo "$raw" | sed 's/-.*//')
+          base="${raw%%-*}"
           preview="${base}-pr.${{ github.event.pull_request.number }}"
           echo "version=${preview}" >> "$GITHUB_OUTPUT"
           echo "Preview version: ${preview}"
@@ -181,9 +308,9 @@ jobs:
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
 
-      # Materializes a flat node_modules stage via `pnpm deploy`, rebuilds
-      # better-sqlite3's Electron-native win32-x64 sidecar, injects sharp's
-      # win32-x64 slice, then runs `electron-builder --win nsis --x64`.
+      # Materializes a flat node_modules stage via `pnpm deploy`, injects
+      # sharp's win32-x64 slice, keeps only better-sqlite3's win32-x64
+      # prebuild, then runs `electron-builder --win nsis --x64`.
       # Unsigned for now (Authenticode signing is a later task). See
       # apps/desktop/scripts/package-win.mjs.
       - name: Build preview installer (unsigned)
@@ -242,7 +369,9 @@ jobs:
           $requiredArchivePaths = @(
             "PwrSnap.exe",
             "resources/elevate.exe",
-            "resources/PwrSnapWindowList.exe"
+            "resources/PwrSnapWindowList.exe",
+            "resources/PwrSnapFFmpeg.exe",
+            "resources/PwrSnapScreenSnapshot.exe"
           )
           foreach ($path in $requiredArchivePaths) {
             if ($entryPaths -notcontains $path) {
@@ -280,7 +409,9 @@ jobs:
           $requiredFiles = @(
             (Join-Path $installDir "PwrSnap.exe"),
             (Join-Path $installDir "resources/app.asar"),
-            (Join-Path $installDir "resources/PwrSnapWindowList.exe")
+            (Join-Path $installDir "resources/PwrSnapWindowList.exe"),
+            (Join-Path $installDir "resources/PwrSnapFFmpeg.exe"),
+            (Join-Path $installDir "resources/PwrSnapScreenSnapshot.exe")
           )
           foreach ($file in $requiredFiles) {
             if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {

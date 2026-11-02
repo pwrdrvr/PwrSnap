@@ -16,17 +16,35 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { desktopCapturer, screen, type Display } from "electron";
+import { desktopCapturer, nativeImage, screen, type Display, type NativeImage } from "electron";
 import sharp from "sharp";
 import { getMainLogger } from "../log";
 import type { CaptureLatencyTrace } from "./capture-latency-trace";
+import { checkGrabMatchesDisplay } from "./grab-geometry";
 import { classifyCaptureError } from "./permissions";
+import type { ElectronBitmapPixelFormat } from "./windows-shared-snapshot";
 
 const log = getMainLogger("pwrsnap:screencapture");
 
 const execFileAsync = promisify(execFile);
 
 export type Rect = { x: number; y: number; w: number; h: number };
+
+/**
+ * What a grab whose shape does not match its display should do.
+ *
+ * `enforce` — refuse it. The default, and the only safe answer for anything
+ * that maps a rect through the display's geometry afterwards: the selector
+ * snapshot, region crops, the per-display tiles of `capture:allScreens`.
+ *
+ * `report` — log it and keep the pixels. For `capture:fullScreen` only,
+ * where no rect is ever mapped through the display: the grab IS the output.
+ * On an xdg-desktop-portal session the portal's own picker chose the
+ * source, and the Wayland refusal notice sends multi-display users to
+ * exactly this path so they can pick a monitor there — refusing whatever
+ * they picked would turn the recommended escape into an error.
+ */
+export type GrabDisplayMatch = "enforce" | "report";
 
 /**
  * Grab a whole display as a PNG buffer via Electron's `desktopCapturer`
@@ -38,10 +56,11 @@ export type Rect = { x: number; y: number; w: number; h: number };
  * needs no native helper. On Windows there's no TCC-style permission
  * gate, so a failure here is a plain error rather than a "revoked".
  */
-async function captureDisplayPng(
+async function captureDisplayNativeImage(
   display: Display,
-  latencyTrace?: CaptureLatencyTrace
-): Promise<Buffer> {
+  latencyTrace?: CaptureLatencyTrace,
+  displayMatch: GrabDisplayMatch = "enforce"
+): Promise<NativeImage> {
   // Request the display's physical size so we don't downscale a HiDPI
   // monitor. desktopCapturer treats this as a max and returns the
   // screen's native pixels (so the actual buffer may differ slightly —
@@ -120,10 +139,55 @@ async function captureDisplayPng(
   if (source === undefined) {
     throw new Error("desktopCapturer returned no usable screen source");
   }
+  if (source.thumbnail.isEmpty()) {
+    throw new Error("desktopCapturer screen thumbnail was empty");
+  }
+  // Last gate before these pixels become "this display" to everything
+  // downstream. Neither branch above proves the source IS this display:
+  // `single_source` takes the lone source precisely because it cannot
+  // check, and on an xdg-desktop-portal session that lone source is
+  // whatever the user picked in the portal's own dialog — possibly
+  // another monitor, a single window, or the whole desktop. Downstream
+  // never asks again: the selector paints the grab stretched to the
+  // overlay and the crop scales the user's rect by `display.scaleFactor`,
+  // so a mismatch here is silently wrong pixels rather than an error.
+  // See grab-geometry.ts for why aspect ratio is the checkable part.
+  const geometry = checkGrabMatchesDisplay({
+    grab: source.thumbnail.getSize(),
+    bounds: { width: display.bounds.width, height: display.bounds.height }
+  });
+  if (!geometry.ok) {
+    const fields = {
+      displayId: display.id,
+      strategy,
+      sourceCount: sources.length,
+      sourceId: source.id,
+      sourceName: source.name,
+      sourceDisplayId: source.display_id,
+      message: geometry.message
+    };
+    if (displayMatch === "report") {
+      // See `GrabDisplayMatch`: no rect is mapped through this display, so
+      // the pixels are what the user (or the portal's picker) chose.
+      log.warn("desktopCapturer grab does not match the display it was asked for; keeping it", fields);
+      return source.thumbnail;
+    }
+    log.error("desktopCapturer grab does not match the display it was asked for", fields);
+    throw new Error(`${geometry.message} (selected via ${strategy})`);
+  }
+  return source.thumbnail;
+}
+
+async function captureDisplayPng(
+  display: Display,
+  latencyTrace?: CaptureLatencyTrace,
+  displayMatch: GrabDisplayMatch = "enforce"
+): Promise<Buffer> {
+  const image = await captureDisplayNativeImage(display, latencyTrace, displayMatch);
   const toPngStage = latencyTrace?.begin("screen_to_png");
   let png: Buffer;
   try {
-    png = source.thumbnail.toPNG();
+    png = image.toPNG();
     if (toPngStage !== undefined) {
       latencyTrace?.end(toPngStage, {
         outcome: png.length === 0 ? "empty" : "completed",
@@ -139,16 +203,84 @@ async function captureDisplayPng(
     throw cause;
   }
   if (png.length === 0) {
-    throw new Error("desktopCapturer screen thumbnail was empty");
+    throw new Error("desktopCapturer screen PNG was empty");
   }
   return png;
 }
 
+export type CapturedDisplayBitmap = Readonly<{
+  bitmap: Buffer;
+  width: number;
+  height: number;
+  sourcePixelFormat: ElectronBitmapPixelFormat;
+}>;
+
+let cachedBitmapPixelFormat: ElectronBitmapPixelFormat | null = null;
+
+/**
+ * Electron deliberately documents NativeImage.toBitmap() as
+ * platform-dependent. Probe the installed Electron build with one opaque red
+ * pixel and accept only the two layouts we normalize in the Win32 helper.
+ * Unknown layouts disable the fast path and fall back to PNG/file transport.
+ */
+function electronBitmapPixelFormat(): ElectronBitmapPixelFormat {
+  if (cachedBitmapPixelFormat !== null) return cachedBitmapPixelFormat;
+  const redPixel = nativeImage.createFromDataURL(
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVQImWP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=="
+  );
+  const probe = redPixel.toBitmap({ scaleFactor: 1 });
+  if (probe.byteLength < 4 || probe[3] !== 0xff) {
+    throw new Error("Electron NativeImage bitmap probe returned an unsupported layout");
+  }
+  if (probe[0] > 0xf0 && probe[1] < 0x10 && probe[2] < 0x10) {
+    cachedBitmapPixelFormat = "rgba8";
+    return cachedBitmapPixelFormat;
+  }
+  if (probe[2] > 0xf0 && probe[0] < 0x10 && probe[1] < 0x10) {
+    cachedBitmapPixelFormat = "bgra8";
+    return cachedBitmapPixelFormat;
+  }
+  throw new Error("Electron NativeImage bitmap probe was neither RGBA8 nor BGRA8");
+}
+
+/** Windows fast-path source: one raw desktopCapturer bitmap, no PNG encode.
+ * The caller owns the fresh toBitmap() buffer and may normalize it in place. */
+export async function captureDisplayBitmap(
+  display: Display,
+  latencyTrace?: CaptureLatencyTrace
+): Promise<CapturedDisplayBitmap> {
+  const sourcePixelFormat = electronBitmapPixelFormat();
+  const image = await captureDisplayNativeImage(display, latencyTrace);
+  // Pin both calls to the same representation. NativeImage can contain more
+  // than one scale factor; relying on independent defaults risks validating
+  // one representation's dimensions against another representation's bytes.
+  const { width, height } = image.getSize(1);
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
+    throw new Error("desktopCapturer returned invalid bitmap dimensions");
+  }
+  const bitmap = image.toBitmap({ scaleFactor: 1 });
+  const expectedBytes = BigInt(width) * BigInt(height) * 4n;
+  if (
+    expectedBytes > BigInt(Number.MAX_SAFE_INTEGER) ||
+    bitmap.byteLength !== Number(expectedBytes)
+  ) {
+    throw new Error(
+      `desktopCapturer bitmap length mismatch: got ${bitmap.byteLength}, expected ${expectedBytes}`
+    );
+  }
+  return {
+    bitmap,
+    width,
+    height,
+    sourcePixelFormat
+  };
+}
+
 /**
  * Result of a region capture attempt. Caller awaits `tempPath` and
- * passes it into `source-store.putCaptureSource`. On success, the
- * file at `tempPath` is owned by the caller — they should rename or
- * delete it.
+ * passes it into `persistCaptureFromTempV2` (bundle-store.ts). On
+ * success, the file at `tempPath` is owned by the caller — they should
+ * rename or delete it.
  */
 export type CaptureRegionResult =
   | { ok: true; tempPath: string; displayId: number }
@@ -331,7 +463,8 @@ export async function captureWindow(
  */
 export async function captureScreen(
   displayId: number,
-  latencyTrace?: CaptureLatencyTrace
+  latencyTrace?: CaptureLatencyTrace,
+  options: { displayMatch?: GrabDisplayMatch } = {}
 ): Promise<CaptureRegionResult> {
   const display = screen.getAllDisplays().find((d) => d.id === displayId);
   if (display === undefined) {
@@ -356,7 +489,7 @@ export async function captureScreen(
     }
     const tempPath = join(dir, `${Date.now()}.png`);
     try {
-      const png = await captureDisplayPng(display, latencyTrace);
+      const png = await captureDisplayPng(display, latencyTrace, options.displayMatch);
       const writeStage = latencyTrace?.begin("screen_file_write");
       try {
         await writeFile(tempPath, png);

@@ -17,6 +17,7 @@
 
 import { useEffect, useState, type ReactElement } from "react";
 import { appUpdateNotice } from "./app-update-notice";
+import { ReleaseNotesLink } from "./ReleaseNotesLink";
 import { useAppUpdateInstall, useAppUpdateStatus } from "./use-app-update";
 
 export type AppUpdateRowVariant = "tray" | "float-over";
@@ -133,6 +134,18 @@ export function AppUpdateRow({
         </span>
       </span>
       <span className="psu__actions">
+        {/* "Notes", not "Release notes" — both hosts size themselves to
+            their content, and the long label pushes the row's text column
+            narrow enough to wrap the version onto a second line, which
+            resizes the popover. The accessible name carries the full
+            phrase and the version. */}
+        <ReleaseNotesLink
+          version={notice.version}
+          className="psu__notes"
+          label="Notes"
+          ariaLabel={`Release notes for v${notice.version}`}
+          disabled={busy}
+        />
         <button className="psu__go" type="button" disabled={busy} onClick={install}>
           {busy ? notice.busyAction : notice.compactAction}
         </button>

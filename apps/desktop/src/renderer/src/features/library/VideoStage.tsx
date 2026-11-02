@@ -4,28 +4,49 @@
 //   • a chromeless <video> (our transport, no ⋮ download / PiP menu),
 //   • `VideoTransport` (play/pause · timecode · loop-in-range · mute ·
 //     fullscreen) with key hints in the button titles,
-//   • `VideoTimeline` (filmstrip + waveform + playhead + in/out handles),
-//   • a keyboard model (space, J/K/L, ←/→ frame, ⇧←/⇧→ 1 s, I/O,
-//     Home/End) that is active only while the stage has focus and no
-//     text input does — see `video-transport-keys.ts`.
+//   • `VideoTimeline` (filmstrip + activity + waveform + playhead +
+//     in/out handles + splits and cuts),
+//   • a keyboard model (space, J/K/L, ←/→ frame, ⇧←/⇧→ 1 s, I/O, S
+//     split, X cut, Home/End) that is active only while the stage has
+//     focus and no text input does — see `video-transport-keys.ts`.
+//     ⌘Z / ⇧⌘Z undo edits through the window's edit-menu bridge.
 //
-// The trim range is owned by `useVideoTrimRange` (local + debounced
-// `video:setDefaultRange`), instantiated ONCE at the Library level and
+// The edit (trim + cuts) is owned by `useVideoTrimRange` (local +
+// debounced `video:edit`), instantiated ONCE at the Library level and
 // passed in as `trim` — the DetailRail's export cards read that same
 // live object, so a click during the persist debounce can't export a
-// stale range.
+// stale edit.
+//
+// Playback always plays the EDIT: it starts at the in-point, skips every
+// cut, and ends at the out-point (`videoEditPlaybackStep`, the same rule
+// the sizzle reel preview follows). Loop only decides what happens at the
+// end — wrap to the in-point, or stop. To look at footage the edit
+// removed, scrub into it; a paused head shows whatever frame it is on.
 
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactElement
 } from "react";
-import type { CaptureRecord, VideoCaptureMetadata } from "@pwrsnap/shared";
-import { captureSrcUrl } from "../../lib/pwrsnap";
+import {
+  nextPlayableVideoTime,
+  splitVideoSegmentsAt,
+  videoEditPlaybackStep,
+  toggleVideoPiece,
+  videoExportSpans,
+  videoPieceAt,
+  videoSegmentsEqual,
+  type CaptureRecord,
+  type VideoCaptureMetadata
+} from "@pwrsnap/shared";
+import { registerEditorUndoRedo } from "../../lib/editMenuBridge";
 import { usePlayheadSource } from "../shared/playhead";
+import { useVideoActivity } from "../shared/useVideoActivity";
+import { useVideoPlaybackSrc } from "../shared/useVideoPlaybackSrc";
 import { VideoTimeline } from "../shared/VideoTimeline";
 import { useVideoTimelineAssets } from "../shared/useVideoTimelineAssets";
 import type { UseVideoTrimRange } from "../shared/useVideoTrimRange";
@@ -38,6 +59,8 @@ import {
   stepTime
 } from "../shared/video-range";
 import { VideoTransport } from "./VideoTransport";
+import { PresenterLayer } from "../camera/PresenterLayer";
+import { presenterKeyAction, usePresenter } from "../camera/usePresenter";
 import {
   isTextEntryTarget,
   nextShuttleRate,
@@ -132,7 +155,42 @@ export function VideoStage({
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const [playing, setPlaying] = useState(false);
-  const [muted, setMuted] = useState(false);
+  // ONE number owns audibility. `muted` is derived, not stored: two
+  // independent states let the pair reach `muted: false, volume: 0` —
+  // the mute button reading "sound is on" over an element nothing can
+  // be heard from, with the slider the only way back.
+  const [volume, setVolume] = useState(1);
+  const muted = volume === 0;
+  // Where the mute button returns to. Held in a ref because restoring it
+  // is not a render input — only the level it restores TO is.
+  const lastAudibleRef = useRef(1);
+  // Read by `loadedmetadata`, which fires again on every source swap. A
+  // closure over `volume` there would re-apply whatever the level was
+  // when the listener was attached.
+  const volumeRef = useRef(volume);
+  volumeRef.current = volume;
+  // Position + play state carried across a source swap. Assigning `src`
+  // runs the media load algorithm, which stops the element and resets
+  // `currentTime` to 0 — and does NOT fire `pause`, so nothing else
+  // notices. Measured in Chromium: paused true, currentTime 0, events
+  // abort/emptied/timeupdate/loadstart/suspend/durationchange/
+  // loadedmetadata, no pause.
+  const resumeAfterSwapRef = useRef<{ time: number; playing: boolean } | null>(null);
+  // What the <video> should actually load — the capture URL, or a prepared
+  // rendition when the audible audio is not the track a player would take.
+  // Seeded with the capture URL, so the first frame still paints while the
+  // question is being answered.
+  const playbackUrl = useVideoPlaybackSrc({
+    captureId,
+    video,
+    // Record where to come back to BEFORE the src changes: assigning it
+    // resets the element to 0 and stops it, silently (see above).
+    onBeforeSwap: () => {
+      const el = videoRef.current;
+      if (el === null) return;
+      resumeAfterSwapRef.current = { time: el.currentTime, playing: !el.paused };
+    }
+  });
   const [loopInRange, setLoopInRange] = useState(true);
   // `currentTime` is the DISCRETE head — seek, pause, capture switch.
   // The per-frame head rides `playhead` instead, straight to the two
@@ -147,9 +205,33 @@ export function VideoStage({
     null
   );
 
-  const { range, setRange } = trim;
+  const { range, setRange, segments, setSegments } = trim;
   const rangeRef = useRef(range);
   rangeRef.current = range;
+  const segmentsRef = useRef(segments);
+  segmentsRef.current = segments;
+  const spans = useMemo(() => videoExportSpans(segments), [segments]);
+  const spansRef = useRef(spans);
+  spansRef.current = spans;
+  const hasCuts = spans.length > 1;
+  const activity = useVideoActivity(captureId);
+
+  // Edit undo / redo rides the window's edit-menu bridge, the same slot
+  // the image editor uses — so ⌘Z, the Edit menu and its accelerator
+  // all reach this stack, and an empty stack falls through to the
+  // Library's restore-last-deleted. The trim's EditHistory orders the
+  // trim and presenter stacks into one line of edits.
+  const editHistory = trim.history;
+  useEffect(
+    () =>
+      registerEditorUndoRedo({
+        undo: () => editHistory.undo(),
+        redo: () => editHistory.redo(),
+        canUndo: () => editHistory.canUndo(),
+        canRedo: () => editHistory.canRedo()
+      }),
+    [editHistory]
+  );
   const loopRef = useRef(loopInRange);
   loopRef.current = loopInRange;
 
@@ -174,7 +256,9 @@ export function VideoStage({
   // (`fullRange`, the recorder's seed) is exact, so the common case
   // still gets it; anything hand-trimmed falls to the wrap + the
   // `ended` recovery below.
-  const nativeLoop = loopInRange && range.start <= 0 && range.end >= durationSec;
+  //
+  // And never with cuts: the element's loop plays straight through them.
+  const nativeLoop = loopInRange && !hasCuts && range.start <= 0 && range.end >= durationSec;
   const nativeLoopRef = useRef(nativeLoop);
   nativeLoopRef.current = nativeLoop;
 
@@ -245,13 +329,15 @@ export function VideoStage({
     const el = videoRef.current;
     if (el === null) return;
     const r = rangeRef.current;
-    // Play from the in-point when the head sits outside the range with
-    // loop-in-range on, or when parked at the very end.
-    if (loopRef.current && (el.currentTime < r.start - 0.01 || el.currentTime >= r.end - 0.01)) {
-      el.currentTime = r.start;
-    } else if (el.currentTime >= durationSec - 0.01) {
-      el.currentTime = loopRef.current ? r.start : 0;
-    }
+    // Play the edit: from the in-point when the head sits outside the
+    // range or at its end, and from the next kept part when it sits in a
+    // cut.
+    const next =
+      el.currentTime >= r.end - 0.01
+        ? null
+        : nextPlayableVideoTime(segmentsRef.current, el.currentTime);
+    const target = next ?? r.start;
+    if (target !== el.currentTime) el.currentTime = target;
     el.playbackRate = 1;
     // Publish the snap BEFORE handing off to the element. If `play()`
     // rejects — a decode failure on a damaged capture, an autoplay
@@ -266,7 +352,7 @@ export function VideoStage({
     // swallowed.
     settleTime();
     void el.play().catch(() => undefined);
-  }, [durationSec, settleTime, stopShuttle]);
+  }, [settleTime, stopShuttle]);
 
   // Scrubbing the timeline (body scrub or a trim handle) pauses for the
   // duration of the gesture and restores playback on release. Without
@@ -383,6 +469,20 @@ export function VideoStage({
           setRange({ start: Math.min(rangeRef.current.start, end - MIN_RANGE_SEC), end }, true);
           return;
         }
+        case "split": {
+          const current = segmentsRef.current;
+          const next = splitVideoSegmentsAt(current, roundTime(now));
+          if (next.length !== current.length) setSegments(next, true);
+          return;
+        }
+        case "toggleCut": {
+          const current = segmentsRef.current;
+          const piece = videoPieceAt(current, durationSec, now);
+          if (piece === null) return;
+          const next = toggleVideoPiece(current, durationSec, piece);
+          if (!videoSegmentsEqual(next, current)) setSegments(next, true);
+          return;
+        }
         case "seekStart":
           seek(0);
           return;
@@ -394,11 +494,33 @@ export function VideoStage({
           return;
       }
     },
-    [currentTime, durationSec, pause, play, playing, seek, setRange, shuttle]
+    [currentTime, durationSec, pause, play, playing, seek, setRange, setSegments, shuttle]
   );
+
+  const presenterTimeline = useMemo(
+    () => ({
+      segments,
+      durationSec,
+      subscribe: playhead.subscribe,
+      now: playhead.get,
+      history: trim.history
+    }),
+    [segments, durationSec, playhead, trim.history]
+  );
+  const presenter = usePresenter(record, presenterTimeline);
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
     if (isTextEntryTarget(e.target)) return;
+    if (presenter !== null) {
+      const action = presenterKeyAction(e, presenter.selected);
+      if (action !== null) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (action === "deselect") presenter.setSelected(false);
+        else presenter.act(action);
+        return;
+      }
+    }
     // A focused transport button keeps native space/enter activation.
     if ((e.key === " " || e.key === "Enter") && (e.target as HTMLElement).tagName === "BUTTON") return;
     const intent = transportIntentForKey(e);
@@ -443,7 +565,18 @@ export function VideoStage({
       settleTime();
     };
     const onLoaded = (): void => {
-      setMuted(el.muted);
+      el.volume = volumeRef.current;
+      el.muted = volumeRef.current === 0;
+      // A swap landed. Put the user back where they were: the element is
+      // at 0 and stopped, and because no `pause` fired, `playing` still
+      // says it is running.
+      const resume = resumeAfterSwapRef.current;
+      resumeAfterSwapRef.current = null;
+      if (resume === null) return;
+      if (resume.time > 0) el.currentTime = resume.time;
+      settleTime();
+      if (!resume.playing) return;
+      void el.play().catch(() => setPlaying(false));
     };
     el.addEventListener("play", onPlay);
     el.addEventListener("pause", onPause);
@@ -500,14 +633,29 @@ export function VideoStage({
     };
 
     const tick = (nowMs: number): void => {
-      const r = rangeRef.current;
-      let t = el.currentTime;
-      if (!nativeLoopRef.current && loopRef.current && t >= r.end - 0.005) {
+      const t = el.currentTime;
+      // A whole-clip native loop wraps in the media pipeline and has no
+      // cuts to skip; everything else follows the edit.
+      const step = nativeLoopRef.current
+        ? ({ kind: "play" } as const)
+        : videoEditPlaybackStep(spansRef.current, t);
+      if (step.kind === "end") {
+        const r = rangeRef.current;
+        if (!loopRef.current) {
+          // Played once — park on the out-point. The `pause` event
+          // settles React state and ends this loop.
+          el.pause();
+          return;
+        }
         el.currentTime = r.start;
         // The wrap is a discrete jump, not continuous motion — a
         // throttled head would keep drawing the far end for a beat
         // after the picture had already snapped back.
         publish(nowMs, r.start, 0);
+      } else if (step.kind === "seek") {
+        // Jumping a cut. The same discrete-jump rule as the wrap.
+        el.currentTime = step.sec;
+        publish(nowMs, step.sec, 0);
       } else {
         publish(nowMs, t, vfcDriving ? PLAYHEAD_MAX_GAP_MS : PLAYHEAD_MIN_PUBLISH_MS);
       }
@@ -572,10 +720,25 @@ export function VideoStage({
   useEffect(() => () => stopShuttle(), [stopShuttle]);
 
   const toggleMute = (): void => {
+    changeVolume(volume === 0 ? lastAudibleRef.current : 0);
+  };
+
+  // Volume was previously never assigned at all, so playback sat at 1.0
+  // with mute as the only control — which made "I cannot hear it" and "it
+  // is playing quietly" indistinguishable from the UI.
+  const changeVolume = (next: number): void => {
+    const clamped = Math.min(1, Math.max(0, next));
     const el = videoRef.current;
+    // Remember the level the mute button comes back to, so muting is not
+    // a one-way trip to zero.
+    if (clamped > 0) lastAudibleRef.current = clamped;
+    setVolume(clamped);
     if (el === null) return;
-    el.muted = !el.muted;
-    setMuted(el.muted);
+    el.volume = clamped;
+    // Moving the slider off zero is an unmute; dragging it to zero is a
+    // mute. Leaving the two controls independent lets the slider sit at
+    // 80% while the element is silent, with nothing on screen saying why.
+    el.muted = clamped === 0;
   };
 
   const toggleFullscreen = (): void => {
@@ -585,7 +748,7 @@ export function VideoStage({
       void document.exitFullscreen().catch(() => undefined);
       return;
     }
-    void el.requestFullscreen?.().catch(() => undefined);
+    void (record.video?.camera ? el.parentElement : el)?.requestFullscreen?.().catch(() => undefined);
   };
 
   const onStripWidth = useCallback((w: number) => setStripWidth(w), []);
@@ -596,7 +759,15 @@ export function VideoStage({
       className="psl__video-stage"
       tabIndex={0}
       onKeyDown={onKeyDown}
-      onPointerDownCapture={() => {
+      onPointerDownCapture={(e) => {
+        // A press anywhere but the presenter, its toolbar or its lane
+        // deselects it — the same rule as an annotation in the editor.
+        if (
+          presenter?.selected === true &&
+          !(e.target instanceof Element && e.target.closest("[data-presenter-ui]") !== null)
+        ) {
+          presenter.setSelected(false);
+        }
         // Clicking anywhere in the stage arms the keyboard model.
         const root = rootRef.current;
         if (root !== null && !root.contains(document.activeElement)) {
@@ -606,17 +777,26 @@ export function VideoStage({
       aria-label={`Video player, ${formatTimecode(durationSec)}`}
       data-testid="video-stage"
     >
+      {trim.editError && <div role="alert">{trim.editError}</div>}
       <div className="psl__video-frame">
         <video
           ref={videoRef}
           className="psl__video-el"
-          src={captureSrcUrl(captureId)}
+          src={playbackUrl}
           playsInline
           preload="metadata"
           loop={nativeLoop}
           onClick={() => runIntent({ type: "togglePlay" })}
           onDoubleClick={toggleFullscreen}
         />
+        {presenter !== null && (
+          <PresenterLayer
+            capture={record}
+            style={presenter.style}
+            videoRef={videoRef}
+            editing={presenter.editing}
+          />
+        )}
       </div>
       <VideoTransport
         playing={playing}
@@ -625,8 +805,16 @@ export function VideoStage({
         durationSec={durationSec}
         loopInRange={loopInRange}
         muted={muted}
+        volume={volume}
+        onVolumeChange={changeVolume}
         onTogglePlay={() => runIntent({ type: "togglePlay" })}
         onToggleLoop={() => setLoopInRange((v) => !v)}
+        onSplit={() => runIntent({ type: "split" })}
+        presenter={
+          presenter === null
+            ? undefined
+            : { visible: presenter.style.visible, onToggle: () => presenter.act({ type: "toggleVisible" }) }
+        }
         onToggleMute={toggleMute}
         onFullscreen={toggleFullscreen}
       />
@@ -635,6 +823,9 @@ export function VideoStage({
         currentTime={currentTime}
         playhead={playhead}
         range={range}
+        segments={segments}
+        onSegmentsChange={setSegments}
+        activity={activity}
         frames={assets.frames}
         audioBlob={assets.audioBlob}
         onSeek={(sec) => {
@@ -644,7 +835,24 @@ export function VideoStage({
         onWidthChange={onStripWidth}
         onInteractingChange={onTimelineInteracting}
         label="Recording timeline"
+        cameraLane={presenter?.lane}
       />
+      {presenter !== null && presenter.error !== "" && (
+        <p className="psl__video-audio-note" role="alert">
+          The presenter could not be saved: {presenter.error}
+        </p>
+      )}
+      {video.requestedSystemAudio && !video.hasSystemAudio && (
+        // The one thing left worth saying. The preview now plays what the
+        // waveform draws, so the old "system audio only" apology is gone —
+        // but a source the user ARMED and got nothing from is still worth
+        // a line, or the only evidence is a receipt on a toast they have
+        // already dismissed.
+        <p className="psl__video-audio-note">
+          System audio was on for this recording but captured nothing —
+          nothing was playing through this computer.
+        </p>
+      )}
     </div>
   );
 }

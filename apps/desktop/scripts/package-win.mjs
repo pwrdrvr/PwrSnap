@@ -34,11 +34,18 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pruneSharpNativePackages } from "./sharp-platform-packages.mjs";
+import { pruneBetterSqlite3Prebuilds } from "./better-sqlite3-prebuilds.mjs";
+import { stagedPnpmConfigEnv } from "./staged-pnpm-config.mjs";
+// windowsInstallerArtifacts + writeWindowsChecksums live beside the alias
+// writer that reads SHA256SUMS back, so the manifest has one definition.
+import {
+  windowsInstallerArtifacts,
+  writeWindowsChecksums,
+} from "./windows-release-artifacts.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -103,14 +110,6 @@ if (prepareOnly && publish) {
   throw new Error("--prepare-only and --publish cannot be combined");
 }
 
-// Force pnpm to ignore any user-level global-pnpmfile inside child
-// processes — mirrors release.mjs so the staged install resolves the
-// same pnpmfile combination CI's --frozen-lockfile recorded.
-const pnpmProjectConfigEnv = {
-  npm_config_global_pnpmfile: "",
-  NPM_CONFIG_GLOBAL_PNPMFILE: ""
-};
-
 function step(label) {
   console.log(`\n→ ${label}`);
 }
@@ -147,15 +146,6 @@ function resolveElectronBuilderCli() {
   throw new Error(
     `electron-builder CLI missing at ${staged} and ${dev}; run \`pnpm install\` from the repo root first`
   );
-}
-
-function readElectronBuilderVersion() {
-  const config = readFileSync(join(desktopRoot, "electron-builder.yml"), "utf8");
-  const match = /^electronVersion:\s*([^\s#]+)/m.exec(config);
-  if (!match) {
-    throw new Error("electron-builder.yml is missing electronVersion");
-  }
-  return match[1];
 }
 
 function readStagedPackageJson(pkgName) {
@@ -287,6 +277,11 @@ function assertRequiredWindowsResources() {
       label: "Windows verified-file helper",
       path: join(stageDir, "build", "native", "verified-file.exe"),
       hint: "Run `pnpm --filter @pwrsnap/desktop build:native` on Windows before packaging."
+    },
+    {
+      label: "Windows screen-snapshot helper",
+      path: join(stageDir, "build", "native", "screen-snapshot.exe"),
+      hint: "Run `pnpm --filter @pwrsnap/desktop build:native` on Windows before packaging."
     }
   ];
 
@@ -360,29 +355,6 @@ function findWindowsUnpackedDir(distDir) {
   return candidates[0];
 }
 
-function windowsInstallerArtifacts(distDir) {
-  const artifacts = readdirSync(distDir)
-    .filter((entry) => entry.endsWith("-setup.exe"))
-    .sort()
-    .map((name) => ({ name, path: join(distDir, name) }));
-  if (artifacts.length === 0) {
-    throw new Error(`No Windows installer artifacts found under ${distDir}`);
-  }
-  return artifacts;
-}
-
-function writeWindowsChecksums(distDir) {
-  const lines = windowsInstallerArtifacts(distDir)
-    .map(({ name, path }) => {
-      const digest = createHash("sha256").update(readFileSync(path)).digest("hex");
-      return `${digest}  ${name}`;
-    })
-    .join("\n");
-  const checksumPath = join(distDir, "SHA256SUMS");
-  writeFileSync(checksumPath, `${lines}\n`);
-  return checksumPath;
-}
-
 if (!signStageOnly) {
   // 1. License notices check (cheap, fail-fast).
   step("license notices check");
@@ -435,16 +407,15 @@ if (!signStageOnly) {
     `  = retained native slice(s): ${sharpPrune.required.map((name) => `@img/${name}`).join(", ")}`
   );
 
-  // 4. Build the staged Electron-native better-sqlite3 sidecar for win32-x64.
-  step("prepare staged better-sqlite3 Electron sidecar (win32-x64)");
-  runChecked("node", ["scripts/rebuild-native-for-electron.mjs"], {
-    cwd: stageDir,
-    env: {
-      PWRSNAP_ELECTRON_VERSION: readElectronBuilderVersion(),
-      npm_config_arch: targetArch,
-      npm_config_target_arch: targetArch
-    }
+  // 4. Keep only the better-sqlite3 prebuild this installer loads. Its N-API
+  //    prebuilds serve Electron as-is, so nothing is rebuilt here.
+  step(`prune foreign better-sqlite3 prebuilds (keep ${targetPlatform}/${targetArch})`);
+  const sqlitePrune = pruneBetterSqlite3Prebuilds({
+    nodeModulesDir: join(stageDir, "node_modules"),
+    platform: targetPlatform,
+    arch: targetArch
   });
+  console.log(`  = retained: ${sqlitePrune.kept.join(", ")}`);
 
   // 5. Seed the stage with build output + electron-builder inputs.
   step("seed stage with build output + builder inputs");
@@ -461,8 +432,7 @@ if (!signStageOnly) {
     join(desktopRoot, "electron-builder.yml"),
     join(stageDir, "electron-builder.yml")
   );
-  cpSync(join(repoRoot, ".npmrc"), join(stageDir, ".npmrc"));
-  for (const file of ["THIRD_PARTY_LICENSES", "CHANGELOG.md"]) {
+  for (const file of ["THIRD_PARTY_LICENSES", "CHANGELOG.md", "LICENSE", ".pnpmfile-global.cjs"]) {
     cpSync(join(repoRoot, file), join(stageDir, file));
   }
   copyWindowsFfmpegIntoStage({ required: releaseMode });
@@ -523,7 +493,7 @@ if (azureSign) {
 }
 runChecked("node", builderArgs.filter(Boolean), {
   cwd: stageDir,
-  env: pnpmProjectConfigEnv
+  env: stagedPnpmConfigEnv(stageDir)
 });
 
 // 7. Verify the installer actually landed. electron-builder can exit 0 even
@@ -532,16 +502,7 @@ runChecked("node", builderArgs.filter(Boolean), {
 //    rather than letting CI upload an empty artifact and calling it green.
 step("verify installer artifact");
 const dist = packageDistDir;
-const installers = existsSync(dist)
-  ? readdirSync(dist).filter((name) => name.endsWith("-setup.exe"))
-  : [];
-if (installers.length === 0) {
-  throw new Error(
-    `electron-builder reported success but produced no *-setup.exe in ${dist}. ` +
-    `Check the electron-builder output above (icon conversion, native slices).`
-  );
-}
-for (const name of installers) {
+for (const { name } of windowsInstallerArtifacts(dist)) {
   console.log(`  ✓ ${name}`);
 }
 

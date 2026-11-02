@@ -42,6 +42,7 @@ import {
   mergeSceneIntoPrevious,
   moveSceneBy,
   patchScene,
+  setScenePresenter,
   patchSequenceBeat,
   refitSceneOffsets,
   removeSceneById,
@@ -292,12 +293,6 @@ export function Editor(props: EditorProps): ReactElement {
     if (playingSceneId === null) return;
     setPlayhead({ sceneId: playingSceneId, localSec: playingTimeSec });
   }, [playingSceneId, playingTimeSec]);
-  const playheadRegion =
-    playhead === null ? null : timelineModel.scenes.find((s) => s.sceneId === playhead.sceneId) ?? null;
-  const playheadSec =
-    playheadRegion === null || playhead === null
-      ? 0
-      : Math.min(playheadRegion.endSec, playheadRegion.startSec + playhead.localSec);
   const onScrub = (sec: number): void => {
     head.set(sec);
     const region = sceneAt(timelineModel, sec);
@@ -437,15 +432,6 @@ export function Editor(props: EditorProps): ReactElement {
     if (next !== project.scenes) onScenes(next);
     plan.dismissRefitOffer(sceneId);
   };
-  /** What a scene's own preview stage should show: its playback time while
-   *  it plays / is loaded, else the project playhead if it sits in this
-   *  scene (a scrub drives the stage even before the audio is loaded). */
-  const sceneCurrentTimeSec = (sceneId: string): number => {
-    if (plan.previewingSceneId === sceneId || plan.previewLoadedSceneId === sceneId) {
-      return plan.previewTimeSec;
-    }
-    return playhead !== null && playhead.sceneId === sceneId ? playhead.localSec : 0;
-  };
   // Guard on the FORMATTED value, not the raw seconds: a sub-half-second
   // reel (a short trim, a small duration override) is > 0 but rounds to
   // "0:00", and `Render · 0:00` reads as broken.
@@ -511,6 +497,7 @@ export function Editor(props: EditorProps): ReactElement {
 
       {project.scenes.length > 0 ? (
         <ReelPlayer
+          scenes={project.scenes}
           model={timelineModel}
           captureMap={captureMap}
           beatById={beatById}
@@ -520,6 +507,7 @@ export function Editor(props: EditorProps): ReactElement {
           renderDisabled={rendering || project.scenes.length === 0 || unscriptedSceneNumber !== null}
           renderTitle={renderTitle}
           onRender={onRender}
+          onScenePresenter={(sceneId, avatar) => onScenes(setScenePresenter(project.scenes, sceneId, avatar))}
         />
       ) : null}
 
@@ -582,6 +570,8 @@ export function Editor(props: EditorProps): ReactElement {
             return createPortal(
               <SceneInspector
                 scene={sceneRecord}
+                onScenePresenter={(avatar) => onScenes(setScenePresenter(project.scenes, sceneRecord.id, avatar))}
+                presenterCapture={(sceneRecord.kind === "sequence" ? (sceneRecord.beats ?? []).map(beat => beat.captureId) : [sceneRecord.captureId]).map(id => captureMap.get(id)).find(capture => capture?.video?.camera != null)}
                 region={region}
                 sceneCount={project.scenes.length}
                 playheadLocalSec={
@@ -642,7 +632,6 @@ export function Editor(props: EditorProps): ReactElement {
                   scene={scene}
                   idx={idx}
                   sceneCount={project.scenes.length}
-                  captureMap={captureMap}
                   onEditScene={(patch) => editScene(scene.id, patch)}
                   onPickSequenceBeat={() => onPickSequenceBeat(scene.id)}
                   onPlayFrom={() => onPlayFrom(scene.id)}

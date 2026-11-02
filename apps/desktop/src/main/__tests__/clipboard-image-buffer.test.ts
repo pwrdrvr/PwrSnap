@@ -71,11 +71,24 @@ describe("clipboard image buffer helpers", () => {
     ).toEqual(["public.jp2", "com.apple.pict", "public.tiff"]);
   });
 
+  test("matches the legacy names Electron 44 lists macOS image flavors under", () => {
+    // Measured on Electron 44.4.5 / macOS 26: a native PNG pasteboard lists
+    // `image/png` plus these raw names, never `public.png` / `public.tiff`.
+    expect(
+      clipboardImageBufferFormats([
+        "image/png",
+        "Apple PNG pasteboard type",
+        "NeXT TIFF v4.0 pasteboard type",
+        "text/uri-list"
+      ])
+    ).toEqual(["Apple PNG pasteboard type", "NeXT TIFF v4.0 pasteboard type"]);
+  });
+
   test("tries later raw image formats after earlier decode failures", async () => {
     const tiff = await makeTiff(144, 81);
     const result = await writeFirstDecodableClipboardBufferToPng({
       formats: ["public.jp2", "public.tiff"],
-      readBuffer: (format) => (format === "public.tiff" ? tiff : Buffer.from("not a jp2")),
+      readBuffer: async (format) => (format === "public.tiff" ? tiff : Buffer.from("not a jp2")),
       makeTempPath
     });
 
@@ -90,7 +103,7 @@ describe("clipboard image buffer helpers", () => {
   test("reports every raw image decode failure when none work", async () => {
     const result = await writeFirstDecodableClipboardBufferToPng({
       formats: ["public.jp2", "com.apple.pict", "text/plain"],
-      readBuffer: () => Buffer.from("not an image"),
+      readBuffer: async () => Buffer.from("not an image"),
       makeTempPath
     });
 

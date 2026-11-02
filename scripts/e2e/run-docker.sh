@@ -15,6 +15,9 @@
 #
 # Usage:
 #   ./scripts/e2e/run-docker.sh [options]
+#   pnpm test:desktop-e2e:docker [--] [options]
+#
+# A bare `--` is ignored, so both pnpm forms work.
 #
 # Options:
 #   --source <path>     Source directory to test. Default: repo
@@ -113,6 +116,11 @@ while [[ $# -gt 0 ]]; do
     --platform) PLATFORM="$2"; shift 2;;
     --keep-stage) KEEP_STAGE=1; shift;;
     --shell) SHELL_MODE=1; shift;;
+    # pnpm 10 forwards a literal `--` to the script, so
+    # `pnpm test:desktop-e2e:docker -- --test ...` arrives here as
+    # `-- --test ...`. The script has no pass-through args for a `--`
+    # to separate, so skip it wherever it appears.
+    --) shift;;
     -h|--help)
       # Print the leading comment block (everything between `# Usage:`
       # and the first non-`#` line after it) so --help and the file

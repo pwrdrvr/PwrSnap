@@ -12,8 +12,9 @@
 - Solution learnings (post-incident notes, gotchas) live in `docs/solutions/`.
 - Shipped-behavior references live at the top level of `docs/` — the release
   runbook, the Windows guide and signing doc, the ffmpeg build reference, the
-  third-party license notices doc, and the
-  [third-party agent connection guide](docs/mcp-third-party-agents.md).
+  third-party license notices doc, the
+  [third-party agent connection guide](docs/mcp-third-party-agents.md), and
+  the [Linux tray support statement](docs/linux-tray-support.md).
 - Two documents that began as plans survive as living references, because
   each is the only written statement of something still true: the
   [bundle format spec](docs/architecture-bundle-format.md) and the
@@ -80,10 +81,14 @@
   the selector and global hotkeys — and the operator's real windows can leak
   into a capture. For macOS Tart, self-hosted runner, or headed E2E work,
   follow [`.agents/skills/macos-vm-e2e-lab/SKILL.md`](.agents/skills/macos-vm-e2e-lab/SKILL.md).
-  It discovers an existing PwrSuiteLab checkout and routes all lab access
-  through that checkout's current instructions and controllers
-  (`macos-tart/run-e2e.sh`). For Windows probes or Windows headed E2E, read
-  the Windows VM skill in that same checkout. Do not provision a
+  It prefers PwrSuiteLab Control MCP's live schemas and served
+  `manage-pwrlab-e2e` skill. Granted MCP actions need no per-operation native
+  confirmation; keep the requested target/scope and controller safety checks.
+  Use the existing checkout's managed `macos-tart/run-e2e.sh` only when MCP
+  is unavailable, retaining the script runbook's approval and transport gates.
+  Invalid arguments require checking the schema, not assuming a lost grant.
+  For Windows probes or Windows headed E2E, read the Windows VM skill in
+  the existing PwrSuiteLab checkout. Do not provision a
   product-local Tart lab from this repository, improvise direct Tart or SSH
   access, or run headed E2E on the operator's desktop without their explicit
   approval.
@@ -92,7 +97,7 @@
   inventory live only in PwrSuiteLab — including in commit messages, PR
   bodies, issues, and fixtures. What may live here is the product/CI contract,
   the fact that the lab exists and is named PwrSuiteLab, and the controller
-  entry points it exposes (`macos-tart/run-e2e.sh` and its flags) — enough to
+  entry points and public MCP job/ownership contract it exposes — enough to
   invoke it, never enough to map it.
 
 ## Agent Instruction Files
@@ -100,6 +105,13 @@
 - Keep a sibling `CLAUDE.md` symlink next to every `AGENTS.md`, pointing at
   that `AGENTS.md`, so Codex and Claude read the same local guidance.
 - Project root: `CLAUDE.md → AGENTS.md` (this file).
+- `design/`: `CLAUDE.md → AGENTS.md` — the brand-mark, wordmark, token and
+  Claude Design provenance rules for `design/**`. It was a bare `CLAUDE.md`
+  until the README-chip work put a load-bearing path rule in it that Codex
+  could not see.
+- `apps/desktop/src/renderer/src/lib/`: `CLAUDE.md → AGENTS.md` — the focus
+  hooks every dialog, popover and menu uses (Escape, Tab, focus return), the
+  app's fast hover tooltip, and why each rule in them is there.
 
 ## Brand and Identity
 
@@ -273,20 +285,46 @@ existing `FFMPEG_BUILDS_*` App **cannot** be reused — it is scoped read-only t
 `pwrsnap-ffmpeg-builds`. Until one of those exists the workflow still runs, and
 warns in the job summary that CI will not re-run.
 
-## Codex App Server is the AI brain
+## AI backends: installed agents and custom direct APIs
 
-**All AI features in PwrSnap go through the user's installed Codex CLI / Codex
-Desktop instance over stdio JSON-RPC.** This is the schtick — annotation,
-description generation, tag suggestion, smart filenames, sensitive-data
-review, voice describe, sizzle-reel composition. No direct OpenAI / Anthropic
-/ xAI calls in `apps/desktop`.
+Built-in Codex/ACP paths remain agent clients. User-configured direct API
+connections additionally call OpenAI Responses, OpenAI-compatible Chat
+Completions, or Anthropic Messages from main, without an agent or proxy. This is
+the explicit exception to the former agent-only rule. See `docs/architecture.md`
+for the connection/model split and the credential, capability, protocol, and
+OAuth invariants. Direct HTTP code lives under
+`apps/desktop/src/main/ai/direct-api/`; the Settings screens
+(`ConnectionPage.tsx`, `ConnectionIndex.tsx`, `direct-api-status.ts`) are
+separate from its schema, credential manager and protocol adapters, and reach
+them only through the `customModels:*` verbs — `ai.customConnections` and
+`ai.customModels` are main-owned and `settings:write` refuses both.
+
+Never route a custom model through Codex/ACP as a silent fallback. The one
+fallback that exists is `ai.enrichmentFallback`
+([enrichment-fallback.ts](apps/desktop/src/main/ai/enrichment-fallback.ts)):
+opt-in in Settings, captions only, and taken only when the primary could not be
+reached (connection refused, HTTP 404/502/503, ACP agent not installed). A
+401/403, a bad answer, a timeout (504 included), or a removed or repointed custom model still
+fails closed. A run that falls back records the primary in
+`ai_runs.fallback_from`, and the Float-Over and Library show a FALLBACK chip.
+An unreachable primary is marked down for 60 s (`EnrichmentPrimaryHealth`):
+captures in that window skip it, and only the down/up transitions log above
+debug. Do not widen the trigger set to make a run succeed: each addition hides a
+failure the operator should see. Never infer vision,
+reasoning, Fast mode, pricing, OAuth access or subscription entitlement from a
+model name or base URL. Auth secrets stay in `DesktopSecretStore`, not settings.
+Direct chat has no tools. Direct enrichment sends bounded app-prepared image
+bytes to the explicitly configured endpoint; the model has no filesystem,
+execution, or tool interface. The sandbox rules below still govern agent-backed
+enrichment; their no-network rule concerns model-initiated network activity,
+not main's fixed direct inference request.
 
 ### Protocol package
 
 TypeScript types for the protocol are consumed from the published
 **[`@pwrdrvr/codex-app-server-protocol`](https://www.npmjs.com/package/@pwrdrvr/codex-app-server-protocol)**
 package (pinned to an exact version in
-[apps/desktop/package.json](apps/desktop/package.json) — currently `0.144.0`).
+[apps/desktop/package.json](apps/desktop/package.json) — currently `0.159.2`).
 The package version tracks the Codex CLI release it was generated from, so the
 pinned number tells you which Codex protocol surface PwrSnap is built against.
 Import the v2 surface via `@pwrdrvr/codex-app-server-protocol/v2`.
@@ -305,14 +343,15 @@ protocol surface lands that PwrSnap wants to consume.
 ### Connecting at runtime
 
 PwrSnap discovers and connects to the user's local Codex install — same model
-as PwrAgnt. Settings → AI surfaces every detected Codex binary, lets the user
-pick newest / pin a specific path, and persists the choice. Discovery code in
+as PwrAgnt. Settings → AI Providers → Codex surfaces every detected Codex
+binary, lets the user pick newest / pin a specific path, and persists the
+choice. Discovery code in
 `apps/desktop/src/main/settings/codex-discovery.ts` mirrors PwrAgnt's
 implementation; see plan §"Phase 0.5".
 
 ### One-shot vs multi-turn
 
-Both shapes go through Codex App Server:
+On the Codex backend, both shapes go through Codex App Server:
 
 - **Phase 4 background pipelines** (annotate / describe / tag / filename) use
   a fresh ephemeral thread per capture with structured output. Image input
@@ -329,8 +368,8 @@ PwrSnap is an App Server *client* only — never an App Server *implementation*.
 
 ## Capture enrichment runs in a sandbox jail
 
-**A capture-enrichment turn may not run a command, call a tool, touch a
-file outside its scratch dir, or reach the network. That is enforced in
+**An agent-backed capture-enrichment turn may not run a command, call a tool,
+touch a file outside its scratch dir, or reach the network. That is enforced in
 the transport, not in the prompt. Do not loosen it to make a feature
 work.**
 
@@ -374,6 +413,14 @@ and [acp-approval-policy.test.ts](apps/desktop/src/main/ai/__tests__/acp-approva
   (`disableConfiguredMcpServers`), so the user's own Codex MCP setup never
   attaches to an enrichment thread. `web_search: "disabled"` and
   `project_doc_max_bytes: 0` come from the thread-config overlay.
+- **Codex enrichment disables lifecycle hooks and legacy notification
+  commands in its thread config** (`features.hooks: false`, `notify: []`).
+  Trusted hooks execute outside the agent sandbox and can inject context;
+  `notify` executes separately from the hooks feature and receives the last
+  assistant message. Pin both on every enrichment start, including the
+  legacy sandbox fallback. Keep these overrides per-thread: enrichment and
+  chat share an App Server process, and chat retains the user's choices.
+  See [docs/solutions/2026-10-02-codex-enrichment-config-overlays.md](docs/solutions/2026-10-02-codex-enrichment-config-overlays.md).
 - **Every one-shot thread carries explicit deny handlers.** An approval
   request or tool call from an enrichment turn is denied and logged at
   **error** with `{ runId, captureId }` through
@@ -427,14 +474,23 @@ the other, mutually exclusive path:
 
 ```jsonc
 "permissions": "pwrsnap_enrichment",     // NOT "sandbox" — cannot combine
-"config": { "permissions": { "pwrsnap_enrichment": {
+"config": { "default_permissions": "pwrsnap_enrichment",
+  "permissions": { "pwrsnap_enrichment": {
   "filesystem": { ":root": "deny", ":minimal": "read", "<jail>": "read" } } } }
 ```
 
 Measured result: `~/Documents`, `~/.ssh`, `~/.aws`, and any path outside
 the jail are DENIED; the jail stays readable and network stays denied.
 
-Two things that bite if you touch this:
+Three things that bite if you touch this:
+
+- **Keep the selection in `config.default_permissions` too.** Codex 0.160
+  reloads the retained session config before inference without the explicit
+  `thread/start.permissions` override. A profile table without a selected
+  default then fails validation, surfaced only as "failed to load workspace
+  requirements". The legacy `sandbox` fallback leaves this named profile
+  unselected. See
+  [docs/solutions/2026-10-02-codex-workspace-requirements-enrichment.md](docs/solutions/2026-10-02-codex-workspace-requirements-enrichment.md).
 
 - **`":minimal" = "read"` is load-bearing.** Denying `:root` also denies
   reading `/bin/cat`, so without `:minimal` no command can exec at all
@@ -488,6 +544,46 @@ had a test asserting exactly that — but the test covered
 pointing into `~/Documents/PwrSnap`. The doc and the test agreed with each
 other and both disagreed with what shipped. When you pin a security
 property, pin the production wiring, not the default.
+
+## Only the operator's re-run is exempt from the enrichment budget
+
+**`codex:enrich` spends a token from `AiEnrichmentBudget` on every call, for
+every principal and every `triggerSource`. The one enqueue that skips the
+bucket is the Library's "Re-run AI on snaps" job, and it reaches the handler
+through the `EnrichmentRepairDispatcher` that `registerCodexHandlers` returns
+— never through the bus.** Owners: `enqueueEnrichment` in
+[codex-handlers.ts](apps/desktop/src/main/handlers/codex-handlers.ts) and the
+pacing in
+[enrichment-repair-job.ts](apps/desktop/src/main/ai/enrichment-repair-job.ts).
+Pinned by the "operator-started re-runs" block in
+[codex-handlers.test.ts](apps/desktop/src/main/__tests__/codex-handlers.test.ts)
+and by
+[enrichment-repair-job.test.ts](apps/desktop/src/main/ai/__tests__/enrichment-repair-job.test.ts).
+
+- **Why exempt.** The bucket and its breaker (8 refusals in an hour turns AI
+  off) exist to stop a runaway: a stuck hotkey, a folder import. A re-run is
+  started by the operator from a preview that names how many snaps it
+  covers. Sharing the bucket left live captures five tokens of headroom for
+  the length of a re-run, and each capture it then refused counted toward
+  turning AI off.
+- **Never key the exemption on a request field.** `codex:enrich` is reachable
+  from every renderer and over the process bridge, and a
+  `triggerSource: "library-repair"` from either still spends a token. The
+  local-agent policy refuses it to MCP today; the budget must not depend on
+  that staying true.
+  Do not add a bus verb, dispatch option or context flag that skips
+  `budget.consume` either: a capability that travels with a request is one
+  something else can forge.
+- **Exempt from the bucket, not from the gates.** AI off, missing consent and
+  a breaker that live captures already tripped all still refuse the re-run,
+  and each ends the job.
+- **The re-run paces itself.** At most one run starts per refill interval of
+  the rate limit in force (the user's steady `perMinute`, without the burst),
+  read before each start; the job's concurrency (1–8) caps what is in
+  flight. A loopback Direct API model is paced the same: a local URL can be a
+  gateway to a paid API, a fallback can be hosted, and pricing is never
+  inferred from a URL (see "AI backends" above). Users who want a backlog to
+  go faster raise the rate limit.
 
 ## Bundle format v2 — the only bundle format (v1 fully removed)
 
@@ -582,6 +678,256 @@ History + the `sample` recipe:
 §"Addendum (2026-08-22)". Pinned by
 [chat-thread-store-documents-access.test.ts](apps/desktop/src/main/ai/__tests__/chat-thread-store-documents-access.test.ts).
 
+## Clipboard bytes are read only for a paste or copy the user started
+
+**Only a command the user started to paste or copy may read a clipboard
+flavor's bytes. Everything else may list types and nothing more: menu
+enablement, focus or activation handlers, change listeners, polling.**
+Owners: [pasteboard-types.ts](apps/desktop/src/main/clipboard/pasteboard-types.ts)
+(the one types-only listing) and
+[paste-menu-hint.ts](apps/desktop/src/main/clipboard/paste-menu-hint.ts).
+Pinned by
+[paste-menu-hint.test.ts](apps/desktop/src/main/clipboard/__tests__/paste-menu-hint.test.ts),
+which traps every Electron clipboard method.
+
+- **Why.** A clipboard item from another device (Universal Clipboard) or a
+  remote-desktop client is promised data. macOS lists its types and fetches
+  a flavor's bytes, across the network, only when an app asks for them. The
+  File → New → Paste from Clipboard probe read bytes on every menu open, and
+  pulled images and files the user never pasted.
+- **Electron 44's `clipboard.read()` and `clipboard.has()` are not
+  types-only.** Measured on macOS 26, they fetch `public.url` and
+  `public.url-name` (Electron probes for a bookmark with Chromium's
+  `ReadURL`) and the W3C custom-format map. On Windows that probe is
+  `GetClipboardData(CFSTR_INETURLW)`, which renders a delay-rendered format.
+  So macOS lists types through AppKit (`NSPasteboard.types`, the
+  pasteboard helper's `--list-types`), measured to fetch nothing. Windows and
+  Linux have no measured types-only listing, so the paste item is always
+  enabled there and nothing is probed.
+- **A types-only hint is generous by design.** A web URL or a file URL to a
+  non-image file leaves the item enabled; `capture:pasteFromClipboard`
+  validates and reports "no image".
+- **The E2E bridge's readers (`__PWRSNAP_TEST__`) exist only under
+  `PWRSNAP_E2E`.** A copy's own readback (`writeMacFileToClipboard`) runs
+  inside the user's copy, against the item PwrSnap just wrote.
+
+Measurements and the promised-data probe recipe:
+[docs/solutions/2026-10-12-clipboard-types-only-paste-menu.md](docs/solutions/2026-10-12-clipboard-types-only-paste-menu.md).
+
+## A screen grab must prove it is the display it claims to be
+
+**Nothing may treat `desktopCapturer` pixels as a given display without
+first checking their shape against that display's bounds, and the
+region selector may not be shown on a Wayland session with more than one
+display.**
+Owners: [grab-geometry.ts](apps/desktop/src/main/capture/grab-geometry.ts)
+and [linux-session.ts](apps/desktop/src/main/capture/linux-session.ts).
+Pinned by their unit tests plus the two production-wiring tests —
+[screencapture-grab-geometry.test.ts](apps/desktop/src/main/capture/__tests__/screencapture-grab-geometry.test.ts)
+and [capture-handlers-wayland-refusal.test.ts](apps/desktop/src/main/handlers/__tests__/capture-handlers-wayland-refusal.test.ts).
+
+macOS is exempt by construction: `screencapture -R <bounds>` is TOLD the
+rect. Everywhere else the grab comes from `getSources`, which returns a
+LIST, and the only authoritative key — `display_id` — is documented as
+"an empty string if not available".
+
+- **The silent branch is `single_source`, not the warned fallback.** When
+  `display_id` is empty and there is exactly one source,
+  `captureDisplayNativeImage` takes it deliberately and logs nothing. On
+  an xdg-desktop-portal session that lone source is whatever the user
+  picked in the portal's own dialog. Triage that greps for
+  `no source matched display_id` will therefore find **nothing** on the
+  configuration that is actually broken.
+- **A wrong-shaped grab used to be stretched, not reported.** The selector
+  renderer paints the snapshot with `object-fit: fill`, and
+  `cropScreenSnapshot` maps the user's rect through `display.scaleFactor`
+  — which describes the display and knows nothing about the grab. So a
+  mismatch produced a misaligned picker and a file of pixels the user
+  never saw. `checkGrabMatchesDisplay` now refuses it.
+- **The check is aspect ratio, and that is on purpose.** `thumbnailSize`
+  is a MAXIMUM and Chromium preserves aspect scaling into it, so a healthy
+  grab matches the display's shape whatever size it arrives at — a size
+  check would reject good grabs. It is necessary, not sufficient: two 16:9
+  monitors are indistinguishable this way, **and on a single-display
+  machine it cannot separate a right portal answer from a wrong one at
+  all** — the measured Ubuntu grab came back 0% off. Treat it as a
+  backstop for the multi-source cases, never as proof the grab is right.
+  Do not widen `GRAB_ASPECT_TOLERANCE` to make something pass; 1% is
+  already ~14× the worst pixel-rounding drift.
+- **The Ubuntu misalignment was OURS, and the fix is
+  `setFullScreen(true)`.** `enterMenuBarOverlayMode` returned early for
+  every platform that was neither win32 nor darwin, so the Linux selector
+  never entered fullscreen, and a bare window does not own the screen
+  under GNOME. Measured on Ubuntu 24 / GNOME with the probe's occlusion
+  table:
+
+  ```
+  bare                     32 rows at the top / 67 columns at the left
+  fullscreen-after-show     0 / 0
+  fullscreen-before-show    0 / 0
+  ```
+
+  32 rows is the top bar, 67 columns is the dock, and under `bare` the
+  opaque test field starts at `72,34`. That count cannot say whether the
+  chrome was drawn OVER the window or the window was MOVED off it, and the
+  first write-up guessed "covered, nothing moved". Measured since, on
+  mutter 46 with a 32px top / 67px left strut: mutter **moves** a
+  monitor-sized toplevel into the work area. Its 100px top-left marker
+  landed whole at `67,32` and only 33 columns of the top-right one
+  survived at the screen edge, on the native Wayland and the X11 backends
+  alike. So the frozen snapshot was painted offset by the work-area
+  insets, beside the live bar and dock: the duplicated, offset desktop
+  that was reported. Windows had the identical bug ("two taskbars") and
+  already had the identical fix. **Both orderings cover**, so
+  `enterMenuBarOverlayMode(win)` may stay ahead of `win.show()` (measured
+  on the Ubuntu machine and again on mutter 46). `fullscreenable` must be
+  true there too, or the call is a silent no-op. Pinned by
+  [selector-overlay-fullscreen.test.ts](apps/desktop/src/main/capture/__tests__/selector-overlay-fullscreen.test.ts).
+- **On Linux the selector must be resizable, or X11 mutter ignores the
+  fullscreen.** A non-resizable window carries min == max size hints, and
+  mutter drops `_NET_WM_STATE_FULLSCREEN` for it unless they equal the
+  monitor, which stops being true once mutter has squeezed the window into
+  the work area. Measured with `createSelectorWindow`'s own options, on
+  mutter 46 as an Xorg WM and under XWayland: `resizable: false` stays at
+  `67,32 1853x1048` while **`isFullScreen()` reports `true`**, and
+  `resizable: true` covers `0,0 1920x1080`. A native Wayland client goes
+  fullscreen either way, which is why the Ubuntu run passed without it,
+  but a GNOME Xorg session is exactly where the Wayland refusal notice
+  sends multi-display users. Windows keeps `resizable: false`. Pinned by
+  the same test.
+- **On a native Wayland client, geometry readbacks are echoes, and a probe
+  that trusts them will send you the wrong way.** `getBounds()`,
+  `getContentBounds()` and the renderer's own `screenX/screenY` all
+  agreed the overlay was perfectly placed, and the probe duly reported
+  "the bare window was already correct on this machine — look elsewhere
+  before changing placement." That sentence cost three wrong hypotheses,
+  and "the window sat at exactly 0,0" came from the same echoes: on
+  mutter 46 all three read `0,0` for a window whose pixels were at
+  `67,32`. They report what was REQUESTED; they cannot see where the
+  compositor put the window, and they cannot see what is painted over it.
+  Only pixels tell. **And do not resolve it by eye**, which failed twice
+  here. The translucent simulation (step 5) is unanswerable that way by
+  construction: at 55% opacity the live desktop shows through BY DESIGN,
+  so "covered by the shell" and "showing through my own translucency"
+  look identical. Step 6 answers it as an integer: paint an OPAQUE
+  full-display field of known colours, grab the screen, and count the
+  foreign pixels. Its corner fiducials then say which it was. Every corner
+  shifted by the same amount means the window MOVED; only the top and left
+  corners losing rows and columns while bottom-right stays put means it
+  was COVERED.
+- **Wayland keeps region capture on a single display.** The refusal is now
+  Wayland AND `displayCount > 1`, and nothing else. The only capability
+  fullscreen does not restore is `getCursorScreenPoint()`, which returns
+  0,0 wherever the mouse is — and that is load-bearing for exactly one
+  decision, which display `pickRegion` opens on. With one display there is
+  nothing to get wrong (the opening crosshair starts in the corner and
+  corrects on the first mouse move); with two it reliably picks the wrong
+  one. The portal still charges a permission prompt and a source picker per
+  capture (~3s), which is a cost, not a defect. `capture:interactive`
+  refuses ahead of `guardScreenCapture` so a refused capture never raises
+  that prompt. Do not lift the refusal by fixing only the pointer: with two
+  displays the portal returns whichever monitor the user picked, with no
+  `display_id`, and two same-shaped monitors pass the geometry check.
+- **The refusal lives in the handler and nowhere else — in particular, not
+  in `preWarmRegionSelector`.** A draft skipped pre-warming where the
+  selector is refused, to save the renderers. That is a second refusal with
+  no voice: `runInteractiveRecord` in index.ts drives `pickRegion` directly,
+  finds no selector windows, resolves `destroyed`, and the Record button
+  does nothing, silently. Pinned by
+  [selector-overlay-fullscreen.test.ts](apps/desktop/src/main/capture/__tests__/selector-overlay-fullscreen.test.ts).
+- **⇧-snap-to-window and source-app metadata do not work on Linux at all,
+  X11 included.** `build-native.mjs` builds the `window-list` helper for
+  darwin (Swift) and win32 (C++) only, so `listWindowsSnapshot()` returns
+  an empty list behind one `warn`. That is why no hover highlight follows
+  the pointer over windows there. It is a missing native helper, not a
+  Wayland limitation — though a Wayland-native session has no protocol to
+  enumerate other apps' windows, so any Linux helper would be X11-only.
+- **The refusal must SHOW itself, and the notice hangs off the refusal —
+  not off the trigger.** A refusal only the log can see is a dead button,
+  which is strictly worse than the broken selector it replaced. The
+  first version explained itself from `capture-trigger.ts`, which only the
+  global hotkeys and the native tray menu route through; the Library's
+  Quick Capture button and the tray popover's tiles dispatch straight over
+  IPC from the renderer and `void` the promise, so on Ubuntu the app's
+  headline button did nothing at all. `showWaylandRefusalNotice()`
+  ([wayland-refusal-notice.ts](apps/desktop/src/main/capture/wayland-refusal-notice.ts))
+  is now raised from the handler, for `principal === "ipc"` only — every
+  human entry point is `ipc`, and an agent has nobody to dismiss a modal.
+  It offers **Capture Full Screen** rather than only naming it: the
+  message already says that is the way to capture here, and making the
+  user dismiss an alert and go find a different button is the same dead
+  end wearing a hat.
+- **`WAYLAND_SELECTOR_MESSAGE` is user-visible text, so only measured
+  claims go in it.** Two drafts failed that: one blamed Wayland's
+  placement rules for the misaligned selector (true of a native client,
+  but not the cause, since fullscreen needs no placing), and one told users
+  drag-to-select was unavailable on Wayland when the real cause was our
+  own missing fullscreen call. Its Xorg advice holds only because of the
+  `resizable` rule above. Correcting a header comment is not enough; grep
+  the strings.
+- **On a Wayland session, assume a native Wayland client, and do not try
+  to place the overlay.** An earlier version of this section said the
+  opposite, that Electron defaults to X11 and runs as an XWayland client
+  whose placement is honoured. It was wrong. Electron 41 resolves to
+  `wayland` on a Wayland session even with `DISPLAY` set. That was
+  measured on mutter 46 and sway 1.9 from the resolved `--ozone-platform`
+  switch, which Electron writes back even when nobody passed it; read it
+  with `app.commandLine.getSwitchValue("ozone-platform")`. A native client
+  cannot place its toplevel, and no readback will tell it where the window
+  went. Fullscreen is why that no longer matters for the selector. XWayland
+  is what you get only by asking for it (`--ozone-platform=x11`).
+- **`capture:fullScreen` / `capture:allScreens` stay available there** —
+  no overlay, no rect arithmetic, so the portal's picker IS the source
+  selection and the editor's crop tool is the region selection. That is
+  what the refusal notice points users at; keep it pointing somewhere.
+- **Detection fails OPEN.** Only a positively-identified Wayland session
+  is refused; an unrecognised environment keeps region capture, because a
+  miss on X11 deletes a working feature while a miss on multi-display
+  Wayland only restores the pre-refusal behavior — which the geometry
+  check catches when the two monitors differ in shape, and not otherwise.
+- **Neither CI job can catch any of this.** The Docker/xvfb harness has no
+  portal and no window manager, and macOS never runs the code. Confirm on
+  a real session with
+  `pnpm --filter @pwrsnap/desktop probe:linux-capture`
+  ([linux-capture-probe.mjs](apps/desktop/scripts/linux-capture-probe.mjs)),
+  which reports session type and the RESOLVED ozone backend, the source
+  list with `display_id` and measured dimensions, where a selector-shaped
+  window lands (on X11 only; on native Wayland it says the readback is an
+  echo), whether the overlay owns the screen and, if not, whether it was
+  moved or covered (step 6), and whether the cursor point is real.
+  `--no-overlay` keeps the
+  measured steps and drops every watch-and-judge one; the banner prints
+  the checked-out sha and `-dirty`, because a run was once pasted back
+  that predated the commit it was meant to exercise.
+
+## Overlays get Escape, Tab and focus from the renderer's focus hooks
+
+**Every click-opened dialog, popover and menu in the renderer uses
+`useModal` / `useDismissable` / `useFocusTrap` / `useMenuNavigation` /
+`useFocusReturn` from `apps/desktop/src/renderer/src/lib/`. Don't add an
+overlay keydown listener for Escape or Tab.** The Escape listener is the
+first window-capture keydown listener, and it stops the key it claims.
+That is why the app's own Escape handlers (Library view, editor, Sizzle
+inspector) never need a `defaultPrevented` check, and why a second overlay
+listener would break the ordering. Rules, measurements and test recipes:
+[apps/desktop/src/renderer/src/lib/AGENTS.md](apps/desktop/src/renderer/src/lib/AGENTS.md).
+
+## Icon-only controls name themselves with `data-tip`, not `title`
+
+**A control whose meaning a sighted user can only get from its tooltip
+opts into the app's fast tooltip with `data-tip` (plus `data-tip-keys` /
+`data-tip-detail`), never `title`, and still carries an `aria-label` or
+text for its name.** The native tooltip waits out the macOS delay and
+restarts it on every pointer move, so an icon took seconds to say anything.
+`useFastTooltip` is mounted once per window by `App`. Nothing else mounts
+it, and no element carries `data-tip` and `title` together or nested.
+Two places keep `title` on purpose: the recording HUD and the float-over
+dock, windows too small for an in-page tooltip. Rules and the list:
+[apps/desktop/src/renderer/src/lib/AGENTS.md](apps/desktop/src/renderer/src/lib/AGENTS.md)
+§"Hover tooltips". Pinned by
+[fast-tooltip-contract.test.ts](apps/desktop/src/renderer/src/lib/__tests__/fast-tooltip-contract.test.ts)
+and [useFastTooltip.test.tsx](apps/desktop/src/renderer/src/lib/__tests__/useFastTooltip.test.tsx).
+
 ## Never mix a post-transform rect with a layout measure
 
 **`getBoundingClientRect()` is POST-TRANSFORM. `offsetWidth` /
@@ -603,7 +949,7 @@ transient, it is permanent until some unrelated real resize happens.
 That is what makes this class so hard to spot: it never self-heals, but
 it always disappears the moment you resize the window to look at it.
 
-Two confirmed instances, both in
+Three confirmed instances. The first two are in
 [Editor.tsx](apps/desktop/src/renderer/src/features/editor/Editor.tsx):
 
 - `canvasCssHeight` — the rect was the WRONG KIND. It is divided into
@@ -625,12 +971,51 @@ Two confirmed instances, both in
   replay of the staleness (it re-applies the entrance transform, forces
   re-measures under it, removes it, then asserts render-vs-live).
 
+The third is in
+[VideoTimeline.tsx](apps/desktop/src/renderer/src/features/shared/VideoTimeline.tsx),
+and it is the cleanest example of why the ResizeObserver is no rescue:
+
+- `width` — the strip's own size, measured once in a `useLayoutEffect`
+  with `getBoundingClientRect()` and thereafter only from a
+  `ResizeObserver`. The video stage mounts inside `.psl__focus`, so the
+  mount measure landed mid-`psl-focus-in` and came back ~1.5% short
+  (measured: **985 on a 1000px strip**); the finishing transform changed
+  no layout box, so the observer never fired again and the short value
+  was permanent. It sizes the out handle, the ticks, the playhead and
+  the filmstrip request, so the out handle and the ruler parked ~14px
+  inside the right edge and the right scrim dimmed that band even at
+  FULL CLIP. The IN handle is `left: 0` and looked perfect throughout —
+  which is how it reads as "the right handle is broken" rather than "the
+  strip is mis-measured". Drags were unaffected: `secAt()` re-reads a
+  live rect per pointer event, the same render-wrong/gesture-right split
+  as `canvasRect` above. Fixed by measuring `clientWidth` /
+  `contentBoxSize`; pinned by `VideoTimeline.test.tsx` §"sizes off the
+  layout box, not a transform-polluted rect", which stands the two boxes
+  apart (rect 788, layout 800) and asserts the sized output follows 800.
+
 Rules:
 
 - Sizing something that will be compared against a layout measure? Use a
   layout measure. `ResizeObserverEntry.borderBoxSize[0].blockSize` is the
   fractional, transform-independent equivalent of `rect.height` (block
   axis — height only under a horizontal writing mode).
+- **Sizing the coordinate space of absolutely-positioned children? That
+  space is the PADDING box** — `clientWidth` / `clientHeight`, and
+  nothing else. A bordered element fed its own border-box width puts the
+  far edge 1px per border past where `left: <width>` lands, and under
+  `overflow: hidden` the overshoot is clipped rather than visible. That
+  was a second, quieter defect in `VideoTimeline`: the out handle
+  rendered 6 of its 8px with its rounded corner cut off, while the in
+  handle at `left: 0` was flush.
+  - **`contentBoxSize` is the wrong box here**, and it is the one you
+    reach for after reading the rule above it. The content box excludes
+    padding; the containing block does not. Measured in Chromium on a
+    `border: 1px; padding: 0 10px` box: a child at `left: 0` lands on the
+    padding edge, `clientWidth` reads 498 and
+    `contentBoxSize[0].inlineSize` reads 478. Zero padding is the only
+    reason they ever look interchangeable, and a measure that is right at
+    mount and wrong after the first resize is worse than one that is
+    always wrong.
 - Mapping pointer coordinates? The post-transform rect is correct — but
   **a cached `DOMRect` is only valid until something moves**, and a
   ResizeObserver never tells you an element MOVED. Re-read at the moment
@@ -643,6 +1028,148 @@ Rules:
 Full investigation, measurements, and the two wrong hypotheses it
 replaced:
 [docs/solutions/2026-08-28-text-outline-stale-canvas-scale.md](docs/solutions/2026-08-28-text-outline-stale-canvas-scale.md).
+
+## Focus rings
+
+**Every keyboard focus indicator is drawn in `--focus-ring`, reaches 3:1
+against what it sits on, and is on screen when the control has focus.
+Measure the last part in a browser: reading the CSS does not show it.**
+Owners: the `--focus-ring` token in
+[tokens.css](apps/desktop/src/renderer/src/styles/tokens.css) and the
+global `:where(:focus-visible)` rule in
+[app.css](apps/desktop/src/renderer/src/styles/app.css). Pinned by
+[focus-ring-contract.test.ts](apps/desktop/src/renderer/src/styles/__tests__/focus-ring-contract.test.ts)
+(every stylesheet) and
+[theme-contract.test.ts](apps/desktop/src/renderer/src/styles/__tests__/theme-contract.test.ts)
+(the token and its contrast).
+
+- **The token is `--focus-ring: var(--accent)`**, the same name and value
+  as PwrAgent (docs/UI-THEME.md) and PwrGit. It measures 8.6:1 on
+  `--bg-app` in dark and 4.6:1 in light. Never ring in `--accent-border`:
+  eleven rules did, at about 2.2:1. The light block does not redeclare the
+  token, and `design/ds/colors_and_type.css` mirrors it.
+- **The global rule is the default, at zero specificity.** A control with no
+  `:focus-visible` rule gets `outline: 2px solid var(--focus-ring)` 1px
+  out, not Chromium's pale-blue `outline: auto`. Before this rule, most of
+  the app drew the Chromium ring.
+- **Placement.**
+  - A bordered or filled control keeps the default, 1px out.
+  - A row or scroller that runs edge to edge inside an `overflow`
+    ancestor insets its ring with `outline-offset: -2px`.
+  - A borderless text link sits 2px off, with `border-radius: var(--radius-sm)`.
+  - A borderless field rings its wrapper via
+    `:has(<field>:focus-visible)`. Key it on the field, not on
+    `:focus-within`, when sibling buttons ring themselves.
+- **`outline: none` in a focus rule must be followed by a ring for the same
+  selector.** That ring can be later in the file, in the same block (the
+  hollow trim handle), or on a `:has()` wrapper. The contract test enforces
+  this, because a shared `:hover, :focus-visible { outline: 0 }` block
+  reads as harmless in review. Four stylesheets shipped one with nothing
+  after it.
+
+Things that hid rings that were correctly styled. Each of these shipped:
+
+- **Opacity fades the outline with everything else the element paints.**
+  A dimmed control un-dims while focused. One that is unavailable
+  (`aria-disabled`, busy) joins the "Focused while unavailable" block in
+  app.css, which swaps the fade for a muted paint at opacity 1.
+- **Scrolling stops at the border box.** When Tab lands on a control partly
+  past a scroller's edge, Chromium scrolls only until the control's border
+  box is in view, which cuts the ring. The global rule therefore carries
+  `scroll-margin: 4px` (the ring's reach + 1). A sticky header needs
+  `scroll-padding` on its scroller as well: the grid uses 36px.
+  **Horizontally, Chromium does not scroll a partly visible target at
+  all** (measured on Electron 41, and on a bare page). Reel frames call
+  `scrollIntoView` on keyboard focus for that reason.
+- **Something painted on top.**
+  - A positioned later sibling covers the ring: lift the focused control
+    with `z-index`.
+  - Positioned children cover an element's own inset outline (timeline
+    clips and regions): draw the ring on a positioned `::after`.
+  - Over media or a dark shadow, add the halo
+    `box-shadow: 0 0 0 4px var(--bg-app)`.
+  - Canvas layers stack at their own `layer.z_index` (1000+), so editor
+    chrome inside `.editor-canvas` uses `Z_INDEX_CHROME`. The crop overlay
+    sat at 5, under every arrow.
+- **A popup left open.**
+  - Menus close on Tab (`useMenuNavigation`), and when focus leaves them
+    any other way (`closeWhenFocusLeaves`).
+  - A non-modal popover right after its trigger closes when focus lands
+    past either end (`useDismissable`'s `dismissOnFocusLeave`).
+  - A popover portaled to the end of `<body>` traps Tab instead, and
+    closes on a `focusin` outside it (see `DeleteConfirm`). Tab past its
+    last element would leave the document with no `relatedTarget`, so
+    `blur` never learns where focus went.
+- **A floating panel stepping aside.** Use `opacity: 0` plus
+  `pointer-events: none`, never `visibility: hidden`. A hidden panel's
+  buttons leave the tab order, and Tab from the grid skipped the copy
+  palette entirely.
+- **`aria-modal` holds no focus.** `useModal` focuses the safe button (its
+  `initialFocusRef`), traps Tab and restores focus on close. A dialog that
+  focus can reach without Tab also contains `focusin`: `ChatApprovalModal`
+  and `AiConsentDialog`.
+
+**How it was measured, and how to re-measure:**
+
+1. Build the renderer with Vite against a fake preload bridge.
+2. Tab through each surface in Playwright's headless Chromium.
+3. At every stop, record the computed outline, the `overflow` ancestors
+   that clip it, and the fraction of ring pixels actually on screen
+   (classified by hue, saturation and brightness).
+4. Walk both themes, at 1280×800 and at each window's minimum size from
+   `window.ts`.
+
+The harness is not in the tree. Headless only: a headed walk takes over
+the screen, so it belongs in the lab VM (see Workflow above). Two
+residuals are known and accepted:
+
+- Chromium reveals only the caret line of a partly visible `<textarea>`.
+- The trim handle signals focus with a hollow fill, not an outline.
+
+## The Pwr-family title strip
+
+**Every window's title strip on macOS is the strip PwrGit and PwrAgent draw:
+a 40px fill centred on y=20, stoplights at `{ x: 16, y: 13 }`, the brand at
+x=96. These numbers are shared across the family — change them in all three
+apps together, never in one.** The spec is PwrGit's
+`apps/desktop/src/renderer/src/features/chrome/AGENTS.md`, adopted in
+[pwrdrvr/PwrGit#361](https://github.com/pwrdrvr/PwrGit/pull/361).
+
+| Part | Value | Where in PwrSnap |
+|---|---|---|
+| Band | 40px fill; the 1px divider sits *below* it, so every bar's row is `41px` | `grid-template-rows` on `.psl`, `.pss`, `.szl`, `.ps-doc` |
+| Stoplights | `{ x: 16, y: 13 }` — a 14px button (measured on macOS 26) centred on y=20; the group ends at x=76 | `MACOS_TRAFFIC_LIGHT_POSITION` in [window.ts](apps/desktop/src/main/window.ts) |
+| Windows caption strip | `titleBarOverlay` height 40 — the fill, leaving the divider visible under the buttons | `titleBarOverlayForTheme()` in window.ts |
+| Brand start | x=96, 20px clear of the stoplights | `--mac-traffic-light-reserve` in [tokens.css](apps/desktop/src/renderer/src/styles/tokens.css) |
+| Mark | the app icon's glyph (`generate-app-icon.swift` coordinates) as `PwrSnapMark`, 20px, filling its box; `--accent`, 8px to the wordmark, `decorative` (the wordmark names the app) | [BrandMark.tsx](apps/desktop/src/renderer/src/features/shared/BrandMark.tsx) |
+| Wordmark | `700 17px/1` Geist, `-0.01em`; "Pwr" `--text-primary`, "Snap" `--accent` | `.psl__title`, `.pss__title-brand`, `.szl__title-brand`, `.ps-doc__brand` |
+| Centring | text by cap height (`text-box: trim-both cap alphabetic`), chevrons by x-height (`trim-both ex alphabetic`); an ellipsizing crumb gets `padding-block` back for its descenders | the four bar stylesheets |
+
+Three things that bite:
+
+- **The fill must be an even number of points.** `trafficLightPosition` takes
+  whole points, so a 14pt button centres on a whole point only. The old 52px
+  row had its divider INSIDE it, leaving a 51pt fill whose centre (25.5) no
+  stoplight could sit on.
+- **Nothing may sit above a bar in its container.** The stoplights are placed
+  in window coordinates; the bar is placed in its container's. The Library's
+  `.psl` carried a 1px outer border until 2026-09, which put its strip at
+  y=1 and its brand at x=97 — its stoplights sat 1.5pt high. The window
+  already has an edge: the OS draws it on macOS and Windows, `#root::after`
+  on Linux.
+- **Toolbar controls have to fit the band.** The tallest Library control is
+  28px (search, capture buttons, layout toggles), which leaves 6px either
+  side. A taller one does not belong in the strip.
+
+Pinned by
+[macos-traffic-light-position.test.ts](apps/desktop/src/main/__tests__/macos-traffic-light-position.test.ts)
+(the derivation, from the CSS) and
+[window-chrome-platform.spec.ts](apps/desktop/e2e/window-chrome-platform.spec.ts)
+(the reserve, resolved in a real renderer). Neither can see pixels:
+**verify a change by measuring, not by eye.** Render each strip at 2× with the
+stoplights drawn at their Electron position as 14px circles, and compare each
+element's ink centre with y=20. Text baselines snap to device pixels, so
+capitals land within about ±0.4px of the line; anything further out is real.
 
 ## Annotation sizing — one basis, one ladder
 
@@ -689,12 +1216,201 @@ Full history, the measurements, and why short side + absolute px
 clamps failed:
 [docs/solutions/2026-08-28-annotation-scale-recalibration.md](docs/solutions/2026-08-28-annotation-scale-recalibration.md).
 
+## Draw strokes — one geometry, canvas-normalized points
+
+**The Draw tool (key D: pen, marker, airbrush, eraser) stores a vector
+`stroke` shape, and everything that paints one goes through
+`strokeGeometry` in
+[packages/shared/src/freehand-stroke.ts](packages/shared/src/freehand-stroke.ts).**
+The editor renders that geometry as JSX (`StrokeGlyph` in
+`OverlaySvg.tsx`), and the bake serializes the same geometry as SVG text
+(`strokeSvgForV2` in `compose.ts`). Pinned by
+[freehand-stroke.test.ts](packages/shared/src/__tests__/freehand-stroke.test.ts),
+[OverlaySvg-stroke.test.tsx](apps/desktop/src/renderer/src/features/editor/__tests__/OverlaySvg-stroke.test.tsx)
+and [stroke-bake.test.ts](apps/desktop/src/main/render/__tests__/stroke-bake.test.ts).
+
+- **Points are fractions of the CURRENT canvas, like every other
+  overlay coordinate**, so crop re-normalizes them
+  (`inverseTransformOverlayByCrop`). The width is sized from the SOURCE
+  basis (`strokeWidthPx` → `annotationBasisPx`), so a crop never re-thins
+  a stroke. The pen is the arrow ladder exactly; marker and airbrush are 3×
+  it (`STROKE_WIDTH_FACTORS`).
+- **Every tool is one path along `points`; the airbrush is that path
+  stroked five times.** Its soft edge is `AIRBRUSH_BANDS`: concentric
+  round-capped strokes of the same centerline, widest and faintest first,
+  whose alphas are chosen so the stack composites to an even ramp ending
+  in a solid core. No filter (resvg and Chromium blur differently, and
+  the bake would stop matching the preview), no randomness, nothing
+  stored beyond the points. A scaled bake wraps the 1× geometry in
+  `scale()` like every stroke. The first version was a seeded particle
+  spray; it was replaced because a few hundred dots per stroke cost far
+  more to store, paint and erase than a soft line, and a cut re-scattered
+  the dots beside it.
+- **The eraser cuts only strokes, and a cut stroke stays ONE layer.** The
+  eraser is a mode of the Draw tool, never a shape and never a bag slot
+  (settings refuse one). What it leaves of a stroke are SEGMENTS of that
+  one row (`breaks` indexes the flat `points`; read them through
+  `strokeSegments`), at the original's z_index. A stroke erased whole is
+  deleted. The first build wrote every piece as its own row, and one
+  scrub across a page of strokes filled the Layers panel with dozens of
+  them. Each segment still paints on its own (`strokeGeometries`), so a
+  cut never changes how the rest of the stroke looks. One eraser drag is
+  ONE undo step (the `replace` op in `useUndoRedo.ts`). The original is
+  deleted only after its replacement is written. An earlier build
+  deleted it regardless while every write was being refused (a 21-char
+  `nanoid()` id; the bundle schema takes 16), so one swipe erased the
+  whole stroke. The jsdom test missed that because its dispatch stub
+  accepted anything; it now validates upserts against `BundleLayerNode`.
+  Masking was considered and rejected: a mask layer leaves its holes
+  behind when a stroke moves, and no ink or markup app erases that way.
+- **Nothing a drag does per pointer event may scale with what was drawn
+  before it.** A page of handwriting is hundreds of strokes and a long
+  stroke is thousands of samples, so per-event work that touches the
+  whole stroke, or every stroke, goes quadratic and lags. Three rules:
+  - **The live stroke is appended in place.** `DraftStroke.points` is one
+    array for the whole drag, and `count` says how much of it to draw;
+    never `slice()` it per event. A long draft paints frozen spans plus a
+    live tail (`useLiveStrokeSpans` in `OverlaySvg.tsx`, built on
+    `smoothStrokeSpanD`). A span's sections are final once the next point
+    exists, so its `d` is built once. The spans overlap by one section
+    inside a group that carries the opacity, so the joints show no seam.
+    Opacity on a span instead of the group would double it at every
+    joint.
+  - **The eraser cuts with each move's new samples only**
+    (`StrokeEraseSession`), against the pieces earlier moves left, and
+    only for strokes whose box the new segments reach. The preview shows
+    the session's pieces and the release commits them. No second pass
+    over the whole drag runs anywhere, so the two cannot disagree.
+  - **The bake paints adjacent arrows, shapes and strokes as one SVG
+    run** (`compositeSvgRunOntoAccumulator` in `compose-tree.ts`). Every
+    sharp composite rewrites the whole accumulator, so one pass per
+    stroke made a 150-stroke page at 4K take ~2.9 s; as one run it takes
+    ~0.1 s. Text, highlights, rasters and effects end a run.
+- **A burst of strokes is one layer.** A stroke started within
+  `STROKE_BURST_GAP_MS` of the last one ending, in the same tool, color
+  and weight, joins the layer that stroke landed in as another segment,
+  if it is still the top layer (`stroke-burst.ts`). It names that layer
+  by id, not "whatever stroke is on top": after an ⌘Z the top stroke can
+  be an older one the burst never touched. Each stroke stays its own undo step: the
+  join is written as a `replace`, so ⌘Z takes back one stroke, not the
+  burst. Each segment paints on its own, so a burst looks exactly like
+  the separate strokes it holds, crossings included.
+- **A Draw press does not select what it lands on.** Freehand marks go on
+  top of other annotations, and the eraser is dragged across strokes on
+  purpose. A finished stroke is not auto-selected either, unlike the other
+  tools, so the property bar stays on the pen while the user writes.
+- **Older builds cannot parse a `stroke`.** What that costs is written up
+  in [docs/architecture.md](docs/architecture.md) §"Storage: data, not
+  pixels". Read it before adding the next shape kind.
+
 ## Bake render cache — orphans are tolerated, not swept
 
 Content-addressed cache; `BAKE_PIPELINE_VERSION` is in the hash, so a
 bump orphans existing files. We do NOT auto-sweep — see
 [docs/solutions/2026-05-28-bake-render-cache-orphans.md](docs/solutions/2026-05-28-bake-render-cache-orphans.md)
 for rationale, when-to-bump rules, and the adjacent-code map.
+
+## Every deleter of `<cacheRoot>` goes through the admission gate
+
+**Nothing may `rm` inside `<cacheRoot>` without first taking
+`withDerivedCacheCleanup`, and the five per-capture derived-video lanes —
+the playback rendition, the waveform asset, the contact strip, the
+poster frame and the activity track — must publish inside
+`runGatedCacheWrite`.** Owner:
+[derived-cache-gate.ts](apps/desktop/src/main/persistence/derived-cache-gate.ts).
+
+The deleter half is absolute; the writer half is scoped, and the module
+header says exactly which lanes are in and which are deliberately out
+(MP4/GIF exports carry their own cancellation — a background trim must not
+kill a user's export; render bakes re-derive in milliseconds, so an orphan
+there is cheap). **A new writer that spends seconds under `<cacheRoot>` and
+publishes by `rename` belongs behind the gate.**
+
+The writers publish through a staging file and a final `rename`
+([`publishMedia`](apps/desktop/src/main/sizzle/audio-extract.ts)). The
+deleters `rm -rf` whole directories underneath them. Ungated, the
+`rename` lands after the `rm -rf` and recreates the tree it was just
+deleted from: purging a capture mid-remux left an orphaned
+`<cacheRoot>/video/<deleted-id>/playback-*.mp4` that nothing would ever
+collect — the capture row is gone, so no later `purgeCacheForCapture`
+for that id can run — and "Clear cache" during preparation did not
+clear, reporting a `clearedBytes` short by a whole recording.
+
+The in-flight maps are not a substitute. They coalesce DUPLICATE WORK
+and have no idea a deletion happened.
+
+Five things that bite:
+
+- **Both sides must register SYNCHRONOUSLY, before their first `await`.**
+  A write registered in the gap after a cleanup's check runs against a
+  directory the cleanup is about to remove. That is why
+  `runGatedCacheWrite` takes a callback rather than a promise — by the
+  time a caller could hand you a promise, it has already started.
+- **Abort is not enough; you must DRAIN.** An aborted ffmpeg still holds
+  its staging file open when `abort()` returns. The gate aborts, waits
+  for every matching write to settle, and only then runs the cleanup —
+  with admission still closed for the whole of it.
+- **Cleanups serialize with each other.** Clear/Trim walk the whole root
+  and a purge walks part of it, so two at once race an `rm -rf` against
+  a `readdir` that already listed the entries. The chain is a
+  `.catch`-ed tail so one failure does not poison every later cleanup.
+- **The drain is bounded, and re-entry is refused.** Without a bound, one
+  write that never settles leaves admission closed and `cleanupTail`
+  pending for the life of the process — every later write rejected, every
+  later cleanup queued behind a promise that never resolves. And a cleanup
+  callback that calls another gated cleanup would await a tail it is itself
+  holding; that is caught by an `AsyncLocalStorage` marker, which (unlike a
+  boolean) can tell a NESTED call from a merely concurrent one that should
+  queue.
+- **Split mode has no shared event loop to save you.** `video:*` is
+  agent-owned and `storage:*` / `library:purge` are reached from the
+  library, so the library forwards the whole operation over
+  `storage:runCacheCleanup` and awaits it. Forwarding the OPERATION, not
+  a cancellation, is deliberate: a "stop writing" message needs a lease
+  with a release, and a crashed library never sends one. A library with
+  no forwarder **fails closed** — not cleaning is safe, cleaning locally
+  is the bug.
+
+Pinned by
+[derived-cache-gate.test.ts](apps/desktop/src/main/persistence/__tests__/derived-cache-gate.test.ts)
+(the ordering) and
+[derived-cache-cleanup-wiring.test.ts](apps/desktop/src/main/persistence/__tests__/derived-cache-cleanup-wiring.test.ts)
+(that the three real deleters actually call it — the regression a fourth
+deleter added later would otherwise ship silently).
+
+## An MP4 with no audio choice gets the user's, never "every track"
+
+**Every MP4 export resolves its audio through `resolveExportAudio`
+([mp4-export-audio.ts](apps/desktop/src/main/recording/mp4-export-audio.ts)).
+An omitted `audio` means the saved `recording.mp4IncludeMicrophone` /
+`mp4IncludeSystemAudio` preference, narrowed to the tracks the take has,
+and an unreadable preference means SILENT.** Pinned by
+[mp4-export-audio.test.ts](apps/desktop/src/main/recording/__tests__/mp4-export-audio.test.ts)
+and the `video:export` cases in
+[recording-handlers-bus.test.ts](apps/desktop/src/main/handlers/__tests__/recording-handlers-bus.test.ts).
+
+The MP4 row of every video export grid has Mic / System toggles, and they
+exist because people forget the mic was on and send the take anyway. The
+grid sends its choice explicitly on export, copy, path copy and drag. But
+the tray's and the Library grid's ⌘4–⌘6 shortcuts dispatch
+`clipboard:copyVideoFile` with no `audio`, and so can an HTTP/MCP caller.
+Before this rule, omitted meant every recorded track, so a mic switched
+off on the grid still shipped from a keystroke.
+
+- **A new export verb, or a new caller of `exportVideoRange`, goes
+  through `resolveExportAudio`.** Do not restate a default inline. Two
+  copies of it had already drifted before this rule existed.
+- **`recording.includeMicrophone` is not the export toggle.** It decides
+  what a new recording CAPTURES. `mp4Include*` decides what an export
+  KEEPS. The toggles default ON because recording audio is already
+  opt-in, so any track that exists is one the user asked for.
+- **An audio change cancels in-flight runs** (`useVideoExportPresets`
+  keys its reset on it, the same way it does on the trim range). An
+  encode started with the mic on must not finish onto the clipboard after
+  the user switched it off.
+- **The drag bridge refuses a malformed `audio`** rather than treating it
+  as omitted (`parseVideoDragRequest` in `ipc.ts`). A malformed range
+  still falls back to the default range.
 
 ## Startup profiling harness — `PWRSNAP_STARTUP_PROFILE=1`
 
@@ -748,6 +1464,195 @@ Two things to know before measuring GPU-process CPU:
 Worked example — the 2026-08 video-playback GPU burn, where a 1 px
 playhead was re-rasterizing a tile 120 times a second:
 [docs/solutions/2026-08-20-video-playback-gpu-process-burn.md](docs/solutions/2026-08-20-video-playback-gpu-process-burn.md).
+
+## React DevTools renderer profiling — `PWRSNAP_REACT_DEVTOOLS=1`
+
+Nothing in the app connects React DevTools on its own. Two opt-in env
+vars, both read by
+[electron.vite.config.ts](apps/desktop/electron.vite.config.ts) at Vite
+config time — **not at app runtime** — turn it on:
+
+| Variable | What it does |
+|---|---|
+| `PWRSNAP_REACT_DEVTOOLS=1` | Injects `<script src="http://localhost:8097">` as the first `<head>` script so the renderer loads the standalone DevTools backend. |
+| `PWRSNAP_REACT_DEVTOOLS_HOST` / `_PORT` | Point that script somewhere other than `localhost:8097`. |
+| `PWRSNAP_REACT_PROFILING=1` | Aliases `react-dom/client` → `react-dom/profiling`, for `electron-vite build` only. |
+
+Both take the repo's usual flag allowlist (`1`/`true`/`yes`/`on`, the
+same one `content-trace-config.ts` and `hot-cpu-profile-config.ts` use).
+A "non-empty and not 0" test would read `false`/`off`/`no` as ON and
+silently bake the bridge into a build.
+
+With both unset the plugin is never constructed and the alias key is
+never added, so a normal build is byte-identical to one from a tree
+without this feature — verified by building from both configs and
+diffing `out/renderer`.
+
+### Attaching to the dev build
+
+This is the configuration to reach for first, and it needs no build
+changes.
+
+```bash
+npx react-devtools
+```
+
+Then launch this checkout with the bridge enabled. Use a scratch userData
+root, never your real profile — `PWRSNAP_E2E=1` **together with**
+`PWRSNAP_USER_DATA` is what rebases `documents` into userData, so a
+profiling run cannot touch `~/Documents/PwrSnap`:
+
+```bash
+S="$(mktemp -d)"                     # scratch profile; purge it afterwards
+env HOME="$S" PWRSNAP_USER_DATA="$S" PWRSNAP_E2E=1 PWRSNAP_REACT_DEVTOOLS=1 \
+  pnpm --filter @pwrsnap/desktop dev --remoteDebuggingPort=9333
+```
+
+Do not paste that `env` line without setting `S` first: with it unset both
+variables expand to the empty string, `PWRSNAP_E2E=1` alone does not rebase
+`documents`, and the run reads the operator's real library.
+
+`npx react-devtools` must already be listening when the renderer loads —
+the script tag is a synchronous classic script, and a refused connection
+just means React never registers a renderer with the hook.
+
+**Do not add `react-devtools` to `package.json`.** It depends on
+`electron@^23`, which would pull a second Electron runtime into
+`node_modules` alongside the one the app actually uses.
+
+### Knowing which instance you attached
+
+Several PwrDrvr Electron apps usually run at once on this machine and the
+standalone DevTools window says nothing about which page is on the other
+end of its socket. Never drive or restart another session's instance.
+Two things resolve it:
+
+- **The bridge is opt-in per process.** An instance started without
+  `PWRSNAP_REACT_DEVTOOLS=1` has no script tag and *cannot* connect, so
+  starting exactly one bridged instance is itself the isolation.
+- **The injected bridge logs its endpoint and the checkout it was built
+  from** to the renderer console:
+  `[pwrsnap] React DevTools bridge -> http://localhost:8097 (renderer from /…/apps/desktop)`.
+  Read it over CDP (`Runtime.evaluate`) or in that window's own Electron
+  DevTools to confirm *this* window is the one talking to that port.
+
+To profile two checkouts at once, give each its own port and run one
+listener per port:
+
+```bash
+npx react-devtools --port 8098
+PWRSNAP_REACT_DEVTOOLS=1 PWRSNAP_REACT_DEVTOOLS_PORT=8098 …
+```
+
+Every window in the process loads the same renderer bundle, so the tray,
+float-over, settings, and region-selector windows carry the bridge too —
+and **the standalone server keeps only one connection**, closing the
+previous one with "Only one connection allowed at a time". So the window
+you are profiling is whichever connected LAST, which is often the region
+selector rather than the Library. Confirm the tree in the Components tab
+before recording, or close the other windows first.
+
+### Which build to use for what
+
+**Use the dev build to find re-render storms and update loops.** It is
+the better tool for that, not a fallback:
+
+- The Profiler's "Record why each component rendered" attribution is
+  richer in a development build — it names the changed props and the
+  changed hook indices (`Hook 7 changed`). The production profiling build
+  drops some of that detail.
+- No build step, no packaging, and HMR still works.
+- A pathology shows up as a *ratio* — components re-rendered per commit,
+  or commits per interaction — and ratios survive the dev build's
+  overhead intact.
+
+**Use the profiling build only when an absolute millisecond number has to
+be trustworthy.** Development React is much slower than production React
+and the overhead is uneven across component shapes, so dev-build
+durations rank badly against each other and **must never be quoted as the
+cost users pay.** A plain production build is not an option: it reports
+"Profiling not supported", because production `react-dom` is compiled
+without the timing instrumentation.
+
+```bash
+PWRSNAP_REACT_PROFILING=1 PWRSNAP_REACT_DEVTOOLS=1 pnpm --filter @pwrsnap/desktop build
+pnpm --filter @pwrsnap/desktop preview
+```
+
+Measured cost of the alias on the renderer bundle, `react-dom` 19.2.8:
+
+| | baseline | profiling | delta |
+|---|---|---|---|
+| `assets/index-*.js` raw | 1,180,744 B | 1,200,986 B | +20,242 B (+1.7%) |
+| `assets/index-*.js` gzip | 349,176 B | 355,051 B | +5,875 B (+1.7%) |
+| whole `out/renderer` | 2,153,874 B | 2,174,116 B | +20,242 B (+0.9%) |
+
+**Only `react-dom/client` is aliased**, and that is what keeps one
+reconciler in the bundle. In React 19 both `react-dom/client` and
+`react-dom/profiling` `require("react-dom")` for their shared internals,
+so bare `react-dom` (`createPortal`, used in `Library.tsx`,
+`Editor.tsx`, `DeleteConfirm.tsx`) and `react-dom/server` keep resolving
+normally and cannot produce a second copy. The +20 KB delta is the
+instrumentation; a second reconciler would be an order of magnitude more.
+
+Confirm a build really is the profiling one by grepping the chunk for a
+Profiler-only fiber field: `treeBaseDuration` appears **21 times** in the
+profiling bundle and **0 times** in the baseline.
+
+### The DevTools browser extension does not work here
+
+`electron-devtools-installer` plus the React DevTools MV3 extension is a
+dead end on Electron 41, and the half that works makes it look like it
+might. Measured on Electron 41.10.7 with React Developer Tools 8.0.0:
+
+- The extension installs and Electron accepts `manifest_version: 3`.
+- Its background **service worker runs**.
+- Content-script injection works — `__REACT_DEVTOOLS_GLOBAL_HOOK__` is
+  installed in the page with the full hook API. The old `chrome.scripting`
+  blocker from 2023 is genuinely gone.
+- **The extension's `devtools_page` never loads.** No webContents is
+  created for it, and no Components or Profiler tab appears, with the
+  window shown or hidden.
+
+Backend attaches, frontend does not. Use the standalone route.
+
+### Packaging cannot ship the bridge
+
+`PWRSNAP_REACT_DEVTOOLS` is read at build time, so nothing at app runtime
+can undo a renderer HTML that was built with it.
+[verify-asar-contents.mjs](apps/desktop/scripts/verify-asar-contents.mjs)
+fails packaging when any packaged HTML loads a remote script, and
+`release.mjs` + `package-win.mjs` run it on every packaging path. The
+rule is written against the shape — a remote `<script src>` in a shipped
+renderer — not against the flag.
+
+Four things about that gate are deliberate. The two content rules are
+pinned by
+[packaged-html-rules.test.mjs](apps/desktop/scripts/packaged-html-rules.test.mjs),
+the two failure modes by
+[verify-asar-contents.test.mjs](apps/desktop/scripts/verify-asar-contents.test.mjs)
+§"packaged renderer HTML":
+
+- **It fails closed on an unreadable entry.** An HTML entry that cannot be
+  read is reported, not skipped. This is a check whose whole job is to stop
+  something shipping, so "could not look" has to be as loud as "looked and
+  found it".
+- **It fails closed on an empty scan.** Matching zero files is a failure,
+  not a pass. Without that, a renderer that stopped landing under `/out/`
+  would leave the check inspecting nothing and printing OK, for every
+  release after the one that moved it.
+- **It is scoped to `/out/`.** electron-builder ships `out/**` plus the
+  auto-included production `node_modules`; a dependency that vendors a
+  playground page pointing at a CDN would otherwise fail a release with a
+  message about a flag that has nothing to do with it.
+- **The pattern requires whitespace before `src`.** `\bsrc` also matches
+  `data-src`, an inert lazy-loading placeholder that loads nothing.
+
+PwrSnap has no `rejectDevOnlyEnvVarsInProduction`-style registry in
+`src/main`, so there is no runtime warning when an operator exports one
+of these and then launches a *packaged* build. Nothing breaks — the
+variables are only ever read by the Vite config — but the Profiler simply
+never connects, with no explanation. Worth adding if that bites someone.
 
 ## Loopback agent access — one door, one approval window
 
@@ -804,6 +1709,25 @@ Rules the surface keeps, and where each one lives:
   production sources so `createGrant` has no caller and `issueOAuthGrant`
   is reached only from the authorization-code exchange.
 
+## React act warnings fail renderer tests
+
+The renderer Vitest project uses `act-warning-runner.ts` and
+`react-act-environment.ts` under `apps/desktop/src/test-setup/` to fail React
+act warnings, including unwrapped updates, unawaited/overlapping scopes,
+suspended work and a disabled act environment. The guard observes both
+`console.error` and `console.warn`, survives silenced spies and mock restoration,
+and attributes late asynchronous work to the test that created it. It checks
+again after test and suite teardown.
+
+Await the React work inside `await act(async () => { ... })`: mount effects,
+IPC replies, timers, event callbacks and teardown are all part of the test.
+Keep assertions after the relevant work settles. Do not silence the warning,
+disable `IS_REACT_ACT_ENVIRONMENT`, or wrap the whole test in act to bypass
+individual interaction boundaries. Mocks must preserve the real transport's
+ordering and results; waiting can expose assertions against transient state.
+The nested fixtures in `scripts/renderer-act-warning-guard.test.mjs` prove that
+warnings fail the process and clean runs pass.
+
 ## Repository conventions
 
 - **pnpm workspaces.** Apps in `apps/*`, packages in `packages/*`. Always run
@@ -816,15 +1740,155 @@ Rules the surface keeps, and where each one lives:
   exactly one place to register a command and exactly one place to enforce
   auth + capability checks.
 - **TypeScript strict.** `tsconfig.base.json` has `strict`,
-  `verbatimModuleSyntax`, `isolatedModules`, and (per the deepening plan)
-  `exactOptionalPropertyTypes`.
+  `verbatimModuleSyntax`, `isolatedModules`, (per the deepening plan)
+  `exactOptionalPropertyTypes`, and `noUnusedLocals` + `noUnusedParameters`.
+- **Dead imports and locals fail `pnpm typecheck`, and TypeScript is what catches
+  them.** (Not `pnpm build` — electron-vite transpiles with esbuild and type-
+  checks nothing, so a green build proves nothing here.) `noUnusedLocals` + `noUnusedParameters` ride
+  `pnpm typecheck`, which `pnpm lint` already runs on every PR, so the check
+  uses the native TypeScript 7 compiler. TypeScript 6 remains installed for
+  JavaScript API consumers and `pnpm typecheck:legacy`; do not let the two
+  packages' identically named `tsc` bins choose the compiler by accident.
+  Package scripts select the compiler explicitly. `pnpm check:benchmark`
+  compares repository file inventories and injected errors before timing
+  repeated sequential pairs on one machine. It measures CLI checks, not LSP
+  memory or editor responsiveness. Keep both unused-binding flags enabled.
+  - This closes a real gap. A refactor in
+    [#585](https://github.com/pwrdrvr/PwrSnap/pull/585) extracted a hook and
+    left two imports behind in `VideoStage.tsx`, and `recording-audio.ts` kept
+    the dead *value* half of a mixed `import { x, type X }` after only the type
+    was still needed. Both survived a fully green CI run — 8 checks, 6121 tests
+    — and were caught by a human reading the diff. `TS6133` catches both
+    shapes, including the value-vs-type one.
+  - **The `_` prefix is an escape hatch for PARAMETERS ONLY.**
+    `noUnusedParameters` skips a parameter named `_foo`; `noUnusedLocals` does
+    NOT skip a local or an import named `_foo`. Use it for a callback that must
+    accept a positional argument it ignores. There is no escape hatch for a
+    dead import — delete it.
+  - A write-only private field counts as unused, which is the point: it is
+    state nothing reads. Delete the field and its assignments rather than
+    adding a read to quiet the compiler.
+  - The flags are all-or-nothing and cannot be scoped per directory, so
+    `e2e/**` and `__tests__/**` are gated too. That is deliberate — an unused
+    import in a test is the same stale-refactor signal as one in `src/main`.
+    The root `scripts/*.mjs` policy gates and
+    `apps/desktop/scripts/*.mjs` are plain JS in no tsconfig, so TypeScript never
+    sees them; Oxlint now checks those scripts, including unused bindings.
+    `apps/desktop/tsconfig.json` does list `scripts/**/*.ts`, but
+    that glob currently matches zero files.
+- **Oxlint adds correctness coverage; it does not replace policy checks or
+  TypeScript.** `pnpm lint:syntax` checks `apps`, `packages`, `scripts`, root
+  Vitest config and pnpm hooks, including unit/E2E files. `.oxlintrc.json`
+  pins an explicit rule list and the classic Rules of Hooks check; React
+  Compiler rules and exhaustive-deps are not enabled by this adoption. Keep
+  `design/**` untouched as a preserved handoff. TypeScript owns unused TS
+  bindings; the JS rule permits unused `_` parameters, not `_` locals/imports.
+  Intentional control-character validation and verification-cleanup throws
+  have narrow, explained syntax exceptions.
+- **Typed lint preserves receivers.** `pnpm lint:typed` checks production
+  main, preload, renderer and shared TypeScript with `unbound-method`. Keep
+  `oxlint.typed.json` at the root so relative overrides work. Callback methods
+  implemented by React hooks/props may declare `this: void`; actual methods
+  need a receiver-preserving call or bind. `scripts/lint-typed.mjs` rejects
+  inline suppression of this rule, including blanket disables, using parsed
+  comments. Its guard and native CLI file inventories must match; a test pins
+  that equality and real lost-receiver probes. Do not disable the rule to
+  accommodate an extraction. The typed pass deliberately excludes tests.
 - **Renderers stay sandboxed.** Every `BrowserWindow` is created with
   `contextIsolation: true, sandbox: true, nodeIntegration: false`. The Phase 6
   sizzle-composer preview player runs in a sandboxed renderer; render
-  orchestration runs in a Node child process. Lifecycle test enforces.
+  orchestration runs in a Node child process. Lifecycle test enforces. Those
+  three flags harden a renderer; they do not stop one from being pointed
+  somewhere else — see the navigation-guard section below.
 - **Result-pattern for cross-process errors.** Electron `invoke` strips
   `instanceof`. All command handlers return `Result<Res, PwrSnapError>` —
   `{ ok: false, error: { kind, code, message, cause? } }`.
+
+## No webContents opens a window, and none navigates away
+
+**Every webContents PwrSnap creates is covered by a `setWindowOpenHandler`
+that denies, and a `will-navigate` handler that refuses any target which is
+not PwrSnap's own content. A URL leaves the app only by clearing
+`isAllowedExternalUrl`, and only into the user's browser. The sole configurable
+exception is an OAuth authorization URL generated in main from a saved custom
+model's validated metadata; it goes directly to the system browser, never to a
+PwrSnap webContents. Do not broaden the generic allowlist for OAuth.** Owner:
+[navigation-guard.ts](apps/desktop/src/main/navigation-guard.ts), armed from
+`app.whenReady()` in [index.ts](apps/desktop/src/main/index.ts) beside
+`installMediaPermissionPolicy()`. Pinned by
+[navigation-guard.test.ts](apps/desktop/src/main/__tests__/navigation-guard.test.ts).
+
+Electron's default for both hooks is "yes", and the default `window.open`
+creates a new `BrowserWindow` carrying the SAME webPreferences — our preload
+and its IPC bridge — pointed at content we did not choose. `contextIsolation`
++ `sandbox` + `nodeIntegration: false` do not help here: they harden the
+renderer that lands, they do not decide what lands.
+
+**The reachable path was a modifier key.** Settings → About renders three real
+`<a href="https://…">` rows. Each `onClick` calls `preventDefault()` and routes
+through `app:openExternal`, which is correct for a plain left-click and **is
+not consulted for a middle-click or a cmd/ctrl-click** — Chromium turns those
+into a window-open. So the one surface that deliberately routes links through
+an allowlist could be made to bypass it without exploiting anything.
+
+Five things that bite:
+
+- **`URL.origin` is the STRING `"null"` for every opaque scheme** — `file:`,
+  `data:`, and anything non-special all report it, so two unrelated opaque
+  URLs compare EQUAL. That is why `file:` is decided in its own branch and
+  returns there unconditionally (a `file://host/…` whose `fileURLToPath`
+  throws must be refused, not handed to an origin test), and why the
+  dev-server branch requires an http/https target before comparing. Before
+  that, an `ELECTRON_RENDERER_URL` with an opaque origin would have made
+  every `data:` URL a permitted navigation target.
+- **The allowlist lives in exactly one module.**
+  [external-url-allowlist.ts](apps/desktop/src/main/external-url-allowlist.ts)
+  holds `isAllowedExternalUrl`; `app:openExternal` and the guard both import
+  it. It is not an export of `app-handlers.ts` because the guard would then
+  pull the command bus, the window factory and electron-updater into a file
+  whose job is one string predicate — and into every test of it. Two copies of
+  a security predicate drift; that is the whole point of the module.
+- **The navigation predicate is deliberately stricter than
+  `isTrustedRendererUrl`** in `media-permissions.ts`, which answers a different
+  question ("did this request come from a page we loaded?") and accepts ANY
+  `file:` URL and ANY loopback port. Those are fine for classifying a request
+  already made and too loose for a navigation TARGET, where any `file:` would
+  let a renderer pull an arbitrary local HTML file — a downloaded one — into a
+  window that still has our preload. Do not unify them; it can only loosen
+  this one.
+- **The dev-server origin must stay allowed or `pnpm dev` breaks.** The
+  renderer is served from `http://localhost:<port>` there, not `file://`, and
+  Vite's HMR full-reload is a renderer-initiated navigation. It is
+  origin-compared against `ELECTRON_RENDERER_URL` and gated on
+  `!app.isPackaged`, so a stray env var cannot open a path in a shipped build.
+  A self-navigation (reload) of the page already loaded is allowed for the same
+  class of reason: the renderer error boundary's Reload button is the recovery
+  path when everything else has failed.
+- **`will-frame-navigate` takes subframes ONLY.** It is a superset of
+  `will-navigate` — both fire for the main frame — so acting on both would hand
+  an allowlisted URL to the browser twice. PwrSnap renders no iframes today,
+  which is exactly why the arm exists: one that appears later inherits the
+  policy instead of silently escaping it.
+
+Two smaller rules, both learned the hard way. **`installNavigationGuard` is
+idempotent** because it APPENDS an emitter listener rather than replacing a
+session handler the way `installMediaPermissionPolicy` does — installing twice
+would give every webContents two `will-navigate` listeners, and one click on
+an allowlisted link would open two browser tabs. And **a refused URL is logged
+as origin + path only**: it is renderer-supplied, can carry a secret in its
+query, and the main log goes to disk and rides along in bug reports.
+
+**Tests here must build file URLs with `pathToFileURL`, never by
+concatenating `file://` onto a POSIX path.** `file:///Applications/…` is not a
+valid file URL on Windows — `fileURLToPath` throws with no drive letter — so a
+hardcoded POSIX fixture passes on macOS and Linux and fails the whole Windows
+lane.
+
+An `<a href>` is safe again now that the guard exists, and it is what About
+uses: a real, copyable URL, with `onClick` → `app:openExternal` kept in front
+of it because that path reports a failure inline (the "Link status" row) where
+the guard can only log. Keep that pairing — the guard is the backstop, not the
+mechanism.
 
 ## BrowserWindow sizing — `setMinimumSize(0, 0)` after construction
 
@@ -908,6 +1972,208 @@ overflow rules) before landing on the actual platform behavior. If
 you find yourself debugging "popover is stuck at its initial size,"
 check for `setMinimumSize(0, 0)` first.
 
+## macOS MOVES a window placed outside the work area
+
+**Any window positioned to line up with something on screen — an
+overlay, a frame, a HUD pinned to a rect — must be planned against
+`display.workArea`, not `display.bounds`.** AppKit runs
+`-[NSWindow constrainFrameRect:toScreen:]` on show and slides any
+window whose frame falls outside `NSScreen.visibleFrame` (the menu bar
+at the top, the Dock at the bottom) back inside it. It is not a
+refusal and not an error; the window simply ends up somewhere else.
+
+Owner for the recording frame:
+[recording-frame-geometry.ts](apps/desktop/src/main/recording/recording-frame-geometry.ts)
+(`clampBox`). Pinned by
+[recording-frame-geometry.test.ts](apps/desktop/src/main/recording/__tests__/recording-frame-geometry.test.ts)
+§"the window server moves a window it does not like" and by
+[recording-frame.test.ts](apps/desktop/src/main/recording/__tests__/recording-frame.test.ts)
+§"the window is placed inside the recorded display's work area".
+
+This shipped: the tangerine recording frame drew ~26px below the window
+it was framing and hung off the bottom by the same amount, while the
+picker and the recorded MP4 were both correct.
+
+Four things that bite:
+
+- **The ORIGIN moves; the SIZE never does.** So the window slides and
+  keeps its height — which reads as "shifted down, hanging off the
+  bottom by the same amount", not as a sizing bug. Measured on macOS 26
+  / Electron 41.10.7 with a 30px menu bar: `y=0 → 30`, `y=4 → 30`,
+  `y=23 → 30`, `y=600 h=500 → y=491` (pulled up off the Dock),
+  `x=-50 → 0`.
+- **The move lands on `show()`, not on construction.** `getBounds()`
+  right after the constructor still returns what you asked for, and
+  `ensureWindow` records exactly that as placed and never reads back —
+  so today nothing in main notices, which is why this shipped. A
+  read-back AFTER `show()` DOES see the moved origin (it is where the
+  measurements above come from), so comparing `getBounds()` to the
+  planned bounds once shown is a cheap backstop for any platform this
+  clamp does not model. That is the one thing it has over the
+  `setMinimumSize(0, 0)` clamp above, where the main-side getter really
+  does answer from the value we set.
+- **AppKit only moves a window that FITS** in the work area. One taller
+  than it is left alone — so the bug reproduces on an ordinary window
+  and vanishes on a big one.
+- **No window level escapes it.** `floating`, `status`, `pop-up-menu`
+  and `screen-saver` were all measured; all four were moved. Covering
+  the menu bar needs `setSimpleFullScreen`, which is what
+  `region-selector.ts` uses and is far too heavy for a small overlay.
+
+The fix shape is "never ask": clamp to the work area so the window
+always fits, and let whatever geometry protocol the window has carry
+the difference. For the recording frame that protocol is
+`RecordingFrameLayout.inset`, **which is why those insets may be
+negative** — a rect edge no window can reach is drawn as an overhang
+and clipped, which keeps the frame ON the rect. Do not "tidy" a
+negative inset to zero; that is the original bug wearing a clean face.
+
+Windows and Linux have no equivalent, and the recording frame's
+`outset` posture depends on every pixel of band it can get, so the
+clamp is darwin-only and the platform split is pinned by test.
+
+Full measurements, the probe recipe, and the dead ends:
+[docs/solutions/2026-09-17-recording-frame-appkit-window-constraint.md](docs/solutions/2026-09-17-recording-frame-appkit-window-constraint.md).
+
+## The Linux tray is a native menu, not the popover
+
+**On Linux the tray's PRIMARY surface is a native `Menu` attached with
+`tray.setContextMenu`, and nothing may anchor a window to the indicator
+there. Do not let a new tray affordance be wired only through the
+popover-platform events.** Owner: `traySurfaceForPlatform` +
+`refreshNativeTrayMenu` in [tray.ts](apps/desktop/src/main/tray.ts).
+Reference: [docs/linux-tray-support.md](docs/linux-tray-support.md). Pinned by
+[tray-linux-native-menu.test.ts](apps/desktop/src/main/__tests__/tray-linux-native-menu.test.ts)
+and
+[tray-linux-wayland-popover.test.ts](apps/desktop/src/main/__tests__/tray-linux-wayland-popover.test.ts).
+
+The popover IS reachable on Linux — the menu's `Show Last Capture…` row opens
+it (`toggleLinuxTrayPopover`). What is not reachable is opening it **at the
+indicator**, which is what a tray popover is; the compositor places it. That
+distinction is the whole of the Wayland bullet below.
+
+PwrSnap shipped with no working Linux tray, and the failure mode is worth
+remembering because nothing in the code looked wrong: the `Tray` was
+created, and then every affordance hung off it was attached to an API
+Electron declares macOS/Windows-only. Read the annotations in
+`electron.d.ts` before assuming a `Tray` method works everywhere:
+
+| API | Platform | Consequence |
+|---|---|---|
+| `Tray.getBounds()` | `darwin,win32` | measured `{0, 0, 0, 0}` — nothing for `positionTrayWindow` to anchor to |
+| `Tray.popUpContextMenu()` | `darwin,win32` | the menu cannot be raised |
+| `Tray` `right-click` / `double-click` | `darwin,win32` | the handler never fires |
+| `Tray.setTitle()` | `darwin` | no `● REC`, no timed countdown |
+| `Tray.setContextMenu()` | **all** | the only menu path that exists on Linux |
+| `Tray` `click` | **all** | fires on Linux for SNI `Activate` AND `SecondaryActivate` (measured); deliberately unwired there — see the doc |
+
+Wayland closes the two remaining escapes: `BrowserWindow.setPosition` is
+"Not supported on Wayland (Linux)" (and `getBounds` returns zeros there),
+and `setContentSize` "may not work … as some window managers restrict
+programmatic window resizing" — which is the single call the whole
+resize-to-fit design rests on (see "Tray + float-over popover sizing").
+
+Five things that bite:
+
+- **Always hand `new Tray()` the `NativeImage`, never the path.** Both are
+  accepted and behave identically — until the file is missing, where measured
+  on 41.10.7 the path form THROWS (`Failed to load image from path`) and the
+  NativeImage form returns a blank icon. `installTray` runs un-awaited inside
+  `app.whenReady().then(...)`, so that throw aborts the rest of the boot
+  (focus sink, selector pre-warm) instead of degrading to a blank spot in the
+  panel. The `icon.isEmpty()` warning is the intended handling.
+- **Every input that can change a menu label must call
+  `refreshNativeTrayMenu`, and it publishes only on a real difference.** It
+  compares a signature of the template — labels, accelerators, enabled flags,
+  `type`, recursing into submenus — against the last export. `setTrayHotkeys`
+  is wired to `onSettingsChanged`, which fires on EVERY settings and secret
+  write, so without that gate a theme toggle re-exports the tray menu; and
+  because `setContextMenu` REPLACES the exported object, some SNI hosts close
+  an open menu when it happens. A failed export must not update the
+  signature, or the next refresh skips the retry and the tray freezes at the
+  last menu that did publish. The Linux menu is a PERSISTENT D-Bus object,
+  and Electron's docs are explicit that "in order for changes made to
+  individual `MenuItem`s to take effect, you have to call `setContextMenu`
+  again." Today that is recording phase, hotkey ownership, and the dev
+  seeder's extra items. macOS/Windows rebuild the template inside
+  `right-click` and need nothing.
+- **Nothing time-varying may go IN that menu.** `phase: "recording"` is set
+  exactly once, so there is no tick to rebuild off and a `mm:ss` clock would
+  freeze at `00:00` — and a per-second republish would replace the menu
+  under a user who has it open. The persistent row therefore reads
+  `● Recording — Stop and Save`; only the popover platforms carry the clock.
+- **macOS and Windows must NEVER call `setContextMenu`.** On an
+  `NSStatusItem` it hands left-click to the menu and suppresses the `click`
+  event `toggleTrayWindow` is wired to — deleting the popover UI on the two
+  platforms where it works. The test asserts the absence.
+- **Linux does not PRE-WARM the popover `BrowserWindow`** — it is built on
+  the first `Show Last Capture…` click and kept. Do not add
+  `prewarmTrayWindow` to the Linux arm of `installTray`: the native menu is
+  the primary surface and most Linux users never open the popover, so that
+  would be a resident renderer at boot for nothing. The consequence is that
+  the first open races the renderer's mount, which is what
+  `LINUX_TRAY_FIRST_MEASURE_WAIT_MS` and the taller Linux constructor frame
+  exist for (see "Tray + float-over popover sizing"). `showTrayPopoverForE2E`
+  still pins a window at a fixed point under E2E — so **a green Linux E2E
+  tray spec proves nothing about the Linux tray.** xvfb is X11 and no
+  indicator is driving it.
+- **On Wayland the compositor owns placement, and the code must say so by
+  not calling `setPosition`.** `placeLinuxTrayPopover` and the float-over's
+  `placeBottomRightOn` both return early when
+  `windowPlacementIsOurs()` is false. Calling an inert API instead would read
+  as a placement that works. Three things would have to be true to mount the
+  popover by the icon and none are: `getBounds()` is zeros, `setPosition` is
+  inert, and the indicator lives in the PANEL's process so there is no
+  surface of ours to anchor to (Electron exposes no `xdg_positioner` /
+  layer-shell path). X11 keeps a real cursor anchor.
+- **Detect the backend with `app.commandLine.getSwitchValue("ozone-platform")`,
+  never with a geometry readback.** Owner:
+  [linux-window-placement.ts](apps/desktop/src/main/linux-window-placement.ts).
+  Measured on 41.10.7 against headless weston AND xvfb, `setPosition(400,300)`
+  → `getPosition()` returns `[400,300]` on BOTH — every geometry getter echoes
+  Chromium's cached widget bounds whether or not the compositor honoured the
+  request, and the two runs were byte-identical. The switch is preferred over
+  `XDG_SESSION_TYPE` because Electron-on-XWayland is an X11 process that CAN
+  place its windows. Note the measured default: on a Wayland session Electron
+  takes **wayland**, even with XWayland available — `pnpm dev` on Ubuntu GNOME
+  cannot place its own windows.
+- **The `Show Last Capture…` row must TOGGLE, and its label must stay
+  static.** Toggle because on Wayland the popover may never take keyboard
+  focus (a client cannot activate itself), so blur-dismiss and the Escape
+  handler can both be unavailable — re-picking the row is the only dismissal
+  guaranteed to work. Static because this menu is persistent: a label naming
+  the last capture, or flipping to "Hide" while open, would need a per-capture
+  republish, and a republish can close the menu under the user's cursor.
+- **There is no `libayatana-appindicator3` dependency to declare.** Electron
+  stopped routing the tray through libappindicator in Electron 22
+  (electron/electron#36333) and speaks StatusNotifierItem over D-Bus itself.
+  What a user needs is an SNI *host*: native on KDE, preinstalled on Ubuntu
+  GNOME, an extension on vanilla GNOME, a bar's tray module on wlroots
+  setups. When none is running, `installTray` still creates the `Tray` (a
+  host that starts later is picked up by Chromium's `NameOwnerChanged`) and
+  [linux-status-notifier-host.ts](apps/desktop/src/main/linux-status-notifier-host.ts)
+  logs a `gdbus NameHasOwner` verdict with the remedy — because a
+  registration with no host raises no error and fires no event. That probe
+  reports `unknown` rather than `absent` whenever it cannot reach a verdict;
+  do not "simplify" it into guessing, or a user with a healthy tray host
+  gets told to install a GNOME extension they already have.
+
+The icon is its own file for its own reason: `tray-icon-linux.png` is 48×48
+with **no `@Nx` siblings**, because `StatusIconLinuxDbus` publishes the
+image's scale-1 bitmap into the SNI `IconPixmap` property and `@Nx` siblings
+do not raise it — measured, `createFromPath(...).toBitmap()` is 1024 bytes
+(16×16×4) for the `tray-icon.png` set and 9216 (48×48×4) for this file.
+
+Everything above about Electron's Linux behavior is measured on 41.10.7, and
+both container recipes are in the doc. It is worth re-running on a major
+Electron bump. The xvfb recipe cannot tell you whether anything draws — a
+bare container has no panel, so every call succeeds and nothing appears,
+which is exactly this bug's failure mode. The headless sway + waybar recipe
+can: waybar's tray module is a real SNI host, and against it the real build
+was measured drawing the icon, exporting a 48×48 `IconPixmap`, and
+dispatching menu rows clicked over dbusmenu. It is a wlroots host, so which
+gesture GNOME Shell maps to `Activate` still needs a GNOME session.
+
 ## Tray popover hide — `setOpacity(0)` before `hide()` on macOS
 
 **The tray popover must never be hidden with a bare `hide()`, and never
@@ -967,14 +2233,31 @@ sits OUTSIDE the styled container, then telling main to
 `setContentSize` the BrowserWindow to match. The two surfaces use
 identical machinery on purpose — fixes flow naturally between them.
 Do NOT revert to hardcoded heights, and do NOT measure the styled
-container itself.**
+container itself.** And past the main-side ceiling the float-over
+scrolls rather than letting the window clip it — see
+§"Past the ceiling, the float-over SCROLLS" below.
+
+Width is display-responsive, but it is not viewport-responsive. The shared
+policy in [popover-sizing.ts](packages/shared/src/popover-sizing.ts) chooses a
+compact profile when the shortest work-area dimension is at most 800 DIP:
+tray 360 DIP (regular 440), float-over toast 320 DIP (regular 392). It also
+fits either width inside unusually narrow work areas. The recent rail is
+omitted below 700 DIP of work-area width. Renderers initially use
+`window.screen.availWidth/availHeight`. When the tray is positioned beside its
+icon, main sends the destination display's work area so its prewarmed renderer
+can re-measure after a display change. Main receives the measured CSS width,
+converts it through the webContents zoom factor, and calls `setContentSize`.
+Never key this policy to `innerWidth`, `innerHeight`, CSS viewport units, or
+display scale factor: the first three are the BrowserWindow being resized and
+create a feedback loop, while scale factor says nothing about usable logical
+space.
 
 Implementations:
 
 - Tray: [TrayMenu.tsx](apps/desktop/src/renderer/src/features/tray/TrayMenu.tsx)
-  → dispatches `pwrsnap:tray:resize`. Main listens in
+  → calls the preload's `requestTrayResize` (`tray:resize`). Main listens in
   [tray.ts](apps/desktop/src/main/tray.ts) (`wireTrayResizeChannel`),
-  clamped to `[TRAY_HEIGHT_MIN=200, TRAY_HEIGHT_MAX=880]`.
+  clamped to `[TRAY_HEIGHT_MIN=200, TRAY_HEIGHT_MAX=1040]`.
 
 - Float-over: [FloatOverHost.tsx](apps/desktop/src/renderer/src/features/float-over/FloatOverHost.tsx)
   → dispatches `float-over:resize`. Main listens in
@@ -1008,7 +2291,10 @@ useLayoutEffect(() => {
 }, []);
 
 return (
-  <div ref={containerRef} style={{ display: "inline-block", width: "100%" }}>
+  <div
+    ref={containerRef}
+    style={{ display: "inline-block", width: `${displayPolicyWidthCss}px` }}
+  >
     <div className="ps-tray">{/* or .fo */}…</div>
   </div>
 );
@@ -1092,6 +2378,58 @@ container, we're fighting browser-implementation quirks of
 `overflow: hidden`. Measure an `inline-block` wrapper outside the
 clipping chain and the entire class of bug disappears.
 
+### Linux: the measurer still runs, but it cannot be the only guarantee
+
+**On Linux the resize-to-fit path is unchanged — the same wrapper, the same
+IPC, the same `setContentSize`. What Linux adds is a floor under it, because
+nothing in the process can verify the resize landed.** Owners:
+`trayPopoverConstructedHeight` in
+[window.ts](apps/desktop/src/main/window.ts) and
+`LINUX_TRAY_FIRST_MEASURE_WAIT_MS` + `toggleLinuxTrayPopover` in
+[tray.ts](apps/desktop/src/main/tray.ts). Pinned by
+[tray-linux-wayland-popover.test.ts](apps/desktop/src/main/__tests__/tray-linux-wayland-popover.test.ts).
+
+- **`getContentSize()` CANNOT tell you whether `setContentSize` worked.** It
+  echoes the requested value on every backend — measured, byte-identical
+  between headless weston and xvfb. The honest check is the renderer's own
+  `window.innerHeight`, and by that measure `setContentSize` **does** work on
+  Wayland (`440→620→300→812` all followed exactly on weston; `620→300` on
+  mutter 46 headless; the real popover shrank from 880 to 302 on sway 1.9).
+  Electron still documents the call as "may not work" there, and the
+  first-open deadline can beat the resize, so the design does not depend on
+  it.
+- **The Linux constructor frame is TALLER (880, not 440)** and that is the
+  floor: the constructor frame is the last size the popover is guaranteed to
+  have. A refused resize then renders content at the top of a taller
+  transparent window — dead area that still hit-tests — which beats clipping
+  the bottom rows off. Do not "tidy" Linux back to 440 on the strength of the
+  resize measurements.
+- **The first Linux open waits for one measurement before showing.** Linux
+  does not pre-warm the popover, so without the wait the first open paints the
+  constructor frame and visibly jumps. The wait has a deadline
+  (`LINUX_TRAY_FIRST_MEASURE_WAIT_MS`) so a renderer that never posts still
+  gets a window — which is the *other* reason the constructor frame has to fit
+  the content.
+- **The float-over's Linux problem was never sizing — it was `setOpacity`.**
+  Through Electron 41 that call was `@platform win32,darwin` and measured
+  inert on BOTH Linux backends, so the toast's opacity park hid nothing and the once-only
+  `showInactive()` (burned by the selector's `show-idle`) meant the commit
+  never showed. Linux now uses the real `hide()` / `showInactive()` cycle
+  Windows already proves — `floatOverHideModelForPlatform`, where macOS is the
+  exception that has to earn its way out rather than the rule everyone else
+  survives. Electron 44 implements `setOpacity` on Linux, and on 44.4.5
+  under xvfb `getOpacity()` reads back what was set. That is not a reason to
+  move Linux back to the park: it is a readback, xvfb draws nothing, and
+  `hide()` needs no compositor. Pinned by
+  [float-over-linux-visibility.test.ts](apps/desktop/src/main/__tests__/float-over-linux-visibility.test.ts).
+- **Linux E2E green proves nothing here.** xvfb is X11. Reproducing any of
+  this needs a nested Wayland compositor — recipe in
+  [docs/linux-tray-support.md](docs/linux-tray-support.md) §"Repeating the
+  Wayland half". Where a window actually LANDS is measurable with pixels on
+  mutter 46 headless (same section): stock mutter puts a native Wayland
+  popover or toast near the top-left of the work area, not centred and not in
+  the corner. Whether GNOME Shell focuses it still needs a real session.
+
 ### When to revisit
 
 - A new top-level section gets added or content becomes genuinely
@@ -1102,6 +2440,507 @@ clipping chain and the entire class of bug disappears.
   measuring it directly would also work, but there's no reason to
   switch off the wrapper pattern; it's strictly more robust and
   keeps the tray and float-over symmetrical.
+
+### Past the ceiling, the float-over SCROLLS — it must never clip
+
+**Measuring correctly is only half of it. What main does with a
+measurement past its clamp is clip, and the toast's footer is last in
+the box — so the row carrying Discard / Dismiss / Edit is exactly what
+disappears.** That shipped. PR #638 bought the video toast back under
+`FLOAT_OVER_HEIGHT_MAX` by cutting 100px of chrome (888 → 788), which
+left ~12px of headroom; a third row of tags, an `AppUpdateRow`, the
+short-clip warning or a long Codex error each spends it on its own.
+
+The toast therefore caps its own height and scrolls the middle:
+`.fo` wears `max-height: var(--fo-max-h)`, `.fo__body` (everything
+between `.fo__hdr` and `.fo__foot`) is `flex: 1 1 auto; min-height: 0;
+overflow-y: auto`, and the header and footer are `flex: none`. The
+wrapper then measures `min(natural, cap)` and main's clamp never fires.
+Policy in [float-over-sizing.ts](packages/shared/src/float-over-sizing.ts),
+imported by BOTH main and the renderer — a renderer cap even a pixel
+looser than main's clamp is clipped footer again.
+
+Four things that bite:
+
+- **The cap may NEVER be derived from the window's current size.**
+  `100vh` / `window.innerHeight` / the wrapper's own `clientHeight` all
+  look equivalent and close a feedback loop: the wrapper would report
+  `min(natural, current window)`, main would size the window to that,
+  and the toast could never grow again. That is strictly worse than the
+  clipping — it does not heal on the next capture, and no
+  `ResizeObserver` reports it, for the reason the section above this
+  one gives. Both legal inputs are window-size independent: the
+  `FLOAT_OVER_HEIGHT_MAX_DIP` constant, and the display's work area.
+- **`window.screen.availHeight` is DIP and zoom-independent; measured
+  on Electron 41 it equals `Display.workArea.height` exactly and does
+  not move at zoom 0.5/1/1.5/2 — while `window.innerHeight` does.** So
+  the CSS ceiling is `DIP / zoomFactor`, and the zoom comes from
+  `webFrame.getZoomFactor()` via preload (`getZoomFactor`). Nothing
+  else page-visible carries it: `devicePixelRatio` is
+  displayScale × zoom and the page does not know the display's scale.
+- **`min-height: 0` on `.fo__body` is load-bearing**, and looks like
+  tidying. A flex item's `min-height` is `auto` — its content height —
+  so without it the middle refuses to shrink, `.fo` overflows its own
+  max-height, and `overflow-y: auto` never engages because the box
+  never got smaller than its content. Same class as `flex: none` on the
+  header and footer, without which those squash their padding first.
+- **Do NOT add a `::-webkit-scrollbar` block** for the new scroller;
+  the repo-wide `scrollbar-width: thin` rule governs it and
+  `scrollbar-contract.test.ts` fails on one.
+
+The tray has no cap, deliberately: its content is structurally bounded
+(fixed mode grid, one preview, one hotkey list) while the toast's grows
+with whatever the model wrote. The MEASURER stays identical on both —
+the cap is published by the host onto the wrapper, not computed inside
+the shared code — so fixes still flow between them.
+
+Pinned by
+[float-over-scroll-cap-contract.test.ts](apps/desktop/src/renderer/src/styles/__tests__/float-over-scroll-cap-contract.test.ts)
+(the CSS, plus a grep that `FloatOverHost.tsx` names no viewport
+measure), [float-over-sizing.test.ts](packages/shared/src/__tests__/float-over-sizing.test.ts)
+(the policy) and the "float-over scroll cap" block in
+[FloatOver.test.tsx](apps/desktop/src/renderer/src/features/float-over/__tests__/FloatOver.test.tsx)
+(that swinging `window.innerHeight` moves nothing). jsdom has no
+layout, so none of them can observe the scroll itself — measure that in
+a real browser against the shipped stylesheet.
+
+## The float-over asks for its state; main never sends it on a timer
+
+**FloatOverHost subscribes to `floatOverState` and then calls
+`requestFloatOverState()`. Main answers with `lastEvent` on that
+channel, and sends nothing live before the request arrives. Do not bring
+back a grace period after a load event.** Owners:
+`wireFloatOverStateRequestChannel` in
+[float-over.ts](apps/desktop/src/main/float-over.ts) and the subscribe
+effect in
+[FloatOverHost.tsx](apps/desktop/src/renderer/src/features/float-over/FloatOverHost.tsx).
+Pinned by
+[float-over-state-request.test.ts](apps/desktop/src/main/__tests__/float-over-state-request.test.ts)
+and the "asks main for the current state" case in
+[FloatOver.test.tsx](apps/desktop/src/renderer/src/features/float-over/__tests__/FloatOver.test.tsx).
+
+The first `setFloatOverState` of a session creates the window, so that
+event always exists before the renderer that has to show it. Main used
+to send it 100ms after `did-finish-load`. React subscribes in a passive
+effect after the first render, and nothing bounds how long that takes.
+
+- **Measured in the Linux Docker harness.** With no load, FloatOverHost
+  subscribed 9–48ms after `did-finish-load` and the send always found
+  it. With the CPU oversubscribed, the send could land mid-render, and
+  its IPC task then raced React's effect flush. It lost 2 of 2 such races
+  at 6× (2 of 30 launches) and 3 of 7 at 12× (3 of 10). A lost event
+  left the toast empty. Main had already put the window on screen,
+  taking clicks, with the copy shortcuts armed.
+- **Subscribe, then ask.** The answer travels on the state channel, and
+  an event with no subscriber is dropped. The renderer test fails if the
+  two lines are swapped.
+- **Ask rather than latch, because this is state.** Each event replaces
+  the renderer's whole state, and main keeps the latest one, so a late
+  subscriber needs only that. A preload latch is for a one-shot intent
+  that exists nowhere else.
+- **Only the float-over's own webContents may ask.** A renderer that
+  reloads asks again and gets the latest state. Main stops sending live
+  at `did-start-loading` until it does.
+- **Ask once per mount.** StrictMode re-runs the effect, and a repeated
+  `show-loaded` resets the toast's enrichment to null.
+- **Do not probe this with `page.evaluate` before the send.** It queues
+  behind the first render and hides the race. Have the preload report
+  its receipt times to main over IPC, aligned with
+  `performance.timeOrigin`.
+
+Measurements, the two failure timelines, and the probe:
+[docs/solutions/2026-09-26-float-over-first-state-lost.md](docs/solutions/2026-09-26-float-over-first-state-lost.md).
+
+## The float-over dock is the toast's own window, and it never lands in a capture
+
+**When a toast's countdown ends, the snap stays in tabs on the screen edge,
+regardless of whether AI is off, running, completed, or failed. The dock is the SAME
+BrowserWindow as the toast, reshaped. It is placed inside the work area,
+excluded from screen capture, and hidden for every snapshot and every
+recording.** Owners: `enterTucked` / `applyDockLayout` /
+`releaseFloatOverDock` in [float-over.ts](apps/desktop/src/main/float-over.ts)
+(where the dock is and whether it shows), and the queue in
+[FloatOverHost.tsx](apps/desktop/src/renderer/src/features/float-over/FloatOverHost.tsx)
+with its rules in
+[float-over-dock-model.ts](apps/desktop/src/renderer/src/features/float-over/float-over-dock-model.ts)
+(which snaps wait). The renderer owns the list because only it knows each
+snap's enrichment status. Pinned by
+[float-over-dock.test.ts](apps/desktop/src/main/__tests__/float-over-dock.test.ts)
+and
+[FloatOverDock.test.tsx](apps/desktop/src/renderer/src/features/float-over/__tests__/FloatOverDock.test.tsx).
+
+- **A shape change parks the window until the renderer draws the new
+  shape.** Every layout post carries `mode: "toast" | "dock"`, main drops a
+  post for the shape it has already left, and the window is shown only
+  when a post for the new shape arrives. The host bumps a layout epoch on
+  every state event, so it re-posts even when the new shape measures the
+  same. Without that, a dock that happened to match its last size would
+  never be shown.
+- **The window is exactly the size of what it draws.** Transparent pixels
+  still take clicks. The dock rests as an 18px sliver and widens only
+  while the pointer is over it. The one accepted exception is the rail
+  beside a toast: it is only as tall as its thumbnails, capped at the
+  toast's height (`--fo-rail-max`, a layout measure the host publishes
+  before it measures), so with a short catalog the strip below it is
+  see-through. A rail stretched to the toast's height read as a tall
+  empty panel. On macOS and Windows that
+  strip (and the gaps between dock tabs) passes clicks through: the host
+  reports each time the pointer crosses between a drawn part
+  (`FLOAT_OVER_SOLID`) and the rest, and main answers with
+  `setIgnoreMouseEvents(true, { forward: true })`. Main only honors it
+  while the window is on screen, and every show and park resets it to
+  taking clicks, so a report can never un-park a window. Linux has no
+  move forwarding, so the strip keeps taking clicks there.
+- **On Windows the dock's window is 32px wide, and its edge is placed, not
+  its request.** Under Electron 44, Windows will not make any window
+  narrower than 32 DIP. Measured on the GitHub Windows runner at 100%: transparent or opaque,
+  resizable or not, through `setBounds` or `setContentSize`, every request
+  below 32 came back as 32. Electron 41 gave 18. The renderer pins the tab
+  to the window's edge, so `applyDockLayout` reads the width back and puts
+  THAT flush with the work area. Placed by the requested 18, the window ran
+  14px past the right edge and 4px of tab showed. The spare strip is
+  see-through, so it passes clicks like the rail's. The E2E specs
+  assert where the tab lands (`dockGeometry`), not the window's width.
+- **No native shadow on the dock.** macOS draws the shadow, with a light
+  rim, around the window's whole shape, which outlined the gap between
+  the tabs. `setWindowShape` turns it off for the dock and back on for
+  the toast.
+- **No rounded window corners, ever** (`roundedCorners: false` in
+  `createFloatOverWindow`). macOS and Windows 11 round a frameless
+  window's corners unless told not to. The toast's own 14px radius hid
+  that, but on the 18px-wide dock it cut all four window corners, and the
+  top tab and the bottom ⋮ tab read as one canoe. It is a construction
+  option, so it cannot follow the shape the way the shadow does. The
+  headless render harness cannot show this: there is no window around
+  the page. Only a real display does.
+- **Placed flush inside the work area, never past it.** AppKit moves a
+  window placed outside it (see "macOS MOVES a window placed outside the
+  work area"). The tabs only look like they run off the screen, because
+  the window's own edge clips them.
+- **Never in a capture.** While tucked, the window is content-protected on
+  macOS and Windows. The chrome-hide `cancel` before every snapshot parks
+  it on every platform, which is the only protection on Linux. A
+  recording parks it for the whole take (`subscribeToRecordingState`).
+- **Only a cancel that ENDS a capture session brings the dock back.** That
+  is a cancel from `idle` or `hidden`. The same event from `loaded` or
+  `tucked` is the chrome hide before a snapshot, and must only park.
+  `holdDock: true` is for a session that hands the screen to a
+  recording. A path that hides the chrome and can then end with no toast
+  and no session-ending cancel calls `releaseFloatOverDock()`. Today that
+  is `capture:fullScreen` / `capture:allScreens` (wrapped in
+  capture-handlers.ts) and `startRecordingFromSelection`. Without it, a
+  failed capture strands the waiting snaps until the next one.
+- **A tuck sent because a new capture started is `markOnly`.** It records
+  that snaps are waiting without touching the screen. A plain tuck that
+  lands after the new capture's `show-loaded` would collapse the toast the
+  user is about to look at.
+- **The rail is the recent-snaps catalog, not the dock's list.** It pages
+  `library:list` newest first, keeps itself current from the
+  captures-changed broadcast, and scrolls past the toast's height. Opening
+  a snap from it never removes or reorders anything: the order is capture
+  time. The dock's glyphs sit on the snaps that are waiting; everything
+  else is a plain thumbnail with its age. Ages count from `captured_at`,
+  never from when a snap joined the dock.
+- **Dock membership does not depend on enrichment status.** Timeout or
+  replacement by another capture keeps the snap; opening it does not
+  remove it. Explicit dismissal, discard, Library handoff, deletion, or
+  "Clear finished" removes it. A failed run shows `!`; a completed run
+  shows `✓`. A snap with no expected AI run has no AI glyph.
+  Re-read an active image on capture-change broadcasts too: deletion
+  closes its toast before it can be retained on the dock.
+- **`recording.showRecentCaptureSidebar` decides whether the dock is SEEN,
+  never what is on it.** Off parks the window through the same
+  `dockParked()` gate a recording uses (`setFloatOverRecentSidebarVisible`
+  in float-over.ts, fed from `onSettingsChanged` in index.ts). The
+  renderer still retains, tucks and shows status glyphs exactly as with it
+  on, and main never sends `dismiss` for it, so turning it back on shows
+  the same tabs. Do not implement "off" as a dismiss or as a renderer-side
+  skip of `retainSnap`: either one makes the switch delete dock state. The
+  only renderer change is that the toast drops its Tuck button, which
+  would send the snap somewhere invisible. The countdown is unchanged.
+- **"No run yet" means "not yet" only for a snap just taken**
+  (`mayAwaitFirstRun`) with AI enabled and available. `awaitingFirstRun`
+  keeps an older snap or one with AI off from showing a waiting glyph
+  or being counted as in-flight. A real queued/running run still wins.
+  Expire that expectation after `FIRST_RUN_GRACE_MS` when no run arrives,
+  so a skipped enrichment becomes a plain tab eligible for "Clear finished".
+- **A snap's fate is decided once, at the close the host caused.**
+  `settledRef` stops main's echo of that close from deciding again. By
+  then the model may have answered. A snap that has been on the dock
+  stays, ✓ and all, until explicitly dismissed or cleared.
+- **No dock where placement is not ours** (`windowPlacementIsOurs()`,
+  native Wayland). `float-over:capabilities` says so. The toast then holds
+  the corner while the model reads, as it did before the dock existed.
+- **The dock's position is process-lifetime, not a setting.** It resets on
+  relaunch, deliberately. Persisting it means a new field in Settings.
+- **Headless E2E cannot see any of this.** Placement, content protection
+  and the park are window-server behavior. Check a change on a real
+  display, and on Windows and Linux as well as macOS.
+
+## The recording frame may never paint inside the recorded rect
+
+**On any platform that cannot hide one of our windows from the recorder
+we are running, every lit pixel of the recording frame must be OUTSIDE
+the recorded rect. This is not a style choice — the alternative is
+tangerine baked into every frame of the user's MP4.**
+
+Owner: [recording-frame-geometry.ts](apps/desktop/src/main/recording/recording-frame-geometry.ts)
+(where to put the window) + [recording-frame.css](apps/desktop/src/renderer/src/styles/recording-frame.css)
+(what each posture paints). Pinned by
+[recording-frame-css-boundary.test.ts](apps/desktop/src/main/recording/__tests__/recording-frame-css-boundary.test.ts),
+which scans the shipped stylesheet — jsdom does not resolve
+`box-shadow`, so a render test cannot catch this.
+
+| Platform | Posture | Why |
+|---|---|---|
+| macOS 13+ | `straddle` — glow may kiss the inside edge | `setContentProtection(true)` → `NSWindow.sharingType = .none`, which SCStream honours. The HUD already relies on it. |
+| Windows 10 2004+ | `outset` — nothing inside, ever | The recorder is FFmpeg `gdigrab` reading the desktop DC. Same reason `anchorAwayFromRecordedRect` exists for the HUD. |
+| Linux | `outset` | No content-protection concept at all. |
+
+Five things that bite:
+
+- **A border paints INWARD from the element's own edge**
+  (`box-sizing: border-box`), so under `outset` an element's offset must
+  be at least its border width or the difference lands inside the rect.
+  This shipped in review: the corner ticks sat at `-1px` with a 2px
+  border, lighting the pixel column at rect-relative 0 on all four
+  corners — one tangerine column per corner, baked into every gdigrab
+  frame. The hairline had it right at `-1px` / 1px, which is exactly why
+  the corners read as correct. The widths are now
+  `var(--psrf-corner-weight)` and the boundary test compares the two
+  numbers rather than asserting a literal.
+- **`outset` is the BASE CSS and macOS adds to it.** Writing it the
+  other way round — a safe `[data-mode="outset"]` override on an unsafe
+  base — means a dropped selector fails into the user's file instead of
+  into a slightly plainer frame. Keep the default safe.
+- **A full-display recording on Windows/Linux draws NOTHING.** There is
+  no outside; `planRecordingFrame` returns `null` and the HUD carries
+  the signal alone. Do not "fix" that by insetting the frame.
+- **The planner takes `platform` as an argument and imports no Electron**,
+  so the Windows branch — the one that protects the capture — actually
+  runs on macOS CI. Reading `process.platform` inside it would switch
+  that coverage off silently.
+- **`RECORDING_FRAME_BAND_PX` is how far outside the rect the window
+  extends, and it is derived from the widest shadow in the CSS**
+  (spread + blur / 2). Widening the falloff without raising it gets the
+  glow a hard edge where the window stops. The boundary test asserts
+  the two agree.
+
+`RecordingState.rect` is DISPLAY-LOCAL and the plan's `bounds` are
+GLOBAL — see the coordinate-space note at the head of
+[rect-overlap.ts](apps/desktop/src/main/capture/rect-overlap.ts) before
+touching the arithmetic.
+
+## Mid-take UI: only the HUD asks questions, and nothing takes focus
+
+**During a live take, the recording-controller HUD is the ONLY surface
+PwrSnap may ask the user anything on, and it must stay non-activating
+for the whole take. No native dialog, and no `setFocusable(true)`.**
+(The frame overlay is also on screen throughout — it is click-through
+and asks nothing, and the section above governs where it may paint.)
+The camera recorder may show a passive, nonfocusable preview on macOS only.
+It must fit wholly outside the recorded rectangle, and ScreenCaptureKit must
+confirm an explicit window exclusion before it becomes visible. Missing
+exclusion, no free area, or changed display geometry hides it. Never rely on
+`setContentProtection(true)` alone: recent macOS ScreenCaptureKit ignores
+`NSWindow.sharingType`. Never exclude the main PID to hide the preview, since
+that also removes Library windows the user may be recording.
+Owners:
+[recording-controller.ts](apps/desktop/src/main/recording/recording-controller.ts)
+(the phase arms) and [tray.ts](apps/desktop/src/main/tray.ts)
+(`confirmDiscardRecording`). Pinned by
+[recording-controller-escape.test.ts](apps/desktop/src/main/recording/__tests__/recording-controller-escape.test.ts)
+§"recording HUD must not intrude on the take" and
+[tray-context-menu.test.ts](apps/desktop/src/main/__tests__/tray-context-menu.test.ts),
+which also grep-asserts tray.ts for `dialog.showMessageBox`.
+
+This is the same class as the two sections above it — "Tray popover
+hide" (an NSPanel fade landed in users' screenshots) and "The recording
+frame may never paint inside the recorded rect". Both defects below
+shipped in [#496](https://github.com/pwrdrvr/PwrSnap/pull/496).
+
+### Only the HUD WINDOW is protected
+
+`collectOurPids()` narrows the capture filter's `excludePids` to the HUD
+renderer alone, and the HUD stays invisible through
+`setContentProtection(true)` set once in
+`createRecordingControllerWindow` — read the "Why per-window content
+protection instead of SCContentFilter PID exclusion" note there before
+reaching for a filter change; excluding the main process takes every
+other PwrSnap window out of the capture with it, because Electron may
+share a renderer across BrowserWindows.
+
+So the protection is a property of that one window, and two things fall
+outside it:
+
+- **A native dialog raised from main.** An `NSAlert` has no
+  `sharingType`, and it is centred on the display, so it is inside
+  almost any recorded rect. On Windows the recorder is FFmpeg
+  `gdigrab` reading the desktop DC, which captures it wherever it sits,
+  and `recordingBackendCapabilities("win32")` offers both destructive
+  items there. The tray's Restart/Cancel confirm was such a dialog; its
+  default button was "Keep Recording", so the path that ruined a take
+  was the user changing their mind — the take survived with several
+  seconds of a PwrSnap alert baked into the MP4.
+- **The CONSEQUENCES of activating PwrSnap.** The HUD is constructed
+  `focusable: false` and shown with `showInactive()` so a click on
+  Stop / Restart / Cancel cannot take key focus. Flip that and clicking
+  the HUD switches the macOS menu bar to PwrSnap, greys the recorded
+  app's title bar, and drops its text caret — all inside the rect, all
+  in the file. The first frames after a Restart arm-click became a
+  recording of the user's app losing focus.
+
+### Where a mid-take confirmation goes
+
+The HUD already owns a two-press arm/confirm for Restart and Cancel, and
+it is the one surface that is content-protected on macOS and anchored
+outside the rect on Windows (`anchorAwayFromRecordedRect`). So the tray
+arms it over `EVENT_CHANNELS.recordingControllerArm` and gets out of the
+way.
+
+- **The nudge is one-way.** The renderer owns the armed state and its
+  5s auto-disarm, and the renderer is what dispatches. Main keeps no
+  parallel armed state that could disagree with what the user sees.
+- **No HUD, no destructive item.** When the HUD renderer has crashed
+  past its retry budget the tray does not offer Restart/Cancel at all.
+  "Stop and Save" always is: losing a take needs a confirmation
+  surface, keeping one does not.
+- **The HUD arms only what it rendered**, behind the same
+  `backend?.controls.<x> ?? true` the buttons use, so a prompt can
+  never point at a button that is not on screen.
+
+### Escape is not available to this window, on purpose
+
+A non-activating window receives no keydown, which is why the LEAD-IN
+Escape goes through `globalShortcut`
+(`registerDesiredLeadInEscapeShortcut`). Do not extend that bridge into
+the recording phase: swallowing a key from the app being recorded is
+the same class of intrusion as painting over it. The 5s auto-disarm and
+the sibling button are the exits from an armed state, and `.rc-root`
+carries no key handler.
+
+## The Dock reclaim is not an activation recovery
+
+**`scheduleDockReclaim` / `reclaimDockIconIfLibraryAlive` restore
+activation POLICY. They do not restore activation, and they do not
+restore z-order. Three different things. Never treat a recovered Dock
+tile as evidence that our window is back on top.**
+
+The AppKit Accessory demotion that follows selector teardown strips the
+Dock tile first and takes our activation a few tens of ms later. The
+reclaim catches the tile; nothing was asking for activation back. The
+cost lands on the one path that needs PwrSnap frontmost for longer than
+an instant — a recording whose subject is one of OUR windows, where the
+~3s countdown outlives the commit-time raise and the window dove under
+another app and got recorded that way.
+
+- **`moveTop()` on an inactive app is not a fix.** macOS orders such a
+  window only among that app's OWN windows, so
+  `applyRecordingStateToController`'s per-tick re-raise loop runs, logs a
+  correct overlap set, and cannot lift the window above the active app.
+  A healthy-looking tick log is not evidence.
+- **`getFocusedWindow() !== null` does NOT mean PwrSnap is active.**
+  The focus-sink is a focusable non-activating panel and can hold key
+  while another app is frontmost — the exact state this bug lives in.
+  Ask the question you mean: is the window you want on top key
+  (`win.isFocused()`)? Both diagnostic lines log which window is key
+  AND whether it is the one that matters (`focusedIsOverlapping` on
+  the debug `recording lead-in z-order tick`, `focusedIsLibrary` on the
+  info-level reclaim line), because the Library and the sink can share
+  a title.
+- **Re-activation is scoped: macOS, the raise branch's own take, and
+  the lead-in phases** (`scheduleLeadInReraise` in
+  `record-from-selection.ts`). Widening any of them is a bug: case two
+  must leave the user's app frontmost, activating mid-take records the
+  recorded app losing focus (see "Mid-take UI" above), and on Windows
+  there is no demotion to recover from. The recording-controller's tick
+  cannot host this — it cannot tell case one from case two.
+
+Measurements, the two hypotheses it replaced, and the log recipe:
+[docs/solutions/2026-09-17-recording-lead-in-activation-loss.md](docs/solutions/2026-09-17-recording-lead-in-activation-loss.md).
+
+## A deferred quit is retried from a macrotask, never from its own promise chain
+
+**Any `before-quit` or `will-quit` listener that calls `preventDefault()` and
+later asks again must do it through `retryQuitAfterDispatch`
+([quit-retry.ts](apps/desktop/src/main/quit-retry.ts)), and nothing defers a
+quit that has nothing to wait for.** Pinned by
+[quit-reentry.test.ts](apps/desktop/src/main/__tests__/quit-reentry.test.ts),
+against a model of Electron's quit state machine
+([electron-quit-model.ts](apps/desktop/src/main/__tests__/electron-quit-model.ts))
+that `pnpm --filter @pwrsnap/desktop probe:quit-reentry` checks against the
+real runtime.
+
+⌘Q hung intermittently from #659 on: two before-quit passes, every window
+closed, `quit stalled: no will-quit` with zero BaseWindows and zero
+webContents. Nothing was still closing. Electron had stopped quitting:
+
+- **`Browser::Quit()` writes `is_quitting_ = HandleBeforeQuit()` AFTER the
+  emit, and a native-started emit runs a microtask checkpoint before it
+  returns.** ⌘Q (`terminate:`), Dock → Quit and a raw SIGTERM all start
+  natively. The diagnostics flush settled in microtasks when no profiler was
+  recording, so its `app.quit()` ran nested inside the pass it was retrying.
+  The nested pass set the flag and closed the Library; the outer pass then
+  wrote `false` over it. The Library finished closing, and Electron emitted
+  `window-all-closed` in place of `will-quit`. With no window left, nothing
+  ever asked again.
+- **will-quit is worse: it is ALWAYS native-started** (the last window
+  finishing its close), so a microtask retry from will-quit is lost even when
+  the quit began in JS. The recording barrier's retry had this shape.
+- **A tray-menu Quit is JS-started and never nested**, and neither is E2E
+  teardown (`setImmediate(() => app.quit())`), which is why some quits with
+  the identical double pass completed and why no spec caught it. A green E2E
+  run proves nothing here.
+- **A flush with no work does not defer.** `createDiagnosticsShutdown` takes
+  `hasPendingWork`: a hot-CPU profiler is running, starting or stopping
+  (`hasActiveHotCpuProfilers`), or the trace hook is armed. Not "a monitor
+  slot exists": the main-process slot is installed at boot for every role, so
+  that test is always true. Without either, `stop()` still runs to latch the
+  targets' shutdown state, but quit is one pass. The #659 guarantee holds
+  whenever a harness is on.
+- **`installQuitStallRecovery`
+  ([quit-stall-recovery.ts](apps/desktop/src/main/quit-stall-recovery.ts)) is
+  a safety net, not the fix.** After a before-quit pass that nothing deferred,
+  it re-asks once if Electron emits `window-all-closed` (the stall signature).
+  It also exits if nothing has quit 20 s later and no window is left. Do not
+  delete the root fix on the strength of it.
+
+Full trail, probe output and the source lines:
+[docs/solutions/2026-09-30-quit-stall-nested-before-quit.md](docs/solutions/2026-09-30-quit-stall-nested-before-quit.md).
+
+## A one-shot intent sent to a renderer must not be droppable
+
+**An event that carries a user's intent and exists nowhere else — today
+`libraryOpenCapture`, which `editor:open` and `library:openInLibrary`
+send — is sent ONCE, after `did-stop-loading`, on a channel the preload
+latches. No `setTimeout` grace, no resend.** Owners:
+`sendOpenCaptureWhenReady` in
+[library-handlers.ts](apps/desktop/src/main/handlers/library-handlers.ts)
+and [latched-events.ts](apps/desktop/src/preload/latched-events.ts).
+Pinned by
+[library-handlers-editor-open.test.ts](apps/desktop/src/main/handlers/__tests__/library-handlers-editor-open.test.ts)
+and [latched-events.test.ts](apps/desktop/src/preload/__tests__/latched-events.test.ts).
+
+- **`isLoading()` is still true inside `did-finish-load`** (231 of 231
+  loads measured). It turns false at `did-stop-loading`, 0–7ms later. So
+  "if loading, wait for `did-finish-load`" waits forever when the request
+  lands between the two. Nothing is sent, and nothing times out. That was
+  the `editor-v2-capture-open` flake, about 1 open in 40. Wait on the
+  event that ends the state you checked.
+- **React subscribes in a passive effect, after an IPC task can already
+  have run.** Measured with one send per open: 59 of 120 opens were sent
+  before the Library subscribed. The preload's listener exists before any
+  page script, holds the latest payload while nothing is subscribed, and
+  hands it to the first subscriber.
+- **A latched channel wants exactly one subscriber.** Any subscriber
+  receives events live, so an earlier one (a diagnostic listener, say)
+  takes the intent before the Library mounts.
+- **Add a channel to the latch only if a late subscriber cannot recover
+  it.** A state broadcast is re-fetched on mount, so it has nothing to
+  latch.
+
+Failure timelines, the load-event measurements, and a probe that hides the
+bug: [docs/solutions/2026-09-26-library-open-capture-lost-intent.md](docs/solutions/2026-09-26-library-open-capture-lost-intent.md).
 
 ## Settings substrate — every setting + secret goes through one place
 
@@ -1166,8 +3005,8 @@ Rules:
   `undefined` / missing key = leave alone. Explicit value (including
   `false`, `0`, `""`, `null` where the type allows) = write.
   `exactOptionalPropertyTypes` enforces.
-- **All secrets via `safeStorage`.** Plaintext never crosses the IPC
-  boundary. The renderer only ever sees `SecretStatus = { configured,
+- **All secrets via `safeStorage`.** Plaintext credentials are never returned over IPC. A write-only API-key
+  input may cross renderer → main once for secure persistence. The renderer only ever sees `SecretStatus = { configured,
   lastSetAt }`. `DesktopSecretStore.getValue()` is the only plaintext
   accessor and is main-only — **never register it on the bus.** If
   `safeStorage.isEncryptionAvailable() === false`, the store throws
@@ -1175,6 +3014,32 @@ Rules:
   `kind: "settings", code: "secret_unavailable"`. **Never fall back to
   plaintext.** A unit test grep-asserts the plaintext never appears in
   `pwrsnap-secrets.bin`.
+- **`getValue()` is the ONLY read allowed to decrypt.** On macOS the first
+  `safeStorage` call in a process is what can raise the login-keychain
+  password dialog, so a status read that decrypts turns "user toggled a
+  preference" into "macOS asked for your password" — `broadcastSettingsChanged`
+  calls `getAllStatus()` after every settings write. `pwrsnap-secrets.bin` is
+  therefore a v2 envelope: a PLAINTEXT `index` of `{ name: { lastSetAt } }`
+  next to one encrypted `ciphertext` of `{ name: value }`. Status reads touch
+  only the index; an emptied store writes `"ciphertext": null` so clearing the
+  last secret encrypts nothing. Do not move status metadata back inside the
+  ciphertext, and do not add a new caller of `getValue()` on a path that runs
+  without the user having asked for a secret-backed feature. Nothing in the
+  index is newly exposed — `SecretStatus` is already broadcast to every
+  window, and the `localAgentToken:<clientId>` ids are already cleartext in
+  `pwrsnap-settings.json` as `localAgents.grants[].id`. v1 files (one bare
+  ciphertext) are still read and rewritten as v2 on first access; an
+  undecryptable v1 file is left alone rather than rewritten empty. A rewrite
+  must stitch `lastSetAt` back from the index — the payload carries values
+  only, so forgetting blanks every surviving timestamp.
+- **E2E runs must not touch the real login keychain.**
+  [darwin-keychain-startup-policy.ts](apps/desktop/src/main/darwin-keychain-startup-policy.ts)
+  appends Chromium's `--use-mock-keychain` under `PWRSNAP_E2E`, so an unsigned
+  dev Electron never registers its rebuild-varying cdhash on the access list of
+  the item the installed app uses, and never blocks a spec on a password
+  dialog. It is deliberately NOT applied to `pnpm dev`: `app.setName` is
+  unconditional, so dev shares `userData` — and `pwrsnap-secrets.bin` — with
+  the installed app and must share its key.
 - **Validate at the bus boundary.** Per-verb validators in
   [apps/desktop/src/main/handlers/settings-validators.ts](apps/desktop/src/main/handlers/settings-validators.ts)
   reject unknown secret names, oversize values (>64KB), unknown
@@ -1263,6 +3128,11 @@ doesn't.
     ```
 
   - Alt text can also follow the path after `#`, as in `--attach './after.png#composer after'`. Update `gh` to v2.99.0 or later before using `--attach`.
+  - `gh` rewrites a link only when its target equals an `--attach` path byte-for-byte. The `#alt` suffix is not compared. On a mismatch, `gh` appends the upload at the end instead.
+  - The rewrite exists only in the uploaded body. The local body file keeps the local paths.
+  - For every later body edit, run `gh pr view <n> --json body -q .body > <file>` and edit that copy. Never re-send the original draft. It replaces the live `user-attachments` URLs with dead local paths.
+  - To add an image later, pass `--attach` for the new file only. Existing `user-attachments` URLs match no `--attach` path, so `gh` leaves them alone.
+  - `gh` exits 0 in each of these cases. Verify that every body image link is a `user-attachments` URL, and that each asset fetches with HTTP 200 and the local file's byte count.
 
 ## Release / Distribution
 
@@ -1274,7 +3144,7 @@ doesn't.
   except through `pnpm licenses:generate`, and do not remove the shipped
   notices/changelog resources from packaged builds. See
   [docs/third-party-license-notices.md](docs/third-party-license-notices.md).
-- macOS and Windows both ship: a signed/notarized universal DMG and a
+- macOS and Windows both ship: signed/notarized Apple Silicon and universal DMGs and a
   signed NSIS x64 installer (plus the winget manifests under
   [docs/windows/winget](docs/windows/winget)). Linux is not a distribution
   target — the Linux CI job is E2E only. The old "macOS-first, cross-platform
@@ -1321,13 +3191,14 @@ Rules:
 - **Every job that packages the mac app needs an actool 26 or newer.**
   electron-builder hard-fails below that, and its Icon Composer
   `AssetCatalogAgent` also requires the macOS 26 host frameworks. The macOS
-  packaging jobs therefore run on GitHub's `macos-26` image, not `macos-15`:
-  pointing any Xcode 26 installation at the macOS 15 host crashes the agent
-  with missing CoreMedia/MediaToolbox symbols.
+  packaging jobs therefore use the restricted self-hosted macOS 26 runners.
+  Pointing Xcode 26 at a macOS 15 host crashes the agent with missing
+  CoreMedia/MediaToolbox symbols.
   [select-xcode-for-actool](.github/actions/select-xcode-for-actool/action.yml)
-  verifies the `macos-26` runner's default actool and returns its Developer
-  directory. Do not override that directory with a side-by-side Xcode unless
-  the host/toolchain pair has passed a signed package end-to-end verification.
+  checks the host and selects the newest stable installed Xcode with actool
+  26 or newer. A Command Line Tools default is insufficient; beta/RC Xcodes
+  never package releases. Keep the selection scoped to icon compilation and
+  packaging, without changing the runner's global `xcode-select` state.
   [release.yml](.github/workflows/release.yml) (both macOS
   jobs) and [preview-build.yml](.github/workflows/preview-build.yml) set
   `DEVELOPER_DIR` from it on exactly the steps that run actool — the unit
@@ -1368,6 +3239,34 @@ Rules:
 Full investigation, measurements, and the probe recipe:
 [docs/solutions/2026-09-05-macos-26-legacy-icon-light-plate.md](docs/solutions/2026-09-05-macos-26-legacy-icon-light-plate.md).
 
+### Electron fuses are pinned — including one that is OFF on purpose
+
+Fuses are burned into the packaged binary and **cannot be read back from
+the running app**, so no unit test, E2E run, or review of
+`apps/desktop/src` can observe a wrong one. The only feedback is a shipped
+installer. [scripts/check-electron-fuses-policy.mjs](scripts/check-electron-fuses-policy.mjs)
+therefore pins the posture and runs in `pnpm lint` (every PR) *and* from
+`pnpm release:check`.
+
+**`enableCookieEncryption` must stay `false`, and it is the one entry that
+looks backwards.** Enabling it makes Electron fetch the app's Safe Storage
+key from the login keychain when the network service starts — before any
+window exists, on every launch — which surfaces as a macOS keychain
+*password* prompt for any binary not already on that keychain item's access
+list (a rebuilt local package, a second install, a dev Electron). PwrSnap
+stores no cookies: every window loads `file://` or `data:`, outbound HTTP
+from main goes through Node `fetch` (undici, no Chromium cookie jar), and
+nothing calls `session.cookies`. So it protected an empty database and cost
+the single scariest thing a new user sees. Every other pinned fuse is a
+hardening one; do not "restore" this one to match them. Revisit only if a
+`BrowserWindow` starts loading a remote origin that sets real cookies —
+and note the transition is one-way, so a store encrypted under the fuse
+becomes unreadable if it is later turned off.
+
+Full mechanism, the `security dump-keychain` evidence, and why the prompt
+cannot be predicted or pre-explained from Electron:
+[docs/solutions/2026-09-11-startup-keychain-prompt-cookie-encryption.md](docs/solutions/2026-09-11-startup-keychain-prompt-cookie-encryption.md).
+
 ### `package.json` `description` is shipped UI on Windows
 
 **It is not inert metadata.** electron-builder reads
@@ -1396,8 +3295,11 @@ caught this at tag time, which is the worst moment to find it.
 
 ## Dependencies and tooling
 
-- Node version pinned in `.nvmrc` (currently `v24.14.1`).
-- Package manager: `pnpm@10.33.0` (set in root `package.json`'s
+- Node version pinned in `.nvmrc` (currently `v24.22.0`, the Node inside
+  Electron 44). Every GitHub Actions job asks for `^24.22.0`, the same range,
+  so a runner uses the 24.x already in its tool cache. Move `.nvmrc` and the
+  workflow pins together.
+- Package manager: `pnpm@12.13.0` (set in root `package.json`'s
   `packageManager` field).
 - Electron + electron-vite versions pinned in `apps/desktop/package.json`,
   matching PwrAgnt for tool consistency.
@@ -1412,62 +3314,173 @@ nvm use
 pnpm install
 ```
 
-The root `preinstall` script checks that `node` exactly matches `.nvmrc` and,
-on local machines with `~/.nvm`, that the active Node binary is coming from
-nvm. Do not bypass this check. Native modules are sensitive to the Node/Electron
-ABI they were built against; installing with the wrong Node can leave
-`better-sqlite3.node` built for the wrong `NODE_MODULE_VERSION` and Electron
-will fail at runtime with a message like:
+On Windows, nvm-windows requires an explicit version from `.nvmrc`. Select its
+installed Node directory in the current PowerShell session; `nvm use` changes
+a shared junction and can require elevation. Corepack and pnpm use `.cmd` shims:
 
-```text
-was compiled against a different Node.js version using NODE_MODULE_VERSION ...
+```powershell
+$nodeVersion = (Get-Content -LiteralPath .nvmrc -Raw).Trim().TrimStart('v')
+nvm install $nodeVersion
+$nodeDir = Join-Path $env:NVM_HOME "v$nodeVersion"
+$env:Path = "$nodeDir;$env:Path"
+corepack.cmd enable
+pnpm.cmd install
 ```
 
-If that happens, switch to the pinned nvm Node and rebuild Electron native
-dependencies from the repo root:
+The root `preinstall` script ([check-node-version.mjs](scripts/check-node-version.mjs))
+checks that `node` satisfies `^<.nvmrc>`: the same major, and no older than
+the pin. `pnpm dev` applies the same rule. On local POSIX machines with
+`~/.nvm`, it also checks that the active Node binary comes from nvm. Do not
+bypass this check. It required an exact match until every native addon was
+N-API; do not tighten it back, or a runner's cached Node fails every install.
 
-```bash
-source ~/.nvm/nvm.sh
-nvm use
-pnpm rebuild:electron-native
-```
+PwrSnap's native addons (better-sqlite3 and sharp) are N-API, so one prebuilt
+binary loads in system Node and in Electron alike, and there is no
+`NODE_MODULE_VERSION` to rebuild for. `pnpm rebuild:electron-native` now only
+builds the platform helpers (`build-native.mjs`, the same as `build:native`).
+The name is kept because tooling outside this repo, including the PwrSuiteLab
+PwrSnap workload, runs it.
 
-## better-sqlite3 + Electron native binding repair
+## Linux sandbox setup
 
-PwrSnap uses `better-sqlite3`, which ships a native `.node` binary. The
-system Node ABI and Electron ABI can diverge, especially after switching
-worktrees, updating Electron, or running `pnpm install` under a different Node
-version. The usual symptom during `pnpm --filter @pwrsnap/desktop dev` is:
+Install and desktop dev/preview warn when Electron's setuid helper is not
+root-owned with mode 4755. The warning is advisory: user namespaces may allow
+launch without it. For the fatal SUID sandbox error, use
+`pnpm fix:linux-sandbox`; it resolves this checkout's Electron helper and uses
+sudo only for chown/chmod. Do not run the app as root or disable its sandbox.
+Run `pnpm check:linux-sandbox` from the repository root for a read-only advisory
+check. Both commands
+safely no-op on non-Linux platforms. The helper may need repair after
+reinstallation or Electron replacement. This fixes permissions,
+not renderer/window visibility or host mount/security policy.
 
-```text
-better_sqlite3.node was compiled against a different Node.js version
-NODE_MODULE_VERSION <old>. This version of Node.js requires NODE_MODULE_VERSION <new>.
-```
+Keep a separate `pnpm install` per checkout/worktree. Root `node_modules` alone
+cannot supply a fresh workspace's package-local dependency links. Sharing
+package node_modules can resolve workspace imports into the donor checkout,
+and installs/native staging then mutate shared dependencies. A symlink to the
+same repaired helper inherits its permissions but is not a complete setup fix.
 
-Do not chase this as a database bug. Repair the native sidecar from the repo
-root:
+## better-sqlite3 loads its own N-API prebuild — nothing is rebuilt for Electron
 
-```bash
-source ~/.nvm/nvm.sh
-nvm use
-pnpm install
-pnpm rebuild:electron-native
-```
+**better-sqlite3 13 is N-API and ships a prebuild for every platform it
+supports inside the one npm package, as `prebuilds/<platform>-<arch>.node`.
+Its loader picks the file for `process.platform` / `process.arch` at runtime,
+so unit tests under system Node and the app under Electron load the same
+binary. Do not reintroduce a `nativeBinding` override, an Electron-only
+rebuild, or a second binding beside the first.** Pinned by
+[better-sqlite3-prebuilds.test.mjs](apps/desktop/scripts/better-sqlite3-prebuilds.test.mjs).
 
-The script keeps two binaries on purpose:
+Until 13, better-sqlite3 was written against V8's own API: one prebuild per
+Electron ABI, and none for Electron 44 (ABI 149). Every install and every
+packaging stage compiled an Electron copy into an `electron-native/` sidecar
+beside the system-Node one, `native-binding.ts` chose between them by a
+metadata file, and the compile needed a C++ toolchain plus a GCC 12 workaround
+for V8 15's headers. All of that is gone, and an old note that tells you to
+"repair the native sidecar" is describing it.
 
-- `better-sqlite3/build/Release/better_sqlite3.node` stays compiled for system
-  Node so unit tests and scripts can `require("better-sqlite3")`.
-- `better-sqlite3/electron-native/better_sqlite3.node` is compiled/downloaded
-  for Electron and is what the app loads at runtime.
+Things that bite:
 
-For release/package work, the Electron sidecar must be built for the target
-architecture, not necessarily the host architecture. The script honors
-`npm_config_arch` / `npm_config_target_arch` before falling back to
-`process.arch`, and `apps/desktop/src/main/persistence/native-binding.ts`
-ignores the sidecar unless its metadata matches the running Electron version,
-`better-sqlite3` version, and `process.arch`.
+- **`allowBuilds: better-sqlite3: false` in `pnpm-workspace.yaml` is a
+  guard.** pnpm 10 ignored the package's `gypfile: false` and ran an
+  implicit `node-gyp rebuild` because a `binding.gyp` is present. With a
+  prebuild for the host, every target in that file is `type: none`, so the
+  run compiled nothing, yet it still needed Python and make (Visual Studio
+  on Windows) just to configure. pnpm 12.9.1 honors `gypfile: false`:
+  measured, it builds nothing even with the entry set to `true`. `false`
+  keeps a future pnpm from bringing the build back. The cost: a host with no
+  prebuild fails to load at runtime instead of compiling. Every target
+  PwrSnap ships or tests on has one, and the test above checks the installed
+  package for each.
+- **`npmRebuild: false` in `electron-builder.yml` is on purpose too.** With
+  it on, electron-builder runs `@electron/rebuild` over better-sqlite3 once
+  per arch. On 44.4.5 that compiled nothing, but its fallback is a node-gyp
+  source build. PwrGit sets the same.
+- **Packaging keeps only the target's prebuilds.** `release.mjs` and
+  `package-win.mjs` call `pruneBetterSqlite3Prebuilds` on the stage, the same
+  way sharp's foreign `@img` packages are pruned. The universal Mac keeps
+  `darwin-arm64.node` + `darwin-x64.node`, the arm64-only Mac keeps
+  `darwin-arm64.node`, and Windows keeps `win32-x64.node`. The other six are
+  ~2 MB each. `verify-asar-contents.mjs` fails on a missing target prebuild
+  and on a foreign one.
+- **The darwin pair are thin Mach-Os, identical in both per-arch app trees,
+  so they are in `mac.x64ArchFiles`.** `@electron/universal` aborts the merge
+  on an identical thin Mach-O that glob does not cover. The old sidecar never
+  hit this because it was already fat, and the merge skips fat files.
+  `verifyPackagedArchitecture` expects each one thin, at its own arch.
+- **The Linux prebuild needs glibc 2.34 and `GLIBCXX_3.4.29`**: Ubuntu 22.04
+  or later, or Debian bookworm, which is the Docker E2E image. A musl host
+  gets the `linuxmusl-*` file.
 
-Do not "fix" the ABI mismatch by copying the Electron binary over
-`build/Release`, because that breaks Node-based tests with the inverse
-`NODE_MODULE_VERSION` mismatch.
+## sharp in Electron on Linux runs its WebAssembly build
+
+**In Electron on Linux, sharp must load `@img/sharp-wasm32`, never the
+native `@img/sharp-linux-*` addon. Every entry that can load sharp imports
+[sharp-wasm-steer.ts](apps/desktop/src/main/sharp-wasm-steer.ts) before
+anything else that could pull sharp in.** Pinned by
+[sharp-wasm-steer.test.ts](apps/desktop/src/main/__tests__/sharp-wasm-steer.test.ts)
+(the policy and the import order) and
+[pnpmfile.test.mjs](scripts/__tests__/pnpmfile.test.mjs) (the install
+wiring and the lockfile).
+
+Electron's Linux binary links the system glib, and sharp's addon imports
+`g_object_ref` / `g_object_unref` meaning the copy statically linked into
+libvips. The global scope wins, so they bind to a GType registry that has
+never seen libvips' objects: every call logs
+`GLib-GObject: g_object_ref: assertion 'G_IS_OBJECT (object)' failed` and
+does nothing, libvips frees images sharp still holds, and main dies with
+**SIGTRAP** a few hundred ms into its first sharp work. Upstream is
+[electron/electron#46323](https://github.com/electron/electron/issues/46323)
+(open). It surfaced as `editor-crop-clip.spec.ts` failing about 40% of runs,
+blamed on a lost `editor:open` intent. The intent was never lost: the
+process was already dead.
+
+Four things that bite:
+
+- **Those GLib lines are not noise.** They were in every Linux E2E log,
+  healthy launches included, which is how they came to be ignored. Read
+  them as "sharp is running native inside Electron", which is now a bug.
+- **The steer must be its own chunk.** `out/main/*.js` is ESM, so every
+  static import, `sharp` included, is evaluated before any module body. A
+  steer inlined into an entry chunk runs after sharp has already loaded
+  native. It is a separate rollup input, and each entry imports it first.
+  Worker threads have their own module loader, so the worker entries each
+  import it too.
+- **The install needs the `.pnpmfile.cjs` hook.** sharp does not depend on
+  `@img/sharp-wasm32` (its docs say to install it alongside), and pnpm's
+  isolated layout hides a sibling from sharp's loader. The hook adds it to
+  sharp's optional dependencies at sharp's own version. It declares `cpu: any`
+  explicitly: pnpm 12 otherwise infers `wasm32` from the name and skips it on
+  native Linux CPUs. It gates the package to `os: linux` so macOS and Windows
+  release staging never ship it (the license notice does not disclose it).
+  It also drops the edge from sharp's
+  FreeBSD and WebContainers wrappers: pnpm 10.33 otherwise reaches the
+  package through them first, skips it along with them, and never
+  reconsiders.
+- **Every shipped target refuses it at release time, too.** pnpm never
+  removes an installed package that the lockfile now skips, so a stale tree
+  can still hold it. `verify-asar-contents` fails any Sharp native package the
+  target does not use, in the asar and in `app.asar.unpacked`, on universal
+  mac as well. Before packaging, `pruneStagedSharp` narrows each mac stage's
+  sharp manifest to the target's slices, because electron-builder follows
+  that manifest. Without it, the universal app shipped both win32 slices
+  through v1.1.15. A slice that no shipped target uses fails the release
+  instead of being pruned.
+- **What does not work.** `RTLD_DEEPBIND` on the addon fixes the glib
+  binding but rebinds `free` / `operator new` / `operator delete` away from
+  Chromium's allocator shim, and crashes with SIGSEGV. A `utilityProcess`
+  or `ELECTRON_RUN_AS_NODE` child is still the electron executable, with
+  the same system glib.
+
+The wasm build is slower. It also rasterizes SVG with resvg instead of
+librsvg, and renders SVG `<text>` blank. Text annotations are unaffected:
+they bake through Chromium (`text-html-bake.ts`). On Linux, the cart drag
+icon's labels draw no glyphs. Linux is not a distribution target, so this
+covers the Linux E2E job and Linux dev runs. Plain Node on Linux (vitest,
+scripts, the Playwright runner) keeps the native addon, because it has no
+second glib.
+
+The boot log says which build loaded:
+`sharp: using the WebAssembly build (Electron on Linux)`, or a warn line
+when the wasm package is missing and main is back on the crashing native
+addon. Investigation, probes and measurements:
+[docs/solutions/2026-10-01-sharp-electron-linux-glib-sigtrap.md](docs/solutions/2026-10-01-sharp-electron-linux-glib-sigtrap.md).

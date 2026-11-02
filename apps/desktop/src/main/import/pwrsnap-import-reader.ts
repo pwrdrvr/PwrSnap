@@ -519,6 +519,7 @@ function assertBaseEntryNameSafe(name: string): void {
     name.includes("//") ||
     name.includes("/./") ||
     name.endsWith("/") ||
+    // oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
     /[\u0000-\u001f\u007f]/.test(name)
   ) {
     throw corrupt("zip_path_unsafe", "The bundle contains an unsafe entry path.");
@@ -614,6 +615,7 @@ function validatePortableManifest(
   const stem = filename.slice(0, -".png".length);
   if (
     !filename.toLowerCase().endsWith(".png") ||
+    // oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
     /[\u0000-\u001f\u007f<>:"/\\|?*]/.test(filename) ||
     /[. ]$/.test(stem) ||
     /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/i.test(filename)

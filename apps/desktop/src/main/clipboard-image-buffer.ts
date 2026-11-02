@@ -84,7 +84,7 @@ export async function writeFirstDecodableClipboardBufferToPng({
   makeTempPath
 }: {
   formats: readonly string[];
-  readBuffer: (format: string) => Buffer;
+  readBuffer: (format: string) => Promise<Buffer>;
   makeTempPath: () => Promise<string>;
 }): Promise<
   | ({ ok: true } & IngestedClipboardImage)
@@ -93,7 +93,7 @@ export async function writeFirstDecodableClipboardBufferToPng({
   const failures: RawClipboardDecodeFailure[] = [];
   for (const format of clipboardImageBufferFormats(formats)) {
     try {
-      const ingested = await ingestImageBufferToTempPng(readBuffer(format), makeTempPath);
+      const ingested = await ingestImageBufferToTempPng(await readBuffer(format), makeTempPath);
       return { ok: true, ...ingested };
     } catch (cause) {
       failures.push({ source: format, cause });

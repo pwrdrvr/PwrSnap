@@ -18,7 +18,6 @@
 
 import type {
   CommandName,
-  Commands,
   LocalAgentCapability,
   LocalAgentRoleBudgets,
   Req,
@@ -82,6 +81,17 @@ export type CommandDispatchOptions = {
   localAgent?: CommandContext["localAgent"];
 };
 
+/** The result a handler that threw is reported as. Shared with main-process
+ *  code that runs a handler body without `dispatch`, so both report alike. */
+export function handlerThrewResult(cause: unknown): Result<never, PwrSnapError> {
+  return err({
+    kind: "unknown",
+    code: "handler_threw",
+    message: cause instanceof Error ? cause.message : String(cause),
+    cause
+  });
+}
+
 export type CommandHandler<C extends CommandName> = (
   req: Req<C>,
   ctx: CommandContext
@@ -118,9 +128,8 @@ type AnyCommandHandler = (req: unknown, ctx: CommandContext) => Promise<Result<u
 class CommandBus {
   private readonly handlers = new Map<CommandName, AnyCommandHandler>();
   /**
-   * AbortControllers keyed by `(captureId | "global")`. Every dispatch
-   * inherits the controller's signal. Capture deletion / float-over
-   * dismissal calls `cancel(captureId)` to fire the abort.
+   * AbortControllers keyed by an opaque command scope (capture id, run id,
+   * or `"global"`). Every matching dispatch inherits the controller's signal.
    */
   private readonly cancellation = new Map<string, AbortController>();
 
@@ -168,9 +177,8 @@ class CommandBus {
   }
 
   /**
-   * Cancel every in-flight handler keyed by `key`. Called on capture
-   * deletion (`key = capture_id`) and on app shutdown (`key = "global"`,
-   * which we leave to natural process exit).
+   * Cancel every in-flight handler keyed by `key`. Capture deletion uses the
+   * capture id; renderer-owned exports use their run id namespace.
    */
   cancel(key: string): void {
     const controller = this.cancellation.get(key);
@@ -179,11 +187,37 @@ class CommandBus {
     this.cancellation.delete(key);
   }
 
+  /**
+   * The signal a dispatch keyed by `key` would get, for main-process work
+   * that runs a handler's body without going through `dispatch`, so that
+   * `cancel(key)` still reaches it. Creates the scope when none exists, as
+   * `dispatch` does.
+   */
+  cancellationSignal(key: string): AbortSignal {
+    let controller = this.cancellation.get(key);
+    if (controller === undefined) {
+      controller = new AbortController();
+      this.cancellation.set(key, controller);
+    }
+    return controller.signal;
+  }
+
   async dispatch<C extends CommandName>(
     name: C,
     req: Req<C>,
     options: CommandDispatchOptions
   ): Promise<Result<Res<C>, PwrSnapError>> {
+    // A bridge request can be followed immediately by its cancellation.
+    // Reserve internal scopes before authorization's first microtask so the
+    // receiving process cannot drop that cancellation while admitting work.
+    // External agent requests still authenticate before allocating a scope.
+    const internalKey = options.principal === "bridge" ? options.cancellationKey : undefined;
+    const reservedController = internalKey === undefined
+      ? null
+      : this.cancellation.get(internalKey) ?? new AbortController();
+    if (internalKey !== undefined && reservedController !== null) {
+      this.cancellation.set(internalKey, reservedController);
+    }
     const authorizedOptions = await this.authorizeLocalAgent(name, req, options);
     if (!authorizedOptions.ok) return authorizedOptions;
     options = authorizedOptions.value;
@@ -220,7 +254,7 @@ class CommandBus {
     const cancellationKey = options.cancellationKey;
     let controller: AbortController;
     if (cancellationKey !== undefined) {
-      controller = this.cancellation.get(cancellationKey) ?? new AbortController();
+      controller = reservedController ?? this.cancellation.get(cancellationKey) ?? new AbortController();
       this.cancellation.set(cancellationKey, controller);
     } else {
       controller = new AbortController();
@@ -263,12 +297,7 @@ class CommandBus {
         principal: options.principal,
         message: cause instanceof Error ? cause.message : String(cause)
       });
-      return err({
-        kind: "unknown",
-        code: "handler_threw",
-        message: cause instanceof Error ? cause.message : String(cause),
-        cause
-      });
+      return handlerThrewResult(cause);
     } finally {
       // Don't auto-clean controllers tied to a long-lived cancellation
       // key — capture-keyed dispatches reuse the controller across

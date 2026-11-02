@@ -7,7 +7,11 @@ import {
 } from "electron";
 import { join } from "node:path";
 import {
+  APP_DOCUMENT_KINDS,
+  APP_DOCUMENT_TITLES,
   EVENT_CHANNELS,
+  FLOAT_OVER_WIDTH_REGULAR_DIP,
+  TRAY_WIDTH_REGULAR_DIP,
   type AppDocumentKind,
   type HotCpuProfileTarget,
   type Settings
@@ -26,6 +30,7 @@ import {
   getStartupBackgroundColor,
   STARTUP_BG_DARK
 } from "./settings/startup-appearance";
+import { linuxSquareCorners } from "./linux-window-corners";
 import { getMainLogFilePath, getMainLogger } from "./log";
 import { attachRendererStartupProfiling } from "./startup-profiler";
 import { getRuntimeProcessRole } from "./process-role";
@@ -51,6 +56,8 @@ import {
 const log = getMainLogger("pwrsnap:window");
 const hotCpuLog = getMainLogger("pwrsnap:hot-cpu");
 const hotCpuProfilerSyncHandlers = new Map<number, (reason: string) => void>();
+const hotCpuProfilerSlots = new Set<HotCpuProfilerSlot>();
+let hotCpuShuttingDown = false;
 
 /**
  * Per-platform window chrome for the main + secondary app windows.
@@ -59,11 +66,37 @@ const hotCpuProfilerSyncHandlers = new Map<number, (reason: string) => void>();
  *   global macOS app menu bar (always present), so nothing to do per-window.
  * - **Windows**: reclaim the native title bar via `titleBarStyle: "hidden"` and
  *   draw the native min/max/close as a themed overlay in the top-right of our
- *   52px top bar (`titleBarOverlay`). Secondary windows (Settings/Sizzle/doc)
+ *   41px top bar (`titleBarOverlay`). Secondary windows (Settings/Sizzle/doc)
  *   hide the native menu bar (`autoHideMenuBar`) — they don't need
  *   File/Edit/View; the main Library window keeps it visible for
  *   discoverability (Alt still toggles it).
- * - **Linux** (deferred): default frame.
+ * - **Linux**: frameless, and the renderer paints the whole strip — the same
+ *   menu bar Windows draws, plus the caption buttons (`WindowControls.tsx`,
+ *   backed by `window-controls-bridge.ts`) that neither the traffic lights nor
+ *   `titleBarOverlay` exist to provide there. `titleBarStyle: "hidden"` IS
+ *   `frame: false` on Linux (`has_frame_` is false for any style but
+ *   `kNormal`), and a frameless window never builds a native menu bar —
+ *   `RootView::SetMenu` returns early on `!has_frame()`, *after* registering
+ *   that menu's accelerators, so ⌘-equivalents keep working with no bar to
+ *   hang them on. Nothing needs `autoHideMenuBar`.
+ *
+ *   This brings PwrSnap in line with PwrAgent and PwrGit, which already ship
+ *   this chrome on Linux. The window keeps its resize borders — frameless
+ *   windows are still resizable via `FramelessView::ResizingBorderHitTest`
+ *   (inside-bounds border, 16px corner grabs) — but Electron gives it an
+ *   `OpaqueFrameView`: no border, no rounded corners, and no X11 drop shadow.
+ *   That is what the `#root::after` hairline in library.css stands in for.
+ *   The corners stay square: Electron 43+ rounds a frameless Linux window by
+ *   default, and every window here opts out through `linuxSquareCorners()`
+ *   (see linux-window-corners.ts for why).
+ *
+ *   Until 2026-09 this branch did not exist: every non-win32 platform was
+ *   handed `titleBarStyle: "hiddenInset"`, and Linux kept an ordinary frame
+ *   only because Electron's option converter accepts that value under
+ *   `#if BUILDFLAG(IS_MAC)` (shell/browser/native_window.cc) — off macOS the
+ *   string fails to convert and the option is dropped. The result was a title
+ *   bar, a native menu bar, and our own top bar stacked three deep, with the
+ *   product name written twice.
  */
 type MenuVisibility = "visible" | "hidden";
 
@@ -73,31 +106,31 @@ type MenuVisibility = "visible" | "hidden";
  * windows share, not eyeballed. Re-derive them here if that bar changes; don't
  * nudge them to taste.
  *
- * A macOS button is a 14pt frame on a 23pt pitch, so the group is 60pt wide
- * and ends at `x + 60`.
+ * These are Pwr-family values: PwrGit and PwrAgent put their stoplights at
+ * the same point in the same 40px strip, and the strip spec lives in PwrGit's
+ * `renderer/src/features/chrome/AGENTS.md` (pwrdrvr/PwrGit#361). Change them
+ * in all three apps together, never in one.
+ *
+ * A macOS button is a 14pt frame on a 23pt pitch (measured on macOS 26), so
+ * the group is 60pt wide and ends at `x + 60`. Electron's `y` is the top of
+ * the button.
  *
  * **x = 16** is the chrome bar's own content inset — `.psl__topbar`,
- * `.pss__titlebar`, and `.szl__titlebar` all use `padding: 0 16px 0 92px`
- * (`.ps-doc__titlebar` matches on the left and uses 20px on the right). The
- * buttons are the leftmost thing in that bar, so they start on the same rail
- * everything else lines up on. The group then ends at x=76, still inside the
- * 92px all four bars reserve on the left.
+ * `.pss__titlebar`, and `.szl__titlebar` all use `padding: 0 16px`
+ * (`.ps-doc__titlebar` uses 20px). The buttons are the leftmost thing in that
+ * bar, so they start on the same rail everything else lines up on. The group
+ * then ends at x=76, 20px short of the brand, which every bar starts at x=96
+ * on macOS (`--mac-traffic-light-reserve`).
  *
- * **y = 18** centres the 14pt button in the 51pt BAND, not in the 52pt row.
- * Every bar declares `grid-template-rows: 52px ...` (`.psl`, `.pss`, `.szl`,
- * `.ps-doc`) with `box-sizing: border-box` and a 1px `border-bottom`, so the
- * bottom pixel is the divider and the fill the buttons sit on is 51pt. That
- * is the same band `titleBarOverlayForTheme()` already pins at `height: 51`
- * for the Windows caption strip, for the same reason — keep the two in step.
- *
- * (51 - 14) / 2 = 18.5, so no integer centres exactly and the choice is which
- * way to round. 18 rounds high, and high is where the platform sits: of the
- * apps measured on this machine, Terminal and Ghostty sit 2pt high, PwrGit
- * 1pt high, Edge and Claude Desktop exactly centred — none sits low. 18 also
- * happens to be what PwrSnap already shipped, so this is a re-derivation that
- * confirms the value rather than a change. Measured both ways against the
- * band: y=18 leaves 18 above / 19 below, y=19 leaves 19 above / 18 below —
- * symmetric, so nothing but the rounding direction separates them.
+ * **y = 13** centres the 14pt button in the 40pt FILL: (40 - 14) / 2 = 13, so
+ * its centre is y=20 — the line the mark, the wordmark's capitals and the
+ * toolbar controls centre on too. Every bar declares
+ * `grid-template-rows: 41px ...` (`.psl`, `.pss`, `.szl`, `.ps-doc`) with
+ * `box-sizing: border-box` and a 1px `border-bottom`, so the divider sits
+ * BELOW the 40pt fill rather than inside it. The fill has to be an even
+ * height for this to work: Electron takes whole points, and a 14pt button
+ * centres on a whole point only. `titleBarOverlayForTheme()` pins the Windows
+ * caption strip to the same 40pt fill — keep the two in step.
  *
  * Five of the six consumers render one of those bars: Library (`.psl`),
  * Settings (`.pss`), Sizzle (`.szl`), the document windows and the logs
@@ -108,16 +141,19 @@ type MenuVisibility = "visible" | "hidden";
  * that window ever grows a title bar, the inset needs re-deriving against it.
  *
  * History: `x` was 20 from the 2026-05 build-out and never re-derived, which
- * left the buttons 4pt past the rail. Measured against a standalone
- * `hiddenInset` window: first-button left 20 → 16, pitch 23 and top 18
- * unchanged. Pinned by `macos-traffic-light-position.test.ts`, which also
- * fails if a seventh window starts consuming this without being classified.
+ * left the buttons 4pt past the rail. `y` was 18 in the old 52px bar, whose
+ * divider sat INSIDE the row: that left a 51pt fill with no whole-point
+ * centre, so the buttons sat half a point high in Settings, Sizzle and the
+ * document windows — and 1.5pt high in the Library, whose `.psl` also carried
+ * a 1px outer border that pushed its bar down to y=1. Pinned by
+ * `macos-traffic-light-position.test.ts`, which also fails if a seventh
+ * window starts consuming this without being classified.
  *
  * Frozen because it is exported — `as const` is compile-time only, so without
  * this one stray write from any importer would move the buttons on every
  * window opened afterwards. Callers spread it rather than passing it on.
  */
-export const MACOS_TRAFFIC_LIGHT_POSITION = Object.freeze({ x: 16, y: 18 });
+export const MACOS_TRAFFIC_LIGHT_POSITION = Object.freeze({ x: 16, y: 13 });
 
 function platformWindowChrome(menu: MenuVisibility): BrowserWindowConstructorOptions {
   if (process.platform === "win32") {
@@ -127,14 +163,25 @@ function platformWindowChrome(menu: MenuVisibility): BrowserWindowConstructorOpt
       autoHideMenuBar: menu === "hidden"
     };
   }
-  // macOS (and Linux, deferred) keep the prior chrome unchanged: hidden-inset
-  // title bar + inset traffic-light position. `trafficLightPosition` is a no-op
-  // off macOS but harmless, and matching the prior unconditional behavior keeps
-  // the Linux E2E frame identical.
-  // Spread, don't share: the frozen constant guards against an importer
-  // mutating our source of truth, while the copy keeps one window's options
-  // object from being reachable by any other.
-  return { titleBarStyle: "hiddenInset", trafficLightPosition: { ...MACOS_TRAFFIC_LIGHT_POSITION } };
+  if (process.platform === "darwin") {
+    // Hidden-inset title bar + inset traffic lights. The renderer clears room
+    // for them with `--mac-traffic-light-reserve`, scoped to
+    // `:root[data-platform="darwin"]` — the two halves are pinned against each
+    // other by macos-traffic-light-position.test.ts.
+    // Spread, don't share: the frozen constant guards against an importer
+    // mutating our source of truth, while the copy keeps one window's options
+    // object from being reachable by any other.
+    return {
+      titleBarStyle: "hiddenInset",
+      trafficLightPosition: { ...MACOS_TRAFFIC_LIGHT_POSITION }
+    };
+  }
+  // Linux: plain frameless. There is no overlay API to hand the caption
+  // buttons to and no traffic lights to inset, so the renderer paints both the
+  // buttons and the menu bar into the strip — see the header comment. `menu`
+  // is deliberately not consulted here: a frameless window builds no native
+  // menu bar, so there is nothing for `autoHideMenuBar` to act on.
+  return { titleBarStyle: "hidden" };
 }
 
 // Title-bar (caption-button strip) background. This MUST match the renderer's
@@ -150,20 +197,19 @@ const TITLEBAR_BG_LIGHT = "#f7f4ef";
  *  matches the title bar's `--bg-sidebar` so the strip reads as part of our
  *  chrome rather than a system band.
  *
- *  Height is 51 — ONE LESS than the renderer's 52px title bar — on purpose: it
- *  leaves the title bar's bottom 1px border (`border-bottom: var(--border-subtle)`)
- *  uncovered, so the divider line continues UNDER the native min/max/close
- *  buttons on every window (GitHub Desktop does this). At full height the
- *  overlay covers the border, which is why Settings — lacking the main window's
- *  1px outer-border offset — showed no line under its buttons. The 1px of title
- *  bar revealed below the buttons is `--bg-sidebar`, the same as `color`, so the
- *  only thing that shows through is the border itself. */
+ *  Height is 40 — the renderer's title-bar FILL, one less than its 41px row —
+ *  on purpose: the bar's 1px bottom border (`border-bottom: var(--border-subtle)`)
+ *  sits below the fill, so the overlay leaves it uncovered and the divider line
+ *  continues UNDER the native min/max/close buttons on every window (GitHub
+ *  Desktop does this). At full height the overlay would cover the border. It
+ *  is the same 40pt band the macOS stoplights centre in — see
+ *  MACOS_TRAFFIC_LIGHT_POSITION. */
 function titleBarOverlayForTheme(): { color: string; symbolColor: string; height: number } {
   const isDark = getStartupBackgroundColor() === STARTUP_BG_DARK;
   return {
     color: isDark ? TITLEBAR_BG_DARK : TITLEBAR_BG_LIGHT,
     symbolColor: isDark ? "#cdcdcd" : "#333333",
-    height: 51
+    height: 40
   };
 }
 
@@ -240,6 +286,8 @@ type RendererStage =
   | "document"
   | "sizzle"
   | "recording-controller"
+  | "recording-frame"
+  | "permission-guide"
   | "local-agent-consent";
 type RendererTarget = { kind: "url"; url: string } | { kind: "file"; path: string; hash?: string };
 
@@ -394,7 +442,25 @@ type EnabledHotCpuConfig = Extract<
 type HotCpuProfilerSlot = {
   sync: (reason: string) => void;
   stop: (reason: string) => Promise<void>;
+  shutdown: () => Promise<void>;
+  /** A profiler is running, starting, or still stopping. */
+  isActive: () => boolean;
 };
+
+/**
+ * True while any monitor has a profiler that a quit flush would have to save.
+ * Not "any slot exists": the main-process slot is installed at boot for every
+ * role, profiling enabled or not.
+ */
+export function hasActiveHotCpuProfilers(): boolean {
+  return [...hotCpuProfilerSlots].some((slot) => slot.isActive());
+}
+
+/** Stop main and renderer captures before their debugger targets are destroyed. */
+export async function stopHotCpuProfilers(): Promise<void> {
+  hotCpuShuttingDown = true;
+  await Promise.all([...hotCpuProfilerSlots].map((slot) => slot.shutdown()));
+}
 
 function hotCpuConfigKey(hotCpuConfig: EnabledHotCpuConfig): string {
   return JSON.stringify({
@@ -479,8 +545,9 @@ function createHotCpuProfilerSlot(options: {
   let profilerPromise: Promise<HotCpuProfiler | null> | null = null;
   let generation = 0;
   let syncQueue: Promise<void> = Promise.resolve();
+  const stopping = new Set<Promise<void>>();
 
-  const stop = async (reason: string): Promise<void> => {
+  const stopCurrent = async (reason: string): Promise<void> => {
     generation += 1;
     const pending = profilerPromise;
     configKey = null;
@@ -499,11 +566,19 @@ function createHotCpuProfilerSlot(options: {
     }
   };
 
+  const stop = (reason: string): Promise<void> => {
+    const task = stopCurrent(reason);
+    stopping.add(task);
+    void task.then(() => stopping.delete(task), () => stopping.delete(task));
+    return task;
+  };
+
   const run = async (reason: string): Promise<void> => {
     try {
-      if (!options.isReady()) return;
+      if (hotCpuShuttingDown || !options.isReady()) return;
 
       const settings = await readHotCpuSettings();
+      if (hotCpuShuttingDown) return;
       const captureHeapSnapshot = settings.general.hotCpuProfilingCaptureHeapSnapshot;
       const hotCpuConfig = resolveHotCpuProfileConfig({
         captureHeapSnapshot,
@@ -528,6 +603,8 @@ function createHotCpuProfilerSlot(options: {
         if (configKey === nextConfigKey) return;
         await stop(reason);
       }
+
+      if (hotCpuShuttingDown) return;
 
       const startGeneration = generation;
       configKey = nextConfigKey;
@@ -562,7 +639,16 @@ function createHotCpuProfilerSlot(options: {
     void syncQueue;
   };
 
-  return { sync, stop };
+  const slot = {
+    sync,
+    stop,
+    shutdown: async (): Promise<void> => {
+      await Promise.all([stop("app-quit"), syncQueue, ...stopping]);
+    },
+    isActive: (): boolean => profilerPromise !== null || stopping.size > 0
+  };
+  hotCpuProfilerSlots.add(slot);
+  return slot;
 }
 
 /** Sentinel key for the app-global main-process monitor in
@@ -604,9 +690,6 @@ export function installMainProcessHotCpuMonitor(): void {
   });
   mainHotCpuProfilerSlot = slot;
   hotCpuProfilerSyncHandlers.set(MAIN_HOT_CPU_PROFILER_SYNC_KEY, slot.sync);
-  app.on("will-quit", () => {
-    void slot.stop("app-quit");
-  });
   slot.sync("main-profiler-wired");
 }
 
@@ -693,8 +776,8 @@ export function positionAppDocumentWindowForSource(
  * keyboard focus in Claude / Terminal / etc. is preserved.
  *
  * The `installDevelopmentDockIcon` call inside
- * `showDockWithDevelopmentIcon` paints the dev/prod icon — no-op in
- * packaged builds, but harmless to call either way.
+ * `showDockWithDevelopmentIcon` paints the development icon only;
+ * packaged builds keep the native bundled icon.
  */
 export function reclaimDockIconIfLibraryAlive(options: { force?: boolean } = {}): void {
   if (process.platform !== "darwin") return;
@@ -709,7 +792,27 @@ export function reclaimDockIconIfLibraryAlive(options: { force?: boolean } = {})
   // gone — the fingerprint of an AppKit Accessory demotion that orphans
   // the Library. Log it: it's the symptom users report as "the Library
   // disappeared from the Dock."
-  log.info("reclaiming Dock icon — Library alive but Dock tile stripped (AppKit Accessory demotion)");
+  // Which of our windows, if any, holds key as we catch the demotion.
+  // `null` means nothing of ours does. A non-null value is NOT proof
+  // PwrSnap is active: the focus-sink is a non-activating panel and can
+  // be key while another app holds activation — and it may share the
+  // Library's "PwrSnap" title, which is why `focusedIsLibrary` is
+  // logged beside it.
+  //
+  // That distinction is the whole triage for "my PwrSnap window dove
+  // under another app during the recording countdown". The reclaim
+  // below re-asserts Regular activation POLICY and brings the Dock
+  // tile back; it does not re-activate the app and it does not restore
+  // z-order. Three different things, and a `dockVisibleAfter=true`
+  // elsewhere in the log says nothing about the other two.
+  const focused = BrowserWindow.getFocusedWindow();
+  log.info(
+    "reclaiming Dock icon — Library alive but Dock tile stripped (AppKit Accessory demotion)",
+    {
+      focusedWindowTitle: focused?.getTitle() ?? null,
+      focusedIsLibrary: focused !== null && focused === libraryWindow
+    }
+  );
   showDockWithDevelopmentIcon();
 }
 
@@ -819,6 +922,7 @@ export function createMainWindow(): BrowserWindow {
   }
   const windowsBounds = process.platform === "win32" ? initialWindowsLibraryBounds() : null;
   const window = new BrowserWindow({
+    ...linuxSquareCorners(),
     ...(windowsBounds ?? { width: 1440, height: 960 }),
     // Keep this well below the responsive toolbar/grid breakpoints
     // (≤1024 narrow through ≤560 tiny, ≤640 very-narrow, plus the grid's
@@ -939,7 +1043,9 @@ export function createMainWindow(): BrowserWindow {
     log.info("main window closed", { id: window.id });
     if (libraryWindow === window) libraryWindow = null;
     hotCpuProfilerSyncHandlers.delete(window.id);
-    void rendererHotCpuSlot.stop("window-closed");
+    void rendererHotCpuSlot.stop("window-closed").finally(() => {
+      hotCpuProfilerSlots.delete(rendererHotCpuSlot);
+    });
     // Combined mode: no library = no dock icon; the tray keeps the
     // app alive and the user re-opens via right-click → "Open
     // Library". The split-mode library PROCESS keeps its Dock icon
@@ -1046,6 +1152,7 @@ export function createLocalAgentConsentWindow(): BrowserWindow {
     sourceDisplayForWindow({})
   );
   const window = new BrowserWindow({
+    ...linuxSquareCorners(),
     x: position.x,
     y: position.y,
     width: LOCAL_AGENT_CONSENT_WINDOW_WIDTH,
@@ -1065,7 +1172,7 @@ export function createLocalAgentConsentWindow(): BrowserWindow {
     label: `local-agent-consent/${window.id}`,
     onShow: () => {
       if (process.platform === "darwin") {
-        void app.dock?.show();
+        showDockWithDevelopmentIcon();
         app.focus({ steal: true });
       }
       window.moveTop();
@@ -1108,6 +1215,7 @@ export function createSettingsWindow(
   const height = Math.min(SETTINGS_WINDOW_HEIGHT, display.workArea.height);
   const position = centeredWindowBoundsOnDisplay(width, height, display);
   const window = new BrowserWindow({
+    ...linuxSquareCorners(),
     x: position.x,
     y: position.y,
     width,
@@ -1201,6 +1309,7 @@ export function createSizzleWindow(
     sourceDisplayForWindow(options)
   );
   const window = new BrowserWindow({
+    ...linuxSquareCorners(),
     x: position.x,
     y: position.y,
     width: SIZZLE_WINDOW_WIDTH,
@@ -1226,7 +1335,38 @@ export function createSizzleWindow(
 }
 
 function appDocumentTitle(kind: AppDocumentKind): string {
-  return kind === "changelog" ? "PwrSnap Changelog" : "PwrSnap Third-party Licenses";
+  return `PwrSnap ${APP_DOCUMENT_TITLES[kind]}`;
+}
+
+/** One of PwrSnap's own windows, named the way the Window menu lists it. */
+export type OpenAppWindow = { window: BrowserWindow; label: string };
+
+/**
+ * The windows a person opened and can switch between — Library, Settings,
+ * Sizzle Reels, Logs and the document windows — for the Window menu on
+ * Linux and Windows (macOS draws its own list). Chrome that is not a
+ * destination (tray popover, float-over, region selector, recording HUD and
+ * frame, the focus sink) is left out by construction: only the singletons
+ * this module tracks are read. Hidden windows are skipped.
+ */
+export function listOpenAppWindows(): OpenAppWindow[] {
+  const candidates: Array<[BrowserWindow | null | undefined, string]> = [
+    [libraryWindow, "Library"],
+    [settingsWindow, "Settings"],
+    [sizzleWindow, "Sizzle Reels"],
+    [logsWindow, "Logs"],
+    ...APP_DOCUMENT_KINDS.map(
+      (kind): [BrowserWindow | undefined, string] => [
+        appDocumentWindows.get(kind),
+        APP_DOCUMENT_TITLES[kind]
+      ]
+    )
+  ];
+  return candidates.flatMap(([window, label]) =>
+    window !== null && window !== undefined && !window.isDestroyed() && window.isVisible()
+      ? [{ window, label }]
+      : []
+  );
 }
 
 export function showAppDocumentWindow(
@@ -1248,6 +1388,7 @@ export function showAppDocumentWindow(
     sourceDisplayForWindow(options)
   );
   const window = new BrowserWindow({
+    ...linuxSquareCorners(),
     x: position.x,
     y: position.y,
     width: APP_DOCUMENT_WINDOW_WIDTH,
@@ -1298,6 +1439,7 @@ export function showLogsWindow(options: PlacementSource = {}): BrowserWindow {
   );
   const preferences = themedWebPreferences();
   const window = new BrowserWindow({
+    ...linuxSquareCorners(),
     x: position.x,
     y: position.y,
     width: LOGS_WINDOW_WIDTH,
@@ -1337,6 +1479,51 @@ export function showLogsWindow(options: PlacementSource = {}): BrowserWindow {
   return window;
 }
 
+/**
+ * Height the tray popover is CONSTRUCTED at, before the renderer's
+ * ResizeObserver corrects it.
+ *
+ * 440 on macOS and Windows: a touch shorter than the worst-case content
+ * height, corrected within a frame of the renderer's first layout. Those
+ * platforms pre-warm the popover at boot, so the constructor frame is already
+ * corrected long before a user can see it.
+ *
+ * Taller on Linux, for a reason that is about pre-warm rather than about
+ * Wayland. Linux does NOT pre-warm (the native menu is the primary surface
+ * there), so the first open races the renderer's mount.
+ * `toggleLinuxTrayPopover` waits for one measurement before showing, but that
+ * wait has a deadline — and if the deadline wins, the window is shown at
+ * whatever it was constructed at. At 440 that clips the bottom rows off; at
+ * 880 it does not.
+ *
+ * It is also a hedge on `setContentSize`, which Electron documents as "may
+ * not work" on Wayland because "some window managers restrict programmatic
+ * window resizing". Measured on Electron 41.10.7 it DOES work — against a
+ * headless weston 10, against mutter 46 headless (GNOME's window manager), and
+ * on sway 1.9, where the real popover went from this 880 frame to the 302 its
+ * renderer measured: the renderer's own `window.innerHeight` — the real
+ * viewport, not a cached echo — follows every `setContentSize`, identically to
+ * X11. It stays a hedge because `getContentSize` cannot be used to check at
+ * runtime (it echoes the requested value on every backend; see
+ * linux-window-placement.ts) and because the first-open deadline below can win
+ * the race. So the constructor frame stays the last size the popover is
+ * guaranteed to have.
+ *
+ * The trade is deliberate and asymmetric: a refused resize renders the content
+ * at the top of a taller transparent window — some dead area below it that
+ * still hit-tests — which is worth more than a popover with its bottom rows
+ * clipped off.
+ *
+ * 880 is the pre-video ceiling `TRAY_HEIGHT_MAX` was raised from, so it fits
+ * every shape the popover had before the 6-card video grid.
+ */
+export const TRAY_POPOVER_HEIGHT_DEFAULT = 440;
+export const TRAY_POPOVER_HEIGHT_LINUX = 880;
+
+export function trayPopoverConstructedHeight(platform: NodeJS.Platform): number {
+  return platform === "linux" ? TRAY_POPOVER_HEIGHT_LINUX : TRAY_POPOVER_HEIGHT_DEFAULT;
+}
+
 export function createTrayWindow(): BrowserWindow {
   // Phase 1.7 refinement: drop transparent:true, switch vibrancy from
   // 'under-window' to 'popover' (the macOS-native NSPopover material
@@ -1344,7 +1531,9 @@ export function createTrayWindow(): BrowserWindow {
   // correctly across multi-monitor setups and avoids the Intel-iGPU
   // black-background regression that plagued transparent+vibrancy
   // combos. backgroundColor stays fully transparent so the popover
-  // material shows through.
+  // material shows through — around the edges only: `.ps-tray` paints
+  // an opaque body (library.css), so the material frames the popover
+  // rather than tinting it.
   //
   // 2026-05-04: `type: 'panel'` — Electron PR #34388 wires NSPanel +
   // NSWindowStyleMaskNonactivatingPanel under this option. This is
@@ -1361,25 +1550,36 @@ export function createTrayWindow(): BrowserWindow {
   // windows, so even calls inside our render path can't accidentally
   // re-activate the app.
   // macOS: NSPanel (non-activating) + the popover vibrancy material draw the
-  // rounded surface. Windows has no NSPanel/vibrancy equivalent, so it gets a
+  // rounded window; the renderer's opaque `.ps-tray` body sits inside it.
+  // Windows has no NSPanel/vibrancy equivalent, so it gets a
   // plain frameless, transparent, always-on-top window and the renderer paints
   // the rounded popover surface itself. (Native window shadow doesn't apply to
   // transparent Windows windows — acceptable for now.)
+  //
+  // ⚠️  ON LINUX THIS IS NOT A TRAY-ANCHORED POPOVER. The tray's primary
+  // surface there is a native `setContextMenu` menu (`traySurfaceForPlatform`
+  // in tray.ts has the four-part reason); production reaches this window only
+  // from that menu's "Show Last Capture…" row (`toggleLinuxTrayPopover`),
+  // which places it under the pointer on X11 and leaves placement to the
+  // compositor on Wayland. `showTrayPopoverForE2E` also drives it under xvfb —
+  // where tray-sizing.spec.ts and the zoom-remeasure specs run — at a fixed
+  // point on the primary display. Do not read "the Linux E2E tray popover
+  // works" as "the Linux tray popover works on Wayland"; xvfb is X11, and
+  // there is no indicator driving it.
   const macChrome =
     process.platform === "darwin"
       ? ({ type: "panel", vibrancy: "popover", visualEffectState: "active" } as const)
       : ({ transparent: true } as const);
   const window = new BrowserWindow({
+    ...linuxSquareCorners(),
     ...macChrome,
-    // Width must match TRAY_WIDTH in tray.ts. The renderer's
-    // ResizeObserver only updates HEIGHT — width stays at whatever
-    // the BrowserWindow was constructed with, so a stale value here
-    // silently clips the right column of the mode grid.
-    width: 440,
-    // Start a touch shorter than the worst-case content height; the
-    // renderer's ResizeObserver will setContentSize the moment its
-    // first layout finishes (see wireTrayResizeChannel in tray.ts).
-    height: 440,
+    // Regular-width fallback until the renderer publishes the profile for
+    // this display. The resize channel may shrink it to the compact width.
+    width: TRAY_WIDTH_REGULAR_DIP,
+    // See `trayPopoverConstructedHeight` — 440 everywhere the renderer's
+    // ResizeObserver is trusted to correct it, taller on Linux where it
+    // might not be able to.
+    height: trayPopoverConstructedHeight(process.platform),
     show: false,
     frame: false,
     resizable: false,
@@ -1454,6 +1654,16 @@ export function createTrayWindow(): BrowserWindow {
   return window;
 }
 
+/**
+ * Anchor the popover to the tray icon.
+ *
+ * ⚠️  Never called on Linux in production, and cannot be: its only input is
+ * `tray.getBounds()`, which Electron declares `@platform darwin,win32`. Even
+ * with a rectangle to work from, `setPosition` is inert under Wayland — a
+ * client cannot place its own windows there. That is half of why the Linux
+ * tray is a native menu (see `traySurfaceForPlatform` in tray.ts); the
+ * non-darwin arm below is Windows-only in practice.
+ */
 export function positionTrayWindow(window: BrowserWindow, trayBounds: Rectangle): void {
   const winBounds = window.getBounds();
   // getDisplayMatching is more accurate than getDisplayNearestPoint for
@@ -1465,9 +1675,9 @@ export function positionTrayWindow(window: BrowserWindow, trayBounds: Rectangle)
   // keeps it on-screen near the right edge where the Windows tray lives.
   const x = Math.round(trayBounds.x + trayBounds.width / 2 - winBounds.width / 2);
   // Vertical anchor differs: macOS's menubar is at the top, so the popover
-  // drops straight down from the icon. The Windows/Linux system tray sits at
-  // the bottom-right, so the popover rises ABOVE the taskbar (the work area
-  // already excludes it).
+  // drops straight down from the icon. The Windows system tray sits at the
+  // bottom-right, so the popover rises ABOVE the taskbar (the work area
+  // already excludes it). No Linux case — see the note above.
   const y =
     process.platform === "darwin"
       ? Math.round(trayBounds.y + trayBounds.height + margin)
@@ -1482,7 +1692,7 @@ export function positionTrayWindow(window: BrowserWindow, trayBounds: Rectangle)
 export function createFloatOverWindow(): BrowserWindow {
   // Sized to fit the standard variant of the toast until the renderer's
   // ResizeObserver posts the exact content height.
-  const width = 392;
+  const width = FLOAT_OVER_WIDTH_REGULAR_DIP;
   const height = 700;
 
   // `type: 'panel'` — same rationale as the tray. The float-over is
@@ -1493,6 +1703,7 @@ export function createFloatOverWindow(): BrowserWindow {
   // this window. macOS-only; Windows/Linux use transparent + alwaysOnTop
   // + showInactive() (the latter in float-over.ts).
   const window = new BrowserWindow({
+    ...linuxSquareCorners(),
     ...(process.platform === "darwin" ? { type: "panel" as const } : {}),
     width,
     height,
@@ -1511,6 +1722,12 @@ export function createFloatOverWindow(): BrowserWindow {
     // outside the BrowserWindow without enlarging the transparent
     // hit-test region around the toast.
     hasShadow: true,
+    // The renderer draws every corner itself. macOS and Windows 11 round
+    // a frameless window's corners by default, which the toast's own
+    // 14px radius hid, but the same window reshaped into the 18px dock
+    // had all four corners cut: the tab at the top and the ⋮ tab at the
+    // bottom read as one canoe-shaped sliver. Construction-only.
+    roundedCorners: false,
     webPreferences: {
       ...themedWebPreferences(),
       // Never throttle — the parked (pseudo-hidden) toast must keep
@@ -1595,6 +1812,7 @@ export function createRecordingControllerWindow(): BrowserWindow {
   const width = 280;
   const height = 60;
   const window = new BrowserWindow({
+    ...linuxSquareCorners(),
     type: "panel",
     width,
     height,
@@ -1644,6 +1862,129 @@ export function createRecordingControllerWindow(): BrowserWindow {
   //     from our own filter no matter how clever it was.
   window.setContentProtection(true);
   loadRenderer(window, rendererTarget("recording-controller"));
+  window.webContents.setVisualZoomLevelLimits(1, 1);
+  return window;
+}
+
+/**
+ * The macOS permission guide: a small panel beside System Settings holding
+ * the running app bundle as a file drag (see `capture/permission-guide.ts`).
+ *
+ * Same posture as the recording HUD, for a related reason: System Settings
+ * must stay the active app while the user drags into it, so the panel is
+ * non-activating (`focusable: false`, shown inactive) and floats above
+ * another app's window. Transparent, because the card draws a notch that
+ * points at the list; the native shadow follows the painted shape. Content
+ * protected, so a capture taken while it is up never contains it.
+ */
+export function createPermissionGuideWindow(size: { width: number; height: number }): BrowserWindow {
+  const window = new BrowserWindow({
+    ...linuxSquareCorners(),
+    type: "panel",
+    width: size.width,
+    height: size.height,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    focusable: false,
+    hasShadow: true,
+    roundedCorners: false,
+    webPreferences: themedWebPreferences()
+  });
+  // The renderer reports its height and main resizes to it — lift the
+  // implicit constructor minimum or that resize is silently clamped (see
+  // AGENTS.md "BrowserWindow sizing").
+  window.setMinimumSize(0, 0);
+  window.excludedFromShownWindowsMenu = true;
+  window.setAlwaysOnTop(true, "floating");
+  // System Settings can be on another Space, or full screen; the panel has
+  // to be wherever it is, or the user is left looking at Settings alone.
+  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  window.setMenuBarVisibility(false);
+  // Deliberately NOT content-protected, unlike the recording HUD: this panel
+  // is up only while capture is blocked, so it can never land in our own
+  // take, and users need to screenshot it to ask for help.
+  loadRenderer(window, rendererTarget("permission-guide"));
+  window.webContents.setVisualZoomLevelLimits(1, 1);
+  return window;
+}
+
+/**
+ * Click-through overlay that draws the tangerine frame around the
+ * recorded rect for the life of a video capture (see
+ * `recording/recording-frame.ts` for the lifecycle and
+ * `recording/recording-frame-geometry.ts` for where it goes).
+ *
+ * Constructed at the plan's bounds rather than sized afterwards: the
+ * rect is known at preflight and never changes for a session, so there
+ * is no resize-to-content dance here and no `setContentSize` to be
+ * clamped. `setMinimumSize(0, 0)` is still called because a small
+ * region can be narrower than whatever floor Electron inferred, and a
+ * mid-session display change re-plans through `setBounds`.
+ */
+export function createRecordingFrameWindow(bounds: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}): BrowserWindow {
+  const window = new BrowserWindow({
+    ...linuxSquareCorners(),
+    // Non-activating panel, same rationale as the float-over: nothing
+    // this window does may pull focus away from the app the user is
+    // recording.
+    ...(process.platform === "darwin" ? { type: "panel" as const } : {}),
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    focusable: false,
+    // ⚠️  Never `true`. A native window shadow around a transparent
+    // frame paints a dark halo on all four sides of the recorded
+    // region — the opposite of the "blended, no scrim" brief.
+    hasShadow: false,
+    webPreferences: themedWebPreferences()
+  });
+  window.setMinimumSize(0, 0);
+  window.excludedFromShownWindowsMenu = true;
+  // The overlay sits directly over the user's content for minutes at a
+  // time. It must never eat a click, so this is set once at
+  // construction and never flipped — unlike the HUD, which toggles it
+  // per phase because its Stop button has to be hittable.
+  window.setIgnoreMouseEvents(true);
+  if (process.platform === "darwin") {
+    window.setAlwaysOnTop(true, "floating");
+    window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  } else {
+    window.setAlwaysOnTop(true);
+  }
+  window.setMenuBarVisibility(false);
+  // On macOS this is load-bearing: it is what makes the `straddle`
+  // posture legal, letting the glow kiss the inside of the rect without
+  // reaching the file. On Windows it is defence in depth only — FFmpeg
+  // gdigrab reads the desktop DC, so the geometry (strictly outside the
+  // rect) is what actually protects the capture there. Do not let a
+  // future change trade the outset geometry away on the strength of
+  // this call.
+  window.setContentProtection(true);
+  loadRenderer(window, rendererTarget("recording-frame"));
   window.webContents.setVisualZoomLevelLimits(1, 1);
   return window;
 }

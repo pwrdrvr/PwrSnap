@@ -2,7 +2,8 @@
 // Editor.tsx so OverlaySvg and TextDraftInput (separate files) can
 // reference the same shapes without circular imports.
 
-import type { ShapeKind } from "@pwrsnap/shared";
+import type { DrawToolMode, ShapeKind, StrokeOverlay } from "@pwrsnap/shared";
+import type { ArrowLabelStyle, LabelAlign } from "./arrow-label";
 
 export type DraftArrow = {
   kind: "arrow";
@@ -46,9 +47,39 @@ export type DraftText = {
    *  row. When undefined, the draft is a fresh text placement and
    *  commit creates a new overlay. */
   editingId?: string;
+  /** Set when the draft is an arrow's label ("Add label", arrow-label.ts).
+   *  The draft then renders in `style` rather than the text tool's, is
+   *  aligned on its anchor by `align`, and shows a dimmed placeholder
+   *  until the first keystroke. Commit converts the anchor to the left
+   *  edge every text row uses; nothing links the row to the arrow. */
+  label?: {
+    arrowId: string;
+    align: LabelAlign;
+    style: ArrowLabelStyle;
+  };
 };
 
-export type Draft = DraftArrow | DraftShape | DraftText;
+/** A Draw-tool drag in progress: pen / marker / airbrush lay a stroke, the
+ *  eraser lays the path it will cut along. */
+export type DraftStroke = {
+  kind: "stroke";
+  mode: DrawToolMode;
+  /** Pointer samples as fractions of the canvas, NOT clamped — a stroke
+   *  may run off the edge, and the renderer clips it there. The editor
+   *  APPENDS to this array in place for the whole drag, so a pointer
+   *  event costs its own samples rather than a copy of the stroke. Read
+   *  only the first `count` entries. */
+  points: { x: number; y: number }[];
+  /** How many of `points` this draft shows. Absent means all of them. */
+  count?: number;
+  /** Eraser only: what each stroke the drag has cut now is, by row id —
+   *  the row with its surviving pieces as segments, or `null` for one
+   *  erased whole. Rows absent from the map are untouched. See
+   *  `StrokeEraseSession`. */
+  erased?: ReadonlyMap<string, StrokeOverlay | null>;
+};
+
+export type Draft = DraftArrow | DraftShape | DraftText | DraftStroke;
 
 /** Minimum normalized drag length below which we treat a pointer
  *  gesture as a click (no-op for drawing tools, just clears the

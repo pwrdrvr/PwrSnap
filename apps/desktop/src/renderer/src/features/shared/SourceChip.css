@@ -1,0 +1,720 @@
+/* Recording SOURCE CHIP.
+ *
+ * One control carrying four facts at once: WHICH source, whether it is
+ * ON, whether signal is actually ARRIVING, and what is BLOCKING it.
+ *
+ * The same element appears in three surfaces:
+ *   - region selector  — a Shutter orb (`--orb`) or a Clapperboard
+ *                        slate cell (`--cell`), per the selector HUD
+ *                        setting; `--tile` is the older two-line control
+ *   - recording HUD    — a monitor  (`--dense`: glyph + meter only)
+ *   - float-over toast — a receipt  (`--static`: no hover, no pointer)
+ *
+ * Every color is a token. The recording HUD it sits in is painted on a
+ * near-opaque black scrim rather than a themed panel, so the few values
+ * that must stay legible against that scrim regardless of theme are
+ * called out individually below.
+ */
+
+/* The chip is a GROUP, not a button — see the block comment in
+   SourceChip.tsx. It keeps every rule it had as a <button>, so the
+   `[data-state=...]` cascade below and RecordingController.css's
+   `--onScrim` overrides are untouched; what changed is that the toggle
+   is now `.ps-chip__body` inside it, alongside the grant action and the
+   device caret as real sibling <button>s. */
+.ps-chip {
+  position: relative;
+  /* Pinned, not inherited from app.css's `*` reset. As a <button> this
+     came free from the UA stylesheet; a <span> defaults to content-box,
+     which put the 1px border OUTSIDE `height: 30px` and made every chip
+     32px tall. The one measurable difference the split introduced. */
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 500 12px/1 var(--font-sans);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* The toggle. Carries NO chrome and NO box of its own — the group draws
+   all of it — so splitting the element off changed no width, no gap and
+   no height. `gap: inherit` is what keeps the 8px/6px density variants
+   working across the new nesting level. */
+.ps-chip__body {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  align-self: stretch;
+  gap: inherit;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  /* `inherit` takes the group's 8px — border-radius is not an inherited
+     property, so this is the explicit keyword, and it is what lets the
+     overlay below round off the same four corners the group does. */
+  border-radius: inherit;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: inherit;
+}
+
+/* Before the split the chip WAS the button, so its padding and its
+   trailing <kbd> toggled too. This stretches the toggle's hit area back
+   over the whole group; the two action buttons below are positioned, so
+   they paint — and hit-test — above it. Nothing here is painted. */
+.ps-chip__body::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  /* Measured: without this the square overlay hit-tests the ~1px the
+     radius rounds off each corner, which the <button> used to reject. */
+  border-radius: inherit;
+}
+
+/* `position` keeps both above `.ps-chip__body::after`. Both are later in
+   DOM order than the body, and z-index:auto positioned boxes paint in
+   tree order, so no z-index is needed — and adding one would start a
+   stacking contest with the HUD's scrim. */
+.ps-chip__act {
+  position: relative;
+}
+
+/* The caret's own button: a bare hit target around the glyph, which
+   keeps its `.ps-chip__caret` geometry below. */
+.ps-chip__devices {
+  position: relative;
+  appearance: none;
+  display: flex;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.ps-chip__ico {
+  display: block;
+  flex: 0 0 auto;
+  color: currentColor;
+}
+
+.ps-chip__name {
+  color: inherit;
+}
+
+/* ---------------- the selector's tile (control density) ----------------
+   Two lines in a fixed box. The top line is the source, its meter and
+   its controls; the bottom line is the reason, when there is one, then
+   the device. Using height rather than width keeps the HUD narrow: one
+   row of single-line chips carrying the device and the reason needed
+   ~400px for the microphone alone, and resized itself, moving every
+   control on the centred bar, each time the reason or the device
+   changed. A tile is the same box in every state.
+
+   Areas, not flow: the act and caret siblings are each optional, and
+   the sub line must sit under all of them. No key badge: the selector's
+   shortcut legend lists M / A / K, and a badge on each tile cost the bar
+   ~75px. */
+.ps-chip--tile {
+  display: inline-grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "body caret"
+    "sub  sub";
+  align-content: center;
+  align-items: center;
+  column-gap: 6px;
+  row-gap: 3px;
+  height: 40px;
+}
+/* The grant action ("Allow") rides on the bottom line, beside the reason
+   that asks for it, so the top line keeps its width. */
+.ps-chip--tile.ps-chip--act {
+  grid-template-areas:
+    "body caret"
+    "sub  act";
+}
+/* Microphone and camera name a device, so they get a fixed box, sized
+   so the top line never cuts the source word: the microphone's carries a
+   meter and a caret. The system-audio tile has neither a device
+   nor a meter, and keeps its natural width (at the same height). */
+.ps-chip--tile[data-source="microphone"] {
+  /* Also fits "MacBook Pro Microphone" whole on the second line. */
+  width: 176px;
+}
+.ps-chip--tile[data-source="camera"] {
+  width: 148px;
+}
+.ps-chip--tile > .ps-chip__body {
+  grid-area: body;
+  min-width: 0;
+  /* `gap: inherit` would take the tile's 3px row gap as well. */
+  gap: 8px;
+}
+.ps-chip--tile > .ps-chip__devices { grid-area: caret; }
+.ps-chip--tile > .ps-chip__act {
+  grid-area: act;
+  justify-self: end;
+  margin-right: 0;
+  padding: 1px 6px;
+}
+.ps-chip--tile .ps-chip__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The meter sits at the end of the top line, against the caret. */
+.ps-chip--tile .ps-meter {
+  margin-left: auto;
+}
+/* Indented under the source word: glyph (14px) + the body's 8px gap. */
+.ps-chip__sub {
+  grid-area: sub;
+  min-width: 0;
+  padding-left: 22px;
+  overflow: hidden;
+  font: 500 11px/1.2 var(--font-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ps-chip__dev {
+  color: var(--text-muted);
+}
+
+.ps-chip__why {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ps-chip__why {
+  color: currentColor;
+  font: 500 11px/1 var(--font-sans);
+  opacity: 0.9;
+}
+
+/* The caret opens the device picker. Rendered only when there is more
+   than one device to choose between — a chip with one microphone is a
+   toggle, not a menu. */
+.ps-chip__caret {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 18px;
+  margin-right: -3px;
+  border-radius: 4px;
+  color: var(--text-muted);
+}
+.ps-chip:hover .ps-chip__caret {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
+}
+
+/* The inline grant action. Outlined, never filled: it must not compete
+   with the selector HUD's single accent-filled Record button. */
+.ps-chip__act {
+  appearance: none;
+  padding: 2px 6px;
+  margin-right: -3px;
+  border: 1px solid currentColor;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: 600 10.5px/1 var(--font-sans);
+  cursor: pointer;
+}
+.ps-chip__act:hover {
+  background: color-mix(in srgb, var(--text-primary) 10%, transparent);
+}
+
+/* ---------------- states ---------------- */
+
+/* off — available, not requested. Reads as an offer, not as a fault. */
+.ps-chip[data-state="off"] {
+  color: var(--text-secondary);
+}
+.ps-chip[data-state="off"]:hover {
+  border-color: var(--accent-border);
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+}
+
+/* live — requested, granted, signal arriving. */
+.ps-chip[data-state="live"] {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+/* silent — requested and granted, but nothing has arrived. Amber, never
+   red: the take is still fine, the user may simply not want it to be. */
+.ps-chip[data-state="silent"] {
+  border-color: var(--warn-border);
+  background: var(--warn-soft);
+  color: var(--warn-text);
+}
+
+/* ask — never granted. Carries its own grant action so permission is
+   resolved here, before commit, rather than in a later dialog. */
+.ps-chip[data-state="ask"] {
+  border-color: var(--warn-border);
+  background: var(--warn-soft);
+  color: var(--warn-text);
+}
+
+/* denied — granted once, revoked since. Same shape, different verb. */
+.ps-chip[data-state="denied"] {
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+
+/* nodevice / unsupported — cannot be switched on at all. Still PRESENT,
+   so the row does not change shape between machines and the absence is
+   explained rather than hidden. */
+.ps-chip[data-state="nodevice"],
+.ps-chip[data-state="unsupported"] {
+  border-color: var(--border-subtle);
+  color: var(--text-subtle);
+  cursor: not-allowed;
+}
+.ps-chip[data-state="nodevice"]:hover,
+.ps-chip[data-state="unsupported"]:hover {
+  background: transparent;
+  border-color: var(--border-subtle);
+}
+
+.ps-chip__body:disabled {
+  cursor: not-allowed;
+}
+/* The toggle stands for the whole chip, so its ring is drawn on the
+   group — the ring that shipped when the chip was one button. The two
+   action buttons ring themselves instead: a user tabbing to Allow has
+   to see that they are on Allow and not on the chip. */
+.ps-chip:has(> .ps-chip__body:focus-visible),
+.ps-chip__act:focus-visible,
+.ps-chip__devices:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+/* …and the toggle draws none of its own, or the chip wears two rings.
+   region.css's `.region-hud button:focus-visible` used to land on the
+   chip itself, because the chip WAS the button; it now also matches
+   `.ps-chip__body`, so measured in Chromium the group ringed in
+   `--accent` while the body ringed in `--accent-border` inside it.
+   Two classes plus the pseudo-class (0,3,0) is what it takes to outrank
+   that rule's (0,2,1) — a bare `.ps-chip__body:focus-visible` (0,2,0)
+   loses and changes nothing. Pinned by SourceChip.css.test.ts, because
+   jsdom resolves no cascade and no render test can see this. */
+.ps-chip .ps-chip__body:focus-visible {
+  outline: none;
+}
+
+/* ---------------- density variants ---------------- */
+
+/* Dense: the in-recording HUD. The label was learned in the selector
+   seconds ago; repeating it costs width the HUD does not have when it
+   must sit outside a recorded region. */
+.ps-chip--dense {
+  height: 26px;
+  padding: 0 8px;
+  gap: 6px;
+}
+
+/* Static: the post-capture receipt. Nothing here is actionable. */
+.ps-chip--static {
+  height: 24px;
+  padding: 0 8px;
+  gap: 6px;
+  font-size: 11px;
+  cursor: default;
+}
+.ps-chip--static:hover {
+  background: inherit;
+}
+
+/* ---------------- LED meter ---------------- */
+/* Seven 2px segments rather than a continuous bar: at chip size a 30px
+   bar moving by 3px reads as noise, while a segment lighting up reads
+   as a level. The last two segments go warm so clipping is visible
+   without a second control. */
+.ps-meter {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 11px;
+  flex: 0 0 auto;
+}
+.ps-meter i {
+  display: block;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--text-subtle);
+}
+.ps-meter i:nth-child(1) { height: 4px; }
+.ps-meter i:nth-child(2) { height: 5.5px; }
+.ps-meter i:nth-child(3) { height: 7px; }
+.ps-meter i:nth-child(4) { height: 8.5px; }
+.ps-meter i:nth-child(5) { height: 10px; }
+.ps-meter i:nth-child(6) { height: 11px; }
+.ps-meter i:nth-child(7) { height: 11px; }
+.ps-meter i[data-on="true"] { background: var(--accent); }
+.ps-meter i[data-on="true"]:nth-child(6) { background: var(--warn); }
+.ps-meter i[data-on="true"]:nth-child(7) { background: var(--danger); }
+/* Clipping latches the top segment red whatever the level is now: the
+   shout that clipped is usually over before anyone looks. */
+.ps-chip[data-clipping="true"] .ps-meter i:nth-child(7) { background: var(--danger); }
+
+/* Flat: granted and on, but no samples. Distinct from "off" (grey) and
+   from "live at zero" — the segments are tinted, not dark. */
+.ps-meter[data-tone="flat"] i {
+  background: color-mix(in srgb, var(--warn) 34%, transparent);
+}
+
+/* A recorded-and-confirmed source in the receipt has no live level to
+   show, so the meter is a static full read rather than a fake level. */
+.ps-meter[data-tone="recorded"] i {
+  background: color-mix(in srgb, var(--accent) 72%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ps-meter i {
+    transition: none;
+  }
+}
+
+/* ---------------- selector HUD: orb (Shutter) ----------------
+   A 34px round toggle carrying its own signal, and one caption line under
+   it. The box is a fixed width, so a long device name is cut short in the
+   caption and carried whole in the fast tooltip; nothing on the bar moves
+   when the device, or the reason, changes. The group draws no chrome of
+   its own: the orb does. */
+.ps-chip.ps-chip--orb {
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 7px;
+  width: 92px;
+  height: auto;
+  padding: 4px 0 2px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-muted);
+}
+.ps-chip.ps-chip--orb[data-source="systemAudio"],
+.ps-chip.ps-chip--orb[data-source="cursor"] {
+  width: 56px;
+}
+/* Every state paints the orb, not the group. */
+.ps-chip.ps-chip--orb[data-state],
+.ps-chip.ps-chip--orb[data-state]:hover {
+  border-color: transparent;
+  background: transparent;
+}
+.ps-chip--orb > .ps-chip__body {
+  align-self: center;
+}
+.ps-orb {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-primary) 10%, transparent);
+  color: var(--text-muted);
+  transition: background 0.15s, box-shadow 0.15s, color 0.15s;
+}
+.ps-orb .ps-chip__ico {
+  width: 16px;
+  height: 16px;
+}
+.ps-chip--orb:hover .ps-orb {
+  background: color-mix(in srgb, var(--text-primary) 11%, transparent);
+  color: var(--text-secondary);
+}
+.ps-chip--orb[data-state="live"] .ps-orb,
+.ps-chip--orb[data-state="silent"] .ps-orb {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+  color: var(--accent);
+}
+.ps-chip--orb[data-state="ask"] .ps-orb,
+.ps-chip--orb[data-state="nodevice"] .ps-orb {
+  background: var(--warn-soft);
+  box-shadow: inset 0 0 0 1px var(--warn-border);
+  color: var(--warn);
+}
+.ps-chip--orb[data-state="denied"] .ps-orb {
+  background: var(--danger-soft);
+  box-shadow: inset 0 0 0 1px var(--danger-border);
+  color: var(--danger-text);
+}
+.ps-chip--orb[data-state="unsupported"] .ps-orb {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+  color: var(--text-subtle);
+}
+/* The microphone's level: a ring just outside the orb, filled clockwise.
+   One element, a conic gradient masked down to a 2.5px band. */
+.ps-orb__ring {
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--accent) var(--lvl, 0%),
+    color-mix(in srgb, var(--text-primary) 10%, transparent) 0
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), currentColor calc(100% - 2px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), currentColor calc(100% - 2px));
+  pointer-events: none;
+}
+/* Granted, armed, and nothing arriving: a warm empty ring, not a dark one. */
+.ps-orb__ring[data-tone="flat"] {
+  background: color-mix(in srgb, var(--warn) 40%, transparent);
+}
+.ps-chip--orb[data-clipping="true"] .ps-orb__ring {
+  background: conic-gradient(var(--danger) var(--lvl, 0%), color-mix(in srgb, var(--danger) 30%, transparent) 0);
+}
+/* The camera's picture fills the orb. */
+.ps-orb__media {
+  position: absolute;
+  inset: 2px;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--bg-app);
+}
+.ps-orb__media video,
+.ps-cell__media video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* A live preview reads as a mirror. The recording is not mirrored. */
+  transform: scaleX(-1);
+}
+/* The device caret: a badge on the orb's lower right. */
+.ps-chip--orb > .ps-chip__devices {
+  position: absolute;
+  top: 27px;
+  left: calc(50% + 6px);
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--bg-panel-elevated);
+  box-shadow:
+    0 0 0 2px var(--bg-panel),
+    inset 0 0 0 1px color-mix(in srgb, var(--text-primary) 18%, transparent);
+  color: var(--text-secondary);
+}
+.ps-chip--orb .ps-chip__caret {
+  width: auto;
+  height: auto;
+  margin: 0;
+  color: inherit;
+}
+.ps-chip--orb:hover .ps-chip__caret {
+  background: none;
+}
+.ps-chip--orb > .ps-chip__devices:hover {
+  color: var(--text-primary);
+  background: var(--bg-panel-hover);
+}
+.ps-chip--orb > .ps-chip__cap {
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 0 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 500 10px/12px var(--font-sans);
+  color: var(--text-muted);
+}
+.ps-chip--orb > .ps-chip__cap > .ps-chip__dev,
+.ps-chip--cell > .ps-chip__cap > .ps-chip__dev,
+.ps-chip--orb > .ps-chip__cap > .ps-chip__why,
+.ps-chip--cell > .ps-chip__cap > .ps-chip__why {
+  color: inherit;
+  font: inherit;
+  opacity: 1;
+}
+.ps-chip--orb[data-state="live"] > .ps-chip__cap,
+.ps-chip--orb[data-state="silent"] > .ps-chip__cap {
+  color: var(--text-secondary);
+}
+.ps-chip--orb[data-state="ask"] > .ps-chip__cap,
+.ps-chip--orb[data-state="nodevice"] > .ps-chip__cap {
+  color: var(--warn-text);
+}
+.ps-chip--orb[data-state="denied"] > .ps-chip__cap {
+  color: var(--danger-text);
+}
+.ps-chip--orb > .ps-chip__act {
+  margin: -2px 0 0;
+  padding: 1px 7px;
+  font-size: 10px;
+}
+.ps-chip--orb[data-state="ask"] > .ps-chip__act {
+  color: var(--warn-text);
+}
+.ps-chip--orb[data-state="denied"] > .ps-chip__act {
+  color: var(--danger-text);
+}
+
+/* ---------------- selector HUD: cell (Clapperboard) ----------------
+   A slate cell: an eyebrow and the signal on the top line, the device or
+   the reason on the bottom line, the caret beside it. Fixed widths, for
+   the same reason as the orb; the name line ellipsizes. */
+.ps-chip.ps-chip--cell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-rows: 12px 14px;
+  grid-template-areas:
+    "body body body"
+    "cap  act  caret";
+  align-items: center;
+  column-gap: 0;
+  row-gap: 8px;
+  height: auto;
+  padding: 11px 12px 12px;
+  border: 0;
+  border-radius: 0;
+  color: var(--text-muted);
+}
+.ps-chip.ps-chip--cell[data-source="microphone"] { width: 172px; }
+.ps-chip.ps-chip--cell[data-source="systemAudio"] { width: 96px; }
+.ps-chip.ps-chip--cell[data-source="camera"] { width: 188px; }
+.ps-chip.ps-chip--cell[data-source="cursor"] { width: 102px; }
+.ps-chip.ps-chip--cell[data-state],
+.ps-chip.ps-chip--cell[data-state]:hover {
+  border-color: transparent;
+  background: transparent;
+}
+.ps-chip.ps-chip--cell[data-state]:hover {
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+}
+/* `:hover` too, or the hover tint above outranks the fill and a
+   blocked source loses its colour under the pointer. */
+.ps-chip.ps-chip--cell[data-state="ask"],
+.ps-chip.ps-chip--cell[data-state="ask"]:hover,
+.ps-chip.ps-chip--cell[data-state="nodevice"],
+.ps-chip.ps-chip--cell[data-state="nodevice"]:hover {
+  background: var(--warn-soft);
+}
+.ps-chip.ps-chip--cell[data-state="denied"],
+.ps-chip.ps-chip--cell[data-state="denied"]:hover {
+  background: var(--danger-soft);
+}
+.ps-chip--cell > .ps-chip__body {
+  grid-area: body;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.ps-cell__eye {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: 600 9.5px/1 var(--font-mono);
+  letter-spacing: 0.14em;
+  color: var(--text-muted);
+}
+.ps-cell__eye .ps-chip__ico {
+  width: 11px;
+  height: 11px;
+}
+.ps-cell__vis {
+  display: flex;
+  align-items: center;
+  height: 12px;
+  color: var(--accent);
+}
+.ps-cell__off {
+  font: 600 9px/1 var(--font-mono);
+  letter-spacing: 0.12em;
+  color: var(--text-subtle);
+}
+.ps-cell__led {
+  display: block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+.ps-cell__media {
+  display: block;
+  width: 30px;
+  height: 18px;
+  margin: -3px 0;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--bg-app);
+  box-shadow: 0 0 0 1px var(--accent-border);
+}
+.ps-chip--cell > .ps-chip__cap {
+  grid-area: cap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 500 13px/14px var(--font-sans);
+  color: var(--text-muted);
+}
+.ps-chip--cell > .ps-chip__act {
+  grid-area: act;
+  margin: 0 0 0 6px;
+  padding: 1px 6px;
+}
+.ps-chip--cell > .ps-chip__devices {
+  grid-area: caret;
+  margin-left: 6px;
+}
+.ps-chip--cell .ps-chip__caret {
+  margin-right: 0;
+}
+.ps-chip--cell[data-state="live"] .ps-cell__eye,
+.ps-chip--cell[data-state="silent"] .ps-cell__eye {
+  color: var(--accent);
+}
+.ps-chip--cell[data-state="live"] > .ps-chip__cap,
+.ps-chip--cell[data-state="silent"] > .ps-chip__cap {
+  color: var(--text-primary);
+}
+.ps-chip--cell[data-state="live"] .ps-chip__caret,
+.ps-chip--cell[data-state="silent"] .ps-chip__caret {
+  color: var(--accent-bright);
+}
+.ps-chip--cell[data-state="ask"] .ps-cell__eye,
+.ps-chip--cell[data-state="nodevice"] .ps-cell__eye {
+  color: var(--warn);
+}
+.ps-chip--cell[data-state="ask"] > .ps-chip__cap,
+.ps-chip--cell[data-state="nodevice"] > .ps-chip__cap,
+.ps-chip--cell[data-state="ask"] > .ps-chip__act {
+  color: var(--warn-text);
+}
+.ps-chip--cell[data-state="denied"] .ps-cell__eye,
+.ps-chip--cell[data-state="denied"] > .ps-chip__cap,
+.ps-chip--cell[data-state="denied"] > .ps-chip__act {
+  color: var(--danger-text);
+}
+/* The orb's and the cell's focus ring is the group's (above), rounded to
+   the orb's box; the cell's is inset so the slate does not clip it. */
+.ps-chip--cell:has(> .ps-chip__body:focus-visible) {
+  outline-offset: -2px;
+}

@@ -20,6 +20,7 @@ import { join } from "node:path";
 import type { CaptureRecord, VideoCaptureMetadata } from "@pwrsnap/shared";
 import { getMainLogger } from "../log";
 import { getCacheRoot } from "../persistence/paths";
+import { runGatedCacheWrite } from "../persistence/derived-cache-gate";
 import { resolveFfmpegPath } from "./ffmpeg-resolver";
 
 const log = getMainLogger("pwrsnap:video-poster");
@@ -33,10 +34,8 @@ const POSTER_FILENAME = "poster.png";
 // deterministic (same source, same midpoint frame) so the final
 // state is consistent, but it's wasted CPU and on some filesystems
 // the concurrent write can produce a truncated file the second
-// reader sees zero-length. The Map<captureId, Promise<string>>
-// shares one extraction Promise across concurrent callers.
-const inFlightPosters = new Map<string, Promise<string>>();
-
+// reader sees zero-length. The derived-cache gate shares one
+// extraction Promise across concurrent callers.
 /**
  * Resolve the poster PNG for a video capture. Cache-hit returns the
  * existing path; cache-miss extracts frame at duration/2, scales to
@@ -48,16 +47,18 @@ export async function ensureVideoPoster(
   record: CaptureRecord,
   video: VideoCaptureMetadata
 ): Promise<string> {
-  const existing = inFlightPosters.get(record.id);
-  if (existing !== undefined) return existing;
-
-  const promise = extractPoster(record, video);
-  inFlightPosters.set(record.id, promise);
-  try {
-    return await promise;
-  } finally {
-    inFlightPosters.delete(record.id);
-  }
+  // Through the derived-cache gate, like the other `<cacheRoot>/video/<id>/`
+  // lanes. Unlike them this one hands ffmpeg the final path directly rather
+  // than staging + renaming, so a purge mid-extract fails the write instead
+  // of orphaning it — still worth gating, because the gate turns that error
+  // into "do not start" and drains the extract before the directory goes.
+  //
+  // Its local `runFfmpeg` takes no signal, so an abort cannot cut the encode
+  // short; a single-frame extract is fast and the gate's drain bound covers
+  // the pathological case.
+  return runGatedCacheWrite(record.id, join(getCacheRoot(), "video", record.id, POSTER_FILENAME), () =>
+    extractPoster(record, video)
+  );
 }
 
 async function extractPoster(

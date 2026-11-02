@@ -38,6 +38,7 @@ import {
   type UpdateTrain
 } from "@pwrsnap/shared";
 import { Card, Row } from "../components";
+import { ReleaseNotesLink } from "../../update/ReleaseNotesLink";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import { useSettingsContext } from "../SettingsContext";
 
@@ -73,6 +74,16 @@ function sameVersion(a: string | undefined, b: string | undefined): boolean {
   return a.trim().replace(/^v/i, "") === b.trim().replace(/^v/i, "");
 }
 
+/** A stopped download is neither "available" (nothing is downloading) nor an
+ *  error (nothing failed), so it gets its own line — and says how to get the
+ *  release back, because the only thing that changed is that we stopped
+ *  fetching it. */
+function canceledUpdateText(version: string, switching: boolean): string {
+  return switching
+    ? `Download canceled. v${version} is still available - check again to switch.`
+    : `Download canceled. v${version} is still available - check again to download it.`;
+}
+
 function updateResultText(result: AppUpdateCheckResult): string {
   if (result.status === "skipped") return result.reason;
   if (result.status === "error") return `Update check failed: ${result.message}`;
@@ -82,6 +93,9 @@ function updateResultText(result: AppUpdateCheckResult): string {
     return result.downgrade === true
       ? `v${result.version} ready. Restart to switch.`
       : `Update ready: v${result.version}. Restart to install.`;
+  }
+  if (result.status === "canceled") {
+    return canceledUpdateText(result.version, result.downgrade === true);
   }
   return result.downgrade === true
     ? `Switching to v${result.version}. Downloading in the background.`
@@ -106,11 +120,25 @@ function updateStatusText(status: AppUpdateStatus): string | undefined {
       ? `v${status.version} ready. Restart to switch.`
       : `Update ready: v${status.version}. Restart to install.`;
   }
+  if (status.status === "canceled") {
+    return canceledUpdateText(status.version, status.downgrade === true);
+  }
   if (status.status === "install-failed") {
     return `Update to v${status.version} did not finish installing. Retry to download it again and restart.`;
   }
   if (status.status === "error") return `Update check failed: ${status.message}`;
   return undefined;
+}
+
+/** The version the visible status line is talking about — so the link beside
+ *  it points at THAT release and not at whatever is installed.
+ *
+ *  Written as a property test rather than a status list on purpose: every
+ *  member of both unions either carries a `version` or has nothing to link
+ *  to (`idle`, `checking`, `skipped`, `error`), so a status added later is
+ *  covered the day it lands. */
+function payloadVersion(payload: AppUpdateStatus | AppUpdateCheckResult): string | undefined {
+  return "version" in payload ? payload.version : undefined;
 }
 
 type SlotTileProps = {
@@ -332,6 +360,14 @@ export function UpdatesPage(): ReactElement {
     liveUpdateStatus !== undefined
       ? updateStatus.status === "error"
       : updateResult?.status === "error";
+  // Follows the same live-then-settled precedence as the text above it, so
+  // the link can never point at a different release than the sentence.
+  const visibleUpdateVersion =
+    liveUpdateStatus !== undefined
+      ? payloadVersion(updateStatus)
+      : updateResult !== undefined
+        ? payloadVersion(updateResult)
+        : undefined;
 
   const checkForUpdates = async (): Promise<void> => {
     setUpdateChecking(true);
@@ -415,23 +451,36 @@ export function UpdatesPage(): ReactElement {
                   );
                   const release = releaseVersions?.[rowTrain]?.[slotChannel];
                   return (
-                    <SlotTile
-                      key={slotChannel}
-                      train={rowTrain}
-                      channel={slotChannel}
-                      release={release}
-                      loading={!releasesSettled}
-                      selected={index === selectedIndex}
-                      installed={sameVersion(release?.version, appVersion)}
-                      tabbable={index === selectedIndex}
-                      onSelect={() => {
-                        selectSlot({ train: rowTrain, channel: slotChannel });
-                      }}
-                      onKeyDown={onSlotKeyDown(index)}
-                      registerRef={(el) => {
-                        slotRefs.current[index] = el;
-                      }}
-                    />
+                    // The link is a SIBLING of the tile, not a child: the tile
+                    // is the radio, and an interactive element nested inside
+                    // one is neither valid HTML nor reachable by keyboard.
+                    // Picking a slot rewrites which build the app installs, so
+                    // reading the notes first has to be possible WITHOUT
+                    // picking — that is the whole reason all four are here
+                    // rather than one link under the selected slot.
+                    <div key={slotChannel} className="pss__slot-cell">
+                      <SlotTile
+                        train={rowTrain}
+                        channel={slotChannel}
+                        release={release}
+                        loading={!releasesSettled}
+                        selected={index === selectedIndex}
+                        installed={sameVersion(release?.version, appVersion)}
+                        tabbable={index === selectedIndex}
+                        onSelect={() => {
+                          selectSlot({ train: rowTrain, channel: slotChannel });
+                        }}
+                        onKeyDown={onSlotKeyDown(index)}
+                        registerRef={(el) => {
+                          slotRefs.current[index] = el;
+                        }}
+                      />
+                      <ReleaseNotesLink
+                        version={release?.version}
+                        className="pss__slot-notes"
+                        ariaLabel={`Release notes for ${TRAIN_LABEL[rowTrain]} ${CHANNEL_LABEL[slotChannel]} ${release?.version}`}
+                      />
+                    </div>
                   );
                 })}
               </Fragment>
@@ -470,7 +519,7 @@ export function UpdatesPage(): ReactElement {
               </button>
               {updateAction !== undefined ? (
                 <button
-                  className="pss__top-btn is-active"
+                  className="pss__top-btn is-primary"
                   type="button"
                   aria-label={updateAction.ariaLabel}
                   disabled={updateRestarting}
@@ -491,6 +540,17 @@ export function UpdatesPage(): ReactElement {
                 role={visibleUpdateStatusIsError ? "alert" : undefined}
               >
                 {visibleUpdateStatus}
+                {/* Inline, inside the same line, because it is scoped to the
+                    version that line just named — an "Update ready: v1.1.1"
+                    with no way to find out what v1.1.1 is was the gap this
+                    whole change closes. */}
+                <ReleaseNotesLink
+                  version={visibleUpdateVersion}
+                  className="pss__update-notes"
+                  {...(visibleUpdateVersion === undefined
+                    ? {}
+                    : { ariaLabel: `Release notes for v${visibleUpdateVersion.replace(/^v/i, "")}` })}
+                />
               </span>
             ) : null}
             {updateRestartError !== undefined ? (

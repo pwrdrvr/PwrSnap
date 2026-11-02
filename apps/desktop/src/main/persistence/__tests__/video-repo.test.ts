@@ -96,6 +96,8 @@ describe("video-repo metadata round-trip", () => {
       containerFormat: "mp4",
       hasSystemAudio: true,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       subject: { kind: "region", rect: { x: 100, y: 200, w: 800, h: 600 }, displayId: 1 }
     });
 
@@ -129,6 +131,8 @@ describe("video-repo metadata round-trip", () => {
         containerFormat: "mp4",
         hasSystemAudio: false,
         hasMicrophoneAudio: false,
+        requestedSystemAudio: false,
+        requestedMicrophone: false,
         subject: { kind: "display", displayId: 1 }
       });
     }
@@ -151,6 +155,8 @@ describe("video-repo metadata round-trip", () => {
       containerFormat: "mp4",
       hasSystemAudio: false,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       subject: { kind: "display", displayId: 1 }
     });
 
@@ -172,6 +178,8 @@ describe("video-repo metadata round-trip", () => {
       containerFormat: "mp4",
       hasSystemAudio: true,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       subject: { kind: "display", displayId: 1 }
     });
     expect(getVideoMetadata("cap-trim")!.defaultRange).toEqual({ start: 0, end: 16 });
@@ -205,6 +213,8 @@ describe("video-repo metadata round-trip", () => {
       containerFormat: "mp4",
       hasSystemAudio: false,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       subject: { kind: "display", displayId: 1 }
     });
     updatePreview("cap-prev", "previews/cap-prev.mp4", "ready");
@@ -222,6 +232,8 @@ describe("video-repo metadata round-trip", () => {
       containerFormat: "mp4",
       hasSystemAudio: false,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       subject: { kind: "display", displayId: 1 }
     });
     expect(getVideoMetadata("cascade-1")).not.toBeNull();
@@ -392,4 +404,27 @@ describe("normalizeRange", () => {
     expect(normalizeRange({ start: 5, end: 2 }, 10)).toEqual({ start: 5, end: 5 });
     expect(normalizeRange({ start: 2, end: 8 }, 10)).toEqual({ start: 2, end: 8 });
   });
+});
+
+test("avatar edits preserve immutable camera metadata and screen identity", async () => {
+  const { DEFAULT_AVATAR_STYLE } = await import("@pwrsnap/shared");
+  const { insertVideoMetadata, getVideoMetadata, setVideoAvatar, setVideoCamera } = await import("../video-repo");
+  insertCaptureRow(mocks.db!, "camera-1", "video");
+  insertVideoMetadata({ captureId: "camera-1", durationSec: 10, containerFormat: "mp4", hasSystemAudio: false, hasMicrophoneAudio: false, requestedMicrophone: false, requestedSystemAudio: false, subject: { kind: "display", displayId: 1 } });
+  const camera = { version: 1 as const, durationSec: 13, width: 1280, height: 720, offsetSec: -3, sha256: "c".repeat(64), mimeType: "video/mp4" as const };
+  setVideoCamera("camera-1", camera);
+  setVideoAvatar("camera-1", { ...DEFAULT_AVATAR_STYLE, x: 0.1, visible: false });
+  expect(getVideoMetadata("camera-1")?.camera).toEqual(camera);
+  expect(getVideoMetadata("camera-1")?.avatar?.visible).toBe(false);
+  expect(mocks.db!.prepare("SELECT sha256 FROM captures WHERE id = ?").get("camera-1")).toEqual({ sha256: "sha-camera-1" });
+});
+
+test("opening a camera take with incompatible uptime recovers playback without rewriting stored metadata", async () => {
+  const { insertVideoMetadata, getVideoMetadata, setVideoCamera } = await import("../video-repo");
+  insertCaptureRow(mocks.db!, "camera-clock", "video");
+  insertVideoMetadata({ captureId: "camera-clock", durationSec: 9.190416, containerFormat: "mp4", hasSystemAudio: false, hasMicrophoneAudio: false, requestedMicrophone: false, requestedSystemAudio: false, subject: { kind: "display", displayId: 1 } });
+  const camera = { version: 1 as const, durationSec: 13.2307, width: 1280, height: 720, offsetSec: 36276.61846, sha256: "c".repeat(64), mimeType: "video/mp4" as const };
+  setVideoCamera("camera-clock", camera);
+  expect(getVideoMetadata("camera-clock")?.camera).toEqual({ ...camera, offsetSec: 9.190416 - 13.2307, timing: "estimated" });
+  expect(mocks.db!.prepare("SELECT camera_json FROM video_captures WHERE capture_id = ?").get("camera-clock")).toEqual({camera_json:JSON.stringify(camera)});
 });

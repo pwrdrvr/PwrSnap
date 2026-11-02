@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { app } from "electron";
 import type {
-  SizzleResolvedPhraseTiming,
   SizzleSequenceTranscriptPhrase,
   SizzleSpeechTiming,
   SizzleSpeechTimingWarning,
@@ -72,7 +71,7 @@ export async function resolveSpeechTiming(
         apiKey: req.apiKey,
         audioPath: req.audioPath
       });
-      const normalized = normalizeTranscribedWords(words, text, req.durationSec);
+      const normalized = normalizeTranscribedWords(words, req.durationSec);
       if (normalized.length > 0) {
         timing = {
           text,
@@ -276,7 +275,6 @@ async function transcribeWithOpenAi(args: {
 
 function normalizeTranscribedWords(
   words: RawTranscribedWord[],
-  text: string,
   durationSec: number
 ): SizzleWordTiming[] {
   const duration = finitePositive(durationSec) ? durationSec : Number.POSITIVE_INFINITY;

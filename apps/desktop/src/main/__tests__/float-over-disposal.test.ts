@@ -34,11 +34,9 @@ const mocks = vi.hoisted(() => {
       setPosition: vi.fn(),
       showInactive: vi.fn(),
       webContents: {
-        getURL: vi.fn(() => "file:///renderer/index.html"),
         invalidate: vi.fn(),
         isDestroyed: vi.fn(() => destroyed),
-        isLoadingMainFrame: vi.fn(() => false),
-        once: vi.fn(),
+        on: vi.fn(),
         send: vi.fn(),
         zoomFactor: 1
       }
@@ -163,7 +161,6 @@ describe("disposeFloatOver", () => {
 
     expect(getFloatOverState()).toEqual({ kind: "loaded", captureId: "cap_1" });
     expect(mocks.globalShortcut.register).toHaveBeenCalledTimes(3);
-    expect(vi.getTimerCount()).toBe(1);
 
     disposeFloatOver();
 
@@ -174,13 +171,16 @@ describe("disposeFloatOver", () => {
       "CommandOrControl+3"
     ]);
     expect(mocks.ipcMain.removeAllListeners).toHaveBeenCalledWith("float-over:resize");
+    expect(mocks.ipcMain.removeAllListeners).toHaveBeenCalledWith("float-over:request-state");
+    expect(mocks.ipcMain.removeAllListeners).toHaveBeenCalledWith("float-over:dock-drag");
+    expect(mocks.ipcMain.removeAllListeners).toHaveBeenCalledWith("float-over:pass-through");
     expect(getFloatOverState()).toEqual({ kind: "hidden" });
     expect(vi.getTimerCount()).toBe(0);
 
     disposeFloatOver();
     expect(window.destroy).toHaveBeenCalledTimes(1);
     expect(mocks.globalShortcut.unregister).toHaveBeenCalledTimes(3);
-    expect(mocks.ipcMain.removeAllListeners).toHaveBeenCalledTimes(1);
+    expect(mocks.ipcMain.removeAllListeners).toHaveBeenCalledTimes(4);
   });
 
   it("can create and wire a fresh singleton after disposal", () => {
@@ -193,7 +193,9 @@ describe("disposeFloatOver", () => {
 
     expect(first.destroy).toHaveBeenCalledTimes(1);
     expect(mocks.createFloatOverWindow).toHaveBeenCalledTimes(2);
-    expect(mocks.ipcMain.on).toHaveBeenCalledTimes(2);
+    // Four channels (resize, state request, dock drag, pass-through),
+    // wired once per window.
+    expect(mocks.ipcMain.on).toHaveBeenCalledTimes(8);
     expect(getFloatOverState()).toEqual({ kind: "idle" });
     expect(getFloatOverWindowIdForE2E()).toBe(2);
   });

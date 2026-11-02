@@ -68,4 +68,23 @@ describe("capture:videoInteractive registration", () => {
     expect(result.ok).toBe(true);
     expect(run).toHaveBeenCalledTimes(1);
   });
+
+  test.each(["processing", "failed"])(
+    "does not open another selector while %s owns the attempt",
+    async () => {
+    const run = vi.fn(async () => undefined);
+    const resolveProtectWindowIds = vi.fn(() => [42] as readonly number[]);
+    registerCaptureVideoHandler(run, resolveProtectWindowIds, () => false);
+
+    const result = await bus.dispatch(
+      "capture:videoInteractive",
+      {},
+      { principal: "ipc" }
+    );
+
+    expect(result).toEqual({ ok: true, value: undefined });
+    expect(resolveProtectWindowIds).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    }
+  );
 });

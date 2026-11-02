@@ -3,28 +3,36 @@
 // Exposes:
 //   - app:version             — build/runtime metadata for Settings → About
 //   - app:readDocument        — read a bundled app document (changelog,
-//                               third-party licenses) for in-app viewing
+//                               license, third-party notices) for in-app viewing
 //   - app:openDocumentWindow  — open the document-viewer BrowserWindow
 //   - app:openExternal        — open an allowlisted https URL in the
 //                               default browser (About page links)
 //   - app:update:check        — force a fresh electron-updater check
+//   - app:update:menuCheck    — the Check for Updates… menu item, announced on the
+//                               user-initiated result channel
+//   - app:update:cancel       — stop the download the update card reports
+//   - app:update:userCheckRunning — mount-time snapshot of "the user asked"
 //   - app:update:status       — snapshot of the current updater state
 //   - app:update:install      — restart-into-the-downloaded-update
 //   - app:update:releases     — GitHub Releases list (independent of the
 //                               updater channel; used by the Updates page)
 
 import { app, screen, shell } from "electron";
-import { err, ok } from "@pwrsnap/shared";
+import { err, isAppDocumentKind, ok } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
-import { isAppDocumentKind, readAppDocument } from "../app-documents";
+import { readAppDocument } from "../app-documents";
+import { isAllowedExternalUrl } from "../external-url-allowlist";
 import { readLaunchAtLoginStatus } from "../launch-at-login";
 import { resolveDevelopmentRuntimeIdentity } from "../runtime-identity";
 import { showAppDocumentWindow } from "../window";
 import {
+  cancelAppUpdateDownload,
   checkForAppUpdatesNow,
   installDownloadedAppUpdate,
+  isUserUpdateCheckRunning,
   readAppUpdateReleaseVersions,
-  readAppUpdateStatus
+  readAppUpdateStatus,
+  runMenuUpdateCheck
 } from "../auto-updater";
 
 /**
@@ -34,7 +42,7 @@ import {
  * independent of both Electron upgrades and PwrSnap releases. Keep the seam
  * E2E-only so production always reports the packaged application version.
  */
-function resolveAppVersion(): string {
+export function resolveAppVersion(): string {
   const e2eVersion = process.env["PWRSNAP_E2E_APP_VERSION"];
   if (
     process.env["PWRSNAP_E2E"] === "1" &&
@@ -44,29 +52,6 @@ function resolveAppVersion(): string {
     return e2eVersion;
   }
   return app.getVersion();
-}
-
-/** URLs the renderer is allowed to open via `app:openExternal`. Keeps
- *  `shell.openExternal` from becoming an arbitrary-navigation gadget: a
- *  compromised/buggy renderer can only reach the product site, the docs
- *  site, and PwrDrvr's own GitHub org. https-only. GitHub is scoped to
- *  the `/pwrdrvr/*` path so an attacker can't bounce the user to an
- *  arbitrary repo/gist/profile under the (trusted) github.com host. */
-function isAllowedExternalUrl(raw: string): boolean {
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return false;
-  }
-  if (url.protocol !== "https:") return false;
-  const host = url.hostname.toLowerCase();
-  if (host === "pwrsnap.com" || host.endsWith(".pwrsnap.com")) return true;
-  if (host === "github.com") {
-    // `/pwrdrvr` (org page) or `/pwrdrvr/<repo>...`; reject `/pwrdrvrx`.
-    return url.pathname === "/pwrdrvr" || url.pathname.startsWith("/pwrdrvr/");
-  }
-  return false;
 }
 
 /** Combined-mode registration: all three groups on one bus. Split mode
@@ -191,6 +176,18 @@ export function registerAppUpdateHandlers(): void {
   });
   bus.register("app:update:install", async () => {
     return ok(await installDownloadedAppUpdate());
+  });
+  // Registered here, not called straight from the menu: under the process
+  // split the menu is installed by the library process and this prefix routes
+  // to the agent, which is the only place the updater actually lives.
+  bus.register("app:update:menuCheck", async () => {
+    return ok(await runMenuUpdateCheck());
+  });
+  bus.register("app:update:cancel", async () => {
+    return ok(cancelAppUpdateDownload());
+  });
+  bus.register("app:update:userCheckRunning", async () => {
+    return ok({ running: isUserUpdateCheckRunning() });
   });
   bus.register("app:update:releases", async () => {
     return ok(await readAppUpdateReleaseVersions());

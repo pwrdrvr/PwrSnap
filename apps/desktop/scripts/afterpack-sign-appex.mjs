@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * electron-builder `afterPack` hook. Signs every `.appex` Quick Look
+ * electron-builder `afterPack` hook. Personalizes the staged main executable
+ * UUID, then signs every `.appex` Quick Look
  * extension shipped under `Contents/PlugIns/` before the main app's
  * codesign pass runs.
  *
@@ -40,6 +41,7 @@ import { execSync, spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { personalizeMacExecutableFile, macExecutableIdentity } from "./macos-executable-uuid.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -165,6 +167,13 @@ export default async function afterPackSignAppex(context) {
 
   const appName = context.packager.appInfo.productFilename;
   const appPath = join(context.appOutDir, `${appName}.app`);
+  // Electron's stock launcher UUID is shared across unrelated apps. Patch the
+  // staged launcher before ANY signing, including on builds without extensions.
+  // Universal packaging may invoke this again; the per-slice result is stable.
+  await personalizeMacExecutableFile(
+    join(appPath, "Contents", "MacOS", appName),
+    macExecutableIdentity(context.packager)
+  );
   const pluginsDir = join(appPath, "Contents", "PlugIns");
   if (!existsSync(pluginsDir)) {
     // No nested extensions in this configuration — nothing to do.

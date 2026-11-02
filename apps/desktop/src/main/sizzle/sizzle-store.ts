@@ -1,3 +1,4 @@
+import { AvatarStyleSchema } from "@pwrsnap/shared";
 import { copyFile, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
@@ -372,7 +373,9 @@ function sanitizeScene(s: SizzleScene): SizzleScene {
   const captureId =
     kind === "sequence" ? beats[0]?.captureId ?? s.captureId : s.captureId;
   const narration = s.narration ?? s.scriptLine ?? "";
+  const presenter = AvatarStyleSchema.safeParse(s.avatar);
   const base: SizzleScene = {
+    ...(presenter.success ? { avatar: presenter.data } : {}),
     id: s.id || `sc_${randomUUID().slice(0, 10)}`,
     captureId,
     scriptLine: kind === "sequence" ? narration : s.scriptLine ?? "",
@@ -384,7 +387,8 @@ function sanitizeScene(s: SizzleScene): SizzleScene {
     // disk predate these — readBlob hands them through here.
     mediaTrim: sanitizeMediaTrim(s.mediaTrim),
     audioSource: kind === "sequence" ? "voiceover" : sanitizeAudioSource(s.audioSource),
-    transition: normalizeSizzleTransition(s.transition, { type: "crossfade" })
+    transition: normalizeSizzleTransition(s.transition, { type: "crossfade" }),
+    ...sanitizeUseCaptureCuts(s.useCaptureCuts)
   };
   if (kind === "sequence") {
     base.kind = "sequence";
@@ -423,9 +427,15 @@ function sanitizeSequenceBeats(
         type: "cut",
         durationSec: 0
       }),
-      videoFit: sanitizeVideoFit(beat.videoFit)
+      videoFit: sanitizeVideoFit(beat.videoFit),
+      ...sanitizeUseCaptureCuts(beat.useCaptureCuts)
     }))
   );
+}
+
+/** Default-on flag: only an explicit opt-out survives onto the record. */
+function sanitizeUseCaptureCuts(v: unknown): { useCaptureCuts?: false } {
+  return v === false ? { useCaptureCuts: false } : {};
 }
 
 function sanitizeBeatTiming(timing: SizzleBeatTiming | undefined): SizzleBeatTiming {

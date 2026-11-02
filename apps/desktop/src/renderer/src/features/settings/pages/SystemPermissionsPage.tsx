@@ -66,9 +66,8 @@ function statusTone(status: RecordingPermissionStatus): "ok" | "warn" | "neutral
 /**
  * Status-specific guidance shown beneath each row. Screen / system-audio
  * `not-determined` is PwrSnap's synthesized "we've never asked" state (see
- * `screenCapturePrompted`); `denied` means macOS has already recorded a
- * decision and won't prompt again, so the only path is the Privacy pane +
- * (usually) a relaunch.
+ * `screenCapturePrompted`); `denied` means the user has been here before.
+ * Both open the permission guide; only the wording differs.
  */
 function darwinStatusHint(
   permission: RecordingPermission,
@@ -83,10 +82,10 @@ function darwinStatusHint(
   }
   // screen + systemAudio share the Screen Recording grant.
   if (status === "not-determined") {
-    return "PwrSnap will ask macOS for this the first time you capture. Click Request access to do it now — macOS shows its own approval dialog.";
+    return "PwrSnap asks for this the first time you capture. Request access opens System Settings with PwrSnap beside the list, ready to drag in.";
   }
   if (status === "denied") {
-    return "Turn on Screen Recording for PwrSnap in System Settings → Privacy & Security → Screen & System Audio Recording. If it's already on, relaunch PwrSnap so the change takes effect.";
+    return "Show me how opens System Settings → Privacy & Security → Screen & System Audio Recording and puts PwrSnap beside the list, ready to drag in. If it's already on, relaunch PwrSnap so the change takes effect.";
   }
   if (status === "unavailable") {
     return "Requires macOS 13 or newer. System audio shares the Screen Recording grant.";
@@ -236,7 +235,7 @@ export function SystemPermissionsPage(): ReactElement {
   }, []);
 
   const requestDarwinPermission = useCallback(
-    async (permission: RecordingPermission, status: RecordingPermissionStatus) => {
+    async (permission: RecordingPermission) => {
       setBusyPermission(permission);
       try {
         if (permission === "microphone") {
@@ -249,31 +248,17 @@ export function SystemPermissionsPage(): ReactElement {
           await refresh();
           return;
         }
-        // Screen / system audio: ALWAYS try a real screen-capture probe
-        // FIRST — even on the "Open System Settings" (denied) button. The
-        // probe re-registers PwrSnap + shows the OS dialog when macOS has
-        // no decision on file (fresh install, or after a `tccutil reset` /
-        // a new unsigned dev build that gets a different TCC identity), and
-        // it picks up a grant that just landed. Never skip it — that's how
-        // a denied-looking app gets back into the Privacy pane.
-        const res = await dispatch("permissions:request", { permission });
-        if (!res.ok) {
-          setLastError(res.error.message);
+        // Screen / system audio: the permission guide IS the request. It
+        // opens System Settings at the list and hands over this exact bundle
+        // to drag in, whether or not macOS has a decision on file. Never a
+        // capture probe: that raises macOS's own alert, which outlives a
+        // relaunch and stacks (see capture/screen-permission-gate.ts).
+        const opened = await dispatch("permissions:showGuide", { permission });
+        if (!opened.ok) {
+          setLastError(opened.error.message);
           return;
         }
         await refresh();
-        // If the probe didn't grant AND macOS had already recorded a
-        // decision (effective status was "denied", not the synthesized
-        // "not-determined" first-ask), open System Settings as the
-        // fallback — macOS won't re-prompt for an already-decided app, so
-        // the Privacy pane is the only recovery. On the first ask the OS
-        // dialog is the UI; don't stack a Settings window on top of it.
-        if (res.value.status !== "granted" && status === "denied") {
-          const opened = await dispatch("permissions:openSystemSettings", { permission });
-          if (!opened.ok) {
-            setLastError(opened.error.message);
-          }
-        }
       } finally {
         setBusyPermission(null);
       }
@@ -325,7 +310,8 @@ export function SystemPermissionsPage(): ReactElement {
                 use any of them unless you explicitly start a capture. On a
                 fresh install you'll see <strong>Not yet requested</strong> —
                 click <strong>Request access</strong> (or just take your first
-                snap) and macOS will show its own approval dialog.
+                snap) and PwrSnap opens System Settings with itself beside the
+                list, ready to drag in.
               </>
             ) : isWindows ? (
               <>
@@ -416,7 +402,7 @@ export function SystemPermissionsPage(): ReactElement {
                     <button
                       type="button"
                       onClick={() =>
-                        void requestDarwinPermission(row.permission, status)
+                        void requestDarwinPermission(row.permission)
                       }
                       disabled={
                         busyPermission === row.permission || readiness === null
@@ -438,7 +424,7 @@ export function SystemPermissionsPage(): ReactElement {
                         ? "Ask now"
                         : status === "not-determined"
                         ? "Request access"
-                        : "Open System Settings"}
+                        : "Show me how"}
                     </button>
                   )}
                 </div>

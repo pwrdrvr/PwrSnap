@@ -254,7 +254,7 @@ describe("buildSizzleToolAllowlist", () => {
     expect(r.ok).toBe(true);
     const updateCall = dispatch.mock.calls.find((c) => c[0] === "sizzle:update");
     expect(updateCall?.[1]).toMatchObject({ id: PROJECT_ID });
-    const scenes = (updateCall?.[1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
+    const scenes = (updateCall![1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
     expect(scenes).toHaveLength(2);
     expect(scenes[1]?.captureId).toBe("cap_b");
     expect(scenes[1]?.id).toMatch(/^sc_/);
@@ -268,7 +268,7 @@ describe("buildSizzleToolAllowlist", () => {
       CTX
     );
     const updateCall = dispatch.mock.calls.find((c) => c[0] === "sizzle:update");
-    const scenes = (updateCall?.[1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
+    const scenes = (updateCall![1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
     expect(scenes.find((s) => s.id === "sc_a")?.scriptLine).toBe("");
     expect(scenes.find((s) => s.id === "sc_b")?.scriptLine).toBe("new");
   });
@@ -299,7 +299,7 @@ describe("buildSizzleToolAllowlist", () => {
     );
     expect(r.ok).toBe(true);
     const updateCall = dispatch.mock.calls.find((c) => c[0] === "sizzle:update");
-    const scenes = (updateCall?.[1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
+    const scenes = (updateCall![1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
     expect(scenes).toHaveLength(1);
     expect(scenes[0]!.kind).toBe("sequence");
     expect(scenes[0]!.scriptLine).toBe("Open Settings, then enable Telegram.");
@@ -326,7 +326,7 @@ describe("buildSizzleToolAllowlist", () => {
     );
     expect(r.ok).toBe(true);
     const updateCall = dispatch.mock.calls.find((c) => c[0] === "sizzle:update");
-    const scenes = (updateCall?.[1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
+    const scenes = (updateCall![1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
     expect(scenes[0]!.beats).toHaveLength(3);
     expect(scenes[0]!.beats![0]!.timing).toEqual({ kind: "auto" });
     expect(scenes[0]!.beats![1]!.timing).toEqual({ kind: "auto" });
@@ -372,13 +372,14 @@ describe("buildSizzleToolAllowlist", () => {
         beatId: "bt_b",
         timing: { kind: "phrase", phrase: "Telegram", offsetSec: -0.1, durationSec: 0.5 },
         transition: { type: "dip-black", durationSec: 0.2 },
-        videoFit: "speed-to-fit"
+        videoFit: "speed-to-fit",
+        useCaptureCuts: false
       },
       CTX
     );
     expect(r.ok).toBe(true);
     const updateCall = dispatch.mock.calls.find((c) => c[0] === "sizzle:update");
-    const scenes = (updateCall?.[1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
+    const scenes = (updateCall![1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
     const beats = scenes[0]!.beats!;
     expect(beats[0]!.timing).toEqual({ kind: "offset", startSec: 0, endSec: null });
     expect(beats[1]!.timing).toEqual({
@@ -390,6 +391,9 @@ describe("buildSizzleToolAllowlist", () => {
     });
     expect(beats[1]!.transition).toEqual({ type: "dip-black", durationSec: 0.2 });
     expect(beats[1]!.videoFit).toBe("speed-to-fit");
+    // The agent can hand a clip its Library-cut footage back.
+    expect(beats[1]!.useCaptureCuts).toBe(false);
+    expect(beats[0]!.useCaptureCuts).toBeUndefined();
   });
 
   it("sequence_beat_update errors when the beat id is unknown", async () => {

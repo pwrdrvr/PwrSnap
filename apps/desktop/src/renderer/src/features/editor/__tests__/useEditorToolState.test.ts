@@ -1,6 +1,6 @@
 // Unit tests for `useEditorToolState` — the v2 editor's window-scoped
-// state machine for sticky tool mode, per-tool style memory, shared
-// COLOR slot across tools, and the matching-text affordance lifecycle.
+// state machine for sticky tool mode, per-tool style memory, and the
+// armed tool-bag slot.
 //
 // The hook does not own its Settings transport — it consumes the
 // existing `useSettings` hook for reads and dispatches `settings:write`
@@ -29,8 +29,7 @@ import type { EditorToolStyles, Settings } from "@pwrsnap/shared";
 // ---- Mocks ----------------------------------------------------------
 //
 // `useSettings` is mocked to a flexible factory so each test can drive
-// the loaded snapshot — primarily for the matchingText.enabled=false
-// scenario. `dispatch` is captured per-test so we can assert the
+// the loaded snapshot. `dispatch` is captured per-test so we can assert the
 // coalescing window and the shape of `settings:write` payloads.
 
 const dispatchMock = vi.fn();
@@ -47,6 +46,7 @@ import {
   useEditorToolState,
   type UseEditorToolStateReturn
 } from "../useEditorToolState";
+import { defaultEditorToolBag } from "@pwrsnap/shared";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -60,7 +60,6 @@ function makeSettings(overrides?: {
   arrowThickness?: Settings["editor"]["toolStyles"]["arrow"]["thickness"];
   textColor?: string;
   textFontSize?: Settings["editor"]["toolStyles"]["text"]["fontSize"];
-  matchingTextEnabled?: boolean;
 }): Settings {
   return {
     schemaVersion: 1,
@@ -69,6 +68,7 @@ function makeSettings(overrides?: {
       enabled: false,
       consentAcceptedAt: null,
       budgetSafetyDisabledAt: null,
+      enrichmentRateLimit: null,
       autoAcceptSuggestions: false,
       chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false },
       defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} },
@@ -82,7 +82,8 @@ function makeSettings(overrides?: {
       allScreens: "",
       timed: "",
       videoCapture: "CommandOrControl+Alt+C",
-      reshowFloatOver: "CommandOrControl+Alt+Shift+F"
+      reshowFloatOver: "CommandOrControl+Alt+Shift+F",
+      openLibrary: ""
     },
     general: {
     developerMode: false,
@@ -100,9 +101,16 @@ function makeSettings(overrides?: {
     storage: { filenameTimestampZone: "local", capturesLocation: "documents" },
     recording: {
       quickCaptureAction: "ask",
+      selectorHud: "shutter",
       includeSystemAudio: false,
       includeMicrophone: false,
+      mp4IncludeMicrophone: true,
+      mp4IncludeSystemAudio: true,
       videoCaptureCursor: true,
+      showRegionFrame: true,
+      showRecentCaptureSidebar: true,
+      microphoneDevice: null,
+      cameraDevice: null,
       imageCaptureCursor: true,
       lastRoutedPermissionFingerprint: "",
       screenCapturePrompted: false
@@ -123,15 +131,16 @@ function makeSettings(overrides?: {
           weight: "regular",
           outline: "auto"
         },
-        shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15, outline: "auto" },
+        shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15, strokeStyle: "solid", outline: "auto" },
         blur: { mode: "gaussian", radius: { mode: "auto" } },
-        highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
+        highlight: { color: "yellow", opacity: 0.3, blend: "multiply" },
+        draw: { mode: "pen", color: "accent", thickness: "auto" }
       },
+      toolBag: defaultEditorToolBag(),
       coachmarks: { stoplightSeen: false },
-      matchingText: { enabled: overrides?.matchingTextEnabled ?? true },
       sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
     },
-    library: { detailRail: { pinned: true, lastSelectedTab: "info" }, gridCopyPalette: { anchor: "follow" }, confirmBeforeTrash: true, gridZoom: 180 },
+    library: { detailRail: { pinned: true, lastSelectedTab: "info" }, gridCopyPalette: { anchor: "follow" }, confirmBeforeTrash: true, gridZoom: 180, duplicateWithEdits: { image: true, video: true }, editToolbarDock: "float" },
   localAgents: { enabled: false, grants: [], roles: [], audit: [] }
   };
 }
@@ -189,7 +198,18 @@ function rerender(node: React.ReactElement): void {
 
 beforeEach(() => {
   dispatchMock.mockReset();
-  dispatchMock.mockResolvedValue({ ok: true, value: undefined });
+  dispatchMock.mockImplementation(async (channel, patch) => {
+    // Main broadcasts the saved settings before settings:write resolves.
+    // Preserve that contract when the optimistic tool-bag state settles.
+    if (channel === "settings:write" && patch.editor?.toolBag) {
+      const settings = useSettingsMock().settings as Settings;
+      installSettingsMock({
+        ...settings,
+        editor: { ...settings.editor, toolBag: patch.editor.toolBag }
+      });
+    }
+    return { ok: true, value: undefined };
+  });
   useSettingsMock.mockReset();
   installSettingsMock(makeSettings());
 });
@@ -209,7 +229,7 @@ afterEach(() => {
 // ---- Tests ----------------------------------------------------------
 
 describe("useEditorToolState", () => {
-  test("1. initial state: pointer + idle + reads defaults from settings", () => {
+  test("1. initial state: pointer, nothing armed, the settings bag", () => {
     let api: UseEditorToolStateReturn | null = null;
     render(
       createElement(Probe, {
@@ -221,7 +241,8 @@ describe("useEditorToolState", () => {
     );
 
     expect(api!.activeTool).toBe("pointer");
-    expect(api!.matchingText.kind).toBe("idle");
+    expect(api!.armedSlot).toBeNull();
+    expect(api!.bag.slots).toHaveLength(9);
     // activeStyle reflects settings defaults — pointer has no style
     // block (style discriminant is "none").
     expect(api!.activeStyle.tool).toBe("pointer");
@@ -244,10 +265,7 @@ describe("useEditorToolState", () => {
     expect(api!.activeTool).toBe("arrow");
 
     act(() => {
-      api!.onAnnotationPlaced({
-        tool: "arrow",
-        anchorPoint: { x: 100, y: 50 }
-      });
+      api!.onAnnotationPlaced({ tool: "arrow" });
     });
     expect(api!.activeTool).toBe("arrow");
   });
@@ -269,15 +287,15 @@ describe("useEditorToolState", () => {
     expect(api!.activeTool).toBe("arrow");
 
     act(() => {
-      api!.onAnnotationPlaced({
-        tool: "arrow",
-        anchorPoint: { x: 0, y: 0 }
-      });
+      api!.onAnnotationPlaced({ tool: "arrow" });
     });
     expect(api!.activeTool).toBe("pointer");
   });
 
-  test("4. cross-tool COLOR slot: arrow color propagates to text/rect/highlight", () => {
+  test("4. colors are per tool: an arrow color does not recolor text or shapes", () => {
+    // The shared COLOR slot used to fan every pick out to every tool,
+    // which made "a red arrow and a green arrow" a two-step chore and
+    // recolored the next box too. The bag replaced it.
     let api: UseEditorToolStateReturn | null = null;
     render(
       createElement(Probe, {
@@ -291,31 +309,14 @@ describe("useEditorToolState", () => {
     act(() => {
       api!.setStyleField("arrow", "color", "red");
     });
-
-    // Switch to text — should reflect red (shared COLOR slot).
     act(() => {
       api!.setActiveTool("text");
     });
-    expect(api!.activeStyle.tool).toBe("text");
-    if (api!.activeStyle.tool === "text") {
-      expect(api!.activeStyle.style.color).toBe("red");
-    }
-
-    // Same for rect.
+    expect(api!.activeStyle).toMatchObject({ tool: "text", style: { color: "accent" } });
     act(() => {
       api!.setActiveTool("shape");
     });
-    if (api!.activeStyle.tool === "shape") {
-      expect(api!.activeStyle.style.color).toBe("red");
-    }
-
-    // Same for highlight.
-    act(() => {
-      api!.setActiveTool("highlight");
-    });
-    if (api!.activeStyle.tool === "highlight") {
-      expect(api!.activeStyle.style.color).toBe("red");
-    }
+    expect(api!.activeStyle).toMatchObject({ tool: "shape", style: { color: "accent" } });
   });
 
   test("5. per-tool thickness: arrow thickness change does not affect text fontSize", () => {
@@ -342,10 +343,7 @@ describe("useEditorToolState", () => {
     }
   });
 
-  test("6. matching-text appears after arrow placement", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-05-23T12:00:00.000Z"));
-
+  test("6. armSlot: activates the slot's tool with its WHOLE style", () => {
     let api: UseEditorToolStateReturn | null = null;
     render(
       createElement(Probe, {
@@ -355,25 +353,33 @@ describe("useEditorToolState", () => {
         }
       })
     );
-
+    // A stray working-style field must not leak into the armed slot.
     act(() => {
-      api!.setActiveTool("arrow");
-    });
-    act(() => {
-      api!.onAnnotationPlaced({
-        tool: "arrow",
-        anchorPoint: { x: 100, y: 50 }
-      });
+      api!.setStyleField("arrow", "doubleEnded", true);
     });
 
-    expect(api!.matchingText.kind).toBe("available");
-    if (api!.matchingText.kind === "available") {
-      expect(api!.matchingText.anchorPoint).toEqual({ x: 100, y: 50 });
-      expect(api!.matchingText.expiresAt).toBe(Date.now() + 8000);
-    }
+    let armed = false;
+    act(() => {
+      armed = api!.armSlot(3);
+    });
+    expect(armed).toBe(true);
+    expect(api!.activeTool).toBe("arrow");
+    expect(api!.armedSlot).toBe(3);
+    expect(api!.armedSlotModified).toBe(false);
+    // Slot 4 of the factory bag is the yellow range.
+    expect(api!.activeStyle).toMatchObject({
+      tool: "arrow",
+      style: { color: "yellow", endStyle: "bar", doubleEnded: true, thickness: "small" }
+    });
+
+    act(() => {
+      api!.armSlot(4);
+    });
+    expect(api!.activeTool).toBe("highlight");
+    expect(api!.armedSlot).toBe(4);
   });
 
-  test("7. matching-text dismisses on tool change", () => {
+  test("6b. a Draw slot saves and arms like any other: the Draw tool with its mode, color and weight", async () => {
     let api: UseEditorToolStateReturn | null = null;
     render(
       createElement(Probe, {
@@ -383,25 +389,55 @@ describe("useEditorToolState", () => {
         }
       })
     );
-
-    act(() => {
-      api!.setActiveTool("arrow");
-    });
-    act(() => {
-      api!.onAnnotationPlaced({
-        tool: "arrow",
-        anchorPoint: { x: 1, y: 1 }
+    await act(async () => {
+      api!.setBagSlot(8, {
+        tool: "draw",
+        style: { mode: "marker", color: "yellow", thickness: "large" }
       });
     });
-    expect(api!.matchingText.kind).toBe("available");
-
     act(() => {
-      api!.setActiveTool("text");
+      api!.armSlot(8);
     });
-    expect(api!.matchingText.kind).toBe("idle");
+    expect(api!.activeTool).toBe("draw");
+    expect(api!.armedSlot).toBe(8);
+    expect(api!.activeStyle).toEqual({
+      tool: "draw",
+      style: { mode: "marker", color: "yellow", thickness: "large" }
+    });
+    // Switching to the eraser is a change of working style like any
+    // other — the slot reads as edited (and the bar will not offer to
+    // save the eraser into it).
+    act(() => {
+      api!.setStyleField("draw", "mode", "eraser");
+    });
+    expect(api!.armedSlotModified).toBe(true);
   });
 
-  test("8. matching-text dismisses on capture change (re-render with new id)", () => {
+  test("7. editing the working style marks the armed slot modified; editing it back clears that", () => {
+    let api: UseEditorToolStateReturn | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-1",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+    act(() => {
+      api!.armSlot(0);
+    });
+    act(() => {
+      api!.setStyleField("arrow", "color", "blue");
+    });
+    expect(api!.armedSlot).toBe(0);
+    expect(api!.armedSlotModified).toBe(true);
+    act(() => {
+      api!.setStyleField("arrow", "color", "red");
+    });
+    expect(api!.armedSlotModified).toBe(false);
+  });
+
+  test("8. picking a family directly, or switching captures, disarms the slot", () => {
     let api: UseEditorToolStateReturn | null = null;
     const onSnapshot = (a: UseEditorToolStateReturn): void => {
       api = a;
@@ -409,21 +445,24 @@ describe("useEditorToolState", () => {
     render(createElement(Probe, { captureId: "cap-1", onSnapshot }));
 
     act(() => {
-      api!.setActiveTool("arrow");
+      api!.armSlot(1);
     });
     act(() => {
-      api!.onAnnotationPlaced({
-        tool: "arrow",
-        anchorPoint: { x: 1, y: 1 }
-      });
+      api!.setActiveTool("arrow");
     });
-    expect(api!.matchingText.kind).toBe("available");
+    expect(api!.activeTool).toBe("arrow");
+    expect(api!.armedSlot).toBeNull();
 
+    act(() => {
+      api!.armSlot(1);
+    });
     rerender(createElement(Probe, { captureId: "cap-2", onSnapshot }));
-    expect(api!.matchingText.kind).toBe("idle");
+    expect(api!.armedSlot).toBeNull();
+    // The tool and its working style carry over.
+    expect(api!.activeStyle).toMatchObject({ tool: "arrow", style: { color: "green" } });
   });
 
-  test("9. matching-text dismisses on explicit dismiss", () => {
+  test("9. arming an empty slot does nothing", () => {
     let api: UseEditorToolStateReturn | null = null;
     render(
       createElement(Probe, {
@@ -433,25 +472,100 @@ describe("useEditorToolState", () => {
         }
       })
     );
-
+    let armed = true;
     act(() => {
-      api!.setActiveTool("arrow");
+      armed = api!.armSlot(8);
     });
-    act(() => {
-      api!.onAnnotationPlaced({
-        tool: "arrow",
-        anchorPoint: { x: 1, y: 1 }
-      });
-    });
-    expect(api!.matchingText.kind).toBe("available");
-
-    act(() => {
-      api!.dismissMatchingTextAffordance();
-    });
-    expect(api!.matchingText.kind).toBe("idle");
+    expect(armed).toBe(false);
+    expect(api!.activeTool).toBe("pointer");
+    expect(api!.armedSlot).toBeNull();
   });
 
-  test("10. matching-text auto-dismisses at 8s", () => {
+  test("10. setBagSlot writes the whole bag and shows it before the settings broadcast lands", async () => {
+    let api: UseEditorToolStateReturn | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-1",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+    // Hold the write open so the optimistic bag is observable.
+    let finishWrite: () => void = () => undefined;
+    dispatchMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishWrite = () => resolve({ ok: true, value: undefined });
+        })
+    );
+    const saved = {
+      tool: "text" as const,
+      style: { color: "blue", fontSize: "large" as const, weight: "bold" as const, outline: "none" as const }
+    };
+    act(() => {
+      api!.setBagSlot(8, saved);
+    });
+    expect(api!.bag.slots[8]).toEqual(saved);
+    const write = dispatchMock.mock.calls.find((c) => c[0] === "settings:write");
+    const slots = (write![1] as { editor: { toolBag: { slots: unknown[] } } }).editor.toolBag
+      .slots;
+    expect(slots).toHaveLength(9);
+    expect(slots[8]).toEqual(saved);
+    expect(slots[0]).toMatchObject({ tool: "arrow", style: { color: "red" } });
+
+    // Broadcast the persisted bag before resolving the write, as main does.
+    await act(async () => {
+      const settings = makeSettings();
+      installSettingsMock({
+        ...settings,
+        editor: { ...settings.editor, toolBag: { slots: slots as Settings["editor"]["toolBag"]["slots"] } }
+      });
+      finishWrite();
+      await Promise.resolve();
+    });
+    expect(api!.bag.slots[8]).toEqual(saved);
+  });
+
+  test("10b. a save before settings land is dropped, so the factory bag never overwrites the saved one", () => {
+    installSettingsMock(null);
+    let api: UseEditorToolStateReturn | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-10b",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+    act(() => {
+      api!.setBagSlot(8, { tool: "blur", style: { mode: "pixelate", radius: { mode: "auto" } } });
+    });
+    expect(dispatchMock.mock.calls.some((c) => c[0] === "settings:write")).toBe(false);
+    expect(api!.bag.slots[8]).toBeNull();
+  });
+
+  test("11. clearing the armed slot disarms it", async () => {
+    let api: UseEditorToolStateReturn | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-1",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+    act(() => {
+      api!.armSlot(2);
+    });
+    await act(async () => {
+      api!.setBagSlot(2, null);
+    });
+    expect(api!.armedSlot).toBeNull();
+    expect(api!.bag.slots[2]).toBeNull();
+  });
+
+  test("12. arming a slot remembers its style as the tool's default", () => {
     vi.useFakeTimers();
     let api: UseEditorToolStateReturn | null = null;
     render(
@@ -462,125 +576,20 @@ describe("useEditorToolState", () => {
         }
       })
     );
-
     act(() => {
-      api!.setActiveTool("arrow");
+      api!.armSlot(1);
     });
     act(() => {
-      api!.onAnnotationPlaced({
-        tool: "arrow",
-        anchorPoint: { x: 1, y: 1 }
-      });
+      vi.advanceTimersByTime(501);
     });
-    expect(api!.matchingText.kind).toBe("available");
-
-    act(() => {
-      vi.advanceTimersByTime(8001);
-    });
-    expect(api!.matchingText.kind).toBe("idle");
-  });
-
-  test("11. clickMatchingTextAffordance: → text tool, color matches, kind=armed", () => {
-    let api: UseEditorToolStateReturn | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap-1",
-        onSnapshot: (a) => {
-          api = a;
-        }
-      })
+    const write = dispatchMock.mock.calls.find(
+      (c) =>
+        c[0] === "settings:write" &&
+        (c[1] as { editor?: { toolStyles?: unknown } }).editor?.toolStyles !== undefined
     );
-
-    // Set arrow color to red first so we can verify color propagation.
-    act(() => {
-      api!.setStyleField("arrow", "color", "red");
-    });
-    act(() => {
-      api!.setActiveTool("arrow");
-    });
-    act(() => {
-      api!.onAnnotationPlaced({
-        tool: "arrow",
-        anchorPoint: { x: 1, y: 1 }
-      });
-    });
-    expect(api!.matchingText.kind).toBe("available");
-
-    act(() => {
-      api!.clickMatchingTextAffordance();
-    });
-
-    expect(api!.activeTool).toBe("text");
-    if (api!.activeStyle.tool === "text") {
-      expect(api!.activeStyle.style.color).toBe("red");
-    }
-    expect(api!.matchingText.kind).toBe("armed");
-  });
-
-  test("12. armed text placement → return to arrow with style preserved", () => {
-    let api: UseEditorToolStateReturn | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap-1",
-        onSnapshot: (a) => {
-          api = a;
-        }
-      })
-    );
-
-    act(() => {
-      api!.setStyleField("arrow", "color", "red");
-    });
-    act(() => {
-      api!.setActiveTool("arrow");
-    });
-    act(() => {
-      api!.onAnnotationPlaced({
-        tool: "arrow",
-        anchorPoint: { x: 1, y: 1 }
-      });
-    });
-    act(() => {
-      api!.clickMatchingTextAffordance();
-    });
-    expect(api!.activeTool).toBe("text");
-
-    // Place the text. The hook should now return to arrow tool.
-    act(() => {
-      api!.onAnnotationPlaced({ tool: "text" });
-    });
-
-    expect(api!.activeTool).toBe("arrow");
-    if (api!.activeStyle.tool === "arrow") {
-      expect(api!.activeStyle.style.color).toBe("red");
-    }
-    expect(api!.matchingText.kind).toBe("idle");
-  });
-
-  test("13. matching-text disabled in settings: arrow placement stays idle", () => {
-    installSettingsMock(makeSettings({ matchingTextEnabled: false }));
-
-    let api: UseEditorToolStateReturn | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap-1",
-        onSnapshot: (a) => {
-          api = a;
-        }
-      })
-    );
-
-    act(() => {
-      api!.setActiveTool("arrow");
-    });
-    act(() => {
-      api!.onAnnotationPlaced({
-        tool: "arrow",
-        anchorPoint: { x: 1, y: 1 }
-      });
-    });
-
-    expect(api!.matchingText.kind).toBe("idle");
+    expect(
+      (write![1] as { editor: { toolStyles: { arrow: unknown } } }).editor.toolStyles.arrow
+    ).toMatchObject({ color: "green", endStyle: "filled-triangle" });
   });
 
   test("14. settings dispatch coalescing: 5 rapid color clicks → 1 dispatch after 500ms", () => {

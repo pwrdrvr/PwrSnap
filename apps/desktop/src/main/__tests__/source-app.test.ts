@@ -9,6 +9,7 @@ import { describe, expect, test } from "vitest";
 import type { WindowInfo } from "../capture/window-list";
 import {
   findWindowById,
+  resolveSelectedWindowTitle,
   resolveSelectionSourceApp,
   resolveSourceAppByRect,
   shouldConsiderRaisingOurWindows
@@ -20,6 +21,7 @@ function win(
     pid?: number;
     bundleId?: string | null;
     appName?: string | null;
+    title?: string | null;
     bounds?: { x: number; y: number; width: number; height: number };
   } = {}
 ): WindowInfo {
@@ -28,7 +30,7 @@ function win(
     pid: overrides.pid ?? 1234,
     bundleId: overrides.bundleId ?? null,
     appName: overrides.appName ?? null,
-    title: null,
+    title: overrides.title ?? null,
     bounds: overrides.bounds ?? { x: 0, y: 0, width: 800, height: 600 },
     layer: 0,
     alpha: 1,
@@ -124,6 +126,59 @@ describe("resolveSelectionSourceApp", () => {
     const rect = { x: 100, y: 100, w: 100, h: 100 };
     expect(resolveSelectionSourceApp(rect, undefined, [])).toBeNull();
     expect(resolveSelectionSourceApp(rect, 42, [])).toBeNull();
+  });
+});
+
+describe("resolveSelectedWindowTitle", () => {
+  const selected = win({
+    windowId: 42,
+    pid: 7001,
+    title: "Roadmap — 東京 🚀"
+  });
+
+  test("uses the live Unicode title for the exact selected id and pid", () => {
+    const live = win({
+      windowId: 42,
+      pid: 7001,
+      title: "Roadmap — 東京 🚀 (edited)"
+    });
+    expect(resolveSelectedWindowTitle(42, [selected], [live])).toBe(
+      "Roadmap — 東京 🚀 (edited)"
+    );
+  });
+
+  test("returns null for a free region", () => {
+    expect(resolveSelectedWindowTitle(undefined, [selected], [selected])).toBeNull();
+  });
+
+  test("returns null when the selected id is absent from the original snapshot", () => {
+    expect(resolveSelectedWindowTitle(42, [], [selected])).toBeNull();
+  });
+
+  test("returns null when the selected window disappeared", () => {
+    const replacementUnderTheSameRect = win({
+      windowId: 99,
+      pid: 8002,
+      title: "Unrelated replacement",
+      bounds: selected.bounds
+    });
+    expect(
+      resolveSelectedWindowTitle(42, [selected], [replacementUnderTheSameRect])
+    ).toBeNull();
+  });
+
+  test("returns null when a native id was reused by another process", () => {
+    const reused = win({
+      windowId: 42,
+      pid: 8002,
+      title: "Different process"
+    });
+    expect(resolveSelectedWindowTitle(42, [selected], [reused])).toBeNull();
+  });
+
+  test("preserves an empty live title for persistence normalization", () => {
+    const live = win({ windowId: 42, pid: 7001, title: "" });
+    expect(resolveSelectedWindowTitle(42, [selected], [live])).toBe("");
   });
 });
 

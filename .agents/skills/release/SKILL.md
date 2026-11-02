@@ -1,6 +1,6 @@
 ---
 name: release
-description: Prepare, validate, tag, publish, and monitor guarded PwrSnap desktop releases. Use when the user asks to release PwrSnap, select alpha/beta/maintenance-candidate/RC/stable versions, prepare a vX.Y.Z or vX.Y.Z-prerelease tag, update release notes or CHANGELOG.md for a desktop release, verify package.json/tag/changelog alignment, trigger the macOS signed/notarized release workflow, or inspect release workflow status.
+description: Prepare, validate, tag, publish, and monitor guarded PwrSnap desktop releases, including remote Winget and Homebrew version checks and distribution follow-up. Use when the user asks to release PwrSnap, select alpha/beta/maintenance-candidate/RC/stable versions, prepare a vX.Y.Z or vX.Y.Z-prerelease tag, update release notes or CHANGELOG.md for a desktop release, verify package.json/tag/changelog alignment, trigger the macOS signed/notarized release workflow, or inspect release workflow status.
 ---
 
 # Release
@@ -15,14 +15,20 @@ Read these files before changing release metadata:
 1. [../../../docs/desktop-release-runbook.md](../../../docs/desktop-release-runbook.md)
 2. [../../../.github/workflows/release.yml](../../../.github/workflows/release.yml)
 3. [../../../scripts/check-desktop-release-metadata.mjs](../../../scripts/check-desktop-release-metadata.mjs)
+4. [../../../docs/package-manager-release-runbook.md](../../../docs/package-manager-release-runbook.md)
+5. [../../../docs/windows/winget/README.md](../../../docs/windows/winget/README.md)
 
 ## Guardrails
 
-- Release from `main` for the active next-version train, or from a long-lived
-  maintenance branch named `releases/<major>.<minor>` for a stable promotion
-  explicitly requested from an accepted prerelease or for patch releases on a
-  prior train. Do not include the patch component in maintenance branch names:
-  use `releases/1.0`, not `releases/1.0.x` or `releases/1.0.1`.
+- Release from `main` while it carries the current major/minor train. This
+  includes alpha and beta builds, accepted stable releases, and small
+  follow-up patch releases before the next major/minor work begins.
+- Create a long-lived maintenance branch named `releases/<major>.<minor>`
+  only when the user decides to begin the next major/minor train on `main`.
+  The branch retains the current train for later patches while `main` moves
+  forward. Do not create a release branch merely to promote an accepted beta
+  to stable. Do not include the patch component in branch names: use
+  `releases/1.0`, not `releases/1.0.x` or `releases/1.0.1`.
 - Start from a clean working tree. If tracked files are dirty, stop and ask
   before changing release metadata.
 - Fetch tags before planning:
@@ -36,13 +42,14 @@ Read these files before changing release metadata:
 - Always use a leading-`v` tag such as `v0.0.1-alpha.5`.
 - The tag version, `apps/desktop/package.json` version, and
   `CHANGELOG.md` release heading must match.
-- Before moving `main` to a new major/minor train, verify that the prior train's
-  maintenance branch exists. For example, before preparing `1.1.0-beta.1` from
-  a current `1.0.*` main, check for `origin/releases/1.0`. If it is missing,
-  stop and ask whether to create it from the current prior-train release commit
-  before bumping version metadata.
-- Patch releases for an existing train must land on that train's branch. For
-  example, prepare `v1.0.1` on `releases/1.0`, not on `main`.
+- Before moving `main` to a new major/minor train, confirm the user has chosen
+  to cut the prior train's maintenance branch. Create it from the selected
+  current `main` commit, which may intentionally include post-release fixes
+  and enhancements. Do not assume an already-published stable tag is the
+  correct branch point.
+- After that branch cut, patch releases for the prior train must land on its
+  maintenance branch. Until the cut, release patches for the active train from
+  `main`.
 - Do not create or push the tag until the version and changelog are committed
   and present on the intended release branch.
 - Before pushing a release tag, verify the `apple-signing` GitHub Environment
@@ -54,6 +61,30 @@ Read these files before changing release metadata:
 - Do not create the GitHub Release by hand before the build succeeds. Let
   the CI publish job create it from the signed/notarized build and matching
   changelog notes.
+- Never promote a GitHub Release to Latest as part of this skill. Every release
+  task ends with the release still marked Pre-release; the operator promotes it
+  manually in GitHub only after their own smoke checks.
+- Every release, including alpha/beta/RC, must inspect the **remote** Winget
+  manifests and Homebrew cask before editing metadata and again at handoff.
+  Follow the package-manager runbook; local `winget show` / `brew info` alone
+  do not establish the published version.
+- Keep both package channels as current as practical with the newest eligible
+  stable release. A newly uploaded GitHub Pre-release is not eligible, even
+  with bare stable SemVer. Catch up an older eligible release when authorized;
+  otherwise prepare the payload and name the owner/blocker. Never publish an
+  alpha/beta/RC to these stable packages or downgrade a channel automatically.
+- A bump workflow, open PR, or merged manifest is not proof of client
+  availability. Record submission links, accepted source versions, refreshed
+  client versions, validation results, and pending review/index/cache delays
+  separately. Do not declare the channels current while any of these is unknown.
+- Public cross-repository audits/searches use the organization-provided
+  `DISTRIBUTION_READ_TOKEN` only on read steps, with
+  `GH_TOKEN: ${{ secrets.DISTRIBUTION_READ_TOKEN || github.token }}` so fork PRs
+  retain the workflow-token fallback. It is a public-read-only fine-grained PAT,
+  not a push/submission/release credential. Leave unrelated operations on their
+  existing tokens, and never print/copy the secret or broaden its permissions.
+  Follow the runbook's expiration/rotation requirements. HTTP 429 and incomplete
+  search results remain blockers after bounded retries, never package absence.
 - Do not force-push the default branch or rewrite an existing release tag
   without explicit user approval.
 - Keep the MIT license intact: do not swap LICENSE for a different SPDX or
@@ -67,19 +98,20 @@ Make two independent decisions before editing metadata:
    the changelog heading. They must be the same value, except for the tag's
    leading `v`.
 2. **GitHub Release creation state** is always `isPrerelease=true`. The
-   workflow's `--prerelease` is mandatory even for a bare stable SemVer tag;
-   promote a release to Latest only as an explicit later action after assets
-   and smoke checks pass. Never infer this GitHub flag from the SemVer suffix.
+   workflow's `--prerelease` is mandatory even for a bare stable SemVer tag.
+   Never infer this GitHub flag from the SemVer suffix, and never transition it
+   to Latest: that is a manual operator action after smoke checks.
 
 Choose the SemVer form by source branch and intent:
 
 | Source branch and intent | Matching package / tag / heading version |
 | --- | --- |
-| `main` alpha | `N.N.N-alpha.N` |
-| `main` beta | `N.N.N-beta.N` |
-| `releases/N.N` smoke, install, or onboarding candidate | `N.N.P-prerelease.N` |
-| `releases/N.N` later release candidate | `N.N.P-rc.N` |
-| `releases/N.N` accepted stable release | `N.N.P` |
+| `main` active-train alpha | `N.N.N-alpha.N` |
+| `main` active-train beta | `N.N.N-beta.N` |
+| `main` accepted stable or follow-up patch before the branch cut | `N.N.P` |
+| `releases/N.N` maintenance candidate | `N.N.P-prerelease.N` |
+| `releases/N.N` later maintenance release candidate | `N.N.P-rc.N` |
+| `releases/N.N` accepted maintenance patch | `N.N.P` |
 
 Keep the same `N.N.P` while advancing a maintenance candidate from
 `-prerelease.N` to `-rc.N`; do not consume bare patch versions for candidates.
@@ -101,34 +133,50 @@ the current checker rejects that exact-SHA beta tag.
 
 For every release, identify `RELEASE_BRANCH` before editing files:
 
-- Active-train alpha or beta: `main`.
-- Maintenance candidates, release candidates, accepted stable releases, and
-  patches: `releases/<major>.<minor>`.
+- Use `main` while it still carries the major/minor train being released. This
+  is the normal path for an accepted beta becoming its first stable release and
+  for follow-up `N.N.P` releases made before the next major/minor effort.
+- Use `releases/<major>.<minor>` only after that train has been explicitly cut
+  away from `main`. It is the sole release branch for later maintenance
+  candidates and patches on that train.
 
-When an accepted beta is promoted to its first stable release while `main`
-continues toward newer work, create the tracking branch from that exact signed
-beta tag before preparing stable metadata:
+Cut a maintenance branch as part of starting the next major/minor development
+line, not as part of promoting a prerelease. The user chooses the branch point;
+normally it is the current `main` tip so small post-release fixes remain
+available for the next `N.N.P` patch:
 
 ```bash
 git fetch origin --tags
-git switch -c releases/<major>.<minor> v<major>.<minor>.<patch>-beta.<n>
-git push -u origin releases/<major>.<minor>
+git switch main
+git pull --ff-only
+git switch -c releases/<current-major>.<current-minor>
+git push -u origin releases/<current-major>.<current-minor>
 ```
 
-For later patch releases, start from the existing train branch. Before `main`
-starts a new major/minor train, verify that the prior train's maintenance
-branch exists:
-
-```bash
-git ls-remote --heads origin releases/<current-major>.<current-minor>
-```
-
-If it is missing, ask before proceeding. Create it at the exact prior release
-tag, then bump `main` to the new train.
+Then return to `main` and make a separate signed metadata checkpoint that
+starts the next major/minor alpha train. Do not cut a `releases/N.N` branch,
+or bump `main` to the next train, until the user has explicitly made that
+product decision. If `main` is already on the next train, verify the prior
+train's maintenance branch exists before preparing a prior-train patch.
 
 ## Prepare Release Metadata
 
-1. Determine the next version from the previous tag and user intent:
+1. Run the mandatory **Before every release** inspection in the
+   [package-manager runbook](../../../docs/package-manager-release-runbook.md).
+   Record GitHub Latest and the highest published stable SemVer, Winget
+   `PwrDrvr.PwrSnap` (or confirmed absence), Homebrew
+   `pwrdrvr/tap/pwrsnap`, and pending submissions. Select each channel's target
+   before determining the next version from the previous tag and user intent:
+
+   ```bash
+   node scripts/release/audit-package-channels.mjs .local/package-channels/audit.json
+   ```
+
+   The reusable `distribution-audit.yml` performs the same public-read-only
+   inspection in release CI before preparation and after publication. Verify
+   its report and token-source boolean; metadata sharing alone does not prove
+   successful runtime searches. A preflight failure blocks preparation. A
+   post-publication failure needs follow-up without republishing the release.
 
    ```bash
    git tag --sort=-version:refname | head -n 10
@@ -274,7 +322,7 @@ Push the tag after the release metadata is already on `RELEASE_BRANCH`:
 git push origin v<version>
 ```
 
-The tag push triggers `Release Desktop (macOS universal)`. The workflow must
+The tag push triggers `Release Desktop (macOS universal + Apple Silicon + Windows; Linux-gated)`. The workflow must
 pass `Check release metadata` in the no-secret `Test and prepare signing input`
 job before the environment-gated `Sign, notarize, publish` job can request
 approval and access Apple signing secrets.
@@ -326,13 +374,16 @@ gh release download v<version> --dir .local/release/v<version>
 ls .local/release/v<version>
 ```
 
-Expect signed/notarized universal macOS assets, including DMG/ZIP files and
-`latest-mac.yml`.
+Expect signed/notarized universal and Apple Silicon macOS DMG/ZIP pairs,
+`PwrSnap.dmg` (universal), `PwrSnap-arm64.dmg`, and one merged `latest-mac.yml`
+whose legacy path remains universal. Both ZIPs must have blockmaps.
 
 The workflow automatically replaces electron-builder's generated/empty GitHub
 Release body with the matching `CHANGELOG.md` entry after publishing assets.
 Verify that the body is present and the release is still marked as a GitHub
-Pre-release before calling the release done:
+Pre-release before calling the release done. Report that state to the operator
+for their manual smoke check and later Latest promotion; do not run a GitHub
+CLI or API promotion command.
 
 ```bash
 body_length="$(gh release view v<version> --repo pwrdrvr/PwrSnap --json body --jq '.body | length')"
@@ -354,6 +405,32 @@ gh release view v<version> --repo pwrdrvr/PwrSnap --json body --jq '.body | leng
 gh release view v<version> --repo pwrdrvr/PwrSnap --json isPrerelease --jq '.isPrerelease'
 ```
 
+## Package Channels And Release Handoff
+
+After asset/notes verification, repeat the remote baseline and perform the
+**After publication or manual promotion** steps in the
+[package-manager runbook](../../../docs/package-manager-release-runbook.md).
+This is required even when the new release must wait for manual promotion:
+check existing stable-channel lag and prepare or advance eligible updates.
+Inspect `distribution-audit-after`'s report; a complete source audit still does
+not prove client indexing, installation or upgrade. No audit uses the read token
+to submit manifests or prove Homebrew publication.
+
+Use `pwrdrvr/homebrew-tap`'s automatic `bump.yml` publisher; the cask
+uses the universal macOS DMG on both Intel and Apple Silicon. Winget uses the
+signed Windows x64 NSIS installer and requires first submission if its remote
+package directory is absent. Its local `1.0.3` manifests are a historical
+starter, not evidence of publication. Do not modify another thread's checkout
+to prepare either update.
+
+Keep the newly published release marked Pre-release. Leave a concrete follow-up
+for the operator to resume channel updates after manual promotion, including
+target version, artifact URLs/digests, payload or submission links, test gaps,
+owner, next action and next check time. Report GitHub publication separately
+from each channel's state using the runbook's completion record. Pending channel
+work must remain owned through acceptance and refreshed-client verification;
+it is not complete merely because the GitHub release workflow succeeded.
+
 ## Local Fallback
 
 Use the local path only when CI is unavailable or the user explicitly asks for
@@ -366,3 +443,15 @@ pnpm --filter @pwrsnap/desktop package:dryrun
 pnpm --filter @pwrsnap/desktop package
 pnpm --filter @pwrsnap/desktop release
 ```
+
+## Homebrew automation contract
+
+Routine stable Homebrew updates are published automatically by the vendor tap,
+after artifact-backed native validation; do not open or merge per-release bump
+PRs. Follow the current package-manager runbook's automatic-publication section.
+CI must use the original successful release-build Actions artifacts and verify
+published SHA-256/size. No published release-installer download fallback is
+allowed. Missing/expired artifacts are named blockers, not permission to fetch
+from release URLs or rebuild published bytes. Signed artifact retention is 90
+days. Immediate dispatch is optional; the tap's 15-minute schedule remains the
+fallback. Verify tap main and a refreshed client before declaring publication.

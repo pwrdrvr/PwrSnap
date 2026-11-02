@@ -1,8 +1,13 @@
-import { act, createElement } from "react";
+import { act, createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { EVENT_CHANNELS, type CaptureEnrichment, type CaptureRecord, type Settings } from "@pwrsnap/shared";
-import { FloatOver, type FloatOverAsset } from "../FloatOver";
+import { EVENT_CHANNELS, type CaptureEnrichment, type CaptureRecord, type Settings, defaultEditorToolBag } from "@pwrsnap/shared";
+import {
+  FloatOver,
+  recordingSourcesLabel,
+  recordingSourceReceipts,
+  type FloatOverAsset
+} from "../FloatOver";
 import { FloatOverHost } from "../FloatOverHost";
 
 beforeAll(() => {
@@ -53,7 +58,7 @@ function enrichment(patch: Partial<CaptureEnrichment> = {}): CaptureEnrichment {
 const baseSettings: Settings = {
   schemaVersion: 1,
   codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
-  ai: { enabled: false, consentAcceptedAt: null, budgetSafetyDisabledAt: null, autoAcceptSuggestions: false, chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false }, defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} }, acp: { enabledAgentIds: [] } },
+  ai: { enabled: false, consentAcceptedAt: null, budgetSafetyDisabledAt: null, enrichmentRateLimit: null, autoAcceptSuggestions: false, chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false }, defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} }, acp: { enabledAgentIds: [] } },
   hotkeys: {
     quickCapture: "CommandOrControl+Shift+C",
     region: "",
@@ -62,7 +67,8 @@ const baseSettings: Settings = {
     allScreens: "",
     timed: "",
     videoCapture: "CommandOrControl+Alt+C",
-    reshowFloatOver: "CommandOrControl+Alt+Shift+F"
+    reshowFloatOver: "CommandOrControl+Alt+Shift+F",
+    openLibrary: ""
   },
   general: {
     developerMode: false,
@@ -80,9 +86,16 @@ const baseSettings: Settings = {
   storage: { filenameTimestampZone: "local", capturesLocation: "documents" },
   recording: {
     quickCaptureAction: "ask",
+    selectorHud: "shutter",
     includeSystemAudio: false,
     includeMicrophone: false,
+    mp4IncludeMicrophone: true,
+    mp4IncludeSystemAudio: true,
     videoCaptureCursor: true,
+    showRegionFrame: true,
+    showRecentCaptureSidebar: true,
+    microphoneDevice: null,
+    cameraDevice: null,
     imageCaptureCursor: true,
     lastRoutedPermissionFingerprint: "",
     screenCapturePrompted: false
@@ -91,15 +104,16 @@ const baseSettings: Settings = {
     toolStyles: {
       arrow: { color: "accent", thickness: "auto", endStyle: "filled-triangle", stemStyle: "solid", doubleEnded: false, outline: "auto" },
       text: { color: "accent", fontSize: "auto", weight: "regular", outline: "auto" },
-      shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15, outline: "auto" },
+      shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15, strokeStyle: "solid", outline: "auto" },
       blur: { mode: "gaussian", radius: { mode: "auto" } },
-      highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
+      highlight: { color: "yellow", opacity: 0.3, blend: "multiply" },
+      draw: { mode: "pen", color: "accent", thickness: "auto" }
     },
+    toolBag: defaultEditorToolBag(),
     coachmarks: { stoplightSeen: false },
-    matchingText: { enabled: true },
     sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
   },
-  library: { detailRail: { pinned: true, lastSelectedTab: "info" }, gridCopyPalette: { anchor: "follow" }, confirmBeforeTrash: true, gridZoom: 180 },
+  library: { detailRail: { pinned: true, lastSelectedTab: "info" }, gridCopyPalette: { anchor: "follow" }, confirmBeforeTrash: true, gridZoom: 180, duplicateWithEdits: { image: true, video: true }, editToolbarDock: "float" },
   localAgents: { enabled: false, grants: [], roles: [], audit: [] }
 };
 
@@ -120,6 +134,7 @@ const imageRecord: CaptureRecord = {
   sha256: "sha_cap_1",
   source_app_bundle_id: "com.example.App",
   source_app_name: "Example",
+  source_window_title: null,
   edits_version: 0,
   has_alpha: false,
   deleted_at: null,
@@ -267,6 +282,17 @@ async function renderToast(asset: FloatOverAsset): Promise<HTMLDivElement> {
   });
 }
 
+test.each(["queued", "running"] as const)("float-over can cancel a %s enrichment", async (status) => {
+  const onCancelEnrichment = vi.fn();
+  const el = await renderFloatOver({ src: "fixture.png", srcW: 640, srcH: 360, srcBytes: 1024,
+    startCountdown: false, aiEnabled: true, aiConsentAccepted: true,
+    enrichment: enrichment({ status }), onCancelEnrichment });
+  const cancel = el.querySelector<HTMLButtonElement>('button[title="Cancel enrichment"]');
+  expect(cancel?.textContent).toBe("Cancel");
+  await act(async () => { cancel!.click(); });
+  expect(onCancelEnrichment).toHaveBeenCalledWith("run_1");
+});
+
 async function unmount(): Promise<void> {
   if (root !== null) {
     await act(async () => {
@@ -305,6 +331,42 @@ describe("FloatOver asset mode", () => {
     } as unknown as NonNullable<Window["pwrsnapApi"]>;
   });
 
+  test("a persisted 1.6 s trim owns the initial preview clock, scrubber and duration badge", async () => {
+    const el = await renderToast({
+      kind: "video", src: "pwrsnap-capture://r/trimmed", captureId: "trimmed",
+      durationSec: 4, widthPx: 1208, heightPx: 608,
+      defaultRange: { start: 1.8, end: 3.4 }
+    });
+    expect(el.querySelector('[data-testid="preview-timecode"]')?.textContent).toBe("0:00.0 / 0:01.6");
+    expect(el.querySelector(".fo__preview-size")?.textContent).toBe("1.6s");
+    expect(el.querySelector('[aria-label="Preview position"]')?.getAttribute("max")).toBe("1.6");
+    expect(el.querySelector('[data-testid="video-timeline-trim-label"]')?.textContent).toBe(
+      "TRIM 0:01.8 – 0:03.4 · 1.6 s"
+    );
+    const media = el.querySelector<HTMLVideoElement>(".fo__preview video")!;
+    await act(async () => media.dispatchEvent(new Event("loadedmetadata")));
+    expect(media.currentTime).toBe(1.8);
+    expect(media.controls).toBe(false);
+  });
+
+  test("an upstream trim replaces a paused preview position and all its duration displays", async () => {
+    const asset = {
+      kind: "video", src: "pwrsnap-capture://r/trimmed", captureId: "trimmed",
+      durationSec: 4, widthPx: 1208, heightPx: 608,
+      defaultRange: { start: 0, end: 4 }
+    } as const;
+    const el = await renderToast(asset);
+    const media = el.querySelector<HTMLVideoElement>(".fo__preview video")!;
+    media.currentTime = 0;
+    await act(async () => root?.render(createElement(FloatOver, {
+      asset: { ...asset, defaultRange: { start: 1.8, end: 3.4 } }, src: asset.src,
+      srcW: 1208, srcH: 608, srcBytes: 1024, startCountdown: false
+    })));
+    expect(media.currentTime).toBe(1.8);
+    expect(el.querySelector('[data-testid="preview-timecode"]')?.textContent).toBe("0:00.0 / 0:01.6");
+    expect(el.querySelector(".fo__preview-size")?.textContent).toBe("1.6s");
+  });
+
   test("video asset renders <video> in fo__preview, the mini-trim strip, and the 6-card export grid", async () => {
     const el = await renderToast({
       kind: "video",
@@ -322,7 +384,11 @@ describe("FloatOver asset mode", () => {
     expect(preview?.querySelector("video")?.getAttribute("src")).toBe("pwrsnap-capture://r/abc");
 
     expect(el.querySelector(".fo__hdr-title")?.textContent).toBe("Recording saved");
-    expect(el.querySelector(".fo__hdr-sub")?.textContent).toContain("12.5s");
+    // No header sub-line on video — dims and duration ride the preview's
+    // corner overlays, and the video toast is the one short of height.
+    expect(el.querySelector(".fo__hdr-sub")).toBeNull();
+    expect(el.querySelector(".fo__preview-size")?.textContent).toContain("12.5s");
+    expect(preview?.classList.contains("fo__preview--video")).toBe(true);
 
     // Mini-trim strip: compact timeline with in/out handles and the
     // Full-clip chip (disabled while the range is the whole clip).
@@ -346,7 +412,7 @@ describe("FloatOver asset mode", () => {
     expect(buttons.length).toBe(6);
     // Cards label "Low / Med / High" within each group; the format
     // header ("GIF" / "MP4") lives in the format eyebrow.
-    const eyebrows = el.querySelectorAll(".psl__copy-format-eyebrow span:first-child");
+    const eyebrows = el.querySelectorAll(".psl__copy-format-eyebrow-label");
     expect(Array.from(eyebrows).map((n) => n.textContent)).toEqual(["GIF", "MP4"]);
     const labels = Array.from(buttons).map(
       (b) => b.querySelector(".fo__copy-label")?.textContent
@@ -471,6 +537,11 @@ describe("FloatOver asset mode", () => {
   // the handles go, which makes the trim UI useless.
   test("dragging a trim handle updates the preview and the global-shortcut export range", async () => {
     // jsdom has no layout; pin the strip to 800 px so px↔sec math runs.
+    // Both boxes: the timeline SIZES off `clientWidth` (a layout measure
+    // — see VideoTimeline.tsx) and MAPS pointers off the rect. Without
+    // the first the strip measures 0, `framesSpecFor` returns null, and
+    // this test silently stops exercising the `video:frames` request.
+    const clientWidth = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(800);
     const rect = vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
       x: 0,
       y: 0,
@@ -517,13 +588,18 @@ describe("FloatOver asset mode", () => {
       await act(async () => {
         strip.dispatchEvent(at("pointermove", 400));
       });
-      expect(video.currentTime).toBe(6.25);
+      expect(video.currentTime).toBeGreaterThan(6.2);
+      expect(video.currentTime).toBeLessThan(6.25);
+      expect(el.querySelector('[data-testid="preview-timecode"]')?.textContent).toBe("0:06.2 / 0:06.2");
 
       // Still tracking on release, and the range agrees with the frame.
       await act(async () => {
         strip.dispatchEvent(at("pointerup", 320));
       });
-      expect(video.currentTime).toBe(5);
+      expect(video.currentTime).toBeGreaterThan(4.9);
+      expect(video.currentTime).toBeLessThan(5);
+      expect(el.querySelector('[data-testid="preview-timecode"]')?.textContent).toBe("0:05.0 / 0:05.0");
+      expect(el.querySelector(".fo__preview-size")?.textContent).toBe("5.0s");
       expect(el.querySelector('[data-testid="video-timeline-trim-label"]')?.textContent).toBe(
         "TRIM 0:00.0 – 0:05.0 · 5 s"
       );
@@ -543,14 +619,18 @@ describe("FloatOver asset mode", () => {
         );
         await Promise.resolve();
       });
+      // The fixture take recorded no audio, so the copy is explicitly
+      // silent without waiting for the saved MP4 audio preference.
       expect(window.pwrsnapApi!.dispatch).toHaveBeenCalledWith("clipboard:copyVideoFile", {
         captureId: "abc",
         format: "mp4",
         preset: "med",
-        range: { start: 0, end: 5 }
+        range: { start: 0, end: 5 },
+        audio: { includeMicrophone: false, includeSystemAudio: false }
       });
     } finally {
       rect.mockRestore();
+      clientWidth.mockRestore();
     }
   });
 
@@ -582,7 +662,217 @@ describe("FloatOver asset mode", () => {
   });
 });
 
+describe("post-recording source summary", () => {
+  // Order follows the CHIPS (screen, microphone, system audio), because the
+  // label is now derived from the same receipts rather than re-reading the
+  // flags. An accessible name that enumerates sources in a different order
+  // from the controls beside it is its own small bug.
+  test.each([
+    [{ hasSystemAudio: false, hasMicrophoneAudio: false }, "screen only"],
+    [{ hasSystemAudio: true, hasMicrophoneAudio: false }, "screen + system audio"],
+    [{ hasSystemAudio: false, hasMicrophoneAudio: true }, "screen + microphone"],
+    [
+      { hasSystemAudio: true, hasMicrophoneAudio: true },
+      "screen + microphone + system audio"
+    ]
+  ] as const)("reports persisted sources as $1", (asset, expected) => {
+    expect(recordingSourcesLabel(asset)).toBe(expected);
+  });
+
+  // A source the user ARMED and got nothing from has to reach the accessible
+  // name too. Reading only `has*Audio` announced "screen only" next to a
+  // visible `silent` microphone chip — the name denied a source the chips
+  // were reporting on.
+  test("names an armed-but-silent source instead of omitting it", () => {
+    expect(
+      recordingSourcesLabel({
+        hasSystemAudio: false,
+        hasMicrophoneAudio: false,
+        requestedSystemAudio: false,
+        requestedMicrophone: true
+      })
+    ).toBe("screen + microphone (no audio captured)");
+  });
+
+  // The reason migration 0033 exists. `has*` alone cannot separate
+  // "never asked" from "asked and got silence", and those two need
+  // opposite UI: one is unremarkable, the other is the failure the
+  // whole pre-flight design exists to prevent.
+  test("a source that was never requested is simply absent", () => {
+    const receipts = recordingSourceReceipts({
+      hasSystemAudio: false,
+      hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false
+    });
+    expect(receipts).toEqual([{ source: "screen", state: "live" }]);
+  });
+
+  test("a requested source that captured nothing is flagged, not dropped", () => {
+    const receipts = recordingSourceReceipts({
+      hasSystemAudio: false,
+      hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: true
+    });
+    expect(receipts).toEqual([
+      { source: "screen", state: "live" },
+      { source: "microphone", state: "silent", why: "no audio captured" }
+    ]);
+  });
+
+  test("a requested source that landed reads as live", () => {
+    const receipts = recordingSourceReceipts({
+      hasSystemAudio: true,
+      hasMicrophoneAudio: true,
+      requestedSystemAudio: true,
+      requestedMicrophone: true
+    });
+    expect(receipts.map((r) => [r.source, r.state])).toEqual([
+      ["screen", "live"],
+      ["microphone", "live"],
+      ["systemAudio", "live"]
+    ]);
+  });
+
+  // Rows written before migration 0033 report requested=false. They must
+  // read as an ordinary take, never as a silent-source warning.
+  test("a pre-migration row with audio tracks still reads as live", () => {
+    const receipts = recordingSourceReceipts({
+      hasSystemAudio: true,
+      hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false
+    });
+    expect(receipts.some((r) => r.state === "silent")).toBe(false);
+    expect(receipts.map((r) => r.source)).toEqual(["screen", "systemAudio"]);
+  });
+
+  test("renders one chip per receipt in the toast", async () => {
+    const el = await renderToast({
+      kind: "video",
+      src: "pwrsnap-capture://r/rec-1",
+      captureId: "rec-1",
+      durationSec: 4.2,
+      widthPx: 1280,
+      heightPx: 720,
+      defaultRange: { start: 0, end: 4.2 },
+      hasSystemAudio: false,
+      hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: true
+    });
+    const row = el.querySelector('[data-testid="fo-sources"]');
+    expect(row).not.toBeNull();
+    expect(
+      el.querySelector('[data-testid="fo-source-microphone"]')?.getAttribute("data-state")
+    ).toBe("silent");
+    // This assertion used to read "Captured: screen only" — beside a
+    // microphone chip rendered `silent`. The row said one thing to a
+    // sighted user and the opposite to a screen-reader user, on the same
+    // element, for exactly the failure the pre-flight design exists to
+    // surface. The name must agree with the chips.
+    expect(row?.getAttribute("aria-label")).toBe(
+      "Captured: screen + microphone (no audio captured)"
+    );
+  });
+
+  // The silent chip used to draw a flat meter AND "no audio captured",
+  // which made the failure case the widest chip: a live mic beside a silent
+  // system audio came to 456px in a 366px row, wrapped, and pushed the toast
+  // past its window. The reason now takes the meter's slot, one word wide.
+  // The height cuts are video-only. The image toast has no duration overlay
+  // to carry what the sub-line says, and it was never short of room.
+  test("the image toast keeps its header sub-line and 16:10 preview", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      srcW: 1920,
+      srcH: 1080,
+      startCountdown: false
+    });
+    expect(el.querySelector(".fo__hdr-sub")?.textContent).toContain("just now");
+    expect(el.querySelector(".fo__preview")?.classList.contains("fo__preview--video")).toBe(
+      false
+    );
+  });
+
+  test("a silent receipt chip prints its reason in the meter's slot", async () => {
+    const el = await renderToast({
+      kind: "video",
+      src: "pwrsnap-capture://r/rec-2",
+      captureId: "rec-2",
+      durationSec: 59.1,
+      widthPx: 1701,
+      heightPx: 1082,
+      defaultRange: { start: 0, end: 59.1 },
+      hasSystemAudio: false,
+      hasMicrophoneAudio: true,
+      requestedSystemAudio: true,
+      requestedMicrophone: true
+    });
+    const silent = el.querySelector('[data-testid="fo-source-systemAudio"]');
+    expect(silent?.getAttribute("data-state")).toBe("silent");
+    expect(silent?.querySelector(".ps-meter")).toBeNull();
+    expect(silent?.querySelector(".ps-chip__why")?.textContent).toBe("none");
+    expect(silent?.getAttribute("data-tip")).toBe("no audio captured");
+    // The live chip beside it keeps its recorded meter.
+    const live = el.querySelector('[data-testid="fo-source-microphone"]');
+    expect(live?.querySelector(".ps-meter")?.getAttribute("data-tone")).toBe("recorded");
+    expect(
+      el.querySelector('[data-testid="fo-sources"]')?.getAttribute("aria-label")
+    ).toBe("Captured: screen + microphone + system audio (no audio captured)");
+  });
+});
+
 describe("FloatOverHost", () => {
+  // The first capture of the session creates the float-over window, so
+  // its state event exists before this renderer does. Main answers the
+  // request on the state channel, and an answer that lands before the
+  // listener exists is dropped: the first toast would stay empty.
+  test("asks main for the current state only once it is listening for the answer", async () => {
+    const api = installHostApi();
+    const dispatchMock = window.pwrsnapApi!.dispatch as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementation(async (name: string) => defaultHostDispatchResult(name));
+    // Stands in for main, which replies with the latest state.
+    const requestFloatOverState = vi.fn(() => {
+      api.pushEvent(EVENT_CHANNELS.floatOverState, {
+        kind: "show-loaded",
+        captureId: imageRecord.id,
+        record: imageRecord
+      });
+    });
+    window.pwrsnapApi = { ...window.pwrsnapApi!, requestFloatOverState };
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(createElement(FloatOverHost));
+    });
+
+    expect(requestFloatOverState).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".fo")).not.toBeNull();
+  });
+
+  // StrictMode re-runs the subscribe effect. Both replies would land on
+  // the second subscriber, and a repeated `show-loaded` resets enrichment.
+  test("asks main for the current state once per mount, even under StrictMode", async () => {
+    installHostApi();
+    const dispatchMock = window.pwrsnapApi!.dispatch as ReturnType<typeof vi.fn>;
+    dispatchMock.mockImplementation(async (name: string) => defaultHostDispatchResult(name));
+    const requestFloatOverState = vi.fn();
+    window.pwrsnapApi = { ...window.pwrsnapApi!, requestFloatOverState };
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(createElement(StrictMode, null, createElement(FloatOverHost)));
+    });
+
+    expect(requestFloatOverState).toHaveBeenCalledTimes(1);
+  });
+
   test("focused image toast keeps primary+digits as a local copy owner", async () => {
     const api = installHostApi();
     const dispatchMock = window.pwrsnapApi!.dispatch as ReturnType<typeof vi.fn>;
@@ -623,6 +913,65 @@ describe("FloatOverHost", () => {
     });
   });
 
+  // Regression: the preview hover row's folder button rendered fully
+  // enabled with title="Reveal in library" and NO onClick — it was a
+  // dead control from the day the toast shipped. Both halves matter:
+  // the host has to pass a handler, and the presentational component
+  // has to disable the button when nobody did.
+  test("the preview's Reveal button opens the toast's capture in the Library", async () => {
+    const api = installHostApi();
+    const dispatchMock = window.pwrsnapApi!.dispatch as ReturnType<typeof vi.fn>;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(createElement(FloatOverHost));
+    });
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.floatOverState, {
+        kind: "show-loaded",
+        captureId: imageRecord.id,
+        record: imageRecord
+      });
+    });
+
+    const reveal = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.dataset.tip === "Reveal in library"
+    );
+    expect(reveal).toBeDefined();
+    expect(reveal?.disabled).toBe(false);
+
+    dispatchMock.mockClear();
+    await act(async () => {
+      reveal?.click();
+    });
+
+    expect(
+      dispatchMock.mock.calls.some(
+        (c) => c[0] === "library:openInLibrary" && (c[1] as { captureId: string }).captureId === imageRecord.id
+      )
+    ).toBe(true);
+    // Attention transfers to the Library — the toast shouldn't linger
+    // behind it. Same treatment as Edit.
+    expect(dispatchMock.mock.calls.some((c) => c[0] === "float-over:dismiss")).toBe(true);
+  });
+
+  // The other half of the guard: with no handler the button must render
+  // visibly dead. Without this, `disabled={onReveal === undefined}` could
+  // be deleted with the whole suite green (mutation-verified), which is
+  // how a live-looking no-op button gets back in.
+  test("the Reveal button disables itself when no handler is wired", async () => {
+    const el = await renderFloatOver({ src: "data:image/png;base64,iVBORw0KGgo=" });
+    const reveal = Array.from(el.querySelectorAll("button")).find(
+      (b) => b.dataset.tip === "Reveal in library"
+    );
+    expect(reveal).toBeDefined();
+    expect(reveal?.disabled).toBe(true);
+    // Icon-only button: the sr-only span is its only accessible name.
+    expect(reveal?.textContent).toContain("Reveal in library");
+  });
+
   test("reads settings from settings-change event payload", async () => {
     const api = installHostApi();
     container = document.createElement("div");
@@ -659,7 +1008,10 @@ describe("FloatOverHost", () => {
     expect(container.textContent).not.toContain("Enable AI to read");
   });
 
-  test("status pill names the configured enrichment provider (Gemini, not Codex)", async () => {
+  test.each([
+    { provider: "acp:gemini", label: "Gemini" },
+    { provider: "custom:fixture-model", label: "Bench model" }
+  ])("status pill names the configured enrichment provider ($label)", async ({ provider, label }) => {
     const api = installHostApi();
     // The fast show-loaded-with-record path must still fetch settings so the
     // pill can name the provider. Return an acp:gemini enrichment default.
@@ -671,8 +1023,10 @@ describe("FloatOverHost", () => {
         consentAcceptedAt: "2026-05-19T12:00:00.000Z",
         defaults: {
           ...baseSettings.ai.defaults,
-          enrichment: { provider: "acp:gemini" }
-        }
+          enrichment: { provider, model: "/fixture/models/weights.gguf" }
+        },
+        customConnections: [{ id: "fixture-connection", name: "Local server", baseUrl: "http://127.0.0.1:8080/v1", protocol: "openai-chat", auth: { type: "none" } }],
+        customModels: [{ id: "fixture-model", connectionId: "fixture-connection", displayName: "Bench model", modelId: "/fixture/models/weights.gguf", capabilities: { vision: true, streaming: true }, maxOutputTokens: 4096 }]
       }
     };
     (window.pwrsnapApi!.dispatch as ReturnType<typeof vi.fn>).mockImplementation(
@@ -739,7 +1093,8 @@ describe("FloatOverHost", () => {
       });
     });
 
-    expect(container.textContent).toContain("Gemini is reading the snap");
+    expect(container.textContent).toContain(`${label} is reading the snap`);
+    expect(container.textContent).not.toContain("/fixture/models/weights.gguf");
     expect(container.textContent).not.toContain("Codex is reading the snap");
   });
 
@@ -1189,7 +1544,9 @@ describe("FloatOver AI suggestions", () => {
     expect(textarea?.value).toBe("Dark-mode LINE desktop chat showing PwrAgent command help.");
     expect(textarea?.classList.contains("is-suggested")).toBe(true);
 
-    textarea?.dispatchEvent(new FocusEvent("blur", { bubbles: true }));
+    await act(async () => {
+      textarea?.dispatchEvent(new FocusEvent("blur", { bubbles: true }));
+    });
     expect(onAcceptDescription).not.toHaveBeenCalled();
   });
 
@@ -1445,10 +1802,11 @@ describe("FloatOver AI suggestions", () => {
     expect(checkbox).not.toBeNull();
     expect(checkbox?.checked).toBe(false);
     const autoAccept = el.querySelector<HTMLLabelElement>(".fo__auto-accept");
-    expect(autoAccept?.textContent).toContain("Auto-apply AI enrichment");
-    expect(autoAccept?.getAttribute("title")).toBe(
-      "Apply AI enrichment automatically when ready"
-    );
+    // Short visible text so it fits beside the Codex pill; the control
+    // keeps the full name, which still begins with the visible words.
+    expect(autoAccept?.textContent).toBe("Auto-apply");
+    expect(checkbox?.getAttribute("aria-label")).toBe("Auto-apply AI enrichment");
+    expect(autoAccept?.dataset.tip).toBe("Apply AI enrichment automatically when ready");
 
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(
@@ -1594,5 +1952,316 @@ describe("FloatOver AI suggestions", () => {
     });
 
     expect(fo?.classList.contains("is-paused")).toBe(false);
+  });
+});
+
+// Enrichment lands seconds after the toast appears, and the window is
+// anchored bottom-right, so anything that changed height on arrival moved
+// the preview and export cards up under the cursor. The tag row holds two
+// lines from the start and collapses the rest into "+N"; the Codex pill
+// stays one line with its full sentence as a tooltip.
+describe("FloatOver enrichment does not move the toast", () => {
+  const LONG_TAGS = enrichment({
+    status: "completed",
+    acceptedTags: ["cereal", "crunch-index", "milk-to-flake-ratio"],
+    suggestedTags: [
+      { id: "s1", label: "sogginess-curve-comparison", confidence: 0.8, accepted_at: null, rejected_at: null },
+      { id: "s2", label: "breakfast-analytics", confidence: 0.7, accepted_at: null, rejected_at: null }
+    ]
+  });
+
+  // jsdom lays nothing out. Give the row the toast's 366px and each chip a
+  // width from its text, so the collapse has something to measure.
+  function layOutTagRow(): void {
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (
+      this: HTMLElement
+    ) {
+      if (this.hasAttribute("data-tag-chip")) return 30 + 6 * (this.textContent?.length ?? 0);
+      if (this.classList.contains("fo__tag-more")) return 30;
+      return 0;
+    });
+    vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (
+      this: Element
+    ) {
+      return this.classList.contains("fo__tags") ? 366 : 0;
+    });
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("tags past two lines collapse into +N, and clicking it shows them all", async () => {
+    layOutTagRow();
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: LONG_TAGS
+    });
+    const more = el.querySelector<HTMLButtonElement>(".fo__tag-more");
+    expect(more?.classList.contains("is-overflow")).toBe(false);
+    expect(more?.textContent).toBe("+1");
+    expect(more?.getAttribute("aria-label")).toBe("Show 1 more tag");
+    const hidden = el.querySelectorAll(".fo__tags [data-tag-chip].is-overflow");
+    expect(hidden).toHaveLength(1);
+    expect(hidden[0]?.textContent).toContain("breakfast-analytics");
+
+    await act(async () => {
+      more?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(el.querySelectorAll(".fo__tags [data-tag-chip].is-overflow")).toHaveLength(0);
+    expect(el.querySelector(".fo__tag-more")?.classList.contains("is-overflow")).toBe(true);
+  });
+
+  test("focusing the tag input expands a collapsed row", async () => {
+    layOutTagRow();
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: LONG_TAGS
+    });
+    expect(el.querySelectorAll(".fo__tags [data-tag-chip].is-overflow")).toHaveLength(1);
+    await act(async () => {
+      el.querySelector<HTMLInputElement>(".fo__tag-input")?.focus();
+    });
+    expect(el.querySelectorAll(".fo__tags [data-tag-chip].is-overflow")).toHaveLength(0);
+  });
+
+  test("an unmeasured row shows every chip and no +N", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: LONG_TAGS
+    });
+    expect(el.querySelectorAll(".fo__tags [data-tag-chip]")).toHaveLength(5);
+    expect(el.querySelectorAll(".fo__tags [data-tag-chip].is-overflow")).toHaveLength(0);
+    expect(el.querySelector(".fo__tag-more")?.classList.contains("is-overflow")).toBe(true);
+  });
+
+  test("placeholder chips hold the row while the run is in flight, then give way", async () => {
+    const running = enrichment({
+      status: "running",
+      suggestedDescription: null,
+      suggestedTags: []
+    });
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      aiEnabled: true,
+      aiConsentAccepted: true,
+      enrichment: running
+    });
+    const ghosts = el.querySelectorAll(".fo__tag-ghost");
+    expect(ghosts).toHaveLength(3);
+    for (const ghost of Array.from(ghosts)) {
+      expect(ghost.getAttribute("aria-hidden")).toBe("true");
+    }
+
+    await act(async () => {
+      root?.render(
+        createElement(FloatOver, {
+          src: "data:image/png;base64,",
+          startCountdown: false,
+          aiEnabled: true,
+          aiConsentAccepted: true,
+          enrichment: enrichment()
+        })
+      );
+    });
+    expect(el.querySelectorAll(".fo__tag-ghost")).toHaveLength(0);
+    expect(el.querySelectorAll(".fo__tags [data-tag-chip]")).toHaveLength(2);
+  });
+
+  test("a failed run's full message rides the one-line pill's tooltip", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      aiEnabled: true,
+      aiConsentAccepted: true,
+      enrichment: enrichment({
+        status: "failed",
+        error: "the model did not answer within 60 seconds",
+        suggestedDescription: null,
+        suggestedTags: []
+      })
+    });
+    const summary = el.querySelector(".fo__ai-row .ps-codex-pill__summary");
+    expect(summary?.textContent).toBe(
+      "Codex could not read this snap: the model did not answer within 60 seconds"
+    );
+    expect(summary?.getAttribute("title")).toBe(summary?.textContent);
+  });
+});
+
+describe("float-over scroll cap", () => {
+  /**
+   * Replace a `window` / `window.screen` number that jsdom defines as a
+   * plain getter. Returns a restore function.
+   */
+  function stub(target: object, key: string, value: number): () => void {
+    const original = Object.getOwnPropertyDescriptor(target, key);
+    Object.defineProperty(target, key, { configurable: true, value });
+    return () => {
+      if (original === undefined) {
+        delete (target as Record<string, unknown>)[key];
+      } else {
+        Object.defineProperty(target, key, original);
+      }
+    };
+  }
+
+  function publishedCapPx(el: HTMLElement): number {
+    // The host writes the ceiling onto the measured wrapper, the one
+    // node inside `.fo-host` that its layout effect observes.
+    const wrapper = el.querySelector<HTMLElement>(".fo-host > .fo-host__measure");
+    expect(wrapper).not.toBeNull();
+    const raw = wrapper!.style.getPropertyValue("--fo-max-h");
+    expect(raw).toMatch(/^\d+px$/);
+    return Number.parseInt(raw, 10);
+  }
+
+  function publishedWidthPx(el: HTMLElement): number {
+    const wrapper = el.querySelector<HTMLElement>(".fo-host > .fo-host__measure");
+    expect(wrapper).not.toBeNull();
+    const raw = wrapper!.style.getPropertyValue("--fo-w");
+    expect(raw).toMatch(/^\d+px$/);
+    return Number.parseInt(raw, 10);
+  }
+
+  test("the header and footer sit OUTSIDE the scrolling middle", async () => {
+    // The whole point: `.fo__body` is what overflows, so the row with
+    // Discard / Dismiss / Edit stays in the window main sizes. If the
+    // footer ever lands inside `.fo__body`, it scrolls away again.
+    window.pwrsnapApi = {
+      dispatch: vi.fn(async () => ({ ok: true, value: undefined })),
+      on: () => () => undefined,
+      requestFloatOverResize: vi.fn(),
+      startCaptureDrag: vi.fn(),
+      startVideoDrag: vi.fn()
+    } as unknown as NonNullable<Window["pwrsnapApi"]>;
+
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      srcW: 2880,
+      srcH: 1800,
+      srcBytes: 2048,
+      startCountdown: false,
+      enrichment: enrichment(),
+      aiEnabled: true,
+      aiConsentAccepted: true
+    });
+
+    const fo = el.querySelector(".fo");
+    const body = el.querySelector(".fo__body");
+    const header = el.querySelector(".fo__hdr");
+    const footer = el.querySelector(".fo__foot");
+    expect(body).not.toBeNull();
+    expect(header).not.toBeNull();
+    expect(footer).not.toBeNull();
+
+    expect(header!.parentElement).toBe(fo);
+    expect(footer!.parentElement).toBe(fo);
+    expect(body!.parentElement).toBe(fo);
+    expect(body!.contains(header)).toBe(false);
+    expect(body!.contains(footer)).toBe(false);
+
+    // …and the content that actually varies in height IS inside it.
+    expect(body!.querySelector(".fo__preview")).not.toBeNull();
+    expect(body!.querySelector(".fo__annotate")).not.toBeNull();
+  });
+
+  test("the cap does not move with the toast window's own height", async () => {
+    // The feedback loop this design exists to avoid: a cap read off the
+    // live window (100vh / innerHeight) makes the measured wrapper
+    // report min(natural, current window), main sizes the window to
+    // that, and the toast can never grow again. Hold the display fixed,
+    // swing the window height wildly, and the published ceiling must
+    // not budge. See AGENTS.md §"Tray + float-over popover sizing".
+    const restore = [
+      stub(window.screen, "availHeight", 1415),
+      stub(window, "innerHeight", 240)
+    ];
+    try {
+      const api = installHostApi();
+      const el = await renderHostRecord(api);
+      const short = publishedCapPx(el);
+
+      restore.push(stub(window, "innerHeight", 4000));
+      await act(async () => {
+        api.pushEvent(EVENT_CHANNELS.floatOverState, {
+          kind: "show-loaded",
+          captureId: imageRecord.id,
+          record: imageRecord
+        });
+        await Promise.resolve();
+      });
+
+      expect(publishedCapPx(el)).toBe(short);
+      // 1415px of work area leaves the constant ceiling binding.
+      expect(short).toBe(800);
+    } finally {
+      for (const undo of restore.reverse()) undo();
+    }
+  });
+
+  test("a short display lowers the cap; page zoom converts it to CSS px", async () => {
+    // Both inputs are DIP and zoom-independent (measured on Electron
+    // 41: screen.availHeight === Display.workArea.height and does not
+    // move with zoom), so the CSS ceiling is DIP / zoom.
+    const restore = [stub(window.screen, "availHeight", 728)];
+    try {
+      const api = installHostApi();
+      window.pwrsnapApi = {
+        ...window.pwrsnapApi,
+        getZoomFactor: () => 2
+      } as unknown as NonNullable<Window["pwrsnapApi"]>;
+      const el = await renderHostRecord(api);
+      // (728 - 24*2) DIP of work area, halved by a 2x page zoom.
+      expect(publishedCapPx(el)).toBe(340);
+    } finally {
+      for (const undo of restore.reverse()) undo();
+    }
+  });
+
+  test("a preload without the zoom accessor falls back to 1:1", async () => {
+    const restore = [stub(window.screen, "availHeight", 1415)];
+    try {
+      const api = installHostApi();
+      expect(window.pwrsnapApi?.getZoomFactor).toBeUndefined();
+      const el = await renderHostRecord(api);
+      expect(publishedCapPx(el)).toBe(800);
+    } finally {
+      for (const undo of restore.reverse()) undo();
+    }
+  });
+
+  test("a low-resolution work area publishes the compact width independent of viewport size", async () => {
+    const restore = [
+      stub(window.screen, "availWidth", 526),
+      stub(window.screen, "availHeight", 690),
+      stub(window, "innerWidth", 2000),
+      stub(window, "innerHeight", 2000)
+    ];
+    try {
+      const api = installHostApi();
+      const el = await renderHostRecord(api);
+      const wrapper = el.querySelector<HTMLElement>(".fo-host > .fo-host__measure");
+      expect(publishedWidthPx(el)).toBe(320);
+      expect(wrapper?.dataset.popoverDensity).toBe("compact");
+
+      restore.push(stub(window, "innerWidth", 120));
+      restore.push(stub(window, "innerHeight", 120));
+      await act(async () => {
+        api.pushEvent(EVENT_CHANNELS.floatOverState, {
+          kind: "show-loaded",
+          captureId: imageRecord.id,
+          record: imageRecord
+        });
+        await Promise.resolve();
+      });
+      expect(publishedWidthPx(el)).toBe(320);
+    } finally {
+      for (const undo of restore.reverse()) undo();
+    }
   });
 });

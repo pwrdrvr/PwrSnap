@@ -1,186 +1,188 @@
-# PwrSnap
+<div align="center">
 
-**Capture stays on your laptop until you opt in. Enable AI and your captures
-ride your existing OpenAI Codex install — no new cloud provider, no new
-account.**
+<img src="docs/assets/pwrsnap-icon.png" alt="" width="96" height="96">
 
-A local-first macOS and Windows capture + library app with global hotkeys for
-region, window, and full-screen snaps. A float-over toast that copies a Low /
-Med / High render to the clipboard in one click. A menu-bar or system-tray
-surface that keeps the last capture ready for instant re-copy or edit. And —
-because the AI brain is the
-Codex CLI / Codex Desktop you already have installed — annotation, smart
-filenames, descriptions, and sensitive-data review go through your existing
-OpenAI Codex plan, billed to the AI cloud provider you've already set Codex
-up with. No new cloud provider for PwrSnap to talk to, no new account to
-manage, no telemetry.
+<h1>PwrSnap</h1>
 
-| macOS | Windows | Documentation |
-| --- | --- | --- |
-| **[Download the signed universal DMG](https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.dmg)** | **[Open the latest release](https://github.com/pwrdrvr/PwrSnap/releases/latest)** and choose `PwrSnap-<version>-windows-x64-setup.exe` | **[Read the docs](https://docs.pwrsnap.com)** |
+<strong>Screen capture for the agent age.</strong>
 
-## Why you might want it
+<p>Capture, annotate, record, and keep every snap in a searchable library.<br>
+macOS and Windows. Local-first, and AI only when you turn it on.</p>
 
-- **Capture is instant, and it's where your fingers already are.** `⌘⇧C` on
-  macOS or `Ctrl+Shift+C` on Windows for quick capture (snap to a window, drag
-  a region, or hold `Shift` at commit time for occlusion-free full-window).
-  Dedicated chords cover region-only and window-only modes. Every binding is
-  editable from **Settings → Hotkeys** and rebinds without a restart.
-- **The library knows where the snap came from.** Captures auto-group by
-  source app (Chrome, Slack, Xcode, Figma…) with first-class buckets in
-  the sidebar. Filter by app. Virtualized grid stays smooth at thousands
-  of rows. Drag a capture straight out to Finder, Messages, or any drop
-  target.
-- **One-click copy at the resolution you actually want.** Right after
-  every capture, the float-over toast pops up with **Low**, **Med**, and
-  **High** preset copies. The renderer caches the bytes per preset, so
-  the second paste — including from a global copy hotkey while the toast
-  is up — is instant.
-- **Menu-bar or system-tray surface for the last snap.** The tray popover
-  always shows the most recent capture with an Edit button and quick re-copy.
-  One click away from anywhere on the OS, no Library window needed.
-- **AI rides the Codex you already have, on your existing plan.** PwrSnap
-  is a Codex App Server *client* — it talks stdio JSON-RPC to your local
-  Codex CLI / Codex Desktop install for annotation, description
-  generation, smart filenames, sensitive-data scan, and (Phase 5+) voice
-  describe. The image-bearing turns then hit whichever AI cloud provider
-  Codex is set to talk to (OpenAI by default — Codex itself is an OpenAI
-  product — but Codex can be configured to route elsewhere), billed to
-  the plan you already have with that provider through Codex. PwrSnap
-  itself opens no new account, holds no API key of its own, and never
-  calls a model provider directly. Settings → AI Providers auto-discovers
-  every Codex binary on the system and lets you pin a specific path.
-- **Local-first and quiet.** Durable captures and chat threads live in the OS
-  Documents folder under `PwrSnap` (`~/Documents/PwrSnap` on macOS and normally
-  `%USERPROFILE%\Documents\PwrSnap` on Windows). The database, settings,
-  encrypted secrets, and regenerable caches stay in the platform app-data
-  directory: `~/Library/Application Support/PwrSnap` on macOS or
-  `%APPDATA%\PwrSnap` on Windows. A denied Documents write can select the
-  sticky `~/PwrSnap` or `%USERPROFILE%\PwrSnap` fallback instead. No telemetry.
-  No PwrSnap-owned account or cloud sync. (AI features, when enabled, do ride
-  your existing Codex/provider plan — see the AI bullet above.)
+<p>
+  <a href="https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap-arm64.dmg"><img src="docs/assets/buttons/download-mac-apple-silicon.png" alt="Download for Mac — Apple Silicon" width="250"></a>
+  <a href="https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.dmg"><img src="docs/assets/buttons/download-mac-universal.png" alt="Download for Mac — Universal, Intel and Apple Silicon" width="250"></a>
+  <a href="https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.Setup.exe"><img src="docs/assets/buttons/download-windows.png" alt="Download for Windows — x64 installer" width="250"></a>
+</p>
 
-The longer-form pitch is at **[pwrsnap.com](https://pwrsnap.com)**;
-operator setup + feature reference at
-**[docs.pwrsnap.com](https://docs.pwrsnap.com)**.
+<sub>Homebrew: <code>brew install --cask pwrdrvr/tap/pwrsnap</code></sub>
 
-## Get it
+<p>
+  <a href="https://docs.pwrsnap.com"><img src="docs/assets/buttons/link-docs.png" alt="Documentation" width="180"></a>
+  <a href="https://pwrsnap.com"><img src="docs/assets/buttons/link-website.png" alt="pwrsnap.com" width="180"></a>
+  <a href="https://pwrdrvr.com/about"><img src="docs/assets/buttons/link-about.png" alt="About PwrDrvr" width="180"></a>
+</p>
 
-### Supported desktop releases
+<sub>macOS 14 Sonoma or newer · Windows 10 or newer, x64 · MIT</sub><br>
+<sub>No account, no telemetry, no PwrSnap server.</sub>
 
-| Platform | Release artifact | Native architecture | Minimum OS | Release verification |
-| --- | --- | --- | --- | --- |
-| macOS | Universal DMG and updater ZIP | Apple Silicon + Intel | macOS 14 or later | Developer ID signed, hardened, and Apple-notarized |
-| Windows | Per-user NSIS installer | x64 | Windows 10 or Windows 11 | Authenticode-signed; installer and app signatures are verified before publication |
-| Linux | No distributed package | — | — | Linux builds gate releases, but Linux desktop support is not shipped |
+<br><br>
 
-Every tagged desktop release is published only after the macOS
-sign/notarization job, Windows signing job, and Linux build gate all succeed.
-Release installers include the controlled FFmpeg sidecar used for video
-processing; normal users do not need to install FFmpeg separately.
+<img src="docs/assets/screenshots/hero.webp" width="100%" alt="The PwrSnap Library in the dark theme. The sidebar counts captures by type and by the app each one came from. The grid groups the day's snaps by time, with a video, web pages, notes, and code editor captures; the selected dashboard capture's details sit in the right rail — its generated title, description, export filename and tags, and Low, Med and High copy buttons.">
 
-### Install a stable release
+</div>
 
-1. Open the [latest stable release](https://github.com/pwrdrvr/PwrSnap/releases/latest).
-2. On macOS, download `PwrSnap.dmg`, open it, and drag PwrSnap to Applications.
-   On Windows, download `PwrSnap-<version>-windows-x64-setup.exe` and run the
-   per-user installer; its default location is
-   `%LOCALAPPDATA%\Programs\PwrSnap`.
-3. Optionally connect Codex from **Settings → AI Providers**. Capture, editing,
-   the Library, and export continue to work without an AI provider.
+## Why PwrSnap
 
-GitHub's `releases/latest` route deliberately ignores prereleases. To install a
-1.1 prerelease, use the main
-[Releases page](https://github.com/pwrdrvr/PwrSnap/releases) and choose the
-versioned artifact for your platform. Once 1.1 is promoted stable, install it
-from the latest stable release linked above. Pull-request preview artifacts are
-not production-signed and expire after 14 days; the Windows preview is unsigned,
-and the macOS preview is not notarized. They are for development testing rather
-than normal installation.
+A screenshot is usually on its way somewhere: a chat, a ticket, an agent's
+context window. PwrSnap is built to get it there fast and to find it again
+later.
 
-Detailed Windows installation, storage, limitations, troubleshooting, and
-source-build notes live in [docs/windows/README.md](docs/windows/README.md).
+- **One shortcut.** <kbd>Command+Shift+C</kbd> (<kbd>Ctrl+Shift+C</kbd> on
+  Windows) opens Quick Capture: hover a window to take it, drag a rectangle,
+  or take the whole screen. Press <kbd>R</kbd> instead of <kbd>Enter</kbd>
+  and the same selection becomes a recording; on macOS,
+  <kbd>Command+Option+C</kbd> goes straight to recording. Region, window,
+  full-screen, and timed captures have their own bindable shortcuts.
+- **Copy at the size you meant.** A toast appears after every capture with
+  **Low**, **Med**, and **High** renders, one click or
+  <kbd>Command+1</kbd>–<kbd>Command+3</kbd> to the clipboard, or drag one out
+  as a file.
+- **An editor that leaves the original alone.** Arrows, shapes, freehand
+  pen, marker and airbrush, highlights, text, crop, and blur in three
+  strengths — Gaussian, pixelate, or solid redact. Every mark is a layer you
+  can move, restyle, or delete later. **Duplicate** keeps edited copies
+  together as a family.
+- **A library that remembers where things came from.** Captures are grouped
+  by the app they were taken from, by type, and by day, in a grid or a reel.
+  Search covers titles, descriptions, tags, and text read out of the image.
+- **Video in the same place.** Record a region or a window with microphone
+  and system audio on macOS. Trim, cut out sections, or let **Cut idle**
+  remove the stretches where nothing moved; export GIF or MP4 at three sizes.
+- **Sizzle reels.** Pick captures, write or generate a script, and render a
+  narrated video from them.
+- **Agents can use it too.** A local, OAuth-protected MCP server lets an
+  agent you approve search your captures, read them, and export them. Each
+  agent gets a named session and a role you can change or revoke in
+  **Settings → Local Agents**.
 
-Signed release builds update through `electron-updater` using the `latest-mac.yml`
-and `latest.yml` metadata published beside their installers. Choose Stable or
-Beta and Latest or Prerelease under **Settings → General → Updates**. The Help
-menu's **Check for Updates** runs the same check on demand; after a download,
-PwrSnap offers **Restart to Update**.
+## A closer look
 
-### Want to hack on it
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshots/capture-window.webp" width="100%" alt="Quick Capture over a desktop with three overlapping windows: meeting notes, a terminal with a failed build, and a storefront dashboard in a browser. The pointer is over the dashboard, which is outlined in orange with a label reading Google Chrome · 780 × 368; the windows behind it are dimmed. A hint bar along the bottom reads: click pick Google Chrome · Shift full window · drag region · tab next window · Return capture · R record · C rec cursor: on · esc cancel."></td>
+    <td width="50%"><img src="docs/assets/screenshots/editor-draw.webp" width="100%" alt="The editor on a kanban board capture. A hand-drawn orange circle rings one card, a yellow marker stroke covers another, and two green check marks sit in the Done column. The Draw tool's property bar below offers pen, marker, airbrush and eraser, colours and stroke weights."></td>
+  </tr>
+  <tr>
+    <td><b>Window, region, or screen.</b> Hover to pick a window; drag for a region.</td>
+    <td><b>Draw on it.</b> Pen, marker, airbrush, and an eraser that cuts strokes.</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshots/editor-redact.webp" width="100%" alt="The editor with its toolbar docked to the left edge, on a form capture. The zone name field is covered by a solid black redaction, and a red arrow points from a text label reading Split this range? to the postal code ranges field."></td>
+    <td width="50%"><img src="docs/assets/screenshots/ai-suggestions.webp" width="100%" alt="A form capture selected in the Library. The right rail shows a drafted title, description, export filename and three suggested tags, each marked AI draft with a Use button, above Regenerate and an Auto-apply checkbox."></td>
+  </tr>
+  <tr>
+    <td><b>Redact before you send.</b> Solid redaction, pixelate, or blur; the toolbar docks to any edge.</td>
+    <td><b>Optional AI drafts.</b> Title, description, filename, and tags, waiting for you to accept.</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshots/library-chat.webp" width="100%" alt="A storefront dashboard capture open in the Library with the chat panel beside it. The request asks for an arrow at the average basket drop and a box around the top region; the reply lists the steps it took, and the capture now shows a red arrow and a blue box."></td>
+    <td width="50%"><img src="docs/assets/screenshots/video.webp" width="100%" alt="A recording of a documentation site open in the Library. Under the video, a timeline filmstrip with an audio waveform shows two kept parts after Cut idle, and the right rail lists GIF and MP4 exports at Low, Med and High with estimated sizes."></td>
+  </tr>
+  <tr>
+    <td><b>Ask about a capture.</b> Library chat can describe it, or annotate it for you.</td>
+    <td><b>Recordings, trimmed.</b> Cut idle, split, and export GIF or MP4.</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshots/sizzle.webp" width="100%" alt="The Sizzle reel composer for a project named Spring catalogue launch. A preview sits above a timeline holding four clips from the Library, with the scene's narration script below and the reel composer chat panel on the right."></td>
+    <td width="50%"><img src="docs/assets/screenshots/local-agents.webp" width="100%" alt="Settings, Local Agents. An authorization graph links two agent sessions, Claude Code and Codex CLI, to PwrSnap roles such as Search + Previews and Full Media, and from the selected role to the permissions it grants, like Search library, Read edited previews and Export captures."></td>
+  </tr>
+  <tr>
+    <td><b>Sizzle reels.</b> Captures and clips on a timeline, with narration.</td>
+    <td><b>Agent access you can see.</b> Every session, its role, and what that role allows.</td>
+  </tr>
+</table>
 
-```bash
-git clone https://github.com/pwrdrvr/PwrSnap.git
-cd PwrSnap
-pnpm install
-pnpm dev
-```
+## Install
 
-PwrSnap is a pnpm workspace (`apps/desktop` + `packages/*`). The Codex
-App Server protocol types are consumed from
-`@pwrdrvr/codex-app-server-protocol`, pinned in
-`apps/desktop/package.json`; publish that package from its own repo before
-bumping PwrSnap to a newer Codex protocol surface. Full dev workflow,
-conventions, and the architecture overview live in
-**[AGENTS.md](AGENTS.md)** and **[docs/architecture.md](docs/architecture.md)**.
+| Platform | Download | Notes |
+|---|---|---|
+| macOS, Apple Silicon | [PwrSnap-arm64.dmg](https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap-arm64.dmg) | M1 or newer. The smaller download. |
+| macOS, Intel or not sure | [PwrSnap.dmg](https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.dmg) | Universal. On Apple Silicon it moves itself to the arm64 build on its next update. |
+| macOS, Homebrew | `brew install --cask pwrdrvr/tap/pwrsnap` | Picks the right build for your Mac. |
+| Windows 10 / 11, x64 | [PwrSnap.Setup.exe](https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.Setup.exe) | Per-user installer, no administrator prompt. |
 
-## How it's built
+macOS builds are Developer ID signed, hardened, and Apple-notarized, and run on
+macOS 14 or later; the universal DMG runs natively on Apple Silicon + Intel.
+The Windows installer is Authenticode-signed and runs on
+Windows 10 or Windows 11, x64. A release lists it as `PwrSnap-<version>-windows-x64-setup.exe`;
+`PwrSnap.Setup.exe` is the same file under a stable name, and
+`PwrSnap-windows-SHA256SUMS` carries its checksum. There is no Windows arm64
+build. Linux desktop support is not shipped.
 
-| Layer                | Stack                                                    | Where it lives                                  |
-| -------------------- | -------------------------------------------------------- | ----------------------------------------------- |
-| Desktop shell        | Electron + TypeScript + React 19 + electron-vite         | `apps/desktop/`                                 |
-| Capture pipeline     | Electron/OS capture + `sharp`; Swift/C++ window helpers | `apps/desktop/src/main/capture/`                  |
-| Render pipeline      | `sharp` for resize + crop + thumbnail caching            | `apps/desktop/src/main/render/`                 |
-| Persistence          | `better-sqlite3` (WAL) + durable `.pwrsnap` bundles      | `apps/desktop/src/main/persistence/`            |
-| Codex App Server     | Published protocol contracts, stdio JSON-RPC client      | `@pwrdrvr/codex-app-server-protocol` + `apps/desktop/src/main/ai/` |
-| Shared types         | Cross-process commands + IPC channels + result envelopes | `packages/shared/`                              |
-| Settings + secrets   | Single substrate (JSON + Electron `safeStorage`)         | `apps/desktop/src/main/settings/`               |
-
-A few load-bearing design rules:
-
-- **Single command bus.** Every IPC verb routes through
-  [`apps/desktop/src/main/command-bus.ts`](apps/desktop/src/main/command-bus.ts) —
-  ipcMain today, HTTP RPC and MCP later. Exactly one place to register
-  a command; exactly one place to enforce auth + capability checks.
-- **Renderers stay sandboxed.** Every `BrowserWindow` is
-  `contextIsolation: true, sandbox: true, nodeIntegration: false`.
-- **Result-pattern for cross-process errors.** Electron `invoke` strips
-  `instanceof`. All handlers return `Result<Res, PwrSnapError>` —
-  `{ ok: false, error: { kind, code, message, cause? } }`.
-
-## Roadmap
-
-macOS and Windows are shipping desktop targets. The 1.1 release line ships
-signed Windows and universal macOS artifacts through the same guarded release;
-Linux remains a build-only release gate with no supported installer. The
-durable architecture and direction live in
-[docs/architecture.md](docs/architecture.md); platform specifics are in the
+On Windows, recordings have no audio yet. The details are in the
 [Windows guide](docs/windows/README.md).
 
-What's shipped vs. what's still in flight — including video capture, the
-sizzle-reel composer, and presenter video — is tracked at
-**[docs.pwrsnap.com](https://docs.pwrsnap.com)**.
+**Updates** come from GitHub Releases, on a Stable or Beta train with Latest
+and Prerelease tracks (**Settings → General → Updates**). **Check for
+Updates…** in the app's menu checks on demand, and an update installs when you
+choose **Restart to Update**. The download links above always serve
+[the latest stable release](https://github.com/pwrdrvr/PwrSnap/releases/latest).
+For prerelease testing, pick the versioned file for your platform from the
+[Releases page](https://github.com/pwrdrvr/PwrSnap/releases).
 
-The desktop release pipeline (universal DMG, Windows x64 installer, signing,
-notarization, updater metadata, and stable-name aliases) is documented in
-[docs/desktop-release-runbook.md](docs/desktop-release-runbook.md).
+Full walkthrough, permissions, and first launch:
+[docs.pwrsnap.com/install](https://docs.pwrsnap.com/install/).
 
-## Going deeper
+## AI features are opt-in
 
-| Doc                                                                                                | What it covers                                                                            |
-| -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| **[pwrsnap.com](https://pwrsnap.com)**                                                             | Marketing landing — the WHY in 60 seconds.                                                |
-| **[docs.pwrsnap.com](https://docs.pwrsnap.com)**                                                   | Operator reference — capture modes, hotkeys, settings, AI configuration.                  |
-| [AGENTS.md](AGENTS.md)                                                                             | Project conventions, brand rules, "how the load-bearing pieces fit together." Read first. |
-| [docs/desktop-release-runbook.md](docs/desktop-release-runbook.md)                                 | One-time setup, CI release path, local fallback, universal DMG verification.              |
-| [docs/architecture.md](docs/architecture.md)                                                       | What PwrSnap is, the storage/AI/library decisions that still hold, and what's unresolved.  |
-| [docs/solutions/](docs/solutions/)                                                                 | Post-incident notes + gotchas — read before re-solving an old problem.                    |
+Off by default. Capture, editing, the Library, video, and export all work
+without any AI provider.
+
+When you turn it on, PwrSnap can draft a title, description, filename, and
+tags for each new capture and read the text in it; answer questions about a
+capture in Library chat and draw annotations on request; and help write a
+Sizzle reel. It runs through whichever you choose:
+
+- an agent CLI you already have and are signed in to — the Codex CLI, or an
+  ACP agent such as Gemini CLI, Qwen Code, or Kimi Code CLI; or
+- a direct API connection you configure yourself: OpenAI Responses, any
+  Chat Completions-compatible endpoint (including a server on your own
+  machine), or Anthropic Messages.
+
+Background enrichment runs with no tools, no file access, and no network of
+its own; the image goes in as image input and one JSON object comes back.
+Keys you enter are stored encrypted by the operating system and never shown
+again. Sizzle narration uses a text-to-speech key you add separately.
+
+## Privacy
+
+No account, no telemetry, no PwrSnap server. Captures live in
+`~/Documents/PwrSnap` on macOS and `%USERPROFILE%\Documents\PwrSnap` on
+Windows. The database, settings, and caches stay in
+`~/Library/Application Support/PwrSnap` or `%APPDATA%\PwrSnap`. Nothing leaves
+the machine unless you copy it, send it, turn on an AI provider, or approve an
+agent.
+
+## Ways to help
+
+- **[Star the repository](https://github.com/pwrdrvr/PwrSnap)** — it is the
+  main way anyone else finds PwrSnap.
+- **[Open an issue](https://github.com/pwrdrvr/PwrSnap/issues)** for a bug or
+  a rough edge. A capture that lands on the wrong display or with the wrong
+  bounds is worth reporting even if nothing crashed.
+- **Send a pull request.** Development setup, architecture, and the checks CI
+  runs are in [CONTRIBUTING.md](CONTRIBUTING.md).
+- **Report vulnerabilities privately** — see [SECURITY.md](SECURITY.md).
+
+What changed in each release: [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-PwrSnap is licensed under the [MIT License](LICENSE). Third-party
-dependency notices are aggregated in
-[THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES) and shipped with desktop
-distributions.
+[MIT](LICENSE). Third-party dependency notices are in
+[THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES) and ship with every release. The
+bundled FFmpeg is LGPL-2.1; each release publishes its notice and source offer
+beside the installers. How the notices are generated and checked:
+[docs/third-party-license-notices.md](docs/third-party-license-notices.md).
 
 Created by [PwrDrvr LLC](https://pwrdrvr.com). Copyright © 2026 PwrDrvr LLC.

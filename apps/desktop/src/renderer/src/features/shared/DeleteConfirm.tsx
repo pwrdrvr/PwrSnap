@@ -16,6 +16,13 @@
 // clip an in-flow popover (see the popover-sizing notes in CLAUDE.md). The
 // trigger element is captured from the click event (`currentTarget`), so
 // callers only wire an `onClick` — no ref threading.
+//
+// Keyboard: it is a modal confirm, not a tooltip. Focus lands on the confirm
+// button, Tab stays inside, Escape cancels, and focus goes back to the trigger
+// (`useFocusTrap` + `useDismissable`). The portal is what made this necessary:
+// the popover sits at the END of <body>, so an untrapped Tab from its last
+// button fell off the document and Shift+Tab from its first reached whatever
+// the app rendered last — never the trigger it is anchored to.
 
 import {
   useCallback,
@@ -28,6 +35,8 @@ import {
   type ReactNode
 } from "react";
 import { createPortal } from "react-dom";
+import { useDismissable } from "../../lib/useDismissable";
+import { useFocusTrap } from "../../lib/useFocusTrap";
 import "./DeleteConfirm.css";
 
 /** Where the popover sits relative to its trigger. `left` suits the trash
@@ -87,11 +96,12 @@ export function DeleteConfirm({
   const popoverRef = useRef<HTMLDivElement | null>(null);
   const confirmBtnRef = useRef<HTMLButtonElement | null>(null);
 
+  // `anchorRef` is deliberately NOT cleared on close: it is where focus goes
+  // back to, and the trap reads it after the popover has unmounted.
   const close = useCallback(() => {
     setOpen(false);
     setCoords(null);
     setDontAsk(false);
-    anchorRef.current = null;
   }, []);
 
   const handleTriggerClick = useCallback(
@@ -139,38 +149,53 @@ export function DeleteConfirm({
     setCoords({ left, top });
   }, [open, placement, message, detail]);
 
-  // Focus the confirm button when the popover opens (keyboard-friendly,
-  // and an Enter immediately confirms).
-  useEffect(() => {
-    // preventScroll so focusing never nudges a scroller — the close-on-scroll
-    // listener below would otherwise dismiss the popover the instant it opens.
-    if (open && coords !== null) confirmBtnRef.current?.focus({ preventScroll: true });
-  }, [open, coords]);
+  // Focus the confirm button once the popover is positioned (an Enter
+  // immediately confirms), keep Tab inside, and hand focus back to the trigger
+  // on close. Gated on `coords` because the first frame is `visibility:
+  // hidden`, and a hidden button cannot take focus. preventScroll so focusing
+  // never nudges a scroller — the close-on-scroll listener below would
+  // otherwise dismiss the popover the instant it opens. The return target is
+  // the trigger the click came from, not whatever held focus at open: a
+  // click does not always focus the button it lands on.
+  useFocusTrap({
+    open: open && coords !== null,
+    containerRef: popoverRef,
+    initialFocusRef: confirmBtnRef,
+    returnFocusRef: anchorRef,
+    preventScroll: true
+  });
+  useDismissable({ open, onDismiss: close, surfaceRef: popoverRef });
 
-  // Dismiss on outside pointer-down, Escape, scroll, or window resize. The
-  // opening click already passed (listener attaches after open), so it does
-  // not self-close.
+  // Dismiss on outside pointer-down, focus landing outside, scroll, or window
+  // resize (Escape is useDismissable's). The opening click already passed
+  // (listener attaches after open), so it does not self-close.
+  //
+  // The trap keeps Tab inside, so focus lands outside only when something
+  // else moves it: the user has moved on, and the popover must not stay open
+  // over whatever it covers. Focus landing in a modal opened ON TOP (an agent
+  // approval) is the exception. The confirm waits underneath, and focus comes
+  // back to it when that modal closes.
   useEffect(() => {
     if (!open) return;
+    const outside = (target: EventTarget | null): boolean =>
+      !(target instanceof Node && popoverRef.current?.contains(target) === true);
     const onPointerDown = (event: PointerEvent): void => {
-      const target = event.target as Node | null;
-      if (target !== null && popoverRef.current?.contains(target) === true) return;
-      close();
+      if (outside(event.target)) close();
     };
-    const onKey = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        close();
-      }
+    const onFocusIn = (event: FocusEvent): void => {
+      const target = event.target;
+      if (!outside(target)) return;
+      if (target instanceof Element && target.closest('[aria-modal="true"]') !== null) return;
+      close();
     };
     const onScrollOrResize = (): void => close();
     document.addEventListener("pointerdown", onPointerDown, true);
-    document.addEventListener("keydown", onKey, true);
+    document.addEventListener("focusin", onFocusIn, true);
     window.addEventListener("scroll", onScrollOrResize, true);
     window.addEventListener("resize", onScrollOrResize);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown, true);
-      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("focusin", onFocusIn, true);
       window.removeEventListener("scroll", onScrollOrResize, true);
       window.removeEventListener("resize", onScrollOrResize);
     };
@@ -209,7 +234,9 @@ export function DeleteConfirm({
             ref={popoverRef}
             className={`ps-confirm ps-confirm--${placement}`}
             role="dialog"
+            aria-modal="true"
             aria-label={message}
+            tabIndex={-1}
             style={{
               left: coords?.left ?? 0,
               top: coords?.top ?? 0,

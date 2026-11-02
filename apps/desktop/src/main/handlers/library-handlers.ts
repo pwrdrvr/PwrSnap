@@ -1,7 +1,8 @@
 // Command-bus handlers for the `library:*` namespace. Phase 1 wires
 // list / byId / delete; Phase 1.9 adds export.
 
-import { BrowserWindow, clipboard } from "electron";
+import { listCaptureFamilies, listFamilyMembers } from "../persistence/capture-families-repo";
+import { BrowserWindow } from "electron";
 import {
   ok,
   err,
@@ -16,6 +17,8 @@ import {
   validateLibrarySearch
 } from "./sizzle-validators";
 import { z } from "zod";
+import { writeClipboardText } from "../clipboard/system-clipboard";
+import { parseEnrichmentRepairOpenRequest } from "../ai/enrichment-repair-open-request";
 import { bus } from "../command-bus";
 import {
   countCaptures,
@@ -118,37 +121,50 @@ function broadcastEnrichmentUpdated(enrichment: unknown): void {
 
 /**
  * Push a `libraryOpenCapture` event to the Library renderer so it can
- * navigate to the capture in Focus mode. Two cases:
+ * navigate to the capture in Focus mode.
  *
- *   • Existing window — renderer is already mounted and listening,
- *     so we send immediately.
- *   • Just-created window — `webContents.send` would race the React
- *     mount (the event would land before any subscriber registers).
- *     We wait for `did-finish-load` and then add a small grace so
- *     the renderer's `useEffect` subscribe has a chance to attach.
- *     100ms is well past the typical mount interval and safely below
- *     human perception.
+ * Send exactly once, as soon as the window is done loading. Two rules
+ * keep that one send from being lost:
+ *
+ *   • Wait on `did-stop-loading`, never `did-finish-load`. The wait is
+ *     entered when `isLoading()` is true, and `isLoading()` only turns
+ *     false AT `did-stop-loading`, which comes after `did-finish-load`.
+ *     A request that lands between the two sees a window still loading
+ *     and would wait for a `did-finish-load` that has already fired: no
+ *     send at all, and the Library sits on the grid. That was the
+ *     `editor-v2-capture-open` E2E flake (~1 in 40 opens in the Linux
+ *     harness, where the spec dispatches right after DOMContentLoaded).
+ *     Pair a state check with the event that ends that state.
+ *   • The channel is LATCHED in the preload (src/preload/latched-events.ts).
+ *     Its listener exists before the page's scripts run and holds the
+ *     intent until the Library's React subscriber attaches, so main does
+ *     not have to guess when React mounts. It used to guess: a 100ms grace
+ *     after load, and a second send 100ms after the first. A resend can
+ *     only deliver the intent twice now, so do not bring one back.
  */
 function sendOpenCaptureWhenReady(
   window: BrowserWindow,
   captureId: string,
   justCreated: boolean
 ): void {
+  sendLatchedIntentWhenReady(window, EVENT_CHANNELS.libraryOpenCapture, { captureId }, justCreated);
+}
+
+/** The same one send, for any channel latched in the preload. */
+function sendLatchedIntentWhenReady(
+  window: BrowserWindow,
+  channel: string,
+  payload: unknown,
+  justCreated: boolean
+): void {
   const send = (): void => {
     if (window.isDestroyed()) return;
-    window.webContents.send(EVENT_CHANNELS.libraryOpenCapture, { captureId });
+    window.webContents.send(channel, payload);
   };
   if (justCreated || window.webContents.isLoading()) {
-    window.webContents.once("did-finish-load", () => {
-      setTimeout(send, 100);
-    });
+    window.webContents.once("did-stop-loading", send);
   } else {
     send();
-    // Existing Library windows can still be in the narrow post-load /
-    // pre-React-effect interval during cold E2E launches. Repeat once
-    // after the same grace used for newly-created windows so the
-    // renderer subscription has a second chance to observe the intent.
-    setTimeout(send, 100);
   }
 }
 
@@ -201,6 +217,19 @@ export function registerLibraryDataHandlers(): void {
     const v = validateLibraryCounts(req);
     if (!v.ok) return err(v.error);
     return ok({ total: countCaptures(v.value) });
+  });
+
+  bus.register("library:families", async () => ok({ families: listCaptureFamilies() }));
+
+  bus.register("library:family", async (req) => {
+    if (typeof req?.familyId !== "string" || req.familyId.length === 0 || req.familyId.length > 64) {
+      return err({
+        kind: "validation",
+        code: "invalid_family_id",
+        message: "library:family requires a familyId"
+      });
+    }
+    return ok({ members: listFamilyMembers(req.familyId) });
   });
 
   bus.register("library:byId", async (req) => {
@@ -521,6 +550,16 @@ export function registerLibraryWindowHandlers(): void {
     return ok(undefined);
   });
 
+  bus.register("library:openEnrichmentRepair", async (req) => {
+    const request = parseEnrichmentRepairOpenRequest(req?.request);
+    if (request === null) {
+      return err({ kind: "validation", code: "invalid_request", message: "invalid re-run request" });
+    }
+    const { window: main, justCreated } = bringLibraryForward();
+    sendLatchedIntentWhenReady(main, EVENT_CHANNELS.libraryOpenEnrichmentRepair, request, justCreated);
+    return ok(undefined);
+  });
+
   bus.register("clipboard:copyText", async (req) => {
     const parsed = z.object({ text: z.string().max(100_000) }).safeParse(req);
     if (!parsed.success) {
@@ -534,7 +573,7 @@ export function registerLibraryWindowHandlers(): void {
     // copy, AI-derived text) route here instead of calling
     // `navigator.clipboard.writeText` directly so a future redaction
     // policy or audit hook only plugs in once.
-    clipboard.writeText(parsed.data.text);
+    await writeClipboardText(parsed.data.text);
     return ok(undefined);
   });
 
@@ -563,8 +602,20 @@ export function registerLibraryWindowHandlers(): void {
 
 // Reachability for hard-delete during GC sweeps. Not bus-exposed —
 // internal callers only.
+//
+// The cache purge is as load-bearing here as it is on `library:purge`.
+// Boot GC used to drop the rows and leave the per-capture cache dir
+// behind, which was tolerable while the orphan was a filmstrip JPEG and a
+// small `audio.m4a`. It stopped being tolerable when playback began
+// caching a stream-copied rendition — a full second copy of the video, a
+// few hundred MB for a long take — that nothing would ever collect again.
+// Fire-and-forget: a cache file we fail to unlink must not abort the
+// sweep or block startup.
 export function gcHardDeleteCaptures(captureIds: string[]): void {
   for (const id of captureIds) {
     hardDeleteCapture(id);
+    void purgeCacheForCapture(id).catch((cause: unknown) => {
+      log.warn("gc cache purge failed", { captureId: id, cause: String(cause) });
+    });
   }
 }

@@ -104,7 +104,8 @@ const HOTKEY_LABELS = {
   allScreens: "All Screens Capture",
   timed: "Timed Capture",
   videoCapture: "Video Capture",
-  reshowFloatOver: "Show Last Capture"
+  reshowFloatOver: "Show Last Capture",
+  openLibrary: "Open Library"
 } satisfies Record<keyof Settings["hotkeys"], string>;
 
 /**

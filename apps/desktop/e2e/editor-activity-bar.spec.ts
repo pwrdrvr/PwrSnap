@@ -208,54 +208,6 @@ test.skip("editor-activity-bar: hover-pop opens overlay after first session clic
   }
 });
 
-test.skip("editor-activity-bar: stoplight coachmark shows once then hides forever", async () => {
-  const app = await launchPwrSnap();
-  try {
-    const captureId = await seedImageCapture(app, { idPrefix: "activitybar", sourceAppName: "Activity Bar Spec" });
-    const editorWindow = await openEditor(app, captureId);
-
-    // First open of the popover should show the coachmark.
-    await editorWindow
-      .locator('.psl__edit-toolbar button[data-tool="arrow"]')
-      .click();
-    await editorWindow
-      .locator('[data-testid="tool-caret-arrow"]')
-      .click();
-    await editorWindow
-      .locator('[data-testid="tool-style-popover"]')
-      .waitFor({ state: "visible", timeout: 5_000 });
-    const coachmark = editorWindow.locator(
-      '[data-testid="coachmark-strip"]'
-    );
-    await coachmark.waitFor({ state: "visible", timeout: 2_000 });
-
-    // 3s auto-dismiss + slack.
-    await coachmark.waitFor({ state: "detached", timeout: 6_000 });
-
-    // Allow settings:write debounce + broadcast to land.
-    await editorWindow.waitForTimeout(400);
-
-    // Close + reopen popover — coachmark should NOT show this time.
-    await editorWindow.keyboard.press("Escape");
-    await expect(
-      editorWindow.locator('[data-testid="tool-style-popover"]')
-    ).toHaveCount(0);
-
-    await editorWindow
-      .locator('[data-testid="tool-caret-arrow"]')
-      .click();
-    await editorWindow
-      .locator('[data-testid="tool-style-popover"]')
-      .waitFor({ state: "visible", timeout: 5_000 });
-    // No coachmark this time.
-    await expect(
-      editorWindow.locator('[data-testid="coachmark-strip"]')
-    ).toHaveCount(0);
-  } finally {
-    await app.close();
-  }
-});
-
 // ---- Shared helpers --------------------------------------------------
 
 async function closeEditorWindow(app: LaunchedApp, win: Page): Promise<void> {

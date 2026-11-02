@@ -6,7 +6,12 @@
 // out of the registry. Event channels (server → client broadcasts) use
 // the typed map below.
 
-import type { AppUpdateStatus, CaptureRecord, VideoPreset } from "./protocol";
+import type {
+  AppUpdateStatus,
+  CaptureRecord,
+  FloatOverDockSide,
+  VideoPreset
+} from "./protocol";
 
 export const IPC_CMD = "cmd" as const;
 
@@ -31,15 +36,46 @@ export const IPC_VIDEO_DRAG_START = "video:drag-start" as const;
  *  `(captureIds, preset, suggestedName?)` to zip-and-drag. */
 export const IPC_CART_ZIP_DRAG_START = "cart:zip-drag-start" as const;
 
+/** Permission guide → main: start dragging the running app bundle. No
+ *  payload; main drags the path it resolved itself, and only for the guide
+ *  window's own WebContents. */
+export const IPC_PERMISSION_GUIDE_DRAG_START = "permissions:guide-drag-start" as const;
+
 export const EVENT_CHANNELS = {
   /** Main → local renderers: one formatted current-session log line. */
   logEntry: "events:logs:entry",
   capturesChanged: "events:captures:changed",
+  /**
+   * Main → every BrowserWindow: a duplicate family's membership or
+   * live/trashed counts changed — a copy was made, or a member was
+   * trashed, restored or purged. Payload: `{ familyIds: string[] }`.
+   * Separate from `capturesChanged` on purpose: that fires on every
+   * annotation edit, and edits never change a family.
+   */
+  familiesChanged: "events:families:changed",
+  /**
+   * Main (the capture owner) → every BrowserWindow, relayed across the
+   * process split: one background video duplicate's progress or end.
+   * Payload: `{ job: CaptureDuplicateJob }`. Throttled while copying;
+   * the terminal event is always sent.
+   */
+  captureDuplicateJob: "events:capture-duplicate:job",
   overlaysChanged: "events:overlays:changed",
   uploadProgress: "events:upload:progress",
   aiRunUpdated: "events:ai-run:updated",
   aiUsageUpdated: "events:ai-usage:updated",
   aiBudgetUpdated: "events:ai-budget:updated",
+  /** Agent → every BrowserWindow, relayed across the process split: the
+   *  enrichment repair job changed. Payload: `{ job: EnrichmentRepairJob |
+   *  null }` (null once a finished job is dismissed). */
+  enrichmentRepairJob: "events:enrichment-repair:job",
+  /** Agent → every BrowserWindow, relayed across the process split: the
+   *  caption model answered again after one or more runs could not reach
+   *  it. Payload: `EnrichmentPrimaryRecovery`. A nudge, not state: a
+   *  window that misses it has nothing to fetch. */
+  enrichmentPrimaryRecovered: "events:enrichment-primary:recovered",
+  /** Main → every BrowserWindow: run-scoped GIF/MP4 export progress.
+   * Payload type: `VideoExportProgressEvent`. */
   renderProgress: "events:render:progress",
   /**
    * Main → every BrowserWindow: recording-service lifecycle update.
@@ -52,7 +88,44 @@ export const EVENT_CHANNELS = {
    * then subscribe for subsequent transitions.
    */
   recordingState: "events:recording:state",
+  /** Main → tray renderer: work area of the display chosen for its next placement. */
+  trayWorkAreaChanged: "events:tray:work-area-changed",
+  /**
+   * Main → the recording-frame window only: where to draw the frame
+   * inside that window, and in which platform posture. Payload type:
+   * `RecordingFrameLayout`.
+   *
+   * The geometry lives in main (`recording-frame-geometry.ts`) because
+   * only main knows the display bounds the window was clamped against;
+   * the renderer is a dumb painter that positions a box at `inset` and
+   * flips two data attributes.
+   */
+  recordingFrame: "events:recording:frame",
+  /**
+   * Main → the recording-controller (HUD) window only: arm that
+   * window's own destructive-action confirm. Payload type:
+   * `RecordingControllerArmEvent`.
+   *
+   * The tray's "Restart Recording…" / "Cancel Recording…" items send
+   * this instead of raising a native dialog. Nothing PwrSnap paints
+   * during a take may land in the recorded rect, and only the HUD
+   * window is content-protected (macOS) / anchored outside the rect
+   * (Windows) — see the type's doc comment for the take this ruined.
+   */
+  recordingControllerArm: "events:recording-controller:arm",
   settingsChanged: "events:settings:changed",
+  /**
+   * Main → one BrowserWindow: that window's maximize state changed.
+   * Payload type: `WindowFrameState`.
+   *
+   * Linux only in practice. A frameless Linux window draws its own
+   * caption buttons and its own 1px edge, and both have to follow the
+   * WINDOW rather than the last button press — a double-click on the
+   * drag region, Super+Up, or a tiling keybind all maximize behind our
+   * back. Per-window, not a broadcast: two windows can disagree about
+   * being maximized.
+   */
+  windowFrameState: "events:window:frame-state",
   /**
    * Main → every BrowserWindow: latest auto-updater status. Drives the
    * library window's update banner. The payload shape is
@@ -65,6 +138,24 @@ export const EVENT_CHANNELS = {
    */
   appUpdateStatus: "events:app-update:status",
   /**
+   * Main → every BrowserWindow: the outcome of an update check THE USER
+   * ASKED FOR. Emitted from exactly one place — the Help → Check for
+   * Updates menu item (`runMenuUpdateCheck` in auto-updater.ts) — and it
+   * is the only thing that distinguishes "someone is waiting for this
+   * answer" from "the hour hand looked again". Settings → Updates has its
+   * own Check for Updates button and deliberately does NOT emit here: that
+   * surface reports its result inline, and a second card repeating the
+   * answer beside it would say the same thing twice.
+   *
+   * `checking` is the one mid-flight value on this channel; every other
+   * value is an outcome. Payload: `AppUpdateCheckResult`.
+   *
+   * Collapsing this into `appUpdateStatus` breaks the feature — that
+   * channel moves for background checks too, and the live progress card
+   * must stay silent for those.
+   */
+  appUpdateCheckResult: "events:app-update:check-result",
+  /**
    * Main → every BrowserWindow: the exact App Server compatibility guard
    * observed an incompatible Codex CLI, or later observed a compatible CLI
    * and cleared the condition. The Library's App-level toast subscribes so
@@ -73,6 +164,7 @@ export const EVENT_CHANNELS = {
    * Payload: `CodexCliCompatibilityAlert | null`.
    */
   codexCompatibilityAlertChanged: "events:codex:compatibility-alert-changed",
+  codexVersionAdvisoryChanged: "events:codex:version-advisory-changed",
   /**
    * Main → renderer navigation signal for the Settings window. Sent by
    * `settings:open` when the window is already focused and the caller
@@ -97,6 +189,9 @@ export const EVENT_CHANNELS = {
    * Payload type: `FloatOverEvent` (see protocol.ts).
    */
   floatOverState: "events:float-over:state",
+  /** Main → the permission guide window only. Payload:
+   *  `PermissionGuideState` (see protocol.ts). */
+  permissionGuideState: "events:permission-guide:state",
   /**
    * Main → float-over renderer: a native/global copy shortcut fired
    * while the toast was visible. The renderer uses this to play the
@@ -149,6 +244,16 @@ export const EVENT_CHANNELS = {
    * Payload: `{ captureId: string }`.
    */
   libraryOpenCapture: "events:library:open-capture",
+  /**
+   * Tells the Library renderer to open the AI re-run dialog, set up as
+   * the payload says. Sent by `library:openEnrichmentRepair` (Settings ›
+   * AI Features › Enrichment). Latched in the preload like
+   * `libraryOpenCapture`: it is a one-shot intent a late subscriber
+   * cannot fetch.
+   *
+   * Payload: `EnrichmentRepairOpenRequest`.
+   */
+  libraryOpenEnrichmentRepair: "events:library:open-enrichment-repair",
   /**
    * Renderer → main perf signals for the dev seeder's measurement
    * pipeline (Phase 5 of the perf plan). The renderer dispatches
@@ -251,6 +356,22 @@ export const EVENT_CHANNELS = {
   editUndo: "events:edit:undo",
   editRedo: "events:edit:redo",
   /**
+   * Main → focused Library window: File ▸ Duplicate Snap (⇧⌘D) or File ▸
+   * Edit a Copy was chosen. The Library acts on its selected snap.
+   * Payload: `{ mode: "duplicate" | "edit-copy"; viaAccelerator: boolean }`
+   * — `viaAccelerator` lets the renderer drop an accelerator activation
+   * that raced its own ⇧⌘D keydown, exactly as the edit-menu bridge does.
+   */
+  libraryDuplicate: "events:library:duplicate",
+  /**
+   * Main → the window a menu command came from: a short confirmation for
+   * an action that has no surface of its own, such as Help ▸ Copy
+   * Diagnostics Info. The Library shows it as a transient toast; a window
+   * that renders no toast stack ignores it, and the action has already
+   * happened either way. Payload: `{ message: string }`.
+   */
+  appNotice: "events:app:notice",
+  /**
    * Main → every BrowserWindow: a Library chat thread's metadata
    * changed (created, renamed, archived, anchor moved, status flipped
    * to streaming/awaiting-approval/idle, or last-message preview
@@ -334,15 +455,27 @@ export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
  *     can paint without a renderer→main metadata round trip.
  *   - `cancel`      — selector cancelled; hide the toast SYNCHRONOUSLY
  *     with no exit animation. Used so the user never sees the
- *     pre-shown placeholder when they Esc out of the selector.
- *   - `dismiss`     — user explicitly dismissed (X button, Esc on the
- *     toast itself, auto-dismiss countdown). Plays the exit animation.
+ *     pre-shown placeholder when they Esc out of the selector. A cancel
+ *     that ends a selector session (the toast was pre-shown `idle`)
+ *     brings the edge dock back if snaps are waiting on it, unless
+ *     `holdDock` says a recording is about to own the screen.
+ *     `chromeHide` marks the hide before a snapshot: it only ever
+ *     parks, whatever state it finds, because the dock coming back
+ *     then would put it in the picture.
+ *   - `dismiss`     — the renderer has nothing left to show (toast
+ *     closed and the dock is empty). The window parks.
+ *   - `tucked`      — the toast went to the screen-edge dock: snaps whose
+ *     enrichment was still running when their countdown ended wait
+ *     there as tabs. Also re-sent when a drag moves the dock to the
+ *     other side of the screen.
  */
 export type FloatOverEvent =
   | { kind: "show-idle" }
   | { kind: "show-loaded"; captureId: string; record?: CaptureRecord | undefined }
-  | { kind: "cancel" }
-  | { kind: "dismiss" };
+  | { kind: "cancel"; holdDock?: boolean; chromeHide?: boolean }
+  | { kind: "dismiss" }
+  | { kind: "tucked"; side: FloatOverDockSide };
+
 
 export type FloatOverVideoCopyShortcutEvent = {
   captureId: string;
@@ -388,9 +521,12 @@ export type SettingsChangedEvent = {
  * window and the caller supplied a `page`. The renderer flips its
  * hash through `setActivePage`, which re-validates the page id
  * against the same allowlist `useActivePage` uses for `hashchange`.
+ * `sub` is present only when main already validated it against
+ * `SETTINGS_PAGE_SUBS` for that page; absent means the page's hub.
  */
 export type SettingsNavigateEvent = {
   page: import("./protocol").SettingsPage;
+  sub?: string;
 };
 
 /**
@@ -447,7 +583,8 @@ import type {
   CartExportProgressEvent,
   DraftCart,
   SizzleProject,
-  SizzleRenderProgressEvent
+  SizzleRenderProgressEvent,
+  VideoExportProgressEvent
 } from "./protocol";
 import type {
   ChatApprovalResolvedEvent,
@@ -507,8 +644,12 @@ export type AiUsageUpdatedEvent = {
 };
 
 export type EventPayloads = {
+  [EVENT_CHANNELS.codexVersionAdvisoryChanged]: import("./protocol").DesktopCodexVersionAdvisory | null;
   [EVENT_CHANNELS.logEntry]: import("./protocol").AppLogEntry;
+  [EVENT_CHANNELS.windowFrameState]: WindowFrameState;
+  [EVENT_CHANNELS.trayWorkAreaChanged]: { widthDip: number; heightDip: number };
   [EVENT_CHANNELS.appUpdateStatus]: AppUpdateStatus;
+  [EVENT_CHANNELS.appUpdateCheckResult]: import("./protocol").AppUpdateCheckResult;
   [EVENT_CHANNELS.codexCompatibilityAlertChanged]:
     | import("./protocol").CodexCliCompatibilityAlert
     | null;
@@ -519,6 +660,8 @@ export type EventPayloads = {
   [EVENT_CHANNELS.sizzleCloseRequested]: { requestId: number };
   [EVENT_CHANNELS.cartChanged]: { cart: DraftCart };
   [EVENT_CHANNELS.cartExportProgress]: CartExportProgressEvent;
+  [EVENT_CHANNELS.renderProgress]: VideoExportProgressEvent;
+  [EVENT_CHANNELS.appNotice]: { message: string };
   [EVENT_CHANNELS.libraryChatThreadUpdated]: { thread: LibraryChatThreadView };
   [EVENT_CHANNELS.libraryChatStreamDelta]: LibraryChatStreamDeltaEvent;
   [EVENT_CHANNELS.libraryChatToolCall]: LibraryChatToolCallEvent;
@@ -561,3 +704,58 @@ export type TypedEventChannel = keyof EventPayloads;
  * time. A pick larger than this is a bug or an attack, not a user.
  */
 export const MAX_SELECTOR_EXTENTS = 64;
+
+/**
+ * Renderer → main: run one painted caption-button action.
+ *
+ * macOS insets its traffic lights into our title bar and Windows fills the
+ * `titleBarOverlay` strip it reserves, so on both the OS owns minimize /
+ * maximize / close. A frameless Linux window has neither — nothing draws those
+ * buttons but us, and nothing acts on them but this.
+ *
+ * Off the command bus for the same reason `app-menu:*` is: this is chrome
+ * plumbing for a renderer-painted title bar, not a `<domain>:<verb>` command
+ * with a Result envelope. `window-controls-bridge.ts` owns the main half.
+ */
+export const WINDOW_CONTROL_CHANNEL = "window-controls:invoke";
+
+/** Renderer → main: read this window's maximize state once, on mount. The
+ *  changes that follow arrive on `EVENT_CHANNELS.windowFrameState`. */
+export const WINDOW_FRAME_STATE_CHANNEL = "window-controls:state";
+
+/** What a painted caption button asks the main process to do. */
+export type WindowControlAction = "minimize" | "toggle-maximize" | "close";
+
+/** What the maximize button and the window hairline draw from. */
+export type WindowFrameState = { maximized: boolean };
+
+/**
+ * The renderer stages that are a WINDOW rather than a popover surface — the
+ * six that `platformWindowChrome()` builds, and the only ones that paint a
+ * title bar, caption buttons, or a window edge of their own.
+ *
+ * Shared because three places need the same answer and must not drift: the
+ * renderer stamps `data-chrome="window"` from it (App.tsx), library.css keys
+ * the Linux hairline off that attribute instead of re-listing stage names, and
+ * the main-process window-controls bridge refuses to minimize/maximize/close
+ * anything else — the tray popover, float-over toast, region selector and
+ * recording surfaces must never be reachable that way.
+ */
+export const WINDOW_CHROME_STAGES = [
+  "library",
+  "settings",
+  "sizzle",
+  "logs",
+  "document",
+  "local-agent-consent"
+] as const;
+
+export type WindowChromeStage = (typeof WINDOW_CHROME_STAGES)[number];
+
+export function isWindowChromeStage(stage: string | undefined | null): boolean {
+  return (
+    stage !== undefined &&
+    stage !== null &&
+    (WINDOW_CHROME_STAGES as readonly string[]).includes(stage)
+  );
+}

@@ -2,7 +2,9 @@
 // `commit=false` while moving and `commit=true` on release, the strip
 // body scrubs (seek), the scrim / labels follow the range, and the
 // compact variant hides playhead + waveform. jsdom has no layout, so
-// the strip's bounding rect is stubbed to 800 px.
+// the strip is stubbed to 800 px twice over: `clientWidth`, which is
+// what SIZES the handles / ticks / playhead, and the bounding rect,
+// which is what MAPS pointer coordinates.
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -18,8 +20,10 @@ beforeAll(() => {
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 let rectSpy: ReturnType<typeof vi.spyOn> | null = null;
+let clientWidthSpy: ReturnType<typeof vi.spyOn> | null = null;
 
 beforeEach(() => {
+  clientWidthSpy = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(800);
   rectSpy = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
     () =>
       ({
@@ -45,6 +49,8 @@ afterEach(() => {
   container = null;
   rectSpy?.mockRestore();
   rectSpy = null;
+  clientWidthSpy?.mockRestore();
+  clientWidthSpy = null;
 });
 
 function render(
@@ -134,6 +140,70 @@ describe("VideoTimeline", () => {
     act(() => inHandle.click());
 
     expect(parentClicks).toBe(0);
+  });
+
+  // Regression: the strip is SIZED from a layout measure, never from
+  // `getBoundingClientRect()`. In the Library the timeline mounts
+  // inside `.psl__focus`, whose `psl-focus-in` entrance animates
+  // `scale(0.985)` -> `scale(1)`, and the rect is post-transform — so
+  // a rect-sized strip came up ~1.5% short and, because a
+  // ResizeObserver only reports layout boxes, never corrected. The
+  // out handle, the ticks and the playhead sat ~14px inside the right
+  // edge and the right scrim dimmed that band at FULL CLIP.
+  //
+  // Standing in for the entrance transform: the rect reads 788 (800 x
+  // 0.985) while the layout box is still 800. Everything sized must
+  // follow the 800.
+  test("sizes off the layout box, not a transform-polluted rect", () => {
+    rectSpy!.mockImplementation(
+      () =>
+        ({
+          x: 0,
+          y: 0,
+          left: 0,
+          top: 0,
+          right: 788,
+          bottom: 80,
+          width: 788,
+          height: 80,
+          toJSON: () => ({})
+        }) as DOMRect
+    );
+    const widths: number[] = [];
+    const { el } = render({
+      range: { start: 0, end: 16 },
+      durationSec: 16,
+      currentTime: 16,
+      onWidthChange: (w) => widths.push(w)
+    });
+
+    expect(widths.at(-1)).toBe(800);
+
+    // All four consumers of `width`, because the bug hit all four and a
+    // partial fix would leave the ruler describing a different space
+    // than the strip. Each reads 788 (or a proportional short) when the
+    // measure regresses.
+    //
+    // 1. The out handle's own 8px sit just inside the right edge...
+    const outHandle = el.querySelector('[data-testid="video-timeline-out"]') as HTMLElement;
+    expect(outHandle.style.left).toBe("792px");
+    // 2. ...and the right scrim collapses to zero rather than dimming a
+    //    band of live filmstrip at FULL CLIP.
+    const rightScrim = el.querySelector(".vtl__scrim.is-right") as HTMLElement;
+    expect(rightScrim.style.left).toBe("800px");
+    // 3. The last tick lands ON the right edge, not short of it.
+    const ticks = el.querySelectorAll<HTMLElement>(".vtl__tick");
+    expect(ticks[ticks.length - 1]?.style.left).toBe("800px");
+    // 4. The playhead at the end of the clip reaches it.
+    const head = el.querySelector('[data-testid="video-timeline-playhead"]') as HTMLElement;
+    expect(head.style.transform).toBe("translateX(800px)");
+
+    // The control, and the reason this reads as "the RIGHT handle is
+    // broken": `inX` is `secToPx(0, …)`, which is 0 at every width
+    // including the wrong one. This assertion cannot fail — it is here
+    // to say so, not to cover anything.
+    const inHandle = el.querySelector('[data-testid="video-timeline-in"]') as HTMLElement;
+    expect(inHandle.style.left).toBe("0px");
   });
 
   test("dragging a trim handle seeks the preview to the edge it lands on", () => {
@@ -337,6 +407,94 @@ describe("VideoTimeline", () => {
     expect(playhead.style.transform).toBe("translateX(200px)");
   });
 
+  // The drag tooltip used to render inside `.vtl__strip`, which carries
+  // `overflow: hidden` for its border-radius — so a drag that reached
+  // either end had the tip's trailing digits sliced off at the strip
+  // edge ("0:01" where the value was "0:01.4"). Two halves to the fix
+  // and both are load-bearing: the tip has to sit OUTSIDE the clipping
+  // box, and it has to stay inside the strip once it is free of it,
+  // because the Library's `.psl__stage-wrap` clips at the stage edge and
+  // would take over where the strip left off.
+  describe("drag tooltip", () => {
+    // jsdom lays nothing out, so `offsetWidth` is 0 and the clamp is a
+    // no-op unless the tip's width is stubbed. 44px is about what the
+    // real `0:01.4` box measures at 10px mono + 6px padding + border.
+    const TIP_W = 44;
+    let tipSpy: ReturnType<typeof vi.spyOn> | null = null;
+    function stubTipWidth(px = TIP_W): void {
+      tipSpy = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(px);
+    }
+    afterEach(() => {
+      tipSpy?.mockRestore();
+      tipSpy = null;
+    });
+
+    /** Press the out handle at `clientX` and return the live tip. The
+     *  handle, not the strip body: that is the gesture in the report,
+     *  and it needs no `onSeek` to arm. `drag.sec` is the RAW pointer
+     *  time, so the tip reads the edge of the strip even where
+     *  `clampRange` holds the range back. */
+    function tipDuring(clientX: number): HTMLElement {
+      const { el } = render({ range: { start: 0, end: 16 } });
+      pointer(el.querySelector('[data-testid="video-timeline-out"]')!, "pointerdown", clientX);
+      return el.querySelector('[data-testid="video-timeline-tip"]') as HTMLElement;
+    }
+
+    test("renders outside the strip, so `overflow: hidden` cannot clip it", () => {
+      stubTipWidth();
+      const tip = tipDuring(400);
+      expect(tip).not.toBeNull();
+      expect(tip.closest(".vtl__strip")).toBeNull();
+      expect(tip.closest(".vtl__strip-wrap")).not.toBeNull();
+    });
+
+    test("is centred on the pointer away from the edges", () => {
+      stubTipWidth();
+      // 800px over 16s, pressed at 400px → 8s, dead centre. jsdom lays
+      // nothing out so `clientLeft` is 0 here; the border conversion is
+      // covered by the test below.
+      expect(tipDuring(400).style.left).toBe("400px");
+    });
+
+    // The tip's containing block is the WRAPPER, whose padding box is
+    // the strip's BORDER box — one border wider on each side than the
+    // padding box `tooltipX` is measured in. Without adding it back the
+    // tip drifts a border off the pointer, which is the same class of
+    // mistake as the ruler's inline margin.
+    test("converts out of the strip's padding box into the wrapper's", () => {
+      stubTipWidth();
+      const borderSpy = vi
+        .spyOn(Element.prototype, "clientLeft", "get")
+        .mockReturnValue(3);
+      try {
+        expect(tipDuring(400).style.left).toBe("403px");
+      } finally {
+        borderSpy.mockRestore();
+      }
+    });
+
+    test("stops at the right edge instead of hanging off it", () => {
+      stubTipWidth();
+      // Pressed at the far right, `translateX(-50%)` would put half the
+      // box past 800 — the case in the bug report.
+      expect(tipDuring(800).style.left).toBe(`${800 - TIP_W / 2}px`);
+    });
+
+    test("stops at the left edge too", () => {
+      stubTipWidth();
+      expect(tipDuring(0).style.left).toBe(`${TIP_W / 2}px`);
+    });
+
+    test("a strip narrower than the tip still yields a usable position", () => {
+      // Lower bound (half the tip) above upper bound (width - half):
+      // the clamp must not invert and put the tip off the far end.
+      stubTipWidth(900);
+      const left = Number(tipDuring(400).style.left.replace("px", ""));
+      expect(Number.isFinite(left)).toBe(true);
+      expect(left).toBe(450);
+    });
+  });
+
   test("a playhead source moves the head without re-rendering, and keeps aria in step", () => {
     const source = createPlayheadSource(0);
     const { el } = render({ range: { start: 0, end: 16 }, currentTime: 0, playhead: source });
@@ -446,5 +604,246 @@ describe("VideoTimeline", () => {
     // range change must not drag the live head back to it.
     rerender({ range: { start: 2, end: 16 }, currentTime: 0, playhead: source });
     expect(head.style.transform).toBe("translateX(400px)");
+  });
+});
+
+describe("VideoTimeline — splits and cuts", () => {
+  // 800 px ↔ 16 s → 50 px per second throughout.
+  type Change = { segments: readonly VideoRange[]; commit: boolean };
+
+  function editable(
+    segments: readonly VideoRange[],
+    extra: Partial<VideoTimelineProps> = {}
+  ): { el: HTMLDivElement; changes: Change[]; seeks: number[] } {
+    const changes: Change[] = [];
+    const seeks: number[] = [];
+    const first = segments[0]!;
+    const last = segments[segments.length - 1]!;
+    const { el } = render({
+      range: { start: first.start, end: last.end },
+      segments,
+      onSegmentsChange: (next, commit) => changes.push({ segments: next, commit }),
+      onSeek: (sec) => seeks.push(sec),
+      ...extra
+    });
+    return { el, changes, seeks };
+  }
+
+  const q = (el: Element, id: string): HTMLElement | null =>
+    el.querySelector(`[data-testid="${id}"]`);
+
+  test("an interior cut is drawn in place and the foot reports the kept length", () => {
+    const { el } = editable([
+      { start: 0, end: 4 },
+      { start: 9, end: 16 }
+    ]);
+    const cut = q(el, "video-timeline-cut")!;
+    expect(cut.style.left).toBe("200px");
+    expect(cut.style.width).toBe("250px");
+    expect(q(el, "video-timeline-trim-label")!.textContent).toBe("2 PARTS · 11 s OF 0:16.0");
+    // Both sides of the cut get an edge handle; the hint is for first-timers.
+    expect(q(el, "video-timeline-cut-in")).not.toBeNull();
+    expect(q(el, "video-timeline-cut-out")).not.toBeNull();
+    expect(q(el, "video-timeline-hint")).toBeNull();
+  });
+
+  test("hovering a kept part offers Cut, hovering a cut offers Keep", () => {
+    const { el, changes } = editable([
+      { start: 0, end: 4 },
+      { start: 9, end: 16 }
+    ]);
+    const strip = el.querySelector(".vtl__strip")!;
+
+    pointer(strip, "pointermove", 100);
+    const cutChip = q(el, "video-timeline-piece-chip")!;
+    expect(cutChip.textContent).toBe("Cut");
+    act(() => cutChip.click());
+    expect(changes).toEqual([{ segments: [{ start: 9, end: 16 }], commit: true }]);
+
+    pointer(strip, "pointermove", 300);
+    const keepChip = q(el, "video-timeline-piece-chip")!;
+    expect(keepChip.textContent).toBe("Keep");
+    act(() => keepChip.click());
+    // Restored as its own part, so both old boundaries survive as splits.
+    expect(changes[1]).toEqual({
+      segments: [
+        { start: 0, end: 4 },
+        { start: 4, end: 9 },
+        { start: 9, end: 16 }
+      ],
+      commit: true
+    });
+  });
+
+  test("no Cut chip when there is only one part to keep, and none over the trimmed ends", () => {
+    const { el } = editable([{ start: 2, end: 14 }]);
+    const strip = el.querySelector(".vtl__strip")!;
+    pointer(strip, "pointermove", 400);
+    expect(q(el, "video-timeline-piece-chip")).toBeNull();
+    pointer(strip, "pointermove", 20);
+    expect(q(el, "video-timeline-piece-chip")).toBeNull();
+    expect(q(el, "video-timeline-hint")!.textContent).toBe("S split · X cut");
+  });
+
+  test("a split moves only when dragged, and double-click removes it", () => {
+    const { el, changes, seeks } = editable([
+      { start: 0, end: 8 },
+      { start: 8, end: 16 }
+    ]);
+    const strip = el.querySelector(".vtl__strip")!;
+    const split = q(el, "video-timeline-split")!;
+    expect(q(el, "video-timeline-trim-label")!.textContent).toBe("FULL CLIP · 0:16.0 · 1 SPLIT");
+
+    // A press without movement — half of a double-click — changes nothing.
+    pointer(split, "pointerdown", 403);
+    pointer(strip, "pointerup", 403);
+    expect(changes).toEqual([]);
+
+    pointer(split, "pointerdown", 400);
+    pointer(strip, "pointermove", 450);
+    pointer(strip, "pointerup", 450);
+    expect(changes).toEqual([
+      { segments: [{ start: 0, end: 9 }, { start: 9, end: 16 }], commit: false },
+      { segments: [{ start: 0, end: 9 }, { start: 9, end: 16 }], commit: true }
+    ]);
+    expect(seeks.at(-1)).toBe(9);
+
+    act(() => {
+      split.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+    });
+    expect(changes.at(-1)).toEqual({ segments: [{ start: 0, end: 16 }], commit: true });
+  });
+
+  test("dragging a cut's edge onto the other side undoes the cut on release", () => {
+    const { el, changes } = editable([
+      { start: 0, end: 4 },
+      { start: 9, end: 16 }
+    ]);
+    const strip = el.querySelector(".vtl__strip")!;
+    pointer(q(el, "video-timeline-cut-in")!, "pointerdown", 197);
+    pointer(strip, "pointermove", 300);
+    // 447 px is 8.94 s — inside the snap, so it lands exactly on 9.
+    pointer(strip, "pointermove", 447);
+    pointer(strip, "pointerup", 447);
+    expect(changes[0]).toEqual({
+      segments: [{ start: 0, end: 6 }, { start: 9, end: 16 }],
+      commit: false
+    });
+    // Mid-drag the parts stay separate, so dragging back reopens the cut…
+    expect(changes.at(-2)).toEqual({
+      segments: [{ start: 0, end: 9 }, { start: 9, end: 16 }],
+      commit: false
+    });
+    // …and on release they are one part again, not a leftover split.
+    expect(changes.at(-1)).toEqual({ segments: [{ start: 0, end: 16 }], commit: true });
+  });
+
+  test("the cut's far edge undoes it the same way", () => {
+    const { el, changes } = editable([
+      { start: 0, end: 4 },
+      { start: 9, end: 16 }
+    ]);
+    const strip = el.querySelector(".vtl__strip")!;
+    pointer(q(el, "video-timeline-cut-out")!, "pointerdown", 450);
+    pointer(strip, "pointermove", 203);
+    pointer(strip, "pointerup", 203);
+    expect(changes.at(-1)).toEqual({ segments: [{ start: 0, end: 16 }], commit: true });
+  });
+
+  test("an edge released short of its neighbour keeps the cut", () => {
+    const { el, changes } = editable([
+      { start: 0, end: 4 },
+      { start: 9, end: 16 }
+    ]);
+    const strip = el.querySelector(".vtl__strip")!;
+    pointer(q(el, "video-timeline-cut-out")!, "pointerdown", 450);
+    pointer(strip, "pointermove", 300);
+    pointer(strip, "pointerup", 300);
+    expect(changes.at(-1)).toEqual({
+      segments: [{ start: 0, end: 4 }, { start: 6, end: 16 }],
+      commit: true
+    });
+  });
+
+  test("Escape mid-drag puts the parts back", () => {
+    const segments = [
+      { start: 0, end: 8 },
+      { start: 8, end: 16 }
+    ];
+    const { el, changes } = editable(segments);
+    const strip = el.querySelector(".vtl__strip")!;
+    pointer(q(el, "video-timeline-split")!, "pointerdown", 400);
+    pointer(strip, "pointermove", 600);
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", cancelable: true }));
+    });
+    expect(changes.at(-1)).toEqual({ segments, commit: true });
+  });
+
+  test("Full clip resets the parts, not just the outer handles", () => {
+    const ranges: VideoRange[] = [];
+    const { el, changes } = editable(
+      [
+        { start: 0, end: 4 },
+        { start: 9, end: 16 }
+      ],
+      { onRangeChange: (range) => ranges.push(range) }
+    );
+    act(() => q(el, "video-timeline-full-clip")!.click());
+    expect(changes).toEqual([{ segments: [{ start: 0, end: 16 }], commit: true }]);
+    expect(ranges).toEqual([]);
+  });
+
+  test("the activity lane draws the levels, and Cut idle removes the still stretch", () => {
+    // 5 Hz × 16 s: busy for 2 s, still for 8 s, busy for 6 s.
+    const magnitudes = [
+      ...Array.from({ length: 10 }, () => 255),
+      ...Array.from({ length: 40 }, () => 0),
+      ...Array.from({ length: 30 }, () => 255)
+    ];
+    const { el, changes } = editable([{ start: 0, end: 16 }], {
+      activity: { sampleHz: 5, magnitudes }
+    });
+    const lane = q(el, "video-timeline-activity")!;
+    expect(lane.querySelector(".vtl__act-l3")).not.toBeNull();
+    expect(lane.querySelector(".vtl__act-idle")).not.toBeNull();
+
+    const chip = q(el, "video-timeline-cut-idle")!;
+    // Still from 2 s to 10 s, less half a second of padding either side.
+    expect(chip.textContent).toBe("Cut idle −7 s");
+    act(() => {
+      chip.dispatchEvent(new MouseEvent("pointerover", { bubbles: true }));
+    });
+    const preview = q(el, "video-timeline-idle-preview")!;
+    expect(preview.style.left).toBe("125px");
+    expect(preview.style.width).toBe("350px");
+
+    act(() => chip.click());
+    expect(changes).toEqual([
+      { segments: [{ start: 0, end: 2.5 }, { start: 9.5, end: 16 }], commit: true }
+    ]);
+  });
+
+  test("a still-loading track draws an empty lane and offers no Cut idle", () => {
+    const { el } = editable([{ start: 0, end: 16 }], { activity: null });
+    expect(q(el, "video-timeline-activity")!.classList.contains("is-loading")).toBe(true);
+    expect(q(el, "video-timeline-cut-idle")).toBeNull();
+  });
+
+  test("compact: cuts are drawn but not editable", () => {
+    const { el } = render({
+      compact: true,
+      range: { start: 0, end: 16 },
+      segments: [
+        { start: 0, end: 4 },
+        { start: 9, end: 16 }
+      ],
+      onSegmentsChange: () => undefined
+    });
+    expect(q(el, "video-timeline-cut")).not.toBeNull();
+    expect(q(el, "video-timeline-cut-in")).toBeNull();
+    expect(q(el, "video-timeline-hint")).toBeNull();
+    pointer(el.querySelector(".vtl__strip")!, "pointermove", 100);
+    expect(q(el, "video-timeline-piece-chip")).toBeNull();
   });
 });

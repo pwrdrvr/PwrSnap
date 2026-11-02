@@ -5,11 +5,11 @@
 // exactly. For non-PwrSnap consumers (Slack, Mail, Claude, Messages)
 // the copy ALSO writes a flattened composite (`public.png` +
 // `public.tiff`) in the SAME pasteboard generation as the UTI bytes.
-// Electron can't co-write a custom UTI and image atomically (each
-// clipboard.write* clears the pasteboard), so the editor layer copy
-// performs that single multi-type write through a native macOS helper
-// — see apps/desktop/src/main/native-clipboard.ts and the
-// `--write-clipboard` subcommand in native/window-list/main.swift.
+// On macOS the editor layer copy performs that single multi-type write
+// through a native helper, which writes the PNG verbatim — see
+// apps/desktop/src/main/native-clipboard.ts and the `--write-clipboard`
+// subcommand in native/window-list/main.swift. (Before Electron 44 it was
+// also the only way: each clipboard.write* cleared the pasteboard.)
 //
 // Five layers of defense the receiving paste handler enforces — see
 // docs/architecture-bundle-format.md

@@ -15,6 +15,13 @@ type QuitApp = Pick<App, "on" | "quit">;
 const barriers = new Map<number, CloseBarrierState>();
 let quitApp: QuitApp | null = null;
 let quitDeferred = false;
+const quitCancelledListeners = new Set<() => void>();
+
+/** Observe an explicit cancellation of app quit, rather than a pending save. */
+export function onSizzleQuitCancelled(listener: () => void): () => void {
+  quitCancelledListeners.add(listener);
+  return () => { quitCancelledListeners.delete(listener); };
+}
 
 function sendPendingRequest(state: CloseBarrierState): void {
   if (
@@ -135,7 +142,11 @@ export function completeSizzleCloseRequest(
   state.pendingRequestId = null;
   state.requestSent = false;
   if (action === "cancel") {
+    const cancelledQuit = quitDeferred;
     quitDeferred = false;
+    if (cancelledQuit) {
+      for (const listener of quitCancelledListeners) listener();
+    }
     return true;
   }
 

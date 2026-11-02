@@ -16,25 +16,58 @@
 // fire and call onDismiss → main hides the freshly-shown toast. With a
 // persistent renderer there's no reload, and the timer cleanup added
 // to FloatOver in this same phase clears the timer on unmount.
+//
+// The host also owns the screen-edge DOCK (float-over-dock-model.ts):
+// recent snaps retained when their toast's countdown runs out, regardless
+// of model status. It is the renderer's list because the renderer is
+// what knows each snap's enrichment status; main only knows where the
+// dock sits and whether the window is showing the toast or the tabs.
+// The same window draws both — `mode` says which, and every layout post
+// is tagged with it so main can drop one drawn for the shape it has
+// already left.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   EVENT_CHANNELS,
   exportStrategyFromSettings,
+  floatOverRailFits,
+  floatOverMaxContentHeightCss,
+  floatOverToastWidthCss,
+  popoverDensityForWorkArea,
   type AcpAgentDiscovery,
   type CaptureEnrichment,
   type CaptureRecord,
   type DesktopCodexDiscoverySnapshot,
+  type FloatOverDockSide,
   type FloatOverEvent,
   type FloatOverVideoCopyShortcutEvent,
+  type LibraryCursor,
   type RenderPreset,
   type Settings,
   type SettingsChangedEvent,
   type ShortcutPlatform
 } from "@pwrsnap/shared";
 import { FloatOver } from "./FloatOver";
+import { FloatOverDock, FloatOverRail } from "./FloatOverDock";
+import {
+  DOCK_VISIBLE_CAP,
+  clearFinishedDockItems,
+  dockItemLabel,
+  firstRunDeadline,
+  hasFinishedDockItems,
+  mayAwaitFirstRun,
+  catalogRailItems,
+  mergeCatalogRecords,
+  railInFlightCount,
+  removeCatalogRecords,
+  removeDockItem,
+  splitDockItems,
+  updateDockEnrichment,
+  upsertDockItem,
+  type DockItem
+} from "./float-over-dock-model";
 import type { VideoCopyShortcutRequest } from "../shared/VideoExportPresetsPanel";
-import { enrichmentBackendLabel } from "../shared/CodexStatusPill";
+import { enrichmentBackendLabel, enrichmentRunBackend } from "../shared/CodexStatusPill";
 import { isEnrichmentProviderAvailable } from "../shared/enrichment-provider-availability";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { useSurfaceCopyShortcuts } from "../shared/useSurfaceCopyShortcuts";
@@ -42,6 +75,90 @@ import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/p
 import { copyImagePreset, copyImagePresetPath } from "../../lib/clipboard-copy";
 import { useCapturesLocationDisplayState } from "../../lib/useCapturesLocationDisplayState";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
+
+/** One `library:list` page of the rail's catalog. */
+const CATALOG_PAGE_SIZE = 30;
+
+type Catalog = {
+  readonly rows: readonly CaptureRecord[];
+  /** Where the next page starts; null once the whole library is loaded. */
+  readonly cursor: LibraryCursor | null;
+  /** At least the first page has arrived. */
+  readonly started: boolean;
+};
+
+const EMPTY_CATALOG: Catalog = { rows: [], cursor: null, started: false };
+
+/** Whether a record falls inside the contiguous, newest-first window the
+ *  catalog has loaded. One past it belongs to a page not fetched yet. */
+function inCatalogWindow(record: CaptureRecord, cursor: LibraryCursor | null): boolean {
+  if (cursor === null) return true;
+  if (record.captured_at !== cursor.capturedAt) return record.captured_at > cursor.capturedAt;
+  return record.id >= cursor.id;
+}
+
+/**
+ * How tall the toast may render, in CSS pixels, before `.fo__body`
+ * starts scrolling instead of growing.
+ *
+ * **Every input here is independent of the toast window's current
+ * size, and that is the whole point.** Main sizes the window from what
+ * the wrapper below measures, so a cap read off the window — `100vh`,
+ * `window.innerHeight`, the wrapper's own clientHeight — closes a loop:
+ * the wrapper would report `min(natural, current window)`, main would
+ * size the window to that, and the toast could never grow again.
+ * Content that arrived later (a third row of tags, an update row, a
+ * long Codex error) would be permanently unreachable, and unlike the
+ * clipping this replaces it would not heal on the next capture. See
+ * AGENTS.md §"Tray + float-over popover sizing" and
+ * §"Never mix a post-transform rect with a layout measure".
+ *
+ * The two inputs, both measured stable under zoom on Electron 41:
+ *
+ *   - `window.screen.availHeight` — the work area of the display this
+ *     window is on, in DIP. Equals `Display.workArea.height` exactly
+ *     and does NOT change with page zoom (`window.innerHeight` does,
+ *     which is precisely why it can't be used). Covers displays too
+ *     short for the constant ceiling.
+ *   - `getZoomFactor()` — so the DIP ceiling lands as the right number
+ *     of CSS pixels. Main converts back with the same factor.
+ *
+ * Both are read fresh per call rather than captured at mount, because
+ * both can change under a live toast: the session zoom moves whenever
+ * the user presses ⌘+ in the Library (the `matchMedia` DPR listener
+ * below re-posts when it does), and the window is re-anchored per
+ * capture, possibly onto another display. There is no separate trigger
+ * for a display change with no content change; main clamps to the
+ * anchored display's work area as the backstop for that.
+ */
+function maxContentHeightCss(): number {
+  const availHeight =
+    typeof window.screen?.availHeight === "number" ? window.screen.availHeight : null;
+  return floatOverMaxContentHeightCss({
+    workAreaHeightDip: availHeight,
+    // jsdom and any preload build without the accessor fall back to
+    // 1:1, which is the un-zoomed case and the common one.
+    zoomFactor: window.pwrsnapApi?.getZoomFactor?.() ?? 1
+  });
+}
+
+function rendererWorkAreaDip(): { width: number | null; height: number | null } {
+  return {
+    width: typeof window.screen?.availWidth === "number" ? window.screen.availWidth : null,
+    height: typeof window.screen?.availHeight === "number" ? window.screen.availHeight : null
+  };
+}
+
+/** The toast's width in CSS pixels. Read per post for the same reason
+ *  as the height cap: the zoom can change under a live toast. */
+function toastWidthCss(): number {
+  const workArea = rendererWorkAreaDip();
+  return floatOverToastWidthCss(
+    window.pwrsnapApi?.getZoomFactor?.() ?? 1,
+    workArea.width,
+    workArea.height
+  );
+}
 
 type HostState =
   | { kind: "idle" }
@@ -72,6 +189,40 @@ type AiRunUpdatedPayload = {
   enrichment?: CaptureEnrichment | null;
 };
 
+/** The parts of the float-over window that are drawn and take clicks.
+ *  Everything else in it is see-through, and a click there goes to the
+ *  app behind the window. */
+const FLOAT_OVER_SOLID = ".fo-shell__toast, .fo-rail, .fod-tab, .fod-more";
+
+/** What the window is showing: the toast (with the rail beside it when
+ *  other snaps are waiting), or the tabs on the screen edge. */
+type HostMode = "toast" | "dock";
+
+/** The snap the toast is showing, in the dock's terms. */
+function currentDockItem(state: HostState, addedAt: number): DockItem | null {
+  switch (state.kind) {
+    case "idle":
+      return null;
+    case "loading":
+    case "error":
+      return { captureId: state.captureId, addedAt, record: null, enrichment: null };
+    case "loaded":
+      return {
+        captureId: state.record.id,
+        addedAt,
+        record: state.record,
+        enrichment: state.enrichment
+      };
+  }
+}
+
+function capturesChangedIds(payload: unknown): string[] {
+  if (typeof payload !== "object" || payload === null) return [];
+  const raw = (payload as { changedIds?: unknown }).changedIds;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((id): id is string => typeof id === "string");
+}
+
 export type FloatOverHostProps = {
   /** Explicit host semantics keep local shortcut behavior deterministic. */
   readonly shortcutPlatform?: ShortcutPlatform;
@@ -85,11 +236,230 @@ export function FloatOverHost({
   const [videoCopyShortcut, setVideoCopyShortcut] =
     useState<VideoCopyShortcutRequest | null>(null);
   const videoCopyShortcutSequenceRef = useRef(0);
+  const stateRequestedRef = useRef(false);
   const [codexAvailable, setCodexAvailable] = useState<boolean | undefined>(undefined);
   // ACP-agent install status, so an ACP enrichment backend (Kimi/Gemini/Grok/
   // Qwen) counts as available even when Codex is absent — see
   // isEnrichmentProviderAvailable.
   const [acpDiscovery, setAcpDiscovery] = useState<AcpAgentDiscovery | undefined>(undefined);
+
+  // ---- the screen-edge dock -------------------------------------------
+  const [mode, setMode] = useState<HostMode>("toast");
+  const [dockSide, setDockSide] = useState<FloatOverDockSide>("right");
+  const [queue, setQueue] = useState<readonly DockItem[]>([]);
+  // The event listeners below are registered once, so they read the
+  // queue through this ref; `commitQueue` keeps the two in step.
+  const queueRef = useRef<readonly DockItem[]>([]);
+  const commitQueue = (next: readonly DockItem[]): void => {
+    queueRef.current = next;
+    setQueue(next);
+  };
+  // False until main answers, and false for good where PwrSnap cannot
+  // place its own windows (native Wayland): the toast then holds the
+  // corner while the model reads, as it always did.
+  const [dockSupported, setDockSupported] = useState(false);
+  const dockSupportedRef = useRef(false);
+  const [railHover, setRailHover] = useState(false);
+  // Chromium does not consistently synthesize React's mouseleave when the
+  // pointer exits a transparent BrowserWindow through its outer edge on
+  // Windows. The rail's enter can therefore be the last event React sees,
+  // leaving the toast's external-hover pause latched forever. Window-level
+  // mouseout is the native boundary signal (`relatedTarget === null`); blur
+  // covers the same stale state when the window loses activation instead.
+  useEffect(() => {
+    const clearRailHoverOnWindowExit = (event: MouseEvent): void => {
+      if (event.relatedTarget === null) setRailHover(false);
+    };
+    const clearRailHover = (): void => setRailHover(false);
+    window.addEventListener("mouseout", clearRailHoverOnWindowExit);
+    window.addEventListener("blur", clearRailHover);
+    return () => {
+      window.removeEventListener("mouseout", clearRailHoverOnWindowExit);
+      window.removeEventListener("blur", clearRailHover);
+    };
+  }, []);
+  // The rail's catalog: every snap, newest first, a page at a time.
+  const [catalog, setCatalog] = useState<Catalog>(EMPTY_CATALOG);
+  const catalogRef = useRef<Catalog>(EMPTY_CATALOG);
+  const commitCatalog = (next: Catalog): void => {
+    catalogRef.current = next;
+    setCatalog(next);
+  };
+  const catalogLoadingRef = useRef(false);
+  // The last word from the model on every snap this window has heard
+  // about, so a snap opened again from the rail shows its title (and no
+  // stale "waiting" ring) without a round trip first.
+  const enrichmentsRef = useRef(new Map<string, CaptureEnrichment>());
+  const [menuOpen, setMenuOpen] = useState(false);
+  // Bumped on every state event so the layout effect re-posts even when
+  // the new shape measures the same as the old one. Main parks the window
+  // when its shape changes and shows it again only on a post for the new
+  // shape, so a post that never comes is a window that never shows.
+  const [layoutEpoch, setLayoutEpoch] = useState(0);
+  // When the float-over first showed the snap on the toast. Set by the
+  // event handler before the state that renders it.
+  const shownRef = useRef<{ captureId: string; addedAt: number } | null>(null);
+  // The snap whose place (dock or gone) has already been decided. The
+  // host decides at the close it caused, and main's echo of that close
+  // must not decide again — by then the model may have answered, and a
+  // snap tucked unread would be dropped as "finished".
+  const settledRef = useRef<string | null>(null);
+  const aiWillRunRef = useRef(false);
+  const lastSettingsRef = useRef<Settings | null>(null);
+  const toastItem = currentDockItem(state, shownRef.current?.addedAt ?? 0);
+  const currentRef = useRef(toastItem);
+  currentRef.current = toastItem;
+  const activeCaptureRefreshSequenceRef = useRef(0);
+  if (state.kind === "loaded" && state.settings !== null) lastSettingsRef.current = state.settings;
+  const loadedSettings = state.kind === "loaded" ? state.settings : null;
+  const enrichmentProviderAvailable = isEnrichmentProviderAvailable({
+    provider: loadedSettings?.ai.defaults.enrichment.provider,
+    customModels: loadedSettings?.ai.customModels,
+    codexAvailable,
+    acpDiscovery
+  });
+  aiWillRunRef.current =
+    loadedSettings !== null &&
+    loadedSettings.ai.enabled &&
+    loadedSettings.ai.consentAcceptedAt !== null &&
+    loadedSettings.ai.budgetSafetyDisabledAt === null &&
+    enrichmentProviderAvailable !== false;
+
+  const retainSnap = (item: DockItem): void => {
+    commitQueue(upsertDockItem(queueRef.current, {
+      ...item,
+      awaitingFirstRun: aiWillRunRef.current && mayAwaitFirstRun(item.record, Date.now())
+    }));
+  };
+
+  /**
+   * The snap on the toast is leaving it because something else took the
+   * window: a new capture, another snap opened, the tuck. Every snap
+   * stays available on the dock, independent of AI status. Main is told
+   * that snaps remain without touching the screen, so the end of the capture session can bring the
+   * dock back even though this toast never tucked.
+   */
+  const leaveCurrent = (): void => {
+    const leaving = currentRef.current;
+    if (leaving === null || settledRef.current === leaving.captureId) return;
+    settledRef.current = leaving.captureId;
+    if (dockSupportedRef.current) {
+      retainSnap(leaving);
+      void dispatch("float-over:tuck", { markOnly: true });
+      return;
+    }
+    commitQueue(removeDockItem(queueRef.current, leaving.captureId));
+  };
+
+  /**
+   * The toast is closing by the host's own hand: the countdown ran out,
+   * or the user dismissed it, opened it in the Library, or discarded it.
+   * With recent snaps retained the window becomes the dock; with none it
+   * goes away.
+   */
+  const closeToast = (keepRecent: boolean): void => {
+    const closing = currentRef.current;
+    if (closing !== null && settledRef.current !== closing.captureId) {
+      settledRef.current = closing.captureId;
+      if (keepRecent && dockSupportedRef.current) retainSnap(closing);
+      else commitQueue(removeDockItem(queueRef.current, closing.captureId));
+    }
+    if (queueRef.current.length === 0) {
+      void dispatch("float-over:dismiss", {});
+      return;
+    }
+    void dispatch("float-over:tuck", {}).then((result) => {
+      if (result.ok && result.value?.docked === true) return;
+      // Placement turned out not to be ours: nothing can show the dock.
+      commitQueue([]);
+      void dispatch("float-over:dismiss", {});
+    });
+  };
+
+  /**
+   * The next page of the catalog (the first, when `restart`). One load
+   * at a time; a page that lands after a restart began is dropped.
+   * Only refs and `dispatch` are read, so the listeners registered once
+   * below can call it.
+   */
+  const catalogEpochRef = useRef(0);
+  const loadCatalogPage = (restart: boolean): void => {
+    if (restart) {
+      catalogEpochRef.current += 1;
+      catalogLoadingRef.current = false;
+    }
+    const current = catalogRef.current;
+    if (catalogLoadingRef.current) return;
+    if (!restart && current.started && current.cursor === null) return;
+    catalogLoadingRef.current = true;
+    const epoch = catalogEpochRef.current;
+    const cursor = restart ? undefined : current.cursor ?? undefined;
+    void dispatch("library:list", {
+      limit: CATALOG_PAGE_SIZE,
+      ...(cursor === undefined ? {} : { cursor })
+    }).then((result) => {
+      if (epoch !== catalogEpochRef.current) return;
+      catalogLoadingRef.current = false;
+      // A bridge that answers with nothing (a test double, a verb this
+      // window may not call) leaves the rail to the toast's own snap.
+      const page = result.ok ? result.value : null;
+      if (page == null) return;
+      const base = restart ? [] : catalogRef.current.rows;
+      commitCatalog({
+        rows: mergeCatalogRecords(base, page.rows),
+        cursor: page.nextCursor,
+        started: true
+      });
+    });
+  };
+
+  /** Snaps changed somewhere (captured, edited, deleted, restored):
+   *  re-read the ones the catalog shows or should. */
+  const refreshCatalogRecords = (ids: readonly string[]): void => {
+    if (ids.length === 0) {
+      // A bulk change that names nothing: start over from the top.
+      loadCatalogPage(true);
+      return;
+    }
+    void dispatch("library:listByIds", { ids: [...ids] }).then((result) => {
+      const rows = result.ok ? result.value?.rows : undefined;
+      if (rows === undefined) return;
+      const current = catalogRef.current;
+      const found = new Set(rows.map((row) => row.id));
+      const gone = ids.filter((id) => !found.has(id));
+      const incoming = rows.filter((row) => inCatalogWindow(row, current.cursor));
+      commitCatalog({
+        ...current,
+        rows: mergeCatalogRecords(removeCatalogRecords(current.rows, gone), incoming)
+      });
+    });
+  };
+
+  const openSnap = (captureId: string): void => {
+    void dispatch("float-over:open", { captureId });
+  };
+
+  const popOverflow = (overflow: readonly DockItem[], exceptCaptureId: string | null): void => {
+    if (menuOpen) return;
+    setMenuOpen(true);
+    void dispatch("float-over:overflowMenu", {
+      items: overflow.map((item) => ({ captureId: item.captureId, label: dockItemLabel(item) })),
+      canClearFinished: hasFinishedDockItems(queueRef.current, exceptCaptureId)
+    }).then((result) => {
+      setMenuOpen(false);
+      if (!result.ok) return;
+      const choice = result.value.choice;
+      if (choice?.kind === "open") openSnap(choice.captureId);
+      else if (choice?.kind === "clear-finished") {
+        commitQueue(clearFinishedDockItems(queueRef.current, exceptCaptureId));
+      }
+    });
+  };
+
+  // The event listeners are registered once; they reach the latest
+  // closures through this ref.
+  const dockActionsRef = useRef({ leaveCurrent, closeToast });
+  dockActionsRef.current = { leaveCurrent, closeToast };
   const fallbackCapturesLocation =
     state.kind === "loaded"
       ? state.settings?.storage.capturesLocation ?? "documents"
@@ -127,28 +497,58 @@ export function FloatOverHost({
 
   // ResizeObserver → main: shrink the BrowserWindow to fit the visible
   // toast. Same pattern as TrayMenu.tsx's `pwrsnap:tray:resize`
-  // plumbing: post the wrapper's natural height only. Do not add
+  // plumbing: post the wrapper's natural size only. Do not add
   // transparent shadow padding here — BrowserWindow hit testing uses
   // the full rectangular window bounds, so extra invisible content
-  // below the toast blocks clicks on whatever sits under it.
+  // below the toast blocks clicks on whatever sits under it. The same
+  // holds for the width: the rail and the dock are measured, never
+  // padded, and the dock's resting width is the 18px sliver.
   const contentRef = useRef<HTMLDivElement | null>(null);
   // Last-seen `settings.codex` slice (JSON), used to skip Codex
   // discovery refreshes on broadcasts that didn't touch it. Mirrors
   // Library's gate.
   const lastCodexSettingsRef = useRef<string | null>(null);
+  const dockEmpty = queue.length === 0;
   useLayoutEffect(() => {
     const el = contentRef.current;
     if (el === null) return;
     const post = (): void => {
+      // An empty dock is about to be dismissed; a post for it would
+      // show main a 1px strip until the dismiss lands.
+      if (mode === "dock" && dockEmpty) return;
+      // Publish the ceiling BEFORE measuring, so the rect we read is
+      // already the capped one. `.fo` wears it as a max-height and
+      // scrolls its own middle (`.fo__body`) past it, which is what
+      // keeps the pinned footer — Discard / Dismiss / Edit — inside
+      // the window main is about to size. Without it, content past
+      // main's clamp is simply cut off the bottom.
+      const workArea = rendererWorkAreaDip();
+      el.dataset.popoverDensity = popoverDensityForWorkArea({
+        widthDip: workArea.width,
+        heightDip: workArea.height
+      });
+      el.style.setProperty("--fo-max-h", `${maxContentHeightCss()}px`);
+      el.style.setProperty("--fo-w", `${toastWidthCss()}px`);
+      // The rail is as tall as its thumbnails, and never taller than the
+      // toast beside it (past that it scrolls). A layout measure, so an
+      // entrance transform cannot bake itself in.
+      const toast = el.querySelector<HTMLElement>(".fo-shell__toast");
+      if (toast !== null) el.style.setProperty("--fo-rail-max", `${toast.offsetHeight}px`);
       const rect = el.getBoundingClientRect();
       window.pwrsnapApi?.requestFloatOverResize?.({
         width: Math.ceil(rect.width),
-        height: Math.ceil(rect.height)
+        height: Math.ceil(rect.height),
+        mode
       });
     };
     post();
     const ro = new ResizeObserver(post);
     ro.observe(el);
+    // The toast on its own too: when it shrinks, a rail capped at its
+    // old height holds the wrapper where it was, and only the toast's
+    // own box reports the change.
+    const toastEl = el.querySelector(".fo-shell__toast");
+    if (toastEl !== null) ro.observe(toastEl);
     // Zoom self-detection — identical machinery to TrayMenu.tsx (see
     // the long comment there). Short version: a session zoom change
     // (⌘+ in the library propagates here via Chromium's HostZoomMap)
@@ -177,23 +577,71 @@ export function FloatOverHost({
       ro.disconnect();
       dprQuery?.removeEventListener("change", onDprChange);
     };
-  }, [state.kind]);
+  }, [state.kind, mode, layoutEpoch, dockEmpty]);
 
-  // Subscribe to main → renderer state events. One listener for the
-  // life of the renderer; main re-emits its last event on
-  // `did-finish-load` so the first capture-of-session doesn't miss
-  // the IPC.
+  // Clicks on the see-through parts of the window (below the rail, the
+  // gaps between dock tabs) go to the app behind it: tell main whenever
+  // the pointer crosses between those and something drawn. Main forwards
+  // mouse moves while it ignores clicks, so this keeps hearing the
+  // pointer. Main resets to "taking clicks" on every show and park,
+  // which each follow a state event, so the memo resets with the epoch.
+  useEffect(() => {
+    let sent: boolean | null = null;
+    const onMove = (event: MouseEvent): void => {
+      const target = event.target;
+      const through = !(target instanceof Element) || target.closest(FLOAT_OVER_SOLID) === null;
+      if (through === sent) return;
+      sent = through;
+      window.pwrsnapApi?.setFloatOverPassThrough?.(through);
+    };
+    document.addEventListener("mousemove", onMove);
+    return () => document.removeEventListener("mousemove", onMove);
+  }, [mode, layoutEpoch]);
+
+  // Subscribe to main → renderer state events, then ask main for the
+  // current state. The order matters: main replies on this same channel,
+  // and an event that arrives before the listener exists is dropped. The
+  // window is created by the first capture of the session, so its event
+  // always predates this effect, however long the first render takes.
   useEffect(() => {
     const unsubscribe = window.pwrsnapApi?.on(EVENT_CHANNELS.floatOverState, (payload) => {
       const event = payload as FloatOverEvent;
+      // A record refresh belongs to the toast that requested it, even
+      // if the same capture is opened again before the read resolves.
+      activeCaptureRefreshSequenceRef.current += 1;
       // A shortcut is a one-shot action for the currently mounted toast.
       // Do not replay the last action if the same capture is re-shown later.
       setVideoCopyShortcut(null);
+      setLayoutEpoch((epoch) => epoch + 1);
+      const dock = dockActionsRef.current;
       switch (event.kind) {
         case "show-idle":
+          // A new capture took the window; the toast's snap leaves it.
+          dock.leaveCurrent();
+          setMode("toast");
           setState({ kind: "idle" });
           return;
-        case "show-loaded":
+        case "show-loaded": {
+          if (currentRef.current?.captureId !== event.captureId) dock.leaveCurrent();
+          settledRef.current = null;
+          setMode("toast");
+          setRailHover(false);
+          const waiting = queueRef.current.find((item) => item.captureId === event.captureId);
+          // Opened from the rail: the catalog has the record already.
+          const listed = catalogRef.current.rows.find((row) => row.id === event.captureId);
+          const remembered = enrichmentsRef.current.get(event.captureId) ?? null;
+          const known =
+            waiting?.record != null
+              ? { record: waiting.record, enrichment: waiting.enrichment ?? remembered }
+              : listed !== undefined
+                ? { record: listed, enrichment: remembered }
+                : undefined;
+          if (shownRef.current?.captureId !== event.captureId) {
+            shownRef.current = {
+              captureId: event.captureId,
+              addedAt: waiting?.addedAt ?? Date.now()
+            };
+          }
           // The 6-card export grid auto-resets per (format, preset)
           // when its `captureId` prop changes — no separate reset
           // dispatch needed.
@@ -204,20 +652,201 @@ export function FloatOverHost({
               enrichment: null,
               settings: null
             });
+          } else if (known !== undefined) {
+            // Opened from the dock or the rail: the host already has the
+            // record, and whatever the model has said so far. Going
+            // through LOADING would flash "Loading capture…" first.
+            setState({
+              kind: "loaded",
+              record: known.record,
+              enrichment: known.enrichment,
+              settings: lastSettingsRef.current
+            });
+            if (known.enrichment === null) {
+              const captureId = event.captureId;
+              void dispatch("codex:enrichment", { captureId }).then((result) => {
+                if (!result.ok || result.value === null) return;
+                const enrichment = result.value;
+                setState((prev) =>
+                  prev.kind === "loaded" && prev.record.id === captureId && prev.enrichment === null
+                    ? { ...prev, enrichment }
+                    : prev
+                );
+              });
+            }
           } else {
             setState({ kind: "loading", captureId: event.captureId });
           }
           return;
+        }
         case "cancel":
-        case "dismiss":
-          // Main is hiding the window. Reset to IDLE so a subsequent
-          // show-idle re-uses a clean React tree (no stale countdown
-          // state from the previous LOADED toast).
+          // Main is hiding the window: a new capture is about to be
+          // taken (the chrome hide), or the selector was cancelled.
+          // Reset to IDLE so a subsequent show-idle re-uses a clean
+          // React tree (no stale countdown state from the previous
+          // LOADED toast).
+          dock.leaveCurrent();
+          setMode("toast");
           setState({ kind: "idle" });
+          return;
+        case "dismiss":
+          // Nothing is left to show, and main has forgotten the dock.
+          commitQueue([]);
+          setMode("toast");
+          setState({ kind: "idle" });
+          return;
+        case "tucked":
+          dock.leaveCurrent();
+          setDockSide(event.side);
+          setRailHover(false);
+          setState({ kind: "idle" });
+          if (queueRef.current.length === 0) {
+            // A renderer that reloaded has lost the list; an empty dock
+            // has nothing to offer.
+            setMode("toast");
+            void dispatch("float-over:dismiss", {});
+            return;
+          }
+          setMode("dock");
           return;
       }
     });
+    // Once per mount. StrictMode re-runs this effect, and a second reply
+    // would re-apply `show-loaded`, which resets enrichment to null.
+    if (!stateRequestedRef.current) {
+      stateRequestedRef.current = true;
+      window.pwrsnapApi?.requestFloatOverState?.();
+    }
     return () => {
+      unsubscribe?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void dispatch("float-over:capabilities", {}).then((result) => {
+      if (cancelled) return;
+      const supported = result.ok && result.value?.dock === true;
+      dockSupportedRef.current = supported;
+      setDockSupported(supported);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // The catalog loads the first time a toast shows, then keeps itself
+  // current from the captures-changed broadcast.
+  const toastShowing = state.kind === "loaded" && mode === "toast";
+  useEffect(() => {
+    if (toastShowing && !catalogRef.current.started) loadCatalogPage(false);
+  }, [toastShowing]);
+  // A snap that has been on the toast exists, whether or not its
+  // captures-changed broadcast has arrived: keep it in the catalog, so
+  // leaving it for another never takes it off the rail.
+  const shownRecord = state.kind === "loaded" ? state.record : null;
+  const shownEnrichment = state.kind === "loaded" ? state.enrichment : null;
+  useEffect(() => {
+    if (shownEnrichment !== null) {
+      enrichmentsRef.current.set(shownEnrichment.captureId, shownEnrichment);
+    }
+  }, [shownEnrichment]);
+  useEffect(() => {
+    const current = catalogRef.current;
+    if (shownRecord === null || !current.started) return;
+    if (!inCatalogWindow(shownRecord, current.cursor)) return;
+    const listed = current.rows.find((row) => row.id === shownRecord.id);
+    if (listed === shownRecord) return;
+    commitCatalog({ ...current, rows: mergeCatalogRecords(current.rows, [shownRecord]) });
+  }, [shownRecord]);
+
+  // The dock emptied under the tabs ("Clear finished", a snap deleted in
+  // the Library): nothing is left to show.
+  useEffect(() => {
+    if (mode === "dock" && dockEmpty) void dispatch("float-over:dismiss", {});
+  }, [mode, dockEmpty]);
+
+  // A snap can join the dock before anything has told the host where its
+  // enrichment stands (a toast shown with its record inline starts at
+  // null and waits for the first broadcast). Ask once per snap, and let
+  // a broadcast that got there first win.
+  const enrichmentAskedRef = useRef(new Set<string>());
+  useEffect(() => {
+    for (const item of queue) {
+      if (item.enrichment !== null || enrichmentAskedRef.current.has(item.captureId)) continue;
+      enrichmentAskedRef.current.add(item.captureId);
+      void dispatch("codex:enrichment", { captureId: item.captureId }).then((result) => {
+        if (!result.ok || result.value === null) return;
+        const enrichment = result.value;
+        const entry = queueRef.current.find((e) => e.captureId === enrichment.captureId);
+        if (entry === undefined || entry.enrichment !== null) return;
+        commitQueue(updateDockEnrichment(queueRef.current, enrichment));
+      });
+    }
+  }, [queue]);
+
+  // Enrichment can be skipped before a run row is created (for example,
+  // by the budget limit). Retain the snap, but stop claiming it is waiting
+  // once its first-run grace ends. Actual queued/running rows never expire.
+  useEffect(() => {
+    const deadlines = queue.map(firstRunDeadline).filter((at): at is number => at !== null);
+    if (deadlines.length === 0) return;
+    const timer = window.setTimeout(() => {
+      const now = Date.now();
+      commitQueue(queueRef.current.map((item) => {
+        const deadline = firstRunDeadline(item);
+        return deadline !== null && deadline <= now ? { ...item, awaitingFirstRun: false } : item;
+      }));
+    }, Math.max(0, Math.min(...deadlines) - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [queue]);
+
+  // A snap was deleted or edited somewhere else. Re-read the active image
+  // as well as queued snaps and videos, so a deleted toast cannot become a
+  // retained tab. The active video's trim also follows the refreshed record.
+  useEffect(() => {
+    let disposed = false;
+    const refreshSequences = new Map<string, number>();
+    const unsubscribe = window.pwrsnapApi?.on(EVENT_CHANNELS.capturesChanged, (payload) => {
+      const changed = capturesChangedIds(payload);
+      if (catalogRef.current.started && changed.length > 0) refreshCatalogRecords(changed);
+      const active = currentRef.current;
+      const activeId = active?.captureId ?? null;
+      const sequence = activeId !== null && changed.includes(activeId)
+        ? ++activeCaptureRefreshSequenceRef.current : null;
+      const ids = changed.filter((id) =>
+        id === activeId || queueRef.current.some((item) => item.captureId === id)
+      );
+      for (const captureId of ids) {
+        const refreshSequence = (refreshSequences.get(captureId) ?? 0) + 1;
+        refreshSequences.set(captureId, refreshSequence);
+        void dispatch("library:byId", { id: captureId }).then((result) => {
+          // The newest broadcast wins even if the toast has since tucked.
+          if (disposed || !result.ok || refreshSequences.get(captureId) !== refreshSequence) return;
+          // A newer refresh or re-show of this same toast supersedes the
+          // old read, including an old deletion followed by a restore.
+          if (captureId === activeId && currentRef.current?.captureId === captureId &&
+            sequence !== activeCaptureRefreshSequenceRef.current) return;
+          const record = result.value;
+          if (record === null || record.deleted_at !== null) {
+            commitQueue(removeDockItem(queueRef.current, captureId));
+            if (currentRef.current?.captureId === captureId) dockActionsRef.current.closeToast(false);
+            return;
+          }
+          if (captureId === activeId && sequence === activeCaptureRefreshSequenceRef.current) {
+            setState((current) =>
+              current.kind === "loaded" && current.record.id === captureId
+                ? { ...current, record } : current
+            );
+          }
+          const entry = queueRef.current.find((item) => item.captureId === captureId);
+          if (entry === undefined) return;
+          commitQueue(upsertDockItem(queueRef.current, { ...entry, record }));
+        });
+      }
+    });
+    return () => {
+      disposed = true;
       unsubscribe?.();
     };
   }, []);
@@ -329,6 +958,10 @@ export function FloatOverHost({
     const unsubscribe = window.pwrsnapApi?.on(EVENT_CHANNELS.aiRunUpdated, (payload) => {
       const enrichment = (payload as AiRunUpdatedPayload).enrichment;
       if (enrichment === undefined || enrichment === null) return;
+      enrichmentsRef.current.set(enrichment.captureId, enrichment);
+      if (queueRef.current.some((item) => item.captureId === enrichment.captureId)) {
+        commitQueue(updateDockEnrichment(queueRef.current, enrichment));
+      }
       setState((current) => {
         if (current.kind !== "loaded" || current.record.id !== enrichment.captureId) {
           return current;
@@ -344,6 +977,7 @@ export function FloatOverHost({
   useEffect(() => {
     const unsubscribe = window.pwrsnapApi?.on(EVENT_CHANNELS.settingsChanged, (payload) => {
       const { settings } = payload as SettingsChangedEvent;
+      lastSettingsRef.current = settings;
       setState((current) => {
         if (current.kind !== "loaded") return current;
         return { ...current, settings };
@@ -398,6 +1032,21 @@ export function FloatOverHost({
     };
   }, [enrichmentProviderSelector]);
 
+  // The rail beside the toast: the recent-snaps catalog, once there is
+  // another snap to move to.
+  const railItems =
+    state.kind === "loaded"
+      ? catalogRailItems(
+          catalog.rows,
+          queue,
+          toastItem,
+          aiWillRunRef.current && mayAwaitFirstRun(toastItem?.record ?? null, Date.now()),
+          enrichmentsRef.current
+        )
+      : [];
+  const showRail = railItems.length >= 2 && floatOverRailFits(rendererWorkAreaDip().width);
+  const toastCaptureId = toastItem?.captureId ?? null;
+
   // Single return path so contentRef wraps every state — the
   // ResizeObserver above always has a stable target it can observe
   // across state transitions. Inside the wrapper we branch on state.
@@ -441,11 +1090,6 @@ export function FloatOverHost({
     );
   } else {
     const { enrichment, record, settings } = state;
-    const enrichmentProviderAvailable = isEnrichmentProviderAvailable({
-      provider: settings?.ai.defaults.enrichment.provider,
-      codexAvailable,
-      acpDiscovery
-    });
     const isVideo =
       record.kind === "video" && record.video !== null && record.video !== undefined;
     const previewSrc = captureSrcUrl(record.id);
@@ -471,6 +1115,10 @@ export function FloatOverHost({
           src: previewSrc,
           captureId: record.id,
           durationSec: record.video!.durationSec,
+          hasSystemAudio: record.video!.hasSystemAudio,
+          hasMicrophoneAudio: record.video!.hasMicrophoneAudio,
+          requestedSystemAudio: record.video!.requestedSystemAudio,
+          requestedMicrophone: record.video!.requestedMicrophone,
           widthPx: record.width_px,
           heightPx: record.height_px,
           defaultRange: record.video!.defaultRange,
@@ -484,7 +1132,7 @@ export function FloatOverHost({
             void (async () => {
               await dispatch("library:delete", { id: record.id });
               await dispatch("library:purge", { id: record.id });
-              await dispatch("float-over:dismiss", {});
+              closeToast(false);
             })();
           }
         } as const)
@@ -499,6 +1147,21 @@ export function FloatOverHost({
           onDragPreset: (preset: "low" | "med" | "high") => startCaptureDrag(record.id, preset)
         });
 
+    // Shared by Edit and by the preview hover row's folder button.
+    // Hand off to the Library window's inline editor (Focus mode +
+    // Stage), not the standalone Edit Window: `library:openInLibrary`
+    // is the only "show me this capture in the Library" path there is —
+    // it raises the window and tells its renderer to navigate to the
+    // record in Focus (see open-file.ts, which uses it for
+    // double-clicked .pwrsnap files). The dismiss rides along either
+    // way: attention transfers to the Library, and leaving the toast
+    // open behind it is visual noise.
+    const openInLibraryAndDismiss = (): void => {
+      void dispatch("library:openInLibrary", { captureId: record.id });
+      closeToast(false);
+    };
+    const runBackend = enrichmentRunBackend(enrichment, settings);
+
     body = (
       <FloatOver
         key={record.id}
@@ -512,6 +1175,7 @@ export function FloatOverHost({
         srcH={record.height_px}
         srcBytes={record.byte_size}
         srcDpr={record.device_pixel_ratio}
+        capturedAt={record.captured_at}
         exportStrategy={exportStrategyFromSettings(settings)}
         capturesLocation={capturesDisplay.location}
         capturesRootOverridden={capturesDisplay.overridden}
@@ -525,8 +1189,11 @@ export function FloatOverHost({
         aiEnabled={settings?.ai.enabled ?? false}
         aiConsentAccepted={settings?.ai.consentAcceptedAt !== null && settings !== null}
         aiSafetyDisabled={settings?.ai.budgetSafetyDisabledAt !== null && settings !== null}
-        enrichmentProviderLabel={enrichmentBackendLabel(settings?.ai.defaults.enrichment).providerLabel}
-        enrichmentModelLabel={enrichmentBackendLabel(settings?.ai.defaults.enrichment).modelLabel}
+        enrichmentProviderLabel={runBackend.providerLabel}
+        enrichmentModelLabel={runBackend.modelLabel}
+        {...(enrichment?.fallbackFrom
+          ? { enrichmentFallbackFromLabel: enrichmentBackendLabel({ provider: enrichment.fallbackFrom }, settings?.ai).providerLabel }
+          : {})}
         autoAcceptSuggestions={settings?.ai.autoAcceptSuggestions ?? false}
         onSetAutoAccept={(next) => {
           void dispatch("settings:write", {
@@ -564,6 +1231,7 @@ export function FloatOverHost({
             });
           });
         }}
+        onCancelEnrichment={(runId) => { void dispatch("codex:cancel", { runId }); }}
         onConfigureAi={() => {
           void dispatch("settings:open", { page: "ai" });
         }}
@@ -584,32 +1252,81 @@ export function FloatOverHost({
           void dispatch("codex:rejectTag", { captureId: record.id, tagId });
         }}
         onDismiss={() => {
-          // User dismissed via the X / countdown / Esc-on-toast. Tell
-          // main to hide; main flips state HIDDEN and the IPC echo
-          // resets us to IDLE.
-          void dispatch("float-over:dismiss", {});
+          // User dismissed via the X / Esc-on-toast. Tell main to hide
+          // (or to show the dock, when other snaps are waiting); the IPC
+          // echo resets us to IDLE.
+          closeToast(false);
         }}
-        onEdit={() => {
-          // Hand off to the Library window's inline editor (Focus mode
-          // + Stage), not the standalone Edit Window. Library:open
-          // brings the Library forward and tells its renderer to
-          // navigate to this capture in Focus. Dismiss the toast as
-          // attention transfers — keeping it open behind the Library
-          // would be visual noise.
-          void dispatch("library:openInLibrary", { captureId: record.id });
-          void dispatch("float-over:dismiss", {});
+        onTimeout={() => {
+          // Timeout is not an explicit dismissal: keep the snap available
+          // even when AI finished quickly, failed, or is disabled.
+          closeToast(true);
         }}
+        dockable={dockSupported}
+        sidebarVisible={settings?.recording?.showRecentCaptureSidebar !== false}
+        externalHover={(showRail && railHover) || menuOpen}
+        onEdit={openInLibraryAndDismiss}
+        onReveal={openInLibraryAndDismiss}
       />
     );
   }
 
   // The wrapper is `display: inline-block` so its bounding rect tracks
-  // the natural height of its content (rather than stretching to fill
-  // the body's 100% height, which would always report the full window
-  // height and defeat the resize-to-fit logic).
+  // the natural size of its content (rather than stretching to fill the
+  // window, which would always report the full window size and defeat
+  // the resize-to-fit logic). `.fo-host` pins it to the window corner
+  // main anchors from — bottom-right for the toast, the screen edge for
+  // the dock — so a frame drawn before main has resized the window
+  // shows the part of the content that will stay put.
+  //
+  // It also carries `--fo-max-h` and `--fo-w`, written by the layout
+  // effect above — on the wrapper rather than on `.fo` so the one
+  // element the measurer owns is the one element that publishes them,
+  // and the loading / error / idle bodies inherit them for free.
+  let content: React.ReactNode;
+  if (mode === "dock") {
+    const { visible, overflow } = splitDockItems(queue, DOCK_VISIBLE_CAP);
+    content = (
+      <FloatOverDock
+        items={visible}
+        overflowCount={overflow.length}
+        side={dockSide}
+        onOpen={openSnap}
+        onMore={() => popOverflow(overflow, null)}
+      />
+    );
+  } else {
+    content = (
+      <div className="fo-shell">
+        {showRail ? (
+          <FloatOverRail
+            items={railItems}
+            currentId={toastCaptureId}
+            inFlightCount={railInFlightCount(railItems)}
+            hasMore={catalog.cursor !== null}
+            onOpen={openSnap}
+            onNearEnd={() => loadCatalogPage(false)}
+            onHoverChange={setRailHover}
+          />
+        ) : null}
+        <div className="fo-shell__toast">{body}</div>
+      </div>
+    );
+  }
+
   return (
-    <div ref={contentRef} style={{ display: "inline-block", width: "100%" }}>
-      {body}
+    <div className={`fo-host fo-host--${mode}`} data-side={dockSide}>
+      <div
+        ref={contentRef}
+        className="fo-host__measure"
+        data-popover-density={popoverDensityForWorkArea({
+          widthDip: rendererWorkAreaDip().width,
+          heightDip: rendererWorkAreaDip().height
+        })}
+        style={{ display: "inline-block" }}
+      >
+        {content}
+      </div>
     </div>
   );
 }

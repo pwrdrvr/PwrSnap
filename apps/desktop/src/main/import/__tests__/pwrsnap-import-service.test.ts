@@ -890,7 +890,6 @@ describe("importPwrsnapBundle", () => {
       reconcileAndSweepPwrsnapImportsOnBoot
     } = await import("../pwrsnap-import-service");
     __setPwrsnapImportSweepForTest({
-      waitMs: 10,
       readdir: async (directory) => {
         if (directory === mocks.capturesRoot) {
           sweepStarted();
@@ -900,28 +899,33 @@ describe("importPwrsnapBundle", () => {
       }
     });
 
+    // Check the production sweep deadline independently of real bundle reads,
+    // image processing and durable writes, which can take over a second on
+    // Windows CI. Keep the directory read parked until the queued import ends.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const bootSettled = vi.fn();
     const boot = reconcileAndSweepPwrsnapImportsOnBoot();
-    await started;
-    let timeout: NodeJS.Timeout | undefined;
+    void boot.then(bootSettled);
+    const queuedImport = importPwrsnapBundle(sourcePath);
     try {
-      const imported = await Promise.race([
-        importPwrsnapBundle(sourcePath),
-        new Promise<never>((_resolve, reject) => {
-          timeout = setTimeout(
-            () => reject(new Error("queued import remained blocked behind destination sweep")),
-            1_000
-          );
-        })
-      ]);
-      expect(imported).toMatchObject({
+      await started;
+      await vi.advanceTimersByTimeAsync(1_499);
+      expect(bootSettled).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(bootSettled).toHaveBeenCalledExactlyOnceWith([]);
+
+      vi.useRealTimers();
+      await expect(queuedImport).resolves.toMatchObject({
         status: "imported",
         record: { id: "boundedboot0001" }
       });
     } finally {
-      if (timeout !== undefined) clearTimeout(timeout);
+      vi.useRealTimers();
       releaseSweep();
+      // Drain queued work before afterEach closes SQLite and removes fixtures,
+      // including when a deadline assertion fails.
+      await Promise.allSettled([boot, queuedImport]);
     }
-    await expect(boot).resolves.toEqual([]);
   });
 
   test("retains the durable intent when rollback cleanup fails, then recovers", async () => {

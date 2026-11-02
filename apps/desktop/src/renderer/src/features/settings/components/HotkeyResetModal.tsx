@@ -2,11 +2,13 @@
 // Lists every binding that will change, with current → default deltas
 // the user can review before committing. Cancel keeps everything as-is.
 //
-// Focus management: the Cancel button autoFocuses on mount, so Escape
-// + Enter both have the safe default ("keep my settings, do nothing").
-// Clicking the backdrop also cancels.
+// Focus management: focus starts on Cancel, so Escape + Enter both have the
+// safe default ("keep my settings, do nothing"); Tab stays inside and focus
+// goes back to "Reset to defaults" on close (`useModal`). Clicking the
+// backdrop also cancels. None of it applies while the reset is being written.
 
 import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useModal } from "../../../lib/useModal";
 import { Hk, HkUnset } from "./Hk";
 import {
   acceleratorToDisplayKeys,
@@ -44,22 +46,17 @@ export function HotkeyResetModal({
 
   useEffect(() => {
     mountedRef.current = true;
-    cancelRef.current?.focus();
     return () => {
       mountedRef.current = false;
     };
   }, []);
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape" && !submitting) {
-        event.preventDefault();
-        onCancel();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onCancel, submitting]);
+  const dialogRef = useModal({
+    onClose: () => {
+      if (!submitting) onCancel();
+    },
+    initialFocusRef: cancelRef
+  });
 
   const confirm = async (): Promise<void> => {
     if (submitting) return;
@@ -92,9 +89,11 @@ export function HotkeyResetModal({
       role="presentation"
     >
       <div
+        ref={dialogRef}
         className="pss__modal"
         role="dialog"
         aria-modal="true"
+        tabIndex={-1}
         aria-busy={submitting}
         aria-labelledby="pss-reset-title"
         onClick={(event) => event.stopPropagation()}

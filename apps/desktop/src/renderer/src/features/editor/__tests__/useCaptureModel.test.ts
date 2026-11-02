@@ -22,7 +22,7 @@ import {
   test,
   vi
 } from "vitest";
-import type { BundleLayerNode, CaptureRecord, OverlayRow } from "@pwrsnap/shared";
+import type { BundleLayerNode, CaptureRecord } from "@pwrsnap/shared";
 
 // ---- Mocks ----------------------------------------------------------
 //
@@ -72,8 +72,7 @@ import {
   inverseCropRect,
   cropRectFromCanvas,
   applyGeometryToLayer,
-  type CaptureModel,
-  type LayerView
+  type CaptureModel
 } from "../useCaptureModel";
 
 beforeAll(() => {
@@ -101,30 +100,10 @@ function makeRecord(id: string, formatVersion: number): CaptureRecord {
     sha256: "0".repeat(64),
     source_app_bundle_id: null,
     source_app_name: null,
+    source_window_title: null,
     edits_version: 0,
     has_alpha: false,
     deleted_at: null
-  };
-}
-
-function makeOverlayRow(id: string, captureId: string): OverlayRow {
-  return {
-    id,
-    capture_id: captureId,
-    data: {
-      kind: "arrow",
-      from: { x: 0.1, y: 0.1 },
-      to: { x: 0.5, y: 0.5 },
-      color: "auto"
-    },
-    schema_version: 1,
-    created_at: "2026-05-23T12:00:00.000Z",
-    applied_at: "2026-05-23T12:00:00.000Z",
-    rejected_at: null,
-    superseded_by: null,
-    ai_run_id: null,
-    source: "user",
-    z_index: 0
   };
 }
 
@@ -313,15 +292,7 @@ describe("useCaptureModel", () => {
       return Promise.resolve({ ok: true, value: null });
     });
 
-    let model: CaptureModel | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap_2",
-        onSnapshot: (m) => {
-          model = m;
-        }
-      })
-    );
+    render(createElement(Probe, { captureId: "cap_2", onSnapshot: () => {} }));
     await flush();
 
     const verbs = dispatchMock.mock.calls.map((c) => c[0]);
@@ -1145,15 +1116,7 @@ describe("useCaptureModel", () => {
       return Promise.resolve({ ok: true, value: null });
     });
 
-    let model: CaptureModel | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap_1",
-        onSnapshot: (m) => {
-          model = m;
-        }
-      })
-    );
+    render(createElement(Probe, { captureId: "cap_1", onSnapshot: () => {} }));
     await flush();
 
     expect(listCalls).toBe(1);
@@ -1384,7 +1347,7 @@ describe("useCaptureModel", () => {
     expect(deletes[0]?.[1]).toEqual({ id: "ly_orig" });
     const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "layers:upsert");
     expect(upserts.length).toBe(1);
-    const sentLayer = (upserts[0]?.[1] as { layer: BundleLayerNode }).layer;
+    const sentLayer = (upserts[0]![1] as { layer: BundleLayerNode }).layer;
     expect(sentLayer.kind).toBe("vector");
     if (sentLayer.kind === "vector" && sentLayer.shape.kind === "arrow") {
       expect(sentLayer.shape.from.x).toBeCloseTo(0.2);
@@ -1505,7 +1468,7 @@ describe("useCaptureModel", () => {
     expect(deleteCount).toBe(2);
     expect(upsertCount).toBe(2);
     const upserts = dispatchMock.mock.calls.filter((call) => call[0] === "layers:upsert");
-    const secondLayer = (upserts[1]?.[1] as { layer: BundleLayerNode }).layer;
+    const secondLayer = (upserts[1]![1] as { layer: BundleLayerNode }).layer;
     expect(secondLayer.id).toBe("ly_rapid_arrow");
     if (secondLayer.kind !== "vector" || secondLayer.shape.kind !== "arrow") {
       throw new Error("expected queued arrow upsert");
@@ -1605,7 +1568,7 @@ describe("useCaptureModel", () => {
 
     const upsert = dispatchMock.mock.calls.find((c) => c[0] === "layers:upsert");
     expect(upsert).toBeDefined();
-    const sentLayer = (upsert?.[1] as { layer: BundleLayerNode }).layer;
+    const sentLayer = (upsert![1] as { layer: BundleLayerNode }).layer;
     expect(sentLayer.kind).toBe("effect");
     if (sentLayer.kind !== "effect" || sentLayer.effect.type !== "highlight") {
       throw new Error("expected highlight effect");
@@ -1689,7 +1652,7 @@ describe("useCaptureModel", () => {
     // In-place update carried the merged transform, preserving the id.
     const update = dispatchMock.mock.calls.find((c) => c[0] === "layers:update");
     expect(update).toBeDefined();
-    const sentLayer = (update?.[1] as { layer: BundleLayerNode }).layer;
+    const sentLayer = (update![1] as { layer: BundleLayerNode }).layer;
     expect(sentLayer.id).toBe("ly_pasted");
     if (sentLayer.kind !== "raster") throw new Error("expected raster");
     expect(sentLayer.transform).toEqual([1, 0, 0, 1, 150, 240]);
@@ -1756,7 +1719,7 @@ describe("useCaptureModel", () => {
 
     const upsert = dispatchMock.mock.calls.find((c) => c[0] === "layers:upsert");
     expect(upsert).toBeDefined();
-    const sentLayer = (upsert?.[1] as { layer: BundleLayerNode }).layer;
+    const sentLayer = (upsert![1] as { layer: BundleLayerNode }).layer;
     expect(sentLayer.kind).toBe("effect");
     if (sentLayer.kind !== "effect" || sentLayer.effect.type !== "blur") {
       throw new Error("expected blur effect");
@@ -1831,7 +1794,7 @@ describe("useCaptureModel", () => {
 
     const upsert = dispatchMock.mock.calls.find((c) => c[0] === "layers:upsert");
     expect(upsert).toBeDefined();
-    const sentLayer = (upsert?.[1] as { layer: BundleLayerNode }).layer;
+    const sentLayer = (upsert![1] as { layer: BundleLayerNode }).layer;
     expect(sentLayer.kind).toBe("effect");
     if (sentLayer.kind !== "effect" || sentLayer.effect.type !== "highlight") {
       throw new Error("expected highlight effect");
@@ -1931,7 +1894,7 @@ describe("useCaptureModel", () => {
     expect(deletes[0]?.[1]).toEqual({ id: "ly_text" });
     const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "layers:upsert");
     expect(upserts.length).toBe(1);
-    const sentLayer = (upserts[0]?.[1] as { layer: BundleLayerNode }).layer;
+    const sentLayer = (upserts[0]![1] as { layer: BundleLayerNode }).layer;
     expect(sentLayer.kind).toBe("vector");
     if (sentLayer.kind === "vector" && sentLayer.shape.kind === "text") {
       expect(sentLayer.shape.body).toBe("Hi Mommy");

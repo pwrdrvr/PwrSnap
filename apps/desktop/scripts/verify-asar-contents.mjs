@@ -6,15 +6,16 @@
 
 import { existsSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 // NOTE: this path must stay in the signing tarball's file list in
 // .github/workflows/release.yml — that list is an allowlist, not a glob.
 import { isCliEntrypoint } from "../../../scripts/lib/cli-entrypoint.mjs";
 import {
-  inspectSharpNativePackages,
   partitionSharpNativePackages,
   sharpNativePackagesForTarget
 } from "./sharp-platform-packages.mjs";
+import { findRemoteScript, isRendererHtmlEntry } from "./packaged-html-rules.mjs";
+import { betterSqlite3PrebuildsForTarget } from "./better-sqlite3-prebuilds.mjs";
 
 // @electron/asar is declared as a direct devDependency of @pwrsnap/desktop.
 // The protected Windows signing job receives a self-contained staged toolchain,
@@ -45,11 +46,18 @@ const forbidden = [
 
 const allowedForbiddenEntries = [/^\/out\/main\/prompts\/[^/]+\.md$/];
 
-const macRequiredResources = ["THIRD_PARTY_LICENSES", "CHANGELOG.md", "PwrSnapFFmpeg"];
+const macRequiredResources = [
+  "THIRD_PARTY_LICENSES",
+  "CHANGELOG.md",
+  "LICENSE",
+  "PwrSnapFFmpeg"
+];
 const windowsRequiredResources = [
   "THIRD_PARTY_LICENSES",
   "CHANGELOG.md",
-  "PwrSnapWindowList.exe"
+  "LICENSE",
+  "PwrSnapWindowList.exe",
+  "PwrSnapScreenSnapshot.exe"
 ];
 
 // electron-vite emits ESM for the main process and workers while leaving Sharp
@@ -114,26 +122,43 @@ const sharedSharpAsarRuntime = [
 // version-suffixed dylib name (`libvips-cpp.<ver>.dylib`) changes
 // across libvips upgrades, and a pattern decouples this
 // from the exact version in pnpm-lock.yaml.
+const BETTER_SQLITE3_PREBUILDS_DIR = "app.asar.unpacked/node_modules/better-sqlite3/prebuilds";
 const macRequiredUnpackedNative = [
   {
+    packageName: "sharp-darwin-arm64",
     label: "@img/sharp-darwin-arm64 native binding",
     dir: "app.asar.unpacked/node_modules/@img/sharp-darwin-arm64/lib",
     filePattern: /\.node$/
   },
   {
+    packageName: "sharp-darwin-x64",
     label: "@img/sharp-darwin-x64 native binding",
     dir: "app.asar.unpacked/node_modules/@img/sharp-darwin-x64/lib",
     filePattern: /\.node$/
   },
   {
+    packageName: "sharp-libvips-darwin-arm64",
     label: "@img/sharp-libvips-darwin-arm64 dylib",
     dir: "app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-arm64/lib",
     filePattern: /\.dylib$/
   },
   {
+    packageName: "sharp-libvips-darwin-x64",
     label: "@img/sharp-libvips-darwin-x64 dylib",
     dir: "app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-x64/lib",
     filePattern: /\.dylib$/
+  },
+  {
+    prebuild: "darwin-arm64.node",
+    label: "better-sqlite3 darwin-arm64 prebuild",
+    dir: BETTER_SQLITE3_PREBUILDS_DIR,
+    filePattern: /^darwin-arm64\.node$/
+  },
+  {
+    prebuild: "darwin-x64.node",
+    label: "better-sqlite3 darwin-x64 prebuild",
+    dir: BETTER_SQLITE3_PREBUILDS_DIR,
+    filePattern: /^darwin-x64\.node$/
   },
 ];
 
@@ -177,15 +202,21 @@ function windowsRequiredUnpackedRuntime(arch) {
       filePattern: /^index\.cjs$/
     },
     {
-      label: "better-sqlite3 Electron sidecar",
-      dir: "app.asar.unpacked/node_modules/better-sqlite3/electron-native",
-      filePattern: /^better_sqlite3\.node$/
+      label: `better-sqlite3 win32-${arch} prebuild`,
+      dir: BETTER_SQLITE3_PREBUILDS_DIR,
+      filePattern: new RegExp(`^win32-${arch}\\.node$`)
     }
   ];
 }
 
 function packagedPlatform(appPath) {
   return appPath.endsWith(".app") ? "darwin" : "win32";
+}
+
+// The target a bare call checks, matching what runCli assumes when
+// PWRSNAP_TARGET_ARCH is unset: the universal mac app, the x64 Windows app.
+function defaultArch(platform) {
+  return platform === "darwin" ? "universal" : "x64";
 }
 
 function resourcesPath(appPath, platform = packagedPlatform(appPath)) {
@@ -204,10 +235,15 @@ function requiredResourcesFor(platform) {
   return required;
 }
 
-function requiredUnpackedNativeFor(platform, arch = "x64") {
-  return platform === "darwin"
-    ? macRequiredUnpackedNative
-    : windowsRequiredUnpackedRuntime(arch);
+function requiredUnpackedNativeFor(platform, arch = defaultArch(platform)) {
+  if (platform !== "darwin") return windowsRequiredUnpackedRuntime(arch);
+  const required = new Set([
+    ...sharpNativePackagesForTarget({ platform, arch }),
+    ...betterSqlite3PrebuildsForTarget({ platform, arch })
+  ]);
+  return macRequiredUnpackedNative.filter((entry) =>
+    required.has(entry.packageName ?? entry.prebuild)
+  );
 }
 
 function normalizedAsarEntries(listing) {
@@ -225,7 +261,7 @@ function windowsSharpAsarRuntime(arch) {
   ];
 }
 
-export function findMissingSharpAsarRuntime(listing, platform, arch = "x64") {
+export function findMissingSharpAsarRuntime(listing, platform, arch = defaultArch(platform)) {
   const entries = new Set(normalizedAsarEntries(listing));
   const required = platform === "win32"
     ? windowsSharpAsarRuntime(arch)
@@ -233,17 +269,27 @@ export function findMissingSharpAsarRuntime(listing, platform, arch = "x64") {
   return required.filter(({ path }) => !entries.has(path));
 }
 
+// Any depth, not just the top-level scope: a package nested under another
+// package's node_modules ships just the same.
+const imgPackagePattern = /(?:^|\/)node_modules\/@img\/([^/]+)(?:\/|$)/;
+
 function imgPackageNamesFromAsar(listing) {
   const packages = new Set();
   for (const entry of normalizedAsarEntries(listing)) {
-    const match = /(?:^|\/)node_modules\/@img\/([^/]+)(?:\/|$)/.exec(entry);
+    const match = imgPackagePattern.exec(entry);
     if (match) packages.add(match[1]);
   }
   return [...packages];
 }
 
-export function findForeignSharpAsarPackages(listing, platform, arch = "x64") {
-  if (platform !== "win32") return [];
+/**
+ * Sharp native packages in the archive that the target does not use. Every
+ * shipped target is checked, the universal mac app included: it keeps both
+ * Darwin slices and refuses everything else, `@img/sharp-wasm32` among them.
+ * An unknown target throws (via sharpNativePackagesForTarget) rather than
+ * passing with nothing checked.
+ */
+export function findForeignSharpAsarPackages(listing, platform, arch = defaultArch(platform)) {
   return partitionSharpNativePackages(imgPackageNamesFromAsar(listing), {
     platform,
     arch
@@ -275,7 +321,7 @@ export function findMissingPackagedResources(appPath, platform = packagedPlatfor
 export function findMissingUnpackedNative(
   appPath,
   platform = packagedPlatform(appPath),
-  arch = "x64"
+  arch = defaultArch(platform)
 ) {
   const root = resourcesPath(appPath, platform);
   const missing = [];
@@ -305,21 +351,64 @@ export function findMissingUnpackedNative(
   return missing;
 }
 
+// Names of every package in an `@img` scope anywhere under `root`, at any
+// depth. Links are recorded by name and never followed.
+function imgPackageNamesUnder(root) {
+  const packages = new Set();
+  const walk = (dir, insideNodeModules) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch (error) {
+      if (error?.code === "ENOENT" && dir === root) return;
+      throw error;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const path = join(dir, entry.name);
+      if (insideNodeModules && entry.name === "@img") {
+        for (const scoped of readdirSync(path, { withFileTypes: true })) {
+          if (scoped.isDirectory() || scoped.isSymbolicLink()) packages.add(scoped.name);
+          if (scoped.isDirectory()) walk(join(path, scoped.name), false);
+        }
+        continue;
+      }
+      walk(path, entry.name === "node_modules");
+    }
+  };
+  walk(root, false);
+  return [...packages];
+}
+
 export function findForeignUnpackedNative(
   appPath,
   platform = packagedPlatform(appPath),
-  arch = "x64"
+  arch = defaultArch(platform)
 ) {
-  if (platform !== "win32") return [];
-  const nodeModulesDir = resolve(
-    resourcesPath(appPath, platform),
-    "app.asar.unpacked/node_modules"
-  );
-  return inspectSharpNativePackages({
-    nodeModulesDir,
+  const unpackedRoot = resolve(resourcesPath(appPath, platform), "app.asar.unpacked");
+  return partitionSharpNativePackages(imgPackageNamesUnder(unpackedRoot), {
     platform,
     arch
   }).removed;
+}
+
+/**
+ * better-sqlite3 prebuilds for any target but this app's. The stage prune
+ * (pruneBetterSqlite3Prebuilds) should have removed them; one left over is
+ * ~2 MB of dead weight, or on the arm64-only Mac an Intel Mach-O.
+ */
+export function findForeignBetterSqlite3Prebuilds(
+  appPath,
+  platform = packagedPlatform(appPath),
+  arch = defaultArch(platform)
+) {
+  const dir = resolve(resourcesPath(appPath, platform), BETTER_SQLITE3_PREBUILDS_DIR);
+  // A missing directory is findMissingUnpackedNative's to report.
+  if (!existsSync(dir)) return [];
+  const allowed = new Set(betterSqlite3PrebuildsForTarget({ platform, arch }));
+  return readdirSync(dir)
+    .filter((name) => name.endsWith(".node") && !allowed.has(name))
+    .sort();
 }
 
 function formatForbiddenViolations(violations) {
@@ -345,7 +434,7 @@ export function verifyAsarListing(listing) {
   throw new Error(formatForbiddenViolations(violations));
 }
 
-export function verifySharpAsarRuntime(listing, platform, arch = "x64") {
+export function verifySharpAsarRuntime(listing, platform, arch = defaultArch(platform)) {
   const missing = findMissingSharpAsarRuntime(listing, platform, arch);
   const foreign = findForeignSharpAsarPackages(listing, platform, arch);
   if (missing.length === 0 && foreign.length === 0) return;
@@ -362,6 +451,115 @@ export function verifySharpAsarRuntime(listing, platform, arch = "x64") {
   throw new Error(lines.join("\n"));
 }
 
+/**
+ * A packaged renderer must load every script from inside the asar. The one
+ * thing that has ever wanted to break that rule is the opt-in React DevTools
+ * bridge (`PWRSNAP_REACT_DEVTOOLS`), which injects
+ * `<script src="http://localhost:8097">` as the first head script at Vite
+ * config time. That is a build-time decision, so nothing at app runtime can
+ * undo it — this is where it gets caught. The rule is written against the
+ * shape, not against the flag, so any remote script trips it.
+ *
+ * `readEntry` is injected so this is testable without packing an asar, and
+ * so the caller owns the `@electron/asar` handle. An entry it cannot read is
+ * reported rather than skipped: this is a check whose whole job is to stop
+ * something shipping, so "could not look" has to be as loud as "looked and
+ * found it". (`@electron/asar`'s `readFileSync` does resolve unpacked files
+ * out of the `.unpacked` sidecar, so the throwing cases are directories,
+ * links, and real I/O errors — exactly the ones that must not pass quietly.)
+ *
+ * A listing that matches NOTHING is reported too, via `scanned`. A gate that
+ * inspects zero files and prints OK is indistinguishable from one that
+ * inspected the renderer and cleared it — and it stays that way, silently,
+ * for every release after the one where `out/` stopped holding the HTML.
+ */
+export function findPackagedHtmlIssues(listing, readEntry) {
+  const remoteScripts = [];
+  const unreadable = [];
+  const matched = normalizedAsarEntries(listing).filter(isRendererHtmlEntry);
+  for (const entry of matched) {
+    let contents;
+    try {
+      contents = readEntry(entry);
+    } catch (error) {
+      unreadable.push({
+        entry,
+        reason: error instanceof Error ? error.message : String(error)
+      });
+      continue;
+    }
+    const snippet = findRemoteScript(contents);
+    if (snippet !== null) remoteScripts.push({ entry, snippet });
+  }
+  return { remoteScripts, unreadable, scanned: matched.length };
+}
+
+/**
+ * Turn a POSIX-normalized listing entry back into the form
+ * `@electron/asar` resolves. It looks a node up by splitting on `path.sep`,
+ * so on Windows a forward-slash path resolves to nothing and EVERY html
+ * entry would report as unreadable — a release that fails for the wrong
+ * reason. Exported so that branch is testable from a POSIX host, where
+ * `sep` is `/` and the conversion is otherwise a no-op.
+ */
+export function asarLookupPath(entry, pathSep = sep) {
+  return entry.replace(/^\//, "").replaceAll("/", pathSep);
+}
+
+export function verifyPackagedHtml(listing, readEntry) {
+  const { remoteScripts, unreadable, scanned } = findPackagedHtmlIssues(
+    listing,
+    readEntry
+  );
+  if (scanned === 0) {
+    throw new Error(
+      [
+        "verify-asar-contents: no packaged renderer HTML to inspect",
+        "",
+        "  expected at least one /out/**/*.html entry in app.asar",
+        "",
+        "The remote-script scan matched nothing, so it cleared nothing. Either",
+        "the renderer HTML is missing from the bundle or it no longer lands",
+        "under /out/ — update isRendererHtmlEntry in packaged-html-rules.mjs",
+        "to match wherever electron-builder now puts it."
+      ].join("\n")
+    );
+  }
+  if (remoteScripts.length === 0 && unreadable.length === 0) return;
+
+  const lines = [];
+  if (remoteScripts.length > 0) {
+    lines.push(
+      `verify-asar-contents: ${remoteScripts.length} packaged HTML file(s) load a remote script`,
+      ""
+    );
+    for (const { entry, snippet } of remoteScripts) {
+      lines.push(`  ${entry}`, `    ${snippet}`);
+    }
+    lines.push(
+      "",
+      "Build without PWRSNAP_REACT_DEVTOOLS set. That bridge is for local",
+      "profiling builds only and must never reach a packaged app."
+    );
+  }
+  if (unreadable.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push(
+      `verify-asar-contents: ${unreadable.length} packaged HTML file(s) could not be read`,
+      ""
+    );
+    for (const { entry, reason } of unreadable) {
+      lines.push(`  ${entry}`, `    ${reason}`);
+    }
+    lines.push(
+      "",
+      "These were not inspected for remote scripts, so the bundle is not cleared.",
+      "A renderer HTML entry should be a readable, packed file."
+    );
+  }
+  throw new Error(lines.join("\n"));
+}
+
 export function verifyPackagedResources(appPath, platform = packagedPlatform(appPath)) {
   const missingResources = findMissingPackagedResources(appPath, platform);
   if (missingResources.length === 0) return;
@@ -373,13 +571,15 @@ export function verifyPackagedResources(appPath, platform = packagedPlatform(app
 export function verifyUnpackedNative(
   appPath,
   platform = packagedPlatform(appPath),
-  arch = "x64"
+  arch = defaultArch(platform)
 ) {
   const missing = findMissingUnpackedNative(appPath, platform, arch);
   const foreign = findForeignUnpackedNative(appPath, platform, arch);
-  if (missing.length === 0 && foreign.length === 0) return;
+  const foreignSqlite = findForeignBetterSqlite3Prebuilds(appPath, platform, arch);
+  const failures = missing.length + foreign.length + foreignSqlite.length;
+  if (failures === 0) return;
   const lines = [
-    `verify-asar-contents: ${missing.length + foreign.length} unpacked-runtime expectation(s) failed`,
+    `verify-asar-contents: ${failures} unpacked-runtime expectation(s) failed`,
     ""
   ];
   for (const { label, reason } of missing) {
@@ -390,12 +590,18 @@ export function verifyUnpackedNative(
       `  - foreign Sharp native slice(s): ${foreign.map((name) => `@img/${name}`).join(", ")}`
     );
   }
+  if (foreignSqlite.length > 0) {
+    lines.push(`  - foreign better-sqlite3 prebuild(s): ${foreignSqlite.join(", ")}`);
+  }
   lines.push(
     "",
     "If sharp packages are missing: pnpm deploy is dropping platform-specific",
     "optionalDependencies — see the release packager's injection step. If",
-    "foreign Windows slices are present, the staged Sharp pruning step did",
-    "not run. If a native library is missing despite its package being present,",
+    "foreign native slices are present, the stage step that prunes them",
+    "(Windows, arm64 mac) or refuses them (universal mac) did not run.",
+    "@img/sharp-wasm32 is Linux-only and must never ship. Foreign",
+    "better-sqlite3 prebuilds mean its prebuild pruning step did not run.",
+    "If a native library is missing despite its package being present,",
     "the asarUnpack",
     "rule for @img/** is gone from electron-builder.yml."
   );
@@ -405,9 +611,8 @@ export function verifyUnpackedNative(
 export function runCli(args = process.argv.slice(2)) {
   const appPath = args[0] ?? resolve("release-stage/dist/mac-universal/PwrSnap.app");
   const platform = packagedPlatform(appPath);
-  const arch = platform === "win32"
-    ? process.env.PWRSNAP_TARGET_ARCH?.trim() || "x64"
-    : "x64";
+  const arch = process.env.PWRSNAP_TARGET_ARCH?.trim() || defaultArch(platform);
+  if (platform === "darwin" && !["universal", "arm64"].includes(arch)) throw new Error(`Unsupported macOS target: ${arch}`);
   const asarPath = join(resourcesPath(appPath, platform), "app.asar");
   if (!existsSync(asarPath)) {
     console.error(`verify-asar-contents: app.asar not found at ${asarPath}`);
@@ -420,6 +625,9 @@ export function runCli(args = process.argv.slice(2)) {
   try {
     verifyAsarListing(listing);
     verifySharpAsarRuntime(listing, platform, arch);
+    verifyPackagedHtml(listing, (entry) =>
+      asar.extractFile(asarPath, asarLookupPath(entry)).toString("utf8")
+    );
     verifyPackagedResources(appPath, platform);
     verifyUnpackedNative(appPath, platform, arch);
   } catch (error) {
@@ -427,7 +635,9 @@ export function runCli(args = process.argv.slice(2)) {
     process.exit(1);
   }
 
-  console.log(`verify-asar-contents: OK (${listing.length} entries, no forbidden patterns)`);
+  console.log(
+    `verify-asar-contents: OK (${listing.length} entries, no forbidden patterns, no remote scripts)`
+  );
 }
 
 if (isCliEntrypoint(import.meta.url)) {

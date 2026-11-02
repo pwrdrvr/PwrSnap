@@ -1,5 +1,5 @@
-// Unit coverage for `capture:pasteFromClipboard`'s empty and file-URL
-// branches. The no_image case formerly lived in
+// Unit coverage for `capture:pasteFromClipboard`'s empty, file-URL, and
+// Windows Explorer CF_HDROP branches. The no_image case formerly lived in
 // `apps/desktop/e2e/clipboard-paste.spec.ts`; file-URL coverage here pins
 // the secure byte-read boundary and path-redaction contract without relying
 // on host NSPasteboard behavior.
@@ -14,8 +14,7 @@
 // The native-image happy path (`capture:pasteFromClipboard persists current
 // clipboard image`) stays in E2E because it depends on real macOS
 // NSPasteboard semantics + the full persistence + render pipeline. The File
-// menu wiring test also stays there; this unit only pins its synchronous,
-// filesystem-free availability probe.
+// menu's enablement hint is pinned by clipboard/__tests__/paste-menu-hint.test.ts.
 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,8 +28,9 @@ const mocks = vi.hoisted(() => ({
   getSize: vi.fn(() => ({ width: 1, height: 1 })),
   availableFormats: vi.fn((): string[] => []),
   readBookmark: vi.fn(() => ({ title: "", url: "" })),
-  readBuffer: vi.fn(() => Buffer.alloc(0)),
+  readBuffer: vi.fn((_format: string) => Buffer.alloc(0)),
   readText: vi.fn(() => ""),
+  readWindowsClipboardImageFile: vi.fn(),
   readSafePastedFile: vi.fn(),
   ingestImageBufferToTempPng: vi.fn(),
   writeFirstDecodableClipboardBufferToPng: vi.fn(),
@@ -76,23 +76,34 @@ const captureStorageMocks = vi.hoisted(() => {
 });
 
 vi.mock("electron", () => ({
-  clipboard: {
-    readImage: () => ({
-      isEmpty: mocks.isEmpty,
-      getSize: mocks.getSize,
-      toPNG: mocks.toPNG
-    }),
-    availableFormats: mocks.availableFormats,
-    readBookmark: mocks.readBookmark,
-    readBuffer: mocks.readBuffer,
-    readText: mocks.readText,
-    writeText: () => undefined
-  },
   screen: {
     getAllDisplays: () => []
   },
   BrowserWindow: {
     getAllWindows: () => []
+  }
+}));
+
+// One `readClipboard()` snapshot over the per-test mock state. An empty
+// bookmark means "no bookmark", as it did from the pre-44 readBookmark().
+vi.mock("../../clipboard/system-clipboard", () => ({
+  readClipboard: async () => {
+    const formats = mocks.availableFormats();
+    return {
+      formats,
+      has: (format: string) => formats.includes(format),
+      readBuffer: async (format: string) => mocks.readBuffer(format),
+      readImage: async () => ({
+        isEmpty: mocks.isEmpty,
+        getSize: mocks.getSize,
+        toPNG: mocks.toPNG
+      }),
+      readBookmark: async () => {
+        const bookmark = mocks.readBookmark();
+        return bookmark.url === "" ? null : bookmark;
+      },
+      readText: async () => mocks.readText()
+    };
   }
 }));
 
@@ -102,11 +113,6 @@ vi.mock("../../security/assertSafePastedFile", () => ({
 }));
 
 vi.mock("../../clipboard-image-buffer", () => ({
-  clipboardImageBufferFormats: (formats: readonly string[]) =>
-    formats.filter((format) => {
-      const lower = format.toLowerCase();
-      return !lower.includes("url") && lower.includes("png");
-    }),
   ingestImageBufferToTempPng: mocks.ingestImageBufferToTempPng,
   writeFirstDecodableClipboardBufferToPng:
     mocks.writeFirstDecodableClipboardBufferToPng
@@ -170,11 +176,18 @@ vi.mock("../../capture/window-list", () => ({
   resolveWindowListHelperPath: () => null
 }));
 
+vi.mock("../../clipboard/windows-file-clipboard-reader", () => ({
+  readWindowsClipboardImageFile: () => mocks.readWindowsClipboardImageFile(),
+  isSupportedClipboardImagePath: (path: string) =>
+    /\.(?:avif|bmp|gif|heic|heif|jpe?g|png|tiff?|webp)$/i.test(path)
+}));
+
 vi.mock("../../events", () => ({
   broadcastCapturesChanged: () => undefined
 }));
 
 vi.mock("../../float-over", () => ({
+  releaseFloatOverDock: () => undefined,
   setFloatOverState: () => undefined
 }));
 
@@ -197,8 +210,7 @@ vi.mock("../../persistence/captures-repo", () => ({
 }));
 
 vi.mock("../../persistence/source-store", () => ({
-  ensureEffectiveSrcPath: async () => "",
-  putCaptureSource: async () => ({})
+  ensureEffectiveSrcPath: async () => ""
 }));
 
 vi.mock("../../persistence/bundle-store", () => ({
@@ -214,9 +226,7 @@ vi.mock("../../render/file-alias", () => ({
 }));
 
 const { bus } = await import("../../command-bus");
-const { clipboardHasPasteableImage, registerCaptureHandlers } = await import(
-  "../capture-handlers"
-);
+const { registerCaptureHandlers } = await import("../capture-handlers");
 
 registerCaptureHandlers();
 
@@ -251,6 +261,7 @@ beforeEach(() => {
   mocks.readBookmark.mockReturnValue({ title: "", url: "" });
   mocks.readBuffer.mockReturnValue(Buffer.alloc(0));
   mocks.readText.mockReturnValue("");
+  mocks.readWindowsClipboardImageFile.mockResolvedValue({ ok: true, path: null });
   mocks.readSafePastedFile.mockResolvedValue(Buffer.from("safe image bytes"));
   mocks.ingestImageBufferToTempPng.mockResolvedValue({
     tempPath: "/test/tmp/clipboard.png",
@@ -336,14 +347,77 @@ describe("capture:pasteFromClipboard", () => {
     expect(result).toEqual({ ok: true, value: persistedRecord });
   });
 
-  test("keeps the synchronous menu probe filesystem-free for file URLs", () => {
-    const safeUrl = pathToFileURL(join(tmpdir(), "menu probe.png")).href;
-    mocks.readBookmark.mockReturnValue({ title: "menu probe.png", url: safeUrl });
+  test.each([
+    "C:\\Users\\Ada\\Pictures\\copied image.png",
+    "\\\\server\\share\\Pictures\\copied image.png"
+  ])("routes a native CF_HDROP candidate through the same safe byte snapshot: %s", async (path) => {
+    const safeBytes = Buffer.from("bytes returned by one verified open");
+    mocks.readWindowsClipboardImageFile.mockResolvedValue({ ok: true, path });
+    mocks.readSafePastedFile.mockResolvedValue(safeBytes);
 
-    expect(clipboardHasPasteableImage()).toBe(true);
-    expect(mocks.readSafePastedFile).not.toHaveBeenCalled();
-    expect(mocks.ingestImageBufferToTempPng).not.toHaveBeenCalled();
+    const result = await bus.dispatch(
+      "capture:pasteFromClipboard",
+      {},
+      { principal: "ipc" }
+    );
+
+    expect(mocks.readSafePastedFile).toHaveBeenCalledWith(path, {
+      maxBytes: PASTE_IMAGE_MAX_BYTES
+    });
+    expect(mocks.ingestImageBufferToTempPng).toHaveBeenCalledWith(
+      safeBytes,
+      expect.any(Function)
+    );
+    expect(result).toEqual({ ok: true, value: persistedRecord });
   });
+
+  test("rejects multiple Windows Explorer files with a specific clipboard error", async () => {
+    mocks.readWindowsClipboardImageFile.mockResolvedValue({
+      ok: false,
+      error: {
+        code: "multiple_files",
+        message: "PwrSnap can paste one image file at a time; the clipboard contains 2 files.",
+        terminal: true
+      }
+    });
+
+    const result = await bus.dispatch(
+      "capture:pasteFromClipboard",
+      {},
+      { principal: "ipc" }
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { kind: "clipboard", code: "multiple_files" }
+    });
+    expect(mocks.readSafePastedFile).not.toHaveBeenCalled();
+    expect(mocks.readBuffer).not.toHaveBeenCalledWith("CF_HDROP");
+  });
+
+  test("rejects a non-image Explorer file instead of reporting no_image", async () => {
+    mocks.readWindowsClipboardImageFile.mockResolvedValue({
+      ok: false,
+      error: {
+        code: "not_image_file",
+        message: "The copied file is not a supported image: demo.mp4",
+        terminal: true
+      }
+    });
+
+    const result = await bus.dispatch(
+      "capture:pasteFromClipboard",
+      {},
+      { principal: "ipc" }
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { kind: "clipboard", code: "not_image_file" }
+    });
+    expect(mocks.readSafePastedFile).not.toHaveBeenCalled();
+  });
+
 
   test("returns a sanitized stable error when the secure file gate refuses the URL", async () => {
     const privatePath = join(tmpdir(), "private credentials", "secret.png");
@@ -375,9 +449,45 @@ describe("capture:pasteFromClipboard", () => {
     expect(JSON.stringify(result)).not.toContain(privatePath);
     expect(mocks.ingestImageBufferToTempPng).not.toHaveBeenCalled();
     expect(mocks.persistCaptureFromTempV2).not.toHaveBeenCalled();
-    expect(mocks.logWarn).toHaveBeenCalledWith("clipboard file URL unavailable", {
+    expect(mocks.logWarn).toHaveBeenCalledWith("clipboard image file unavailable", {
       code: "privileged_path"
     });
+    expect(JSON.stringify(mocks.logWarn.mock.calls)).not.toContain(privatePath);
+  });
+
+  test("redacts a rejected CF_HDROP candidate without reopening its pathname", async () => {
+    const privatePath = "C:\\Users\\Ada\\Pictures\\junction\\secret.png";
+    mocks.readWindowsClipboardImageFile.mockResolvedValue({
+      ok: true,
+      path: privatePath
+    });
+    mocks.readSafePastedFile.mockRejectedValue(
+      new securityMocks.UnsafePastedFileError(
+        "symlink",
+        "Invalid file",
+        `refusing to follow a junction at ${privatePath}`
+      )
+    );
+
+    const result = await bus.dispatch(
+      "capture:pasteFromClipboard",
+      {},
+      { principal: "ipc" }
+    );
+
+    expect(mocks.readSafePastedFile).toHaveBeenCalledWith(privatePath, {
+      maxBytes: PASTE_IMAGE_MAX_BYTES
+    });
+    expect(mocks.ingestImageBufferToTempPng).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: "clipboard",
+        code: "clipboard_file_unavailable",
+        message: "Invalid file"
+      }
+    });
+    expect(JSON.stringify(result)).not.toContain(privatePath);
     expect(JSON.stringify(mocks.logWarn.mock.calls)).not.toContain(privatePath);
   });
 
@@ -409,7 +519,7 @@ describe("capture:pasteFromClipboard", () => {
     ]);
     expect(JSON.stringify(result)).not.toContain(privatePath);
     expect(mocks.logWarn).toHaveBeenCalledWith(
-      "clipboard file URL image decode failed",
+      "clipboard image file decode failed",
       { code: "decode_failed" }
     );
     expect(JSON.stringify(mocks.logWarn.mock.calls)).not.toContain(privatePath);

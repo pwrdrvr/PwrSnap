@@ -1,3 +1,6 @@
+import type { AvatarStyle, CameraTrackMetadata, PresenterSpan, RecordingCamera } from "./camera";
+import type { RecordingDevicePreference, RecordingMicrophone } from "./recording-devices";
+import type { CustomConnection, CustomConnectionInput, CustomModel, CustomModelDiscovery, CustomModelInput } from "./custom-models";
 // Typed `Commands` registry. Single source of truth across main /
 // preload / renderer / external transports (HTTP RPC in Phase 7, MCP
 // later). Every command-bus.dispatch(name, req) call typechecks the
@@ -8,7 +11,9 @@
 // up the new command for free.
 
 import type { BundleLayerNode } from "./bundle-manifest-schema-v2";
-import type { CaptureEnrichment, SuggestedTag, AiRunStatus } from "./ai-enrichment-schemas";
+import type { CaptureDuplicateJob, CaptureEditSummary } from "./capture-duplicate";
+import type { CaptureEnrichment, AiRunStatus } from "./ai-enrichment-schemas";
+import type { AiEnrichmentRateLimit } from "./ai-enrichment-rate-limit";
 
 export type CaptureInvocationOrigin =
   | "global_hotkey.quick_capture"
@@ -86,6 +91,12 @@ export type CaptureRecord = {
   source_app_bundle_id: string | null;
   source_app_name: string | null;
   /**
+   * Normalized title of the exact selected source window. Null for region,
+   * display, and clipboard captures, and when the selected window could not be
+   * resolved safely at capture time.
+   */
+  source_window_title: string | null;
+  /**
    * Monotonic counter, bumped in the same transaction as every
    * edit write (overlay insert for v1; layer insert for v2 — see
    * `insertOverlay` / `rejectOverlay` in persistence/overlays-repo.ts
@@ -111,12 +122,43 @@ export type CaptureRecord = {
    */
   has_alpha: boolean;
   /**
+   * Duplicate lineage (migration 0035). `family_id` is the id of the
+   * capture a family of duplicates started from — set on that root too,
+   * once it has been duplicated — and `duplicated_from` is this capture's
+   * direct parent. Both null for a capture that was never duplicated.
+   * Neither is a foreign key: a purged original leaves its id behind.
+   * Optional so hand-built records (fixtures, the seeder) may omit them;
+   * every repo read fills both.
+   */
+  family_id?: string | null;
+  duplicated_from?: string | null;
+  /**
    * Set for `kind === "video"` rows. Carries duration, audio-track
    * availability, default range, and preview asset path so the
    * float-over and Library can render without a second round-trip.
    * Null for images.
    */
   video?: VideoCaptureMetadata | null;
+};
+
+/**
+ * One duplicate family (captures sharing a `family_id`), as the Family
+ * tab and the tile glyph see it. Counts exclude nothing but each other:
+ * `liveCount` is what the glyph shows, `trashedCount` what the tab
+ * greys out.
+ */
+export type CaptureFamilySummary = {
+  familyId: string;
+  /** The capture the family started from — equal to `familyId`. Null
+   *  once that capture has been purged; the family keeps its id. */
+  rootId: string | null;
+  /** The member to draw for the family: the root while it is live,
+   *  else the newest live member. Null when every member is trashed. */
+  coverId: string | null;
+  liveCount: number;
+  trashedCount: number;
+  /** Newest live member's `captured_at` (ISO). Families sort by it. */
+  newestCapturedAt: string;
 };
 
 /**
@@ -134,11 +176,41 @@ export type CaptureRecord = {
  * fresh recordings start with `{ start: 0, end: durationSec }`.
  */
 export type VideoCaptureMetadata = {
+  camera?: CameraTrackMetadata | null;
+  avatar?: AvatarStyle | null;
+  /** Stretches of source time with their own presenter; `avatar` shows
+   *  everywhere else. See `presenter-spans.ts`. */
+  avatarSpans?: PresenterSpan[] | undefined;
   durationSec: number;
   containerFormat: "mp4" | "mov";
   hasSystemAudio: boolean;
   hasMicrophoneAudio: boolean;
+  /**
+   * What the user ASKED this take to include, as opposed to what the
+   * recorder managed to write. `requestedMicrophone && !hasMicrophoneAudio`
+   * is the "requested but silent" case the post-capture receipt flags —
+   * a muted input, a device grabbed by another app, a Bluetooth mic that
+   * drifted off mid-take. Both false is the ordinary "did not ask" case.
+   *
+   * Rows written before migration 0033 carry `false` for both; that is
+   * deliberately NOT backfilled from the `has*` fields, which would
+   * invent a fact and permanently hide any past silent take.
+   */
+  requestedSystemAudio: boolean;
+  requestedMicrophone: boolean;
+  /** OUTER range of the edit — first kept start → last kept end. Every
+   *  consumer that understands a single range (sizzle clip trim seeds,
+   *  `video:setDefaultRange` callers) reads this and sees the edit
+   *  without its interior cuts. Sizzle applies the interior cuts on top
+   *  of a clip's trim at plan time (`sizzleMediaSpans`). */
   defaultRange: VideoRange;
+  /**
+   * The edit itself: kept spans in source seconds, ordered, never
+   * overlapping, never empty. Touching spans are a split with both sides
+   * kept; a gap between spans is a cut. A single span equal to
+   * `defaultRange` is an ordinary trim. See `video-segments.ts`.
+   */
+  segments: VideoRange[];
   /** Relative path under captures/ for the silent hover-preview proxy.
    *  Null while preview generation is still in flight (or failed). */
   previewPath: string | null;
@@ -157,6 +229,99 @@ export type VideoCaptureMetadata = {
 export type VideoRange = {
   start: number;
   end: number;
+};
+
+/**
+ * One edit operation on a video capture (`video:edit`). Exactly one of
+ * `keep` / `cut` / `cutStill` / `reset` must be set.
+ *
+ * Shared by the Library timeline (which persists with `keep`) and the
+ * agent tools on both surfaces — MCP and the in-app chat — so every
+ * path normalizes and validates the same way.
+ */
+export type VideoEditRequest = {
+  captureId: string;
+  /** Replace the edit with exactly these kept spans (source seconds). */
+  keep?: VideoRange[] | undefined;
+  /** Remove these spans from the current edit. Composes with cuts that
+   *  already exist. */
+  cut?: VideoRange[] | undefined;
+  /** Cut every stretch where nothing on screen changed and nobody spoke for at least
+   *  `minStillSec` (default 3), keeping `paddingSec` (default 0.5) of
+   *  stillness next to each change. `treatMinorAsStill` also ignores
+   *  cursor movement and typing. Runs the activity analysis if needed. */
+  cutStill?:
+    | {
+        minStillSec?: number | undefined;
+        paddingSec?: number | undefined;
+        treatMinorAsStill?: boolean | undefined;
+      }
+    | undefined;
+  /** Restore the whole clip — no trim, no cuts. */
+  reset?: boolean | undefined;
+};
+
+/** The edit as a caller should reason about it. */
+export type VideoEditState = {
+  captureId: string;
+  durationSec: number;
+  /** Kept spans as persisted (touching spans = a split). */
+  segments: VideoRange[];
+  /** What exports: `segments` with touching spans merged. */
+  spans: VideoRange[];
+  /** What is removed, head/tail trims included. */
+  cuts: VideoRange[];
+  /** Length of the exported video. */
+  keptDurationSec: number;
+};
+
+/** `video:activity` — the raw per-sample activity track for the
+ *  timeline lane. See `video-activity.ts` for the encoding. */
+export type VideoActivityResult = {
+  captureId: string;
+  sampleHz: number;
+  /** One byte per sample: 0 = nothing changed, 1–255 log-scale changed
+   *  fraction of the frame. */
+  magnitudes: number[];
+  /** Recorded-audio loudness per sample (`encodeSoundLevel`). Absent
+   *  when the take has no audio. */
+  sound?: number[] | undefined;
+  /** Size of the grayscale frames the difference was measured on. */
+  analysisWidthPx: number;
+  analysisHeightPx: number;
+};
+
+export type VideoInspectRequest = {
+  captureId: string;
+  /** Still stretches shorter than this are not listed. Default 3. */
+  minStillSec?: number | undefined;
+  /** Count cursor movement / typing as still. Default false. */
+  treatMinorAsStill?: boolean | undefined;
+  /** Include the dense one-character-per-sample level string. */
+  includeTrack?: boolean | undefined;
+};
+
+/** `video:inspect` — everything an agent needs to plan an edit without
+ *  looking at frames. */
+export type VideoInspectResult = VideoEditState & {
+  activity:
+    | {
+        sampleHz: number;
+        levels: Record<string, string>;
+        /** Run-length encoded levels; `resolutionSec` is the bucket the
+         *  runs were pooled to (the busiest level in a bucket wins). */
+        resolutionSec: number;
+        runs: Array<{ start: number; end: number; level: 0 | 1 | 2 | 3 }>;
+        /** Stretches with nothing happening, per the request options. */
+        stillSpans: Array<{ start: number; end: number; durationSec: number }>;
+        stillTotalSec: number;
+        /** One digit per sample, only when `includeTrack` was set. */
+        track?: string | undefined;
+      }
+    | null;
+  /** Why `activity` is null (analysis failed); the edit fields are still
+   *  valid. */
+  activityError?: string | undefined;
 };
 
 /**
@@ -193,7 +358,27 @@ export type RecordingState =
    * working rather than stuck.
    */
   | { phase: "starting"; sessionId: string; rect: Rect; displayId: number }
-  | { phase: "recording"; sessionId: string; startedAt: string; rect: Rect; displayId: number }
+  | {
+      phase: "recording";
+      sessionId: string;
+      startedAt: string;
+      rect: Rect;
+      displayId: number;
+      /**
+       * What this take asked for, so the HUD can show one chip per
+       * requested source while it runs. Carried on the state rather
+       * than fetched separately because the HUD is a pure subscriber:
+       * a second round-trip would let the chips render a frame behind
+       * the timer, and on restart they would briefly describe the
+       * previous take.
+       *
+       * This is the REQUESTED set. Whether a source is actually
+       * producing samples is a live signal the shipped backends do not
+       * expose yet — see `RecordingBackendCapabilities.sources
+       * .liveAudioLevels`.
+       */
+      capabilities: RecordingCapabilities;
+    }
   | { phase: "stopping"; sessionId: string }
   | { phase: "processing"; sessionId: string }
   | { phase: "ready"; sessionId: string; captureId: string }
@@ -205,7 +390,64 @@ export type RecordingState =
       displayId: number;
     };
 
+/**
+ * How the recording frame is allowed to relate to the recorded rect.
+ *
+ * `straddle` — the overlay may paint INSIDE the rect, because the
+ *   platform can hide one of our windows from the recorder that is
+ *   running (macOS: `setContentProtection(true)` →
+ *   `NSWindow.sharingType = .none`, which ScreenCaptureKit honours).
+ * `outset` — every lit pixel must be outside the rect. Windows records
+ *   through FFmpeg `gdigrab`, which reads the desktop DC and bakes in
+ *   whatever is over the capture region; Linux has no content-
+ *   protection concept at all. This is the safe default, and the
+ *   straddle posture is additive on top of it.
+ */
+export type RecordingFrameMode = "straddle" | "outset";
+
+/** Lifecycle of the frame itself, collapsed from `RecordingState.phase`. */
+export type RecordingFramePhase = "arming" | "recording" | "stopping";
+
+/**
+ * Main → the recording-frame renderer. Distances are CSS px from each
+ * edge of that window's content box to the recorded rect, so the
+ * renderer can position the frame without knowing anything about
+ * displays or coordinate spaces. A side whose band was clipped by the
+ * display edge arrives as `0`.
+ */
+export type RecordingFrameLayout = {
+  inset: { left: number; top: number; right: number; bottom: number };
+  mode: RecordingFrameMode;
+  phase: RecordingFramePhase;
+};
+
+/**
+ * Main → the recording-controller (HUD) renderer only: arm the HUD's
+ * own two-press confirm for a destructive control, as if the user had
+ * pressed Restart / Cancel on the HUD itself.
+ *
+ * This exists so the tray's destructive recording items have somewhere
+ * to ask "are you sure?" that is NOT a native dialog. An `NSAlert`
+ * raised from the main process carries no content protection and is
+ * centred on the display, so ScreenCaptureKit records it — and on
+ * Windows `gdigrab` reads the desktop DC, so it is captured
+ * unconditionally. A user who opened the tray, picked Restart, then
+ * thought better of it got several seconds of a PwrSnap alert baked
+ * into a take they kept. The HUD is the one surface that is both
+ * content-protected (macOS) and anchored outside the recorded rect
+ * (Windows), so the confirmation belongs there.
+ *
+ * The HUD owns the armed state, including its auto-disarm timeout;
+ * this event only nudges it. A nudge that arrives outside the
+ * recording phase, or while an action is already in flight, is
+ * ignored by the renderer.
+ */
+export type RecordingControllerArmEvent = {
+  action: "restart" | "cancel";
+};
+
 export type RecordingFailureCode =
+  | "microphone_unavailable"
   | "recorder_unavailable"
   | "recorder_start_failed"
   | "recorder_spawn_failed"
@@ -218,6 +460,10 @@ export type RecordingFailureCode =
  * in the owning main-process log and never cross the recording-state event. */
 export function recordingFailureSummary(code: RecordingFailureCode): string {
   switch (code) {
+    case "microphone_unavailable":
+      // Covers a named input that is gone as well as the default, so it
+      // points at the selector's choice, not only at the default input.
+      return "PwrSnap couldn't open the microphone. Check that the input chosen in the capture selector is connected and that PwrSnap has microphone access, then retry.";
     case "recorder_unavailable":
       return "PwrSnap couldn't find the video recorder.";
     case "recorder_start_failed":
@@ -233,6 +479,11 @@ export function recordingFailureSummary(code: RecordingFailureCode): string {
   }
 }
 
+/** A new selector may start only when no recording attempt owns the workflow. */
+export function canStartRecordingAttempt(state: RecordingState): boolean {
+  return state.phase === "idle" || state.phase === "ready";
+}
+
 /**
  * Capabilities the user wanted included in this recording session.
  * Screen video is always on. Audio fields are independent — degraded
@@ -241,8 +492,46 @@ export function recordingFailureSummary(code: RecordingFailureCode): string {
  * the mic toggle.
  */
 export type RecordingCapabilities = {
+  camera?: RecordingCamera;
   systemAudio: boolean;
   microphone: boolean;
+  /** The input to record from when `microphone` is on. Omitted means the
+   *  system default input. Matched by name in the native recorder, which
+   *  refuses the take rather than record a different microphone. */
+  microphoneDevice?: RecordingMicrophone;
+};
+
+/**
+ * Runtime capabilities of the recorder implementation selected for this
+ * platform. This is deliberately separate from {@link RecordingCapabilities},
+ * which describes the inputs requested for one take.
+ *
+ * The recording HUD uses this snapshot to avoid advertising controls or live
+ * monitoring that the active backend cannot actually perform. In particular,
+ * neither shipped backend can pause/resume, switch audio tracks mid-stream,
+ * or report live RMS levels. Camera capture is a separate browser recorder.
+ */
+export type RecordingBackendCapabilities = {
+  backend: "macos-native" | "windows-ffmpeg" | "unsupported";
+  controls: {
+    stop: boolean;
+    cancel: boolean;
+    restart: boolean;
+    pauseResume: boolean;
+  };
+  sources: {
+    screen: boolean;
+    systemAudio: boolean;
+    microphone: boolean;
+    webcam: boolean;
+    liveAudioLevels: boolean;
+    liveDisconnectDetection: boolean;
+    midRecordingToggles: boolean;
+  };
+  /** macOS content protection excludes the HUD from captured pixels. The
+   * Windows gdigrab backend cannot exclude a window, so its HUD must be kept
+   * outside region recordings and may appear in full-display recordings. */
+  controllerExcludedFromCapture: boolean;
 };
 
 /**
@@ -314,6 +603,23 @@ export type RecordingReadiness = {
 export type RecordingPermission = "screen" | "microphone" | "systemAudio";
 
 /**
+ * Every source a recording can draw from, in the order they are shown.
+ *
+ * Camera permission is acquired by getUserMedia after the user enables it.
+ * It stays separate from the native screen/audio preflight snapshot so an
+ * unused camera cannot block a screen recording.
+ */
+export type RecordingSourceKind = "screen" | "systemAudio" | "microphone" | "camera";
+
+/** Display order for a source row. Screen first — it is always on. */
+export const RECORDING_SOURCE_ORDER: readonly RecordingSourceKind[] = [
+  "screen",
+  "microphone",
+  "systemAudio",
+  "camera"
+];
+
+/**
  * Evidence available to Settings when it explains an OS permission.
  * This is deliberately separate from {@link RecordingReadiness}: readiness
  * may use a permissive fallback on platforms without a preflight API so the
@@ -351,6 +657,45 @@ export type PermissionReadinessReport = RecordingReadiness & {
 };
 
 /**
+ * What the macOS permission guide shows. The guide is a small PwrSnap panel
+ * placed beside System Settings → Screen & System Audio Recording that holds
+ * the running app bundle as a file drag, so the user drops THIS copy into the
+ * list instead of hunting for it.
+ *
+ * - `waiting`: open, Screen Recording not granted yet.
+ * - `granted`: the preflight now reads granted; the panel closes itself.
+ * - `settings-closed`: System Settings was seen and then went away first.
+ */
+export type PermissionGuidePhase = "waiting" | "granted" | "settings-closed";
+
+export type PermissionGuideState = {
+  phase: PermissionGuidePhase;
+  /** Display name of the bundle the handle drags. */
+  appName: string;
+  /** Path of the running bundle, home directory abbreviated to `~`. */
+  appPath: string;
+  /** PNG data URL of the bundle's icon, or null when none could be read. */
+  appIconDataUrl: string | null;
+  /** Other bundles with this app's bundle ID (Spotlight), `~`-abbreviated. */
+  otherCopies: string[];
+  /** False for `pnpm dev`, where macOS checks the launching terminal's grant. */
+  packaged: boolean;
+  /**
+   * Which edge of the panel points at the System Settings window, and where
+   * along it (CSS px from the panel's top). Null when Settings could not be
+   * found or the panel could not sit beside it.
+   */
+  notch: { side: "left" | "right"; y: number } | null;
+  /**
+   * The running bundle's ID, or null when it could not be read. Reset needs
+   * it: macOS keeps one Screen Recording row per bundle ID, not per copy.
+   */
+  bundleId: string | null;
+  /** Outcome of the last `permissions:guideResetGrant` while open. */
+  reset: "none" | "done" | "failed";
+};
+
+/**
  * Quality tier for a video export. Mirrors the image `RenderPreset`
  * shape (low / med / high) so the renderer's preset cards feel like
  * siblings of the image L/M/H row. Each (format, preset) maps to a
@@ -364,15 +709,26 @@ export type VideoPreset = "low" | "med" | "high";
  * GIF or MP4 export request. `preset` is required — the caller picks
  * a tier (LMH); the backend never guesses. `range` defaults to the
  * source `defaultRange` when omitted. `audio` is ignored for GIF
- * (always silent) and validated against the source's available
- * tracks for MP4.
+ * (always silent); an omitted MP4 `audio` keeps the recorded tracks the
+ * user's `recording.mp4Include*` preference keeps, and explicit choices
+ * are validated against the source's available tracks.
  */
 export type VideoExportRequest = {
   captureId: string;
   format: "gif" | "mp4";
   preset: VideoPreset;
+  /** A single contiguous range, no cuts. Ignored when `segments` is set. */
   range?: VideoRange | undefined;
+  /** The kept spans to export (the live edit the caller is displaying).
+   *  Wins over `range`; both omitted = the record's persisted edit. */
+  segments?: VideoRange[] | undefined;
   audio?: VideoExportAudio | undefined;
+  /**
+   * Renderer-minted identity for one visible export attempt. Progress
+   * events echo this value so retries and concurrent windows cannot
+   * consume one another's updates. Non-UI callers may omit it.
+   */
+  runId?: string | undefined;
 };
 
 export type VideoExportAudio = {
@@ -390,6 +746,48 @@ export type VideoExportResult = {
   heightPx: number;
   fromCache: boolean;
 };
+
+export type VideoExportProgressPhase =
+  | "queued"
+  | "palette"
+  | "encoding"
+  | "finalizing";
+
+type VideoExportProgressIdentity = {
+  runId: string;
+  captureId: string;
+  format: "gif" | "mp4";
+  preset: VideoPreset;
+};
+
+/**
+ * Main → renderer progress for one `video:export` request. `ratio: null`
+ * is deliberately indeterminate: FFmpeg has not exposed a usable output
+ * timestamp yet (notably while the single-process GIF graph builds its
+ * palette). A successful terminal event is the only event allowed to
+ * report 100%.
+ */
+export type VideoExportProgressEvent =
+  | (VideoExportProgressIdentity & {
+      phase: VideoExportProgressPhase;
+      ratio: number | null;
+    })
+  | (VideoExportProgressIdentity & {
+      phase: "done";
+      ratio: 1;
+      outcome: "succeeded";
+    })
+  | (VideoExportProgressIdentity & {
+      phase: "done";
+      ratio: null;
+      outcome: "failed";
+      error: { code: string; message: string };
+    })
+  | (VideoExportProgressIdentity & {
+      phase: "done";
+      ratio: null;
+      outcome: "cancelled";
+    });
 
 /** Per-(format, preset) metric returned by `video:presetMetrics`.
  *  Mirrors `CapturePresetMetric` for images. Estimated values come
@@ -435,6 +833,17 @@ export type VideoAudioResult =
   | { hasAudio: false }
   | { hasAudio: true; url: string; mimeType: "audio/mp4" };
 
+/**
+ * Result of `video:playback` — the URL a player should actually load.
+ *
+ * A recording keeps its sources as separate audio tracks, and players take
+ * only the first one. When the audible audio is not that first track, main
+ * prepares a stream-copied rendition whose single track is what the user
+ * should hear, and `prepared` is true. Otherwise this is the original file
+ * and the renderer can treat it as it always has.
+ */
+export type VideoPlaybackResult = { url: string; prepared: boolean };
+
 /** Response from `video:prepareDrag` — mirrors `capture:prepareDrag`.
  *  `path` is the human-friendly file alias (e.g.
  *  `<filename-stem>-<preset>.<ext>`); `iconPath` points at the poster
@@ -449,12 +858,14 @@ export type VideoPrepareDragResult = {
  *  `clipboard:copyVideoFile`, `clipboard:copyVideoPath`) so they
  *  agree on the same source-of-truth tuple. Range + audio are
  *  optional — when omitted, the handler fills them from the source
- *  record's `defaultRange` + recorded audio policy. */
+ *  record's `defaultRange` + the user's MP4 audio preference. */
 export type VideoExportCoordinates = {
   captureId: string;
   format: "gif" | "mp4";
   preset: VideoPreset;
   range?: VideoRange | undefined;
+  /** See `VideoExportRequest.segments`. */
+  segments?: VideoRange[] | undefined;
   audio?: VideoExportAudio | undefined;
 };
 
@@ -616,9 +1027,9 @@ export type CaptureSearchDiscovery = {
  * searches default to newest-first.
  */
 export type CaptureSearchRequest = {
-  /** Free-text query against title / description / OCR / source app
-   *  name via the `capture_search_fts` FTS5 virtual table (migration
-   *  0017). When omitted, the search degenerates to a filter-only
+  /** Free-text query against title / description / OCR / source app name /
+   *  source window title via the `capture_search_fts` FTS5 virtual table
+   *  (migration 0032). When omitted, the search degenerates to a filter-only
    *  scan ordered by `captured_at DESC`. */
   query?: string;
   /** Internal precise source-app filter. PwrSnap's Library/Sizzle code can
@@ -789,6 +1200,7 @@ export type SettingsPage =
   | "updates"
   | "hotkeys"
   | "ai"
+  | "ai-features"
   | "local-agents"
   | "storage"
   | "system-permissions"
@@ -807,6 +1219,7 @@ export const SETTINGS_PAGES = [
   "updates",
   "hotkeys",
   "ai",
+  "ai-features",
   "local-agents",
   "storage",
   "system-permissions",
@@ -1102,11 +1515,12 @@ export type LocalAgentAuditEntry = {
   occurredAt: string;
 };
 
-/** Every secret the app persists. Plaintext values never cross the IPC
- *  boundary — the renderer only ever sees the status shape below. */
+/** Every secret the app persists. Plaintext values never return over IPC;
+ *  write-only inputs are immediately persisted by main. Reads return status only. */
 export type DesktopSettingsSecretName =
   | "openaiApiKey"
-  | `localAgentToken:${string}`;
+  | `localAgentToken:${string}`
+  | `customModelCredential:${string}`;
 
 export type SizzleTtsProvider = "openai";
 export type SizzleTtsModel = "tts-1" | "tts-1-hd";
@@ -1129,9 +1543,11 @@ export const SIZZLE_VOICES = [
 
 /**
  * Trim range for a video-backed scene. start/end are seconds within
- * the source clip. The composer applies these as `-ss start -t (end-start)`.
- * NULL for image scenes; required for video scenes (seeded from
- * `record.video.defaultRange` when a video is first added).
+ * the source clip. The clip plays this window minus the capture's
+ * interior Library cuts unless it opts out (`useCaptureCuts: false`;
+ * see `sizzleMediaSpans`). NULL for image scenes; required for video
+ * scenes (seeded from `record.video.defaultRange` when a video is
+ * first added).
  */
 export type SizzleMediaTrim = {
   startSec: number;
@@ -1283,6 +1699,9 @@ export type SizzleSequenceBeat = {
   mediaTrim: SizzleMediaTrim | null;
   transition: SizzleTransition;
   videoFit: SizzleVideoFitPolicy;
+  /** Skip the capture's Library cuts inside `mediaTrim`. Absent means
+   *  yes — see `sizzleUsesCaptureCuts`. Only `false` is ever stored. */
+  useCaptureCuts?: boolean;
 };
 
 /**
@@ -1414,6 +1833,9 @@ export type SizzleSequencePreviewVideoFit = {
   renderMode: "trim" | "freeze-end" | "loop" | "ping-pong" | "speed-to-fit";
   inputDurationSec: number;
   playbackRate: number;
+  /** Seconds of footage the fit was planned against — the trim minus any
+   *  Library cuts. Lets the editor notice a plan made before a recut. */
+  sourceDurationSec?: number;
 };
 
 export type SizzleSequencePreviewBeat = {
@@ -1490,6 +1912,8 @@ export function resolveSizzleAudioSource(
 }
 
 export type SizzleScene = {
+  /** Presenter appearance for this scene; absent inherits the capture. */
+  avatar?: AvatarStyle;
   id: string;
   /** `simple` is the legacy/current one-capture scene. `sequence`
    *  keeps one continuous narration block with many visual beats.
@@ -1506,6 +1930,9 @@ export type SizzleScene = {
    *  composer ignores it for images). Required at render time for
    *  video scenes; seeded from `record.video.defaultRange` on add. */
   mediaTrim: SizzleMediaTrim | null;
+  /** Skip the capture's Library cuts inside `mediaTrim` (simple video
+   *  scenes). Absent means yes — see `sizzleUsesCaptureCuts`. */
+  useCaptureCuts?: boolean;
   /** See `SizzleAudioSource`. Defaults to "auto" — resolves per-scene
    *  based on capture kind + scriptLine at render time. */
   audioSource: SizzleAudioSource;
@@ -1740,8 +2167,23 @@ export type DesktopCodexDiscoverySnapshot = {
   /** Auth readiness for `resolvedPath`, from `codex login status`.
    *  `null` means no usable Codex binary resolved. */
   auth: DesktopCodexAuthProbe | null;
+  /** Upgrade advice for the binary PwrSnap will launch, from cached discovery. */
+  versionAdvisory?: DesktopCodexVersionAdvisory;
   /** ISO-8601 timestamp of when this snapshot was produced. */
   refreshedAt: string;
+};
+
+export type DesktopCodexInstaller = "homebrew" | "npm" | "pnpm" | "bun" | "application" | "unknown";
+
+export type DesktopCodexVersionAdvisory = {
+  command: string;
+  version: string;
+  minimumVersion: string;
+  installer: DesktopCodexInstaller;
+  upgradeCommand?: string;
+  /** No installation clears the launch floor, so Codex cannot run at all.
+   *  Surfaces say "required" in danger tone rather than "available". */
+  blocking?: true;
 };
 
 /**
@@ -2015,6 +2457,50 @@ export function builtInAcpAgentDisplayName(id: string): string {
   return isBuiltInAcpAgentId(id) ? BUILT_IN_ACP_AGENT_DISPLAY_NAMES[id] : id;
 }
 
+/** Places WITHIN a Settings page, keyed by the page that owns them — the
+ *  `sub` of `settings:open` / `events:settings:navigate` and of the Settings
+ *  window hash (`#stage=settings&page=ai&sub=codex`). AI Providers has one
+ *  screen per provider; AI Features has one section per card, and its subs
+ *  scroll the page to that card rather than replacing it. Lives here, beside
+ *  `SETTINGS_PAGES`, so main can validate a deep link without importing
+ *  renderer code. Declared after `BUILT_IN_ACP_AGENT_IDS` because it spreads
+ *  it at module load. */
+export const SETTINGS_PAGE_SUBS = {
+  ai: ["codex", ...BUILT_IN_ACP_AGENT_IDS, "openai"],
+  "ai-features": ["default-agents", "enrichment", "usage", "guidance"]
+} as const satisfies Partial<Record<SettingsPage, readonly string[]>>;
+
+/** One AI Providers screen id. */
+export type AiProvidersSettingsSub = (typeof SETTINGS_PAGE_SUBS.ai)[number];
+
+/** One AI Features section id. */
+export type AiFeaturesSettingsSub = (typeof SETTINGS_PAGE_SUBS)["ai-features"][number];
+
+/** AI Providers screens beyond the fixed list: the page that adds a Direct
+ *  API connection, and one screen per saved connection. Their SHAPE is what
+ *  is allowlisted; a connection id that no longer exists renders as removed. */
+export const NEW_CONNECTION_SETTINGS_SUB = "new-connection";
+const CONNECTION_SETTINGS_SUB = /^connection:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+export function connectionSettingsSub(connectionId: string): string {
+  return `connection:${connectionId}`;
+}
+/** The connection id a sub names, or `null` for any other sub. */
+export function connectionIdOfSettingsSub(sub: string | null | undefined): string | null {
+  return typeof sub === "string" ? CONNECTION_SETTINGS_SUB.exec(sub)?.[1] ?? null : null;
+}
+
+/** Whether `sub` names a screen that `page` actually has. A sub on a page
+ *  with none, or one the page does not list, is not a sub. */
+export function isSettingsSub(page: SettingsPage, sub: unknown): sub is string {
+  if (typeof sub !== "string") return false;
+  if (page === "ai" && (sub === NEW_CONNECTION_SETTINGS_SUB || CONNECTION_SETTINGS_SUB.test(sub))) {
+    return true;
+  }
+  const subs: readonly string[] | undefined =
+    (SETTINGS_PAGE_SUBS as Partial<Record<SettingsPage, readonly string[]>>)[page];
+  return subs !== undefined && subs.includes(sub);
+}
+
 /** The ACP agent id a chat thread is bound to, parsed from its id
  *  (`acp:<agent>:<session>`), or `null` for a Codex thread. The provider is
  *  baked into the thread id at creation, so it's stable even if the surface's
@@ -2137,6 +2623,7 @@ export type AiEnrichmentTriggerSource =
   | "popover-enable"
   | "popover-regenerate"
   | "library-regenerate"
+  | "library-repair"
   | "library-action"
   | "library-chat"
   | "sizzle-chat"
@@ -2160,7 +2647,29 @@ export type AiEnrichmentBudgetStatus = {
   disabledAt: string | null;
 };
 
-export type AppDocumentKind = "changelog" | "third-party-licenses";
+export type AppDocumentKind = "changelog" | "license" | "third-party-licenses";
+
+/** Every bundled app document, in the order Help lists them. The kind id
+ *  `third-party-licenses` predates the menu name and is kept so an open
+ *  window's URL and every bus caller stay valid; what the user reads is
+ *  `APP_DOCUMENT_TITLES`. */
+export const APP_DOCUMENT_KINDS = [
+  "changelog",
+  "license",
+  "third-party-licenses"
+] as const satisfies readonly AppDocumentKind[];
+
+/** User-visible name of each document — the window's crumb and, prefixed
+ *  with "PwrSnap", its title. Matches the Help menu's wording. */
+export const APP_DOCUMENT_TITLES: Readonly<Record<AppDocumentKind, string>> = {
+  changelog: "Changelog",
+  license: "License",
+  "third-party-licenses": "Third-Party Notices"
+};
+
+export function isAppDocumentKind(value: unknown): value is AppDocumentKind {
+  return (APP_DOCUMENT_KINDS as readonly unknown[]).includes(value);
+}
 
 export type AppDocument = {
   kind: AppDocumentKind;
@@ -2299,6 +2808,30 @@ export const RECORDING_MEDIA_DEFAULTS: {
   videoCaptureCursor: true
 };
 
+/**
+ * How the region selector draws its HUD. Both carry the same controls and
+ * the same Snap / Record mode; only the shape differs.
+ *
+ *   - `shutter`      — a Snap | Record rocker beside one round shutter
+ *                      that ↵ fires. In Record mode the sources appear as
+ *                      round buttons with the device named underneath.
+ *   - `clapperboard` — a SNAP | REC switch and a Capture / Record button.
+ *                      In Record mode a striped clapper and a slate with
+ *                      one fixed cell per source appear.
+ */
+export type SelectorHudStyle = "shutter" | "clapperboard";
+
+export const SELECTOR_HUD_STYLES = [
+  "shutter",
+  "clapperboard"
+] as const satisfies readonly SelectorHudStyle[];
+
+export const SELECTOR_HUD_STYLE_DEFAULT: SelectorHudStyle = "shutter";
+
+export function isSelectorHudStyle(value: unknown): value is SelectorHudStyle {
+  return typeof value === "string" && (SELECTOR_HUD_STYLES as readonly string[]).includes(value);
+}
+
 export function isQuickCaptureAction(value: unknown): value is QuickCaptureAction {
   return (
     typeof value === "string" && (QUICK_CAPTURE_ACTIONS as readonly string[]).includes(value)
@@ -2356,6 +2889,9 @@ export type Settings = {
     consentAcceptedAt: string | null;
     /** ISO-8601; null unless the budget circuit breaker disabled AI. */
     budgetSafetyDisabledAt: string | null;
+    /** How fast enrichment may start runs; null = PwrSnap's default
+     *  (`AI_ENRICHMENT_RATE_LIMIT_DEFAULT`). Replaced whole on write. */
+    enrichmentRateLimit: AiEnrichmentRateLimit | null;
     /** When true, completed Codex enrichments are promoted from
      *  `suggested_*` to `accepted_*` automatically — the user doesn't
      *  have to click "Use draft" in the float-over toast. Off by
@@ -2376,12 +2912,22 @@ export type Settings = {
      *  Codex default" (no `model` / `modelProvider` / `effort` is sent on
      *  thread/start or turn/start). */
     defaults: AiSurfaceDefaults;
+    /** Second choice for capture enrichment, used only when the primary
+     *  (`defaults.enrichment`, a Direct API model or an ACP agent) can't be
+     *  reached — see `isEnrichmentBackendUnavailable` in main. Same field
+     *  semantics as a surface default (`{}` = Codex on its managed default).
+     *  null / absent = off: an unreachable primary fails the run. Additive. */
+    enrichmentFallback?: AiSurfaceDefault | null;
     /** ACP-agent enablement (Settings → AI → ACP agents). The set of
      *  locally-installed ACP agents the user has opted into. Additive;
      *  defaults to empty. Discovery is the `acp:discover` verb; enabling
      *  is a `settings:write` patch to `ai.acp.enabledAgentIds`. Wiring an
      *  enabled agent as a live chat backend is a separate next phase. */
     acp: AcpSettings;
+    /** User-configured direct HTTP endpoints, and the models saved under
+     *  each; absent in older settings files. Main-owned. */
+    customConnections?: CustomConnection[];
+    customModels?: CustomModel[];
   };
   /** Global capture hotkeys. Each field is an Electron accelerator
    *  string (`CommandOrControl+Shift+C`-style) OR the empty string,
@@ -2420,6 +2966,15 @@ export type Settings = {
      *  like ⌘⇧F would shadow "Find in Files" system-wide while PwrSnap
      *  runs. Rebindable/unbindable from Settings → Hotkeys. */
     reshowFloatOver: string;
+    /** Bring the Library window forward (creating it if it was closed).
+     *  Backed by `library:focus`, the same verb the tray's folder button
+     *  dispatches. UNBOUND by default and deliberately so: the obvious
+     *  mnemonic chord (⌘⇧L) is "select all occurrences" in VS Code and
+     *  the reel-rail toggle inside PwrSnap's own Sizzle window, and a
+     *  `globalShortcut` registration wins system-wide — binding it by
+     *  default would shadow both. Bind it from Settings → Hotkeys if you
+     *  want a dedicated chord. */
+    openLibrary: string;
   };
   general: {
     /** When true, the View menu exposes Reload / Force Reload / Toggle
@@ -2536,16 +3091,61 @@ export type Settings = {
      *  cross-mode capture defaults (`imageCaptureCursor` is an image
      *  setting). See `QuickCaptureAction` for the per-value semantics. */
     quickCaptureAction: QuickCaptureAction;
-    /** Default toggle for the system-audio MP4 export option. */
+    /** How the region selector draws its HUD. See `SelectorHudStyle`. */
+    selectorHud: SelectorHudStyle;
+    /** Whether a new recording captures system audio. The selector's
+     *  source chips start from this; it decides what gets RECORDED, not
+     *  what an export keeps (see `mp4IncludeSystemAudio`). */
     includeSystemAudio: boolean;
-    /** Default toggle for the microphone MP4 export option. */
+    /** Whether a new recording captures the microphone. Same split as
+     *  `includeSystemAudio`: recording, not export. */
     includeMicrophone: boolean;
+    /** Whether an MP4 export keeps the recording's microphone track.
+     *  The MP4 row of every video export grid toggles it, and it sticks:
+     *  a user who left the mic on by accident turns it off once and every
+     *  later MP4 leaves it out until they turn it back on. Main applies
+     *  it to any MP4 export whose caller names no audio (the ⌘4–⌘6
+     *  shortcuts, drag-out), so no path falls back to "every track".
+     *  Defaults ON — recording audio is itself opt-in, so a track that
+     *  exists is one the user asked for. A take with no microphone track
+     *  ignores it. */
+    mp4IncludeMicrophone: boolean;
+    /** Whether an MP4 export keeps the recording's system-audio track.
+     *  Same contract as `mp4IncludeMicrophone`. */
+    mp4IncludeSystemAudio: boolean;
     /** Whether VIDEO recordings include the mouse cursor. Defaults
      *  ON — recordings have always baked in the cursor (the native
      *  recorder hardcoded it before this setting existed), so the
      *  default preserves that. The pre-capture selector toggle can
      *  override it per recording. */
     videoCaptureCursor: boolean;
+    /** Whether a tangerine frame is drawn around the recorded rect for
+     *  the duration of a video capture. Defaults ON: without it nothing
+     *  on screen says which pixels are being recorded — the HUD is
+     *  content-protected and anchored to the top of the display, not to
+     *  the subject.
+     *
+     *  Turning it off is a real preference (some users find any overlay
+     *  distracting), not a workaround: the frame never reaches the
+     *  recorded file on any platform. */
+    showRegionFrame: boolean;
+    /** Whether the recent-capture sidebar (the float-over's screen-edge
+     *  dock) is SHOWN. Defaults ON. It governs visibility only: which
+     *  captures are on the dock, their AI status glyphs, and every AI
+     *  run are the same either way. Off parks the dock window the way a
+     *  recording does, so turning it back on shows the same tabs. Main
+     *  reads it live (`setFloatOverRecentSidebarVisible`). */
+    showRecentCaptureSidebar: boolean;
+    /** The microphone a new recording uses, chosen from the selector's
+     *  microphone chip. `null` follows the system default input. It names
+     *  the device, never whether to record it: `includeMicrophone` still
+     *  seeds that. See `RecordingDevicePreference` for why it carries
+     *  both an id and a label. */
+    microphoneDevice: RecordingDevicePreference | null;
+    /** The camera a new recording uses, chosen from the selector's camera
+     *  chip. `null` opens whichever camera Chromium offers first. Like the
+     *  microphone, the chip still starts OFF on every show. */
+    cameraDevice: RecordingDevicePreference | null;
     /** Whether IMAGE captures include the mouse cursor. Defaults ON.
      *  Reserved for the Phase 3 image-cursor work — the field is
      *  persisted now so adding it later needs no schema change, but
@@ -2572,7 +3172,7 @@ export type Settings = {
     screenCapturePrompted: boolean;
   };
   /** v2 editor user preferences — tool style defaults (sticky-mode
-   *  memory), one-time coachmark flags, matching-text affordance gate,
+   *  memory), one-time coachmark flags, the tool bag,
    *  right-sidebar pin/last-panel state. Lives behind the same Settings
    *  substrate as every other field; renderers patch via SettingsPatch
    *  and re-fetch on `events:settings:changed` (see AGENTS.md "Settings
@@ -2626,7 +3226,11 @@ export const DEFAULT_HOTKEYS: Settings["hotkeys"] = {
   allScreens: "",
   timed: "",
   videoCapture: "CommandOrControl+Alt+C",
-  reshowFloatOver: "CommandOrControl+Alt+Shift+F"
+  reshowFloatOver: "CommandOrControl+Alt+Shift+F",
+  // Unbound: see the field doc on `Settings["hotkeys"].openLibrary` —
+  // ⌘⇧L is taken by editors and by our own Sizzle window, and a global
+  // registration would steal it from both.
+  openLibrary: ""
 };
 
 /** Platform-specific managed defaults. macOS keeps the established Option
@@ -2733,13 +3337,15 @@ export type {
   ArrowEndStyle,
   ArrowStemStyle,
   OverlayOutlineMode,
-  ShapeKind
+  ShapeKind,
+  ShapeStrokeStyle
 } from "./overlay-schemas";
 import type {
   ArrowEndStyle,
   ArrowStemStyle,
   OverlayOutlineMode,
-  ShapeKind
+  ShapeKind,
+  ShapeStrokeStyle
 } from "./overlay-schemas";
 export type TextFontWeight = "regular" | "bold";
 export type BlurEffectMode = "gaussian" | "pixelate" | "redact";
@@ -2787,6 +3393,10 @@ export type ShapeToolStyle = {
    *  Ignored for every other shape kind, but persisted so that picking
    *  Parallelogram later restores the user's last-used skew. */
   skewDeg: number;
+  /** Outline stroke pattern, written verbatim into the overlay row's
+   *  `strokeStyle`. Same value space as `ArrowToolStyle.stemStyle`, so
+   *  the tool bag pastes one onto the other. Inert while `filled`. */
+  strokeStyle: ShapeStrokeStyle;
   /** See ArrowToolStyle.outline. */
   outline: OverlayOutlineMode;
 };
@@ -2794,6 +3404,22 @@ export type ShapeToolStyle = {
 export type BlurToolStyle = {
   mode: BlurEffectMode;
   radius: BlurRadiusSetting;
+};
+
+/** The Draw family's working style. `mode` picks the tool the next drag
+ *  uses: pen, marker and airbrush lay a `stroke` overlay down; the eraser
+ *  cuts existing strokes and never commits one of its own. A bag slot
+ *  can hold pen / marker / airbrush but not the eraser (it has no style to
+ *  save). */
+export type DrawToolMode = "pen" | "marker" | "airbrush" | "eraser";
+
+export type DrawToolStyle = {
+  mode: DrawToolMode;
+  color: ToolColor;
+  /** Weight on the shared stroke ladder; each tool multiplies it (a
+   *  marker is wider than a pen at the same preset). Sizes the eraser's
+   *  footprint too. */
+  thickness: ToolSizePreset | number;
 };
 
 export type HighlightToolStyle = {
@@ -2817,6 +3443,34 @@ export type EditorToolStyles = {
   shape: ShapeToolStyle;
   blur: BlurToolStyle;
   highlight: HighlightToolStyle;
+  draw: DrawToolStyle;
+};
+
+/** One saved, complete tool style in the editor's tool bag: the tool it
+ *  arms plus EVERY style field that tool has. Arming a slot never
+ *  changes another slot, and pasting it onto a selection (⇧ + number)
+ *  maps its fields onto whatever kind is selected. `label` is an
+ *  optional user rename; the toolbar derives a name from the style when
+ *  it is absent. */
+export type ToolBagSlot =
+  | { tool: "arrow"; label?: string; style: ArrowToolStyle }
+  | { tool: "text"; label?: string; style: TextToolStyle }
+  | { tool: "shape"; label?: string; style: ShapeToolStyle }
+  | { tool: "blur"; label?: string; style: BlurToolStyle }
+  | { tool: "highlight"; label?: string; style: HighlightToolStyle }
+  /** `style.mode` is never "eraser" in a saved slot — the settings
+   *  parser coerces one to "pen". */
+  | { tool: "draw"; label?: string; style: DrawToolStyle };
+
+/** Number of tool-bag slots, bound to keys 1–9. */
+export const TOOL_BAG_SIZE = 9;
+
+/** The editor's tool bag. `slots` always has exactly TOOL_BAG_SIZE
+ *  entries; `null` is an empty slot. Written WHOLE on every change (the
+ *  settings merge replaces the array rather than merging slot by slot),
+ *  so a reorder or a clear can never interleave with a stale write. */
+export type EditorToolBag = {
+  slots: Array<ToolBagSlot | null>;
 };
 
 // Factory defaults for EditorToolStyles live in
@@ -2832,14 +3486,6 @@ export type EditorToolStyles = {
  *  pattern: any future "did the user see X once?" lives here. */
 export type EditorCoachmarks = {
   stoplightSeen: boolean;
-};
-
-/** Matching-text affordance gate. Default ON; the user can disable it
- *  from Settings → Editor (Phase 1.5 surface, not blocking) if the
- *  "+ Add label" affordance after arrow placement feels intrusive for
- *  their workflow. */
-export type EditorMatchingText = {
-  enabled: boolean;
 };
 
 export type EditorSidebarPanel = "info" | "chat" | "toolConfig" | "help";
@@ -2869,8 +3515,8 @@ export type EditorSidebarSettings = {
 
 export type EditorSettings = {
   toolStyles: EditorToolStyles;
+  toolBag: EditorToolBag;
   coachmarks: EditorCoachmarks;
-  matchingText: EditorMatchingText;
   sidebar: EditorSidebarSettings;
 };
 
@@ -2883,13 +3529,15 @@ export type EditorSettings = {
  *  / Help). `project` is gated at render time to only appear when at
  *  least one sizzle project exists and the active capture is one of
  *  its scenes; `properties` and `layers` are gated to image captures
- *  that have an editor mounted (Reel/Focus); both are absent otherwise. */
+ *  that have an editor mounted (Reel/Focus); both are absent otherwise.
+ *  `family` lists duplicate families and appears once any exist. */
 export type LibrarySidebarTab =
   | "info"
   | "ocr"
   | "chat"
   | "project"
   | "cart"
+  | "family"
   | "properties"
   | "layers";
 
@@ -2899,6 +3547,7 @@ export const LIBRARY_SIDEBAR_TABS = [
   "chat",
   "project",
   "cart",
+  "family",
   "properties",
   "layers"
 ] as const satisfies readonly LibrarySidebarTab[];
@@ -2975,6 +3624,41 @@ export type LibrarySettings = {
    *  survives changes to the level ladder (readers snap to the nearest
    *  level). Clamped to [{@link GRID_ZOOM_MIN}, {@link GRID_ZOOM_MAX}]. */
   gridZoom: number;
+  /** Which way Duplicate goes when a snap has edits to carry and the
+   *  user picks from the chooser rather than a menu row: `true` keeps
+   *  the edits (layers + crop for an image, trim + cuts for a video),
+   *  `false` starts the copy from the capture as taken. Remembered per
+   *  media kind so the chooser opens on the last choice. */
+  duplicateWithEdits: LibraryDuplicateWithEditsSettings;
+  /** Where the Focus / Reel edit toolbar lives. `float` (default) is the
+   *  draggable panel over the canvas; the other four dock it to that
+   *  edge of the stage, which shrinks the canvas so nothing covers the
+   *  snap. See {@link EditToolbarDock}. */
+  editToolbarDock: EditToolbarDock;
+};
+
+/** Position of the Library's edit toolbar. Docking takes its room from
+ *  the canvas (the snap re-fits once); `float` overlays it, as before. */
+export type EditToolbarDock = "float" | "top" | "bottom" | "left" | "right";
+
+export const EDIT_TOOLBAR_DOCKS = [
+  "float",
+  "top",
+  "bottom",
+  "left",
+  "right"
+] as const satisfies readonly EditToolbarDock[];
+
+export function isEditToolbarDock(value: unknown): value is EditToolbarDock {
+  return (
+    typeof value === "string" &&
+    (EDIT_TOOLBAR_DOCKS as readonly string[]).includes(value)
+  );
+}
+
+export type LibraryDuplicateWithEditsSettings = {
+  image: boolean;
+  video: boolean;
 };
 
 /** Discrete Library-grid zoom levels — target thumbnail min-widths in px,
@@ -3065,7 +3749,7 @@ export type ChatSettings = {
    *  the per-row `redactionStyle` field as YAGNI; one global default
    *  + agent picks per call is sufficient). */
   defaultRedactionStyle: RedactionStyle;
-  /** True once the user has dismissed the Settings → AI → Chat
+  /** True once the user has dismissed the Settings → AI Features → Guidance
    *  first-launch disclosure banner (which warns about iCloud +
    *  Time Machine + plaintext exposure at ~/Documents/PwrSnap/Chats/).
    *  Persisted so the banner doesn't re-appear after a relaunch. */
@@ -3246,6 +3930,7 @@ export type SettingsPatch = {
     enabled?: Settings["ai"]["enabled"];
     consentAcceptedAt?: Settings["ai"]["consentAcceptedAt"];
     budgetSafetyDisabledAt?: Settings["ai"]["budgetSafetyDisabledAt"];
+    enrichmentRateLimit?: Settings["ai"]["enrichmentRateLimit"];
     autoAcceptSuggestions?: Settings["ai"]["autoAcceptSuggestions"];
     chat?: Partial<ChatSettings>;
     /** Per-surface defaults. Each surface is independently optional, and
@@ -3259,6 +3944,9 @@ export type SettingsPatch = {
       sizzleChat?: AiSurfaceDefaultPatch;
       enrichment?: AiSurfaceDefaultPatch;
     };
+    /** `null` turns the enrichment fallback off. An object turns it on (from
+     *  `{}` when it was off) and merges leaf-by-leaf like a surface default. */
+    enrichmentFallback?: AiSurfaceDefaultPatch | null;
     /** ACP-agent enablement patch. `enabledAgentIds` REPLACES the stored
      *  set wholesale (the renderer ships the full desired set on each
      *  toggle, mirroring `ai.chat.sensitiveDataPatterns`). An empty array
@@ -3266,6 +3954,10 @@ export type SettingsPatch = {
      *  `undefined` / missing `acp` leaves the stored set untouched. The
      *  bus validator rejects unknown agent ids. */
     acp?: Partial<AcpSettings>;
+    /** Main-owned; changed only through the `customModels:*` verbs, which
+     *  also own the credential each connection holds. */
+    customConnections?: CustomConnection[];
+    customModels?: CustomModel[];
   };
   hotkeys?: Partial<Settings["hotkeys"]>;
   general?: Partial<Settings["general"]>;
@@ -3288,9 +3980,11 @@ export type SettingsPatch = {
       shape?: Partial<ShapeToolStyle>;
       blur?: Partial<BlurToolStyle>;
       highlight?: Partial<HighlightToolStyle>;
+      draw?: Partial<DrawToolStyle>;
     };
+    /** Replaces the whole bag — see {@link EditorToolBag}. */
+    toolBag?: EditorToolBag;
     coachmarks?: Partial<EditorCoachmarks>;
-    matchingText?: Partial<EditorMatchingText>;
     sidebar?: Partial<EditorSidebarSettings>;
   };
   /** Library DetailRail preferences — currently just the right-bar
@@ -3306,6 +4000,8 @@ export type SettingsPatch = {
     /** Sticky grid thumbnail size (target min-width px). See
      *  {@link LibrarySettings.gridZoom}. */
     gridZoom?: number;
+    duplicateWithEdits?: Partial<LibraryDuplicateWithEditsSettings>;
+    editToolbarDock?: EditToolbarDock;
   };
   localAgents?: {
     enabled?: boolean;
@@ -3328,7 +4024,22 @@ export type AppUpdateCheckResult =
   | { status: "checking" }
   | { status: "no-update"; version: string }
   | { status: "downloaded"; version: string; downgrade?: true }
-  | { status: "available"; version: string; downgrade?: true };
+  | { status: "available"; version: string; downgrade?: true }
+  | { status: "canceled"; version: string; downgrade?: true };
+
+/** Bytes moved so far on the update payload. Optional throughout: a feed that
+ *  reports no content length gives electron-updater a percent and nothing
+ *  else, and the meter has to degrade to that rather than print `NaN MB`. */
+export type AppUpdateDownloadProgress = {
+  percent?: number;
+  transferred?: number;
+  total?: number;
+  bytesPerSecond?: number;
+};
+
+/** Whether a download was actually running to stop. `false` is the ordinary
+ *  race — the download finished while the click was in flight — not a fault. */
+export type AppUpdateCancelResult = { canceled: boolean };
 
 // `downgrade` marks the move BACK to a selected slot that sits behind the
 // running build — the way out of a train the user did not pick. It is not
@@ -3341,8 +4052,12 @@ export type AppUpdateStatus =
   | { status: "checking" }
   | { status: "no-update"; version: string }
   | { status: "available"; version: string; downgrade?: true }
-  | { status: "downloading"; version: string; percent?: number; downgrade?: true }
+  | ({ status: "downloading"; version: string; downgrade?: true } & AppUpdateDownloadProgress)
   | { status: "downloaded"; version: string; downgrade?: true }
+  /** The user stopped the download. The release is still published, so this
+   *  is not `available` (which promises a download is under way) and not an
+   *  `error` (nothing failed) — it stands until the next check. */
+  | { status: "canceled"; version: string; downgrade?: true }
   | {
       status: "install-failed";
       version: string;
@@ -3383,6 +4098,9 @@ export type AiRunSnapshot = {
   task: string;
   triggerSource: AiEnrichmentTriggerSource;
   selectedModel: string | null;
+  /** The primary provider this run stood in for, when `ai.enrichmentFallback`
+   *  answered it because the primary could not be reached. */
+  fallbackFrom?: string | null;
   status: AiRunStatus;
   error: string | null;
   latencyMs: number | null;
@@ -3551,6 +4269,92 @@ export type AiUsageRunsPage = {
   nextOffset: number | null;
 };
 
+/** Which captures an enrichment repair job looks at: the latest run
+ *  `failed` (or was cancelled), or AI has `never` run on it. */
+export type EnrichmentRepairStatus = "failed" | "never";
+
+/** Source-app facet for a repair job, over app keys: the lowercased bundle
+ *  id, or `""` for captures with no recorded source app. An empty `appIds`
+ *  means every app. */
+export type EnrichmentRepairAppFacet = {
+  mode: "include" | "exclude";
+  appIds: string[];
+};
+
+export type EnrichmentRepairCriteria = {
+  /** Non-empty. */
+  statuses: EnrichmentRepairStatus[];
+  /** Inclusive lower bound on `captured_at` (ISO), or null for no bound. */
+  since: string | null;
+  /** Exclusive upper bound on `captured_at` (ISO), or null for no bound. */
+  until: string | null;
+  apps: EnrichmentRepairAppFacet;
+};
+
+/** How the AI re-run dialog should be set up when something other than
+ *  the dialog opens it. Omitted fields keep the dialog's defaults. */
+export type EnrichmentRepairOpenRequest = {
+  statuses?: EnrichmentRepairStatus[];
+  /** A preset window, or an exact `[since, until)` range (ISO) — the span a
+   *  caption model was unreachable, say. */
+  window?: "24h" | "7d" | "30d" | "90d" | "all" | { since: string; until: string | null };
+};
+
+/** A caption model that could not be reached answered again. */
+export type EnrichmentPrimaryRecovery = {
+  /** The provider selector, as `ai.defaults.enrichment.provider` holds it. */
+  provider: string;
+  /** When the first run could not reach it (ISO). */
+  downSince: string;
+  /** When it answered again (ISO). */
+  upAt: string;
+};
+
+export type EnrichmentRepairAppCount = {
+  appKey: string;
+  /** A representative real bundle id, for the app icon. */
+  bundleId: string | null;
+  name: string | null;
+  count: number;
+};
+
+export type EnrichmentRepairPreview = {
+  /** Captures the job would run on, every criterion applied. */
+  total: number;
+  /** Per status, with the time window and app facet applied. */
+  byStatus: Record<EnrichmentRepairStatus, number>;
+  /** Per app, with the statuses and time window applied but NOT the app
+   *  facet, so a picker can show what each app would add. */
+  apps: EnrichmentRepairAppCount[];
+};
+
+/** One background repair job. `processed` counts every capture the job is
+ *  done with: `succeeded + failed + skipped`. */
+export type EnrichmentRepairJob = {
+  jobId: string;
+  state: "running" | "completed" | "cancelled" | "stopped";
+  criteria: EnrichmentRepairCriteria;
+  total: number;
+  processed: number;
+  succeeded: number;
+  failed: number;
+  /** Already repaired by something else, or deleted, before its turn. */
+  skipped: number;
+  /** Snaps the job keeps in flight at once (1–8). */
+  concurrency: number;
+  /** The captures being read right now, with when each run started (ISO). */
+  inFlight: Array<{ captureId: string; startedAt: string }>;
+  /** Non-null while the job waits out its own pace between run starts:
+   *  when it expects to continue (ISO). The job never draws on the live
+   *  enrichment budget. */
+  waitingUntil: string | null;
+  /** Why a `stopped` job stopped (AI turned off, the cost-safety breaker
+   *  tripped by live captures, …). */
+  stopReason: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+};
+
 export type CaptureEnrichmentSummary = {
   captureId: string;
   status: AiRunStatus | null;
@@ -3626,8 +4430,9 @@ export type Commands = {
   "capture:pasteFromClipboard": { req: Record<string, never>; res: CaptureRecord };
   /**
    * Synthetic ingest path — accepts a temp PNG already on disk and a
-   * backdated `capturedAt`, persists via the same source-store +
-   * captures-repo chain as `capture:region`. Used by the dev seeder
+   * backdated `capturedAt`, and persists it as a v2 layer-tree bundle
+   * through `persistCaptureFromTempV2`, the same write entrypoint as
+   * every real capture. Used by the dev seeder
    * to populate large datasets through the live command-bus so DB
    * page packing + index maintenance reflect production behavior.
    *
@@ -3638,16 +4443,14 @@ export type Commands = {
    */
   "capture:ingest": {
     req: {
-      /** Absolute path to a temp PNG. Caller owns; handler reads, hashes, persists. */
+      /** Absolute path to a temp PNG. The handler packs it into a bundle and deletes it. */
       tempPngPath: string;
-      /** ISO 8601 with millisecond precision. Drives the captures/<yyyy>/<mm>/ layout
+      /** ISO 8601 with millisecond precision. Drives the bundle's filename
        *  and the row's `captured_at` column. */
       capturedAt: string;
       sourceAppBundleId: string | null;
       sourceAppName: string | null;
-      /** Optional dim hints — when omitted, source-store reads via sharp.metadata(). */
-      widthPxHint?: number | undefined;
-      heightPxHint?: number | undefined;
+      /** Defaults to 2. The canvas dims always come from the PNG itself. */
       devicePixelRatio?: number | undefined;
     };
     res: { record: CaptureRecord; isNew: boolean };
@@ -3698,6 +4501,50 @@ export type Commands = {
   "capture:presetMetrics": {
     req: { captureId: string };
     res: { metrics: CapturePresetMetric[] };
+  };
+  /**
+   * Duplicate a capture into a new, independent capture that sorts at
+   * the top (`captured_at` = now) and joins the source's family.
+   *
+   * `withEdits: true` carries the layer tree (image: crop + annotations;
+   * video: trim + cuts). `false` copies the base image / the full
+   * recording only. Enrichment (title, description, tags, OCR) is copied
+   * and the title/filename get a " copy" / "-copy" suffix numbered within
+   * the family; enrichment is NOT re-run.
+   *
+   * Images, and videos that clone (APFS clonefile, a reflink), answer
+   * with the committed `record`. A video that has to be byte-copied
+   * answers at once with a `job` instead and is copied in the
+   * background; its row appears only when the job reaches `done` (see
+   * {@link CaptureDuplicateJob}). A second duplicate of a source with a
+   * copy already in flight is refused (`code: "in_progress"`).
+   *
+   * Over MCP as `pwrsnap_capture_duplicate` (needs `capture.edit`), and in
+   * the in-app chat as `duplicate_capture`. Both require `withEdits`
+   * explicitly; neither reads the Library's remembered choice. Both wait
+   * for a background video copy to commit before answering.
+   */
+  "capture:duplicate": {
+    req: { captureId: string; withEdits: boolean };
+    res: { record: CaptureRecord; job: null } | { record: null; job: CaptureDuplicateJob };
+  };
+  /** Background video copies still in flight, for a window that mounts
+   *  mid-copy. Terminal jobs are never listed. */
+  "capture:duplicateJobs": {
+    req: Record<string, never>;
+    res: { jobs: CaptureDuplicateJob[] };
+  };
+  /** Stop a background video copy and remove its staging file.
+   *  `cancelled: false` when the job had already finished or failed. */
+  "capture:cancelDuplicate": {
+    req: { jobId: string };
+    res: { cancelled: boolean };
+  };
+  /** What a "with edits" duplicate would carry that a base copy would
+   *  not. The duplicate menus ask the question only when `hasEdits`. */
+  "capture:editSummary": {
+    req: { captureId: string };
+    res: CaptureEditSummary;
   };
 
   // ---- diagnostics ----
@@ -3817,9 +4664,9 @@ export type Commands = {
    *
    * Every filter field is optional; they combine conjunctively. The
    * `query` arg searches an FTS5 virtual table (`capture_search_fts`,
-   * migration 0017) that mirrors `capture_enrichments` and `captures`
-   * — title, description, OCR text, source app name. The returned
-   * `matchSnippet` is the SQLite `snippet()` function output around
+   * migration 0032) that mirrors `capture_enrichments` and `captures`
+   * — title, description, OCR text, source app name, source window title.
+   * The returned `matchSnippet` is the SQLite `snippet()` function output around
    * the FTS hit; it's only non-null when `query` is set.
    *
    * Soft-deleted captures are always excluded.
@@ -3865,6 +4712,20 @@ export type Commands = {
    * just-captured image into the Library editor.
    */
   "library:openInLibrary": { req: { captureId: string }; res: void };
+  /** Bring the Library forward with its AI re-run dialog open, set up as
+   *  `request` says. Settings › AI Features › Enrichment uses it. */
+  "library:openEnrichmentRepair": { req: { request?: EnrichmentRepairOpenRequest }; res: void };
+  /** Every duplicate family — captures sharing a `family_id` — newest
+   *  activity first. Drives the tile ⧉ glyph and the Family tab. */
+  "library:families": {
+    req: Record<string, never>;
+    res: { families: CaptureFamilySummary[] };
+  };
+  /** One family's members, trashed ones included, oldest first. */
+  "library:family": {
+    req: { familyId: string };
+    res: { members: CaptureRecord[] };
+  };
   /** Add a user-typed tag to a capture. Normalizes the label, creates
    *  the `tags` row if it doesn't already exist (kind = 'content'),
    *  and writes a `capture_tags` row with `source = 'user'`.
@@ -3895,6 +4756,24 @@ export type Commands = {
   "storage:maintainRenderCache": {
     req: { mode: RenderCacheMaintenanceMode };
     res: StorageMaintenanceResult;
+  };
+  /**
+   * Internal, agent-owned: run one derived-cache cleanup to completion.
+   *
+   * Not a renderer verb. Under `experimental.processSplit` the writers of
+   * `<cacheRoot>` live in the agent (`video:*`) while the deleters are
+   * reached from the library (`library:purge`, Settings → Storage), so the
+   * library hands the whole operation to the agent and awaits it — the
+   * agent's in-process admission gate is the only thing that can sequence a
+   * delete against an in-flight remux. Rejected for any principal but
+   * `bridge`; see `persistence/derived-cache-gate.ts`.
+   */
+  "storage:runCacheCleanup": {
+    req:
+      | { operation: "purge"; captureId: string }
+      | { operation: "clear" }
+      | { operation: "trim" };
+    res: Record<string, never>;
   };
   /** Snapshot of macOS permission denials on captures-folder reads.
    *  Renderers read this once on mount, then subscribe to
@@ -4039,16 +4918,17 @@ export type Commands = {
 
   // ---- copy / share ----
   "clipboard:copy": { req: { captureId: string; preset: RenderPreset }; res: void };
-  /** Render (or reuse) the image preset cache file and copy it as an
-   *  OS file URL so paste targets receive a real PNG filename. */
+  /** Render (or reuse) the image preset cache file and copy it using the
+   *  platform's existing-file clipboard format so paste targets receive a
+   *  real PNG attachment with the friendly filename. */
   "clipboard:copy-file": {
     req: { captureId: string; preset: RenderPreset };
     res: { path: string };
   };
-  /** Render (or reuse) the cache file at `preset` and write its POSIX
-   *  path as plain text to the system clipboard. The drag affordance
-   *  on the same button hands off the file itself; this one is for
-   *  pasting the path into terminals, editors, or chat. */
+  /** Render (or reuse) the cache file at `preset` and write its
+   *  platform-native absolute path as plain text to the system clipboard.
+   *  The drag affordance on the same button hands off the file itself; this
+   *  one is for pasting the path into terminals, editors, or chat. */
   "clipboard:copy-path": {
     req: { captureId: string; preset: RenderPreset };
     res: { path: string };
@@ -4189,7 +5069,13 @@ export type Commands = {
     res: { resumed: boolean };
   };
   /** Open (or focus, if already open) the Settings BrowserWindow. */
-  "settings:open": { req: { page?: SettingsPage }; res: void };
+  "settings:open": {
+    /** `sub` opens a screen within `page` (see `SETTINGS_PAGE_SUBS`). An
+     *  unknown sub — or one without a `page` — is dropped at the bus
+     *  boundary and the page's hub opens; it never blocks opening Settings. */
+    req: { page?: SettingsPage; sub?: string };
+    res: void;
+  };
   /** Re-run Codex CLI discovery and return the snapshot. `force: false`
    *  is allowed to return a service-cached snapshot. */
   "settings:refreshCodexDiscovery": {
@@ -4207,6 +5093,17 @@ export type Commands = {
     req: Record<string, never>;
     res: Record<DesktopSettingsSecretName, SecretStatus>;
   };
+  "customModels:saveConnection": { req: { connection: CustomConnectionInput }; res: CustomConnection };
+  "customModels:removeConnection": { req: { connectionId: string }; res: undefined };
+  "customModels:setKey": { req: { connectionId: string; value: string }; res: undefined };
+  "customModels:login": { req: { connectionId: string }; res: undefined };
+  "customModels:logout": { req: { connectionId: string }; res: undefined };
+  "customModels:discover": { req: { connectionId: string }; res: CustomModelDiscovery };
+  /** Replaces the connection's saved models with exactly `models`. */
+  "customModels:setModels": { req: { connectionId: string; models: CustomModelInput[] }; res: CustomModel[] };
+  /** Asks one saved model to reply; a few tokens on the provider's bill. */
+  "customModels:test": { req: { id: string }; res: { message: string; ms: number } };
+  "customModels:models": { req: { id: string }; res: { models: { id: string; label: string; isDefault: boolean }[] } };
   "settings:replaceSecret": {
     req: { name: DesktopSettingsSecretName; value: string };
     res: SecretStatus;
@@ -4331,6 +5228,34 @@ export type Commands = {
   /** Restart-into-the-downloaded-update. Only valid when status is
    *  `downloaded`; otherwise returns an error. */
   "app:update:install": { req: Record<string, never>; res: AppUpdateInstallResult };
+  /** Help → Check for Updates. Unlike `app:update:check` this one announces
+   *  itself on `events:app-update:check-result`, which is what raises the
+   *  Library's live progress card, and it does not answer until the download
+   *  the check started has settled.
+   *
+   *  It is a bus verb rather than a direct call because the application menu
+   *  is installed by whichever process owns the windows — the LIBRARY process
+   *  under the experimental split — while the updater (and the
+   *  `userCheckRunning` flag `app:update:userCheckRunning` reports) lives in
+   *  the agent. Calling the function locally would run a second, uninitialized
+   *  updater in the wrong process and set a flag nobody reads. */
+  "app:update:menuCheck": { req: Record<string, never>; res: AppUpdateCheckResult };
+  /** Stop the download the live update card is reporting. `canceled: false`
+   *  is the ordinary race (the download finished, or never started, while
+   *  the click was in flight), not a fault — the caller has a check result
+   *  coming either way. */
+  "app:update:cancel": { req: Record<string, never>; res: AppUpdateCancelResult };
+  /** Whether an update check THE USER ASKED FOR is still running. Mount-time
+   *  companion to `events:app-update:check-result`, which is edge-triggered
+   *  and never replayed: a window whose subscription lands after the
+   *  `checking` tick would otherwise show nothing for the whole check.
+   *  React flushes passive effects AFTER paint, so that gap is real even for
+   *  a window that was already on screen when the user picked the menu
+   *  item. */
+  "app:update:userCheckRunning": {
+    req: Record<string, never>;
+    res: { running: boolean };
+  };
   /** Latest release versions from the GitHub API (independent of the
    *  electron-updater channel). Used by Settings → Updates to show the
    *  candidate version for each channel. */
@@ -4357,6 +5282,37 @@ export type Commands = {
 
   // ---- float-over ----
   "float-over:dismiss": { req: Record<string, never>; res: void };
+  /**
+   * Whether this session can dock the toast on a screen edge. False where
+   * PwrSnap cannot place its own windows (a native Wayland client), in
+   * which case the toast keeps holding the corner while enrichment runs.
+   */
+  "float-over:capabilities": { req: Record<string, never>; res: { dock: boolean } };
+  /**
+   * Send the toast to the screen-edge dock. The renderer owns which snaps
+   * are waiting there; main owns where the dock sits. `docked: false`
+   * means placement is not ours on this session and nothing moved.
+   *
+   * `markOnly` records that snaps are waiting without changing what is on
+   * screen: a toast that is showing stays, and the dock comes up when the
+   * capture session ends. The renderer sends it when a snap leaves the
+   * toast because a new capture started, which can race that capture's
+   * own toast — a plain tuck landing after it would collapse the toast
+   * the user is about to look at.
+   */
+  "float-over:tuck": { req: { markOnly?: boolean }; res: { docked: boolean } };
+  /** Open the toast on a snap picked from the dock, its rail, or the
+   *  overflow menu. Arms the copy shortcuts for that snap. */
+  "float-over:open": { req: { captureId: string }; res: void };
+  /**
+   * Pop the dock's overflow list (the snaps past the visible cap) as a
+   * native menu at the pointer. Resolves with the pick, or null when the
+   * menu closed without one.
+   */
+  "float-over:overflowMenu": {
+    req: { items: FloatOverOverflowItem[]; canClearFinished: boolean };
+    res: { choice: FloatOverOverflowChoice };
+  };
 
   // ---- recording (Phase 5 — Fast Video Capture, issue #64) ----
   /**
@@ -4395,6 +5351,50 @@ export type Commands = {
     res: void;
   };
   /**
+   * Open the platform's sound settings (macOS: Sound, at Input; Windows:
+   * Settings › Sound), where the input device and its level are set. The
+   * selector's microphone picker links here. The URI is chosen in main.
+   * Unsupported platforms return `permission_settings_unsupported`.
+   */
+  "permissions:openSoundSettings": {
+    req: Record<string, never>;
+    res: void;
+  };
+  /**
+   * macOS only: open System Settings at Screen & System Audio Recording and
+   * show the permission guide beside it (see {@link PermissionGuideState}).
+   * Screen and system audio share the grant, so both open the same guide.
+   * Microphone, and every other platform, returns
+   * `permission_guide_unsupported`: those lists accept no drops.
+   */
+  "permissions:showGuide": {
+    req: { permission: RecordingPermission };
+    res: void;
+  };
+  /** The guide's current state, or null when it is closed. The guide
+   *  renderer subscribes to `EVENT_CHANNELS.permissionGuideState` first and
+   *  then asks, so a state sent before it mounted is not lost. */
+  "permissions:guideState": { req: Record<string, never>; res: PermissionGuideState | null };
+  /** The guide renderer's measured content height, in CSS px. */
+  "permissions:guideResize": { req: { height: number }; res: void };
+  /** Re-open System Settings at the Screen Recording list. */
+  "permissions:guideReopenSettings": { req: Record<string, never>; res: void };
+  /**
+   * Remove this bundle ID's Screen Recording row (`tccutil reset`) and
+   * re-open the list. macOS keeps ONE row per bundle ID, signed to whichever
+   * copy was added first, so dropping a second copy adds nothing and the
+   * row's switch can be on for a copy that is not this one. Resetting is
+   * the only way to get the row re-signed to the running copy.
+   */
+  "permissions:guideResetGrant": { req: Record<string, never>; res: void };
+  /**
+   * Quit and relaunch this exact executable (`app.relaunch`). Screen
+   * Recording applies to the next process; macOS's own Quit & Reopen goes
+   * by bundle ID and can open another copy.
+   */
+  "permissions:guideRelaunch": { req: Record<string, never>; res: void };
+  "permissions:guideClose": { req: Record<string, never>; res: void };
+  /**
    * Begin a recording session against the given subject (fixed rect or
    * full display) with the requested audio capabilities. Returns the
    * session id; lifecycle updates land on `EVENT_CHANNELS.recordingState`.
@@ -4404,6 +5404,30 @@ export type Commands = {
    * 3-2-1 countdown completes. Headless callers (agents, hotkey) can
    * pass `countdownSeconds: 0` to skip the countdown.
    */
+  "recording:cameraChunk": {
+    req: { token: string; bytes: number[] };
+    res: { accepted: boolean };
+  };
+  "video:camera": {
+    req: { captureId: string };
+    res: { url: string; camera: CameraTrackMetadata } | null;
+  };
+  "video:setAvatar": {
+    /** Either or both: the recording's presenter, and the whole list of
+     *  spans with their own (replaces the stored list). */
+    req: { captureId: string; avatar?: AvatarStyle | undefined; spans?: PresenterSpan[] | undefined };
+    res: { saved: true };
+  };
+  /** Main-process scene preparation. The video/cache owner resolves the
+   * source by id and publishes the presenter cache under its admission gate. */
+  "video:prepareAvatar": {
+    req: {
+      captureId: string;
+      avatar?: AvatarStyle;
+      canvas?: { width: number; height: number };
+    };
+    res: { path: string };
+  };
   "recording:start": {
     req: {
       subject: RecordingSubject;
@@ -4453,12 +5477,50 @@ export type Commands = {
    */
   "recording:state": { req: Record<string, never>; res: RecordingState };
   /**
+   * Truthful capability snapshot for the selected platform backend. Renderers
+   * must gate controls from this response; unsupported controls are omitted,
+   * not rendered disabled as if they might work.
+   */
+  "recording:capabilities": {
+    req: Record<string, never>;
+    res: RecordingBackendCapabilities;
+  };
+  /**
    * Update the persisted default range for a video capture. The
    * float-over scrubber calls this when the user picks a subrange.
    */
   "video:setDefaultRange": {
     req: { captureId: string; range: VideoRange };
     res: void;
+  };
+  /**
+   * Change a video's edit — replace the kept spans, cut spans out, cut
+   * the still stretches, or reset to the whole clip. Normalized against
+   * the stored duration, persisted, and broadcast on
+   * `events:captures:changed`, so an open Library adopts an agent's edit
+   * the same way it adopts its own (and can undo it). Returns the edit
+   * as stored.
+   */
+  "video:edit": {
+    req: VideoEditRequest;
+    res: VideoEditState;
+  };
+  /**
+   * The current edit plus a summary of on-screen activity — the read
+   * half of the agent tools. Runs (or reuses) the activity analysis.
+   */
+  "video:inspect": {
+    req: VideoInspectRequest;
+    res: VideoInspectResult;
+  };
+  /**
+   * Per-sample on-screen activity for the timeline's activity lane.
+   * Computed once per capture with ffmpeg and cached under
+   * `<cacheRoot>/video/<id>/`.
+   */
+  "video:activity": {
+    req: { captureId: string };
+    res: VideoActivityResult;
   };
   /**
    * Filmstrip contact strip for the Library / float-over timeline.
@@ -4485,15 +5547,49 @@ export type Commands = {
     res: VideoAudioResult;
   };
   /**
+   * Resolve what a player should load for this recording. A take whose
+   * audible track is not the one a player picks up — system audio armed
+   * with nothing playing through it, in front of a live microphone — plays
+   * silent when a player is handed the capture URL directly, because
+   * `<video>` plays ONE audio track and ignores the rest. (Which one is
+   * measured, not assumed: Chromium takes the track flagged `default`, and
+   * AVAssetWriter flags them all, so in practice that is track 0. See
+   * `docs/solutions/2026-09-12-video-playback-audio-track-selection.md`.)
+   *
+   * **The rule: every AUDIBLE player resolves through this verb; a player
+   * that cannot be heard must NOT.** This can spawn a stream-copy remux the
+   * size of the recording, so the dispatch itself is what a silent surface
+   * is avoiding — firing it per cell across a grid is the hazard.
+   *
+   * Renderers do not decide that by hand. `useVideoPlaybackSrc` gates on
+   * the shared `videoPlaybackNeedsPreparation`, which is pure over four
+   * booleans already on `VideoCaptureMetadata`, so a capture that cannot
+   * need a rendition never crosses the bus. `HoverAutoplayVideo` — the
+   * audible preview shared by the float-over toast and the tray's "last
+   * recording" — takes the capture rather than a URL so its callers cannot
+   * forget. The muted thumbnails (Library grid, `DetailRail`, `CartPanel`)
+   * stay on `captureSrcUrl` and say why at the call site.
+   */
+  "video:playback": {
+    req: { captureId: string };
+    res: VideoPlaybackResult;
+  };
+  /**
    * Render and return a GIF or MP4 export for the requested range,
    * preset (LMH), and audio tracks. Cached against (captureId,
    * range, format, preset, audio choices) — re-export with the same
-   * args returns instantly. Progress lands on
-   * `EVENT_CHANNELS.renderProgress`.
+   * args returns instantly. When `runId` is present, progress lands on
+   * `EVENT_CHANNELS.renderProgress` scoped to that exact attempt.
    */
   "video:export": {
     req: VideoExportRequest;
     res: VideoExportResult;
+  };
+  /** Cancel one renderer-owned visible export attempt. Shared encodes keep
+   *  running while another drag/window still consumes the same cache key. */
+  "video:cancelExport": {
+    req: { runId: string };
+    res: void;
   };
   /**
    * Per-(format, preset) metrics for a video capture. Mirrors
@@ -4507,8 +5603,19 @@ export type Commands = {
     /** `range` is optional: the renderer passes the trim range it is
      *  displaying so byte estimates re-derive from that duration even
      *  before the debounced `video:setDefaultRange` lands. Omitted →
-     *  the record's persisted `defaultRange`. */
-    req: { captureId: string; range?: VideoRange | undefined };
+     *  the record's persisted `defaultRange`. `audio` is the MP4 track
+     *  choice the grid is showing, so a cached encode is looked up under
+     *  the same key the next click would hit and the estimate counts the
+     *  audio track only when one is kept. Omitted → the same default an
+     *  export with no `audio` gets. */
+    req: {
+      captureId: string;
+      range?: VideoRange | undefined;
+      /** The live edit, when it has cuts — estimates use its kept
+       *  duration. Wins over `range`. */
+      segments?: VideoRange[] | undefined;
+      audio?: VideoExportAudio | undefined;
+    };
     res: VideoPresetMetricsResult;
   };
   /**
@@ -4526,12 +5633,11 @@ export type Commands = {
   };
   /**
    * Encode (cache-hit if already done) and copy the resulting file
-   * to the system clipboard as a file promise — on macOS, this
-   * writes `public.file-url` to NSPasteboard so paste in
-   * Slack/Mail/Finder drops the binary using the friendly export
-   * alias basename. Sibling of `clipboard:copy` for images, but
-   * image clipboard:copy writes raw bytes via nativeImage; videos
-   * can't fit through that API so we use file-url instead.
+   * to the system clipboard as an existing file — `public.file-url` on
+   * macOS and verified CF_HDROP on Windows — so attachment-aware paste
+   * targets receive the binary using the friendly export alias basename.
+   * Sibling of `clipboard:copy` for images, but image clipboard:copy writes
+   * raw bitmap bytes; animated GIF/MP4 use a file-transfer flavor instead.
    */
   "clipboard:copyVideoFile": {
     req: VideoExportCoordinates;
@@ -4539,7 +5645,7 @@ export type Commands = {
   };
   /**
    * Encode (cache-hit if already done) and write the encoded file's
-   * POSIX path to the system clipboard as text. Sibling of
+   * platform-native absolute path to the system clipboard as text. Sibling of
    * `clipboard:copy-path` for images.
    */
   "clipboard:copyVideoPath": {
@@ -4592,6 +5698,24 @@ export type Commands = {
     res: CaptureEnrichment;
   };
   "codex:runStatus": { req: { runId: string }; res: AiRunSnapshot | null };
+  /** Counts for the enrichment repair dialog. */
+  "codex:repair:preview": {
+    req: { criteria: EnrichmentRepairCriteria };
+    res: EnrichmentRepairPreview;
+  };
+  /** Start re-running enrichment, newest first, on every capture matching
+   *  `criteria`, up to `concurrency` at once. One job at a time. */
+  "codex:repair:start": {
+    /** `concurrency` defaults to 1. */
+    req: { criteria: EnrichmentRepairCriteria; concurrency?: number };
+    res: EnrichmentRepairJob;
+  };
+  /** The current or last finished job, until it is dismissed. */
+  "codex:repair:status": { req: Record<string, never>; res: EnrichmentRepairJob | null };
+  /** Stop the job, cancelling the run in flight. */
+  "codex:repair:cancel": { req: { jobId: string }; res: EnrichmentRepairJob | null };
+  /** Forget a finished job (its toast goes away). */
+  "codex:repair:dismiss": { req: { jobId: string }; res: null };
   "codex:budgetStatus": { req: Record<string, never>; res: AiEnrichmentBudgetStatus };
   /** Latest active too-old CLI condition. Snapshot-read so a Library window
    *  mounted after the guard fired still receives the durable warning. */
@@ -5003,3 +6127,18 @@ export type Commands = {
 export type CommandName = keyof Commands;
 export type Req<C extends CommandName> = Commands[C]["req"];
 export type Res<C extends CommandName> = Commands[C]["res"];
+
+/** Which screen edge the float-over's tab dock hugs. */
+export type FloatOverDockSide = "left" | "right";
+
+/** One row of the dock's overflow menu (the snaps past the visible cap). */
+export type FloatOverOverflowItem = {
+  captureId: string;
+  label: string;
+};
+
+/** What the user picked from the dock's overflow menu, if anything. */
+export type FloatOverOverflowChoice =
+  | { kind: "open"; captureId: string }
+  | { kind: "clear-finished" }
+  | null;

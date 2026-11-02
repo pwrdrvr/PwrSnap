@@ -6,6 +6,7 @@ import type {
   ArrowToolStyle,
   BlurToolStyle,
   BundleLayerNode,
+  DrawToolStyle,
   HighlightToolStyle,
   ShapeKind,
   ShapeToolStyle,
@@ -25,9 +26,11 @@ import {
   readHighlightOpacity,
   readShapeFilled,
   readShapeKind,
-  readShapeSkewDeg
+  readShapeSkewDeg,
+  readShapeStrokeStyle
 } from "@pwrsnap/shared";
 import { storedColorToToolColor } from "../editor/resolveToolColor";
+import { strokeLayerName } from "../editor/overlayToLayer";
 
 // Layer-projection outline defaults describe what a LEGACY row (no
 // `outline` field) actually renders, so the panel's Border control
@@ -56,6 +59,7 @@ const DEFAULT_LAYER_SHAPE_STYLE: ShapeToolStyle = {
   filled: false,
   shape: "rect",
   skewDeg: DEFAULT_PARALLELOGRAM_SKEW_DEG,
+  strokeStyle: "solid",
   outline: "white"
 };
 
@@ -68,6 +72,12 @@ const DEFAULT_LAYER_HIGHLIGHT_STYLE: HighlightToolStyle = {
   color: "yellow",
   opacity: DEFAULT_HIGHLIGHT_OPACITY,
   blend: DEFAULT_HIGHLIGHT_BLEND_MODE
+};
+
+const DEFAULT_LAYER_DRAW_STYLE: DrawToolStyle = {
+  mode: "pen",
+  color: "accent",
+  thickness: "auto"
 };
 
 const SHAPE_LABELS: Record<ShapeKind, string> = {
@@ -103,6 +113,13 @@ export type StyledLayerStyle =
       readonly tool: "highlight";
       readonly label: "Highlight";
       readonly style: HighlightToolStyle;
+    }
+  | {
+      readonly tool: "draw";
+      /** "Pen" / "Marker" / "Airbrush" — the tool that drew it. */
+      readonly label: string;
+      /** `mode` is the stroke's own tool, never "eraser". */
+      readonly style: DrawToolStyle;
     };
 
 /**
@@ -202,6 +219,7 @@ export function styledLayerStyle(
             kind === "parallelogram"
               ? readShapeSkewDeg(shape)
               : DEFAULT_LAYER_SHAPE_STYLE.skewDeg,
+          strokeStyle: readShapeStrokeStyle(shape),
           // Legacy stroked shapes paint the white halo; legacy FILLED
           // shapes paint no rim, so Off is the honest projection there.
           outline:
@@ -236,6 +254,18 @@ export function styledLayerStyle(
           ),
           opacity: readHighlightOpacity(highlight),
           blend: readHighlightBlend(highlight)
+        }
+      };
+    }
+    case "stroke": {
+      const stroke = node.shape;
+      return {
+        tool: "draw",
+        label: strokeLayerName(stroke.tool),
+        style: {
+          mode: stroke.tool,
+          color: storedColorToToolColor(stroke.color, DEFAULT_LAYER_DRAW_STYLE.color),
+          thickness: stroke.thickness ?? DEFAULT_LAYER_DRAW_STYLE.thickness
         }
       };
     }

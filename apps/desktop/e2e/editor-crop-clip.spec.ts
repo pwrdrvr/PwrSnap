@@ -27,7 +27,7 @@
 // Cross-platform: pure Chromium layout — runs on the Linux/xvfb CI
 // subset, not macOS-only.
 
-import { type Locator, type Page } from "@playwright/test";
+import { type Locator } from "@playwright/test";
 import { expect, type LaunchedApp, launchPwrSnap, test } from "./fixtures/electron-app";
 import { openEditorImage, seedRasterCapture } from "./fixtures/editor-helpers";
 

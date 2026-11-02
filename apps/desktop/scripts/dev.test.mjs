@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   checkNodeVersion,
+  configureDevFfmpeg,
   devSignalContext,
   ELECTRON_DEV_ENV_KEYS,
   ensureElectronInstalled,
@@ -100,6 +101,27 @@ function createFakeChildWithoutPid() {
 }
 
 describe("dev launch environment", () => {
+  it("continues startup when FFmpeg provisioning fails and preserves the actionable warning", () => {
+    const env = { PATH: "C:\\Windows" };
+    const logger = { warn: vi.fn(), log: vi.fn() };
+    expect(() => configureDevFfmpeg(env, () => {
+      throw new Error("Authenticate with gh auth login --hostname github.com");
+    }, logger)).not.toThrow();
+    expect(env).toEqual({ PATH: "C:\\Windows" });
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("gh auth login"));
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("Continuing app startup"));
+    expect(logger.log).not.toHaveBeenCalled();
+  });
+
+  it("still passes the provisioned FFmpeg path to the dev app", () => {
+    const env = {};
+    const path = String.raw`C:\Users\dev\.pwrsnap\dev\bin\PwrSnapFFmpeg.exe`;
+    const logger = { warn: vi.fn(), log: vi.fn() };
+    configureDevFfmpeg(env, () => ({ path, source: "cache" }), logger);
+    expect(env.PWRSNAP_FFMPEG_PATH).toBe(path);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
   it("uses an ASCII-only UTF-8 PowerShell bridge for Windows development", () => {
     const bridgeBytes = readFileSync(join(import.meta.dirname, "dev-windows.ps1"));
     const bridge = bridgeBytes.toString("utf8");
@@ -159,13 +181,15 @@ describe("dev launch environment", () => {
     expect(env.PWRSNAP_DATA_ROOT).toBe("/tmp/pwrsnap");
   });
 
-  it("requires the active Node version to match .nvmrc exactly", () => {
-    expect(checkNodeVersion("v24.14.1", "v24.14.1\n")).toMatchObject({ ok: true });
-    expect(checkNodeVersion("v24.13.0", "v24.14.1\n")).toMatchObject({
-      actual: "24.13.0",
-      expected: "24.14.1",
+  it("accepts any Node satisfying ^<.nvmrc>, the range GitHub Actions installs", () => {
+    expect(checkNodeVersion("v24.21.0", "v24.21.0\n")).toMatchObject({ ok: true });
+    expect(checkNodeVersion("v24.22.3", "v24.21.0\n")).toMatchObject({ ok: true });
+    expect(checkNodeVersion("v24.20.0", "v24.21.0\n")).toMatchObject({
+      actual: "24.20.0",
+      expected: "24.21.0",
       ok: false
     });
+    expect(checkNodeVersion("v25.0.0", "v24.21.0\n")).toMatchObject({ ok: false });
   });
 
   it("accepts a complete Electron package install", () => {

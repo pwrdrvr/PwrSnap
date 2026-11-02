@@ -22,9 +22,17 @@ import {
   type SizzleProject
 } from "@pwrsnap/shared";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
+import { useDismissable } from "../../lib/useDismissable";
+import { useFocusReturn } from "../../lib/useFocusReturn";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { CapturePicker } from "./CapturePicker";
-import { ChatResizer, getSavedChatWidth, setSavedChatWidth } from "./ChatResizer";
+import {
+  ChatResizer,
+  effectiveChatWidth,
+  getSavedChatWidth,
+  setSavedChatWidth,
+  useChatWidthCap
+} from "./ChatResizer";
 import { Editor } from "./Editor";
 import {
   PROJECT_CONTEXT_MENU_HEIGHT,
@@ -39,6 +47,8 @@ import { isTypingTarget } from "./sizzle-helpers";
 import { isPrimaryAccel } from "../shared/keyboard";
 import { useSizzleProject } from "./useSizzleProject";
 import "./sizzle.css";
+import { WindowControls } from "../shared/WindowControls";
+import { paintsOwnCaptionButtons, rendererPlatform } from "../../lib/window-chrome";
 
 // Re-exported for the tests that pin these helpers at this module path.
 export {
@@ -54,7 +64,10 @@ export { resetSizzleChatWidthForTests } from "./ChatResizer";
  *  guessed "roughly 480"; the inspector is a bottom DRAWER (stacked, not
  *  beside the chat), so the binding constraint is its widest row (type
  *  select + duration, ~300 px) — 360 keeps the default 400 px rail whole
- *  and folds only a deliberately narrowed one (the resizer floor is 320). */
+ *  and folds only a deliberately narrowed one (the resizer floor is 320).
+ *  The editor's floor never forces a fold on the minimum window: it caps
+ *  the rail at 400 there. Only a workspace under 840 px (a zoomed-in page)
+ *  caps it below 360. */
 export const RAIL_NARROW_PX = 360;
 
 type PickerTarget =
@@ -124,8 +137,13 @@ export function SizzleApp({
   const railRef = useRef<HTMLElement | null>(null);
   const railCrumbRef = useRef<HTMLButtonElement | null>(null);
   // Chat pane width — drag the divider; module-scoped so it survives
-  // remounts within a session (like EditToolbar's position).
+  // remounts within a session (like EditToolbar's position). This is the
+  // user's PREFERENCE; what the rail paints is `railWidth` below, capped so
+  // the editor keeps its floor on a narrow window.
   const [chatWidth, setChatWidth] = useState<number>(() => getSavedChatWidth());
+  const [workspace, setWorkspace] = useState<HTMLDivElement | null>(null);
+  const railMax = useChatWidthCap(workspace);
+  const railWidth = effectiveChatWidth(chatWidth, railMax);
   const [projectContextMenu, setProjectContextMenu] =
     useState<ProjectContextMenuState | null>(null);
 
@@ -147,6 +165,45 @@ export function SizzleApp({
 
   // Rail-as-dropdown: close on outside click / Esc, toggle with primary+Shift+L.
   const railIsPopover = active !== null;
+  // Escape closes the dropdown and nothing else. Its old window-bubble
+  // listener did not stop the event, so the editor's inspector listener
+  // (same target, same phase) closed the open clip inspector with it. A
+  // context menu opened over the rail is its own layer and answers first.
+  useDismissable({
+    open: railIsPopover && railOpen,
+    onDismiss: () => setRailOpen(false),
+    surfaceRef: railRef,
+    triggerRef: railCrumbRef
+  });
+  // Opened from the keyboard (⌘⇧L), the dropdown takes focus — on the open
+  // reel — so its rows are reachable without tabbing across the header
+  // first, and Escape has an owner. A crumb click leaves focus on the
+  // crumb, which already owns Escape as the trigger.
+  const focusRailOnOpenRef = useRef(false);
+  useEffect(() => {
+    if (!railIsPopover || !railOpen) {
+      // A chord that CLOSED the rail set the flag too; drop it here so a
+      // later crumb click does not pull focus into the rail.
+      focusRailOnOpenRef.current = false;
+      return;
+    }
+    if (!focusRailOnOpenRef.current) return;
+    focusRailOnOpenRef.current = false;
+    const rail = railRef.current;
+    const target =
+      rail?.querySelector<HTMLElement>(".szl__row.is-active") ??
+      rail?.querySelector<HTMLElement>("button:not(:disabled)");
+    target?.focus({ preventScroll: true });
+  }, [railIsPopover, railOpen]);
+  // However it closes — the chord again, a click outside, picking a reel —
+  // focus inside the rail goes back to the crumb. The rail stays mounted and
+  // goes `visibility: hidden` after its fade, and Chromium drops a focused
+  // hidden element to <body>.
+  useFocusReturn({
+    open: railIsPopover && railOpen,
+    containerRef: railRef,
+    returnFocusRef: railCrumbRef
+  });
   useEffect(() => {
     if (!railIsPopover || !railOpen) return;
     const onPointerDown = (event: PointerEvent): void => {
@@ -156,14 +213,9 @@ export function SizzleApp({
       if (railCrumbRef.current?.contains(target) === true) return;
       setRailOpen(false);
     };
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") setRailOpen(false);
-    };
     window.addEventListener("pointerdown", onPointerDown, true);
-    window.addEventListener("keydown", onKeyDown);
     return () => {
       window.removeEventListener("pointerdown", onPointerDown, true);
-      window.removeEventListener("keydown", onKeyDown);
     };
   }, [railIsPopover, railOpen]);
   useEffect(() => {
@@ -184,6 +236,8 @@ export function SizzleApp({
         event.key.toLowerCase() === "l"
       ) {
         event.preventDefault();
+        // Read by the effect above only when this opened the rail.
+        focusRailOnOpenRef.current = true;
         setRailOpen((v) => !v);
       }
     };
@@ -223,6 +277,15 @@ export function SizzleApp({
     []
   );
 
+  const inspectorOpen = selectedClipId !== null || selectedSceneId !== null;
+  // Below RAIL_NARROW_PX an open inspector folds the chat to a one-line bar.
+  // The painted width decides, not the preference: it is what the chat and
+  // the inspector actually have to share.
+  const chatFolded = inspectorOpen && railWidth < RAIL_NARROW_PX;
+  // The inspector is the rail's only pane — it fills it instead of sitting
+  // as a content-sized drawer under an empty space.
+  const inspectorOnly = inspectorOpen && (!showChat || chatFolded);
+
   return (
     <div
       className={
@@ -234,7 +297,7 @@ export function SizzleApp({
       <header className="szl__titlebar">
         <div className="szl__title-brand">
           <span className="szl__title-mark">
-            <PwrSnapMark size={18} />
+            <PwrSnapMark size={20} decorative />
           </span>
           <PwrSnapWordmark />
         </div>
@@ -244,18 +307,17 @@ export function SizzleApp({
               ref={railCrumbRef}
               type="button"
               className={"szl__title-crumb-btn" + (railOpen ? " is-open" : "")}
-              aria-haspopup="true"
               aria-expanded={railOpen}
               aria-controls="szl-rail"
               onClick={() => setRailOpen((v) => !v)}
               title={`Browse Sizzle Reels (${acceleratorToDisplayText("CommandOrControl+Shift+L", shortcutPlatform)})`}
               data-testid="sizzle-rail-toggle"
             >
-              Sizzle Reels
+              <span className="szl__title-label">Sizzle Reels</span>
               <span className="szl__title-caret" aria-hidden="true">▾</span>
             </button>
           ) : (
-            "Sizzle Reels"
+            <span className="szl__title-label">Sizzle Reels</span>
           )}
           {active !== null ? (
             <>
@@ -278,6 +340,9 @@ export function SizzleApp({
             </button>
           </>
         ) : null}
+        {/* Linux: a frameless window gets neither traffic lights nor a
+            `titleBarOverlay` — nobody draws min/max/close but us. */}
+        {paintsOwnCaptionButtons(rendererPlatform()) ? <WindowControls /> : null}
       </header>
       {loadError !== null || actionFailure !== null || backgroundSaveFailure !== undefined ? (
         <div className="szl__failure-stack">
@@ -324,7 +389,7 @@ export function SizzleApp({
         {active === null ? (
           <EmptyState />
         ) : (
-          <div className="szl__workspace">
+          <div className="szl__workspace" ref={setWorkspace}>
             <Editor
               project={active}
               captures={captures}
@@ -353,7 +418,7 @@ export function SizzleApp({
               onSelectSceneId={setSelectedSceneId}
               inspectorHost={inspectorHost}
             />
-            {showChat || selectedClipId !== null || selectedSceneId !== null ? (
+            {showChat || inspectorOpen ? (
               // The right rail: chat above, the clip inspector as a bottom
               // drawer (plan §4.6) — beside the chat, never replacing it.
               // Below RAIL_NARROW_PX the two cannot share the rail, so the
@@ -361,18 +426,14 @@ export function SizzleApp({
               // (still mounted — its state survives). A selected clip keeps
               // the rail up even with the chat hidden.
               <aside
-                className={
-                  "szl__chat" +
-                  (selectedClipId !== null || selectedSceneId !== null ? " has-inspector" : "") +
-                  (chatWidth < RAIL_NARROW_PX ? " is-narrow" : "")
-                }
-                style={{ flexBasis: chatWidth }}
+                className={"szl__chat" + (inspectorOnly ? " is-inspector-only" : "")}
+                style={{ flexBasis: railWidth }}
                 data-testid="sizzle-rail"
               >
-                <ChatResizer width={chatWidth} onResize={setChatWidth} />
+                <ChatResizer width={railWidth} max={railMax} onResize={setChatWidth} />
                 {showChat ? (
                   <>
-                    {(selectedClipId !== null || selectedSceneId !== null) && chatWidth < RAIL_NARROW_PX ? (
+                    {chatFolded ? (
                       <div className="szl__chat-folded" data-testid="sizzle-chat-folded">
                         <span>Chat folded while the inspector is open — widen the rail, or</span>
                         <button
@@ -386,12 +447,7 @@ export function SizzleApp({
                         </button>
                       </div>
                     ) : null}
-                    <div
-                      className={
-                        "szl__chat-pane" +
-                        ((selectedClipId !== null || selectedSceneId !== null) && chatWidth < RAIL_NARROW_PX ? " is-folded" : "")
-                      }
-                    >
+                    <div className={"szl__chat-pane" + (chatFolded ? " is-folded" : "")}>
                       <SizzleChatPanel key={active.id} projectId={active.id} />
                     </div>
                   </>

@@ -1,5 +1,5 @@
 import type { CSSProperties, ReactElement, ReactNode } from "react";
-import type { AiRunStatus } from "@pwrsnap/shared";
+import { type AiRunStatus, type CustomModel, type CustomConnection, type Settings } from "@pwrsnap/shared";
 
 // CodexStatusPill — single source of truth for "what is Codex doing"
 // across both the float-over toast and the Library Detail rail.
@@ -25,7 +25,8 @@ const ACP_PROVIDER_LABELS: Record<string, string> = {
 };
 
 /** Derive the status-pill provider + model labels from the enrichment surface
- *  default. `provider` is a backend selector ("" / "codex" / "acp:<id>").
+ *  default. Custom selectors resolve through saved model/connection IDs; the
+ *  display label never changes the model ID sent to the endpoint.
  *
  *  The per-surface `model` is a Codex concept: the enrichment handler passes the
  *  stored model id ONLY for Codex and `null` for ACP (the agent runs on its own
@@ -34,9 +35,16 @@ const ACP_PROVIDER_LABELS: Record<string, string> = {
  *  cross-provider id (e.g. "Kimi … (gpt-5.4-mini)") left over from a Codex
  *  selection made before the backend was switched. */
 export function enrichmentBackendLabel(
-  enrichment: { provider?: string; model?: string } | undefined
+  enrichment: { provider?: string; model?: string } | undefined,
+  custom: { customModels?: readonly CustomModel[] | undefined; customConnections?: readonly CustomConnection[] | undefined } = {}
 ): { providerLabel: string; modelLabel: string | undefined } {
   const provider = enrichment?.provider ?? "";
+  if (provider.startsWith("custom:")) {
+    const model = custom.customModels?.find((m) => `custom:${m.id}` === provider);
+    const connection = custom.customConnections?.find((c) => c.id === model?.connectionId);
+    const name = model?.displayName ?? "Removed model";
+    return { providerLabel: name, modelLabel: connection?.name === name ? undefined : connection?.name };
+  }
   const isAcp = provider.startsWith("acp:");
   const providerLabel = isAcp
     ? (ACP_PROVIDER_LABELS[provider.slice("acp:".length)] ?? provider.slice("acp:".length))
@@ -48,6 +56,32 @@ export function enrichmentBackendLabel(
   };
 }
 
+/** The backend a run's status line should name: the caption fallback when it
+ *  answered this run (`fallbackFrom` is set), otherwise the primary. */
+export function enrichmentRunBackend(
+  enrichment: { fallbackFrom?: string | null | undefined } | null | undefined,
+  settings: Pick<Settings, "ai"> | null | undefined
+): { providerLabel: string; modelLabel: string | undefined } {
+  const ai = settings?.ai;
+  return enrichment?.fallbackFrom
+    ? enrichmentBackendLabel(ai?.enrichmentFallback ?? {}, ai)
+    : enrichmentBackendLabel(ai?.defaults.enrichment, ai);
+}
+
+/** The next action's target, never historical run attribution. */
+export function enrichmentRegenerateLabel(
+  enrichment: { provider?: string; model?: string } | undefined,
+  custom: { customModels?: readonly CustomModel[] | undefined; customConnections?: readonly CustomConnection[] | undefined } = {}
+): string {
+  const { providerLabel, modelLabel } = enrichmentBackendLabel(enrichment, custom);
+  const provider = enrichment?.provider ?? "";
+  if (provider.startsWith("custom:")) return modelLabel ? `${providerLabel} (${modelLabel})` : providerLabel;
+  // Codex's managed default is resolved per run against the live catalog, so
+  // without a pinned model this cannot name a specific id truthfully.
+  const model = enrichment?.model || (provider.startsWith("acp:") ? "agent default" : "default model");
+  return `${providerLabel} (${model})`;
+}
+
 export type CodexStatusPillProps = {
   readonly status: AiRunStatus | null;
   readonly variant?: CodexStatusPillVariant;
@@ -57,19 +91,32 @@ export type CodexStatusPillProps = {
   readonly safetyDisabled?: boolean;
   /** Human label for the enrichment backend (e.g. "Codex", "Gemini"). The
    *  enrichment provider isn't always Codex anymore, so the copy is
-   *  parameterized. Defaults to "Codex". */
-  readonly providerLabel?: string | undefined;
-  /** Optional model id shown in parens (e.g. "gemini-3-flash-preview"). */
+   *  parameterized. Defaults to "Codex"; null uses neutral status copy when
+   *  the run metadata owns attribution. */
+  readonly providerLabel?: string | null | undefined;
+  /** Optional context in parens: a built-in model or a custom connection name. */
   readonly modelLabel?: string | undefined;
   /** Failure message from the latest run, when available. */
   readonly error?: string | null | undefined;
+  /** Label of the primary backend this run stood in for, when the caption
+   *  fallback answered because the primary could not be reached. Marks the
+   *  pill FALLBACK and says why in the summary. */
+  readonly fallbackFrom?: string | undefined;
   /** Compact run metadata rendered on the SAME row as the status text,
    *  separated by a middot (e.g. `· GPT-5.6-Luna · <$0.001`). Exists so
    *  a surface can fold a second boxed "model / cost" card into this
    *  one row instead of stacking two bordered strips above the first
    *  field. Omitted → the row is exactly what it was before. */
   readonly meta?: ReactNode;
+  /** Run duration (`EnrichmentRunClock`), right after the status text. It
+   *  renders nothing until there is a duration worth showing. */
+  readonly clock?: ReactNode;
   readonly action?: ReactNode;
+  /** A full-width row under the status text, inside the pill. Use it when a
+   *  surface has more than one control to offer: side-by-side buttons next to
+   *  the text squeeze the sentence into a few words per line (the Library
+   *  rail is ~280px wide). The float-over keeps the one-line `action` slot. */
+  readonly footer?: ReactNode;
   readonly style?: CSSProperties;
   readonly className?: string;
 };
@@ -81,6 +128,7 @@ type StatusKind =
   | "ready"
   | "accepted"
   | "failed"
+  | "cancelled"
   | "safety-disabled"
   | "needs-consent";
 
@@ -94,7 +142,7 @@ function resolveKind(
   if (status === "running") return "running";
   if (status === "queued") return "queued";
   if (status === "failed") return "failed";
-  if (status === "cancelled") return "idle";
+  if (status === "cancelled") return "cancelled";
   if (safetyDisabled) return "safety-disabled";
   if (accepted) return "accepted";
   if (draftAvailable && status === "completed") return "ready";
@@ -102,60 +150,63 @@ function resolveKind(
   return "idle";
 }
 
-function failedLabelFor(provider: string, error: string | null | undefined): ReactNode {
+function failedLabelFor(provider: string, error: string | null | undefined): string {
   const message = error?.trim();
   if (message === undefined || message.length === 0) {
-    return <>{provider} could not read this snap.</>;
+    return `${provider} could not read this snap.`;
+  }
+  if (/^failed to (?:load|reload) workspace requirements$/i.test(message)) {
+    return "Codex could not load its configuration, so AI did not run. Update PwrSnap or check Settings → AI Providers → Codex.";
   }
   if (/(auth|login|logged|credential|ineligibletier|unsupported_client|unsupported client|not supported|no longer supported)/i.test(message)) {
-    return (
-      <>
-        {provider} is not available: {message}
-      </>
-    );
+    return `${provider} is not available: ${message}`;
   }
-  return (
-    <>
-      {provider} could not read this snap: {message}
-    </>
-  );
+  return `${provider} could not read this snap: ${message}`;
 }
 
-function labelFor(
+/** The status sentence as plain text. The summary's `title` includes this
+ *  sentence and any raw failure detail replaced by friendlier copy, so a
+ *  surface that clamps the pill still offers the whole diagnostic. */
+function labelTextFor(
   kind: StatusKind,
-  provider: string,
+  provider: string | null,
   model: string | undefined,
   error: string | null | undefined,
   hasMeta: boolean
-): ReactNode {
+): string {
   const withModel = model !== undefined && model.length > 0 ? ` (${model})` : "";
   switch (kind) {
     case "running":
-      return (
-        <>
-          {provider} is reading the snap{withModel}
-          <span className="ps-codex-pill__dots" />
-        </>
-      );
+      return provider === null ? "Reading the snap" : `${provider} is reading the snap${withModel}`;
     case "queued":
-      return (
-        <>
-          {provider} is queued<span className="ps-codex-pill__dots" />
-        </>
-      );
+      return provider === null ? "Queued" : `${provider} is queued`;
     case "ready":
-      return <>{provider} drafted a title + description{hasMeta ? "" : "."}</>;
+      return provider === null ? "Drafted a title + description" : `${provider} drafted a title + description${hasMeta ? "" : "."}`;
     case "accepted":
-      return <>Description filled from {provider}{hasMeta ? "" : "."}</>;
+      return provider === null ? "Description filled" : `Description filled from ${provider}${hasMeta ? "" : "."}`;
     case "failed":
-      return failedLabelFor(provider, error);
+      return failedLabelFor(provider ?? "AI", error);
+    case "cancelled":
+      return "Enrichment cancelled.";
     case "safety-disabled":
-      return <>AI enrichment was disabled for cost safety.</>;
+      return "AI enrichment was disabled for cost safety.";
     case "needs-consent":
-      return <>Enable AI to read a bounded copy of this snap.</>;
+      return "Enable AI to read a bounded copy of this snap.";
     case "idle":
-      return <>{provider} has no suggestion yet.</>;
+      return provider === null ? "No suggestion yet." : `${provider} has no suggestion yet.`;
   }
+}
+
+function labelFor(kind: StatusKind, text: string): ReactNode {
+  if (kind === "running" || kind === "queued") {
+    return (
+      <>
+        {text}
+        <span className="ps-codex-pill__dots" />
+      </>
+    );
+  }
+  return text;
 }
 
 function shortLabelFor(kind: StatusKind): string {
@@ -170,6 +221,8 @@ function shortLabelFor(kind: StatusKind): string {
       return "used";
     case "failed":
       return "failed";
+    case "cancelled":
+      return "cancelled";
     case "safety-disabled":
       return "safety off";
     case "needs-consent":
@@ -189,18 +242,37 @@ export function CodexStatusPill({
   providerLabel = "Codex",
   modelLabel,
   error,
+  fallbackFrom,
   meta,
+  clock,
   action,
+  footer,
   style,
   className
 }: CodexStatusPillProps): ReactElement {
   const kind = resolveKind(status, draftAvailable, accepted, needsConsent, safetyDisabled);
   const hasMeta = meta !== undefined && meta !== null;
+  const fellBack = fallbackFrom !== undefined && fallbackFrom.length > 0 &&
+    kind !== "idle" && kind !== "needs-consent" && kind !== "safety-disabled";
+  const statusText = labelTextFor(kind, providerLabel, modelLabel, error, hasMeta);
+  // A failed fallback says what happened to the primary too: both are why
+  // there is no caption.
+  const summaryText = fellBack && kind === "failed"
+    ? `${statusText.replace(/\.?$/, ".")} ${fallbackFrom} could not be reached.`
+    : statusText;
+  const withReason = fellBack && kind !== "failed"
+    ? `${summaryText} ${fallbackFrom} could not be reached, so ${providerLabel ?? "the fallback"} stood in.`
+    : summaryText;
+  const summaryTitle = kind === "failed" && error?.trim()
+    && !withReason.includes(error.trim())
+    ? `${withReason} Technical detail: ${error.trim()}`
+    : withReason;
   const classes = [
     "ps-codex-pill",
     `ps-codex-pill--${variant}`,
     `is-${kind}`,
     hasMeta ? "has-meta" : "",
+    footer !== undefined && footer !== null ? "has-footer" : "",
     className ?? ""
   ]
     .join(" ")
@@ -223,14 +295,21 @@ export function CodexStatusPill({
         </svg>
       </span>
       <span className="ps-codex-pill__text">
-        <span className="ps-codex-pill__summary">
-          {labelFor(kind, providerLabel, modelLabel, error, hasMeta)}
+        {/* The clock rides the status line, so the run's model and cost
+            (`meta`) keep the line below it to themselves. */}
+        <span className="ps-codex-pill__headline">
+          <span className="ps-codex-pill__summary" title={summaryTitle}>
+            {labelFor(kind, summaryText)}
+          </span>
+          {fellBack ? <span className="ps-codex-pill__fallback">Fallback</span> : null}
+          {clock}
         </span>
         {hasMeta ? (
           <span className="ps-codex-pill__meta">{meta}</span>
         ) : null}
       </span>
       {action !== undefined ? <span className="ps-codex-pill__action">{action}</span> : null}
+      {footer !== undefined && footer !== null ? <div className="ps-codex-pill__footer">{footer}</div> : null}
     </div>
   );
 }

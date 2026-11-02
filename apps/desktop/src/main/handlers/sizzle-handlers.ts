@@ -1,3 +1,4 @@
+import { prepareSceneAvatar } from "../sizzle/avatar-preparation";
 import { BrowserWindow, app, shell } from "electron";
 import { join } from "node:path";
 import { mkdir, readFile, stat } from "node:fs/promises";
@@ -10,7 +11,12 @@ import {
   ok,
   resolveSizzleAudioSource,
   resolveVoiceoverSceneDurationSec,
+  SIZZLE_SCENE_MEDIA_MAX_SEC,
+  sizzleMediaSpans,
+  sizzleMediaSpansDurationSec,
+  sizzleMediaSpansHaveCuts,
   sizzleProjectHasCapture,
+  sizzleUsesCaptureCuts,
   type CaptureRecord,
   type EventPayloads,
   type PwrSnapError,
@@ -284,6 +290,8 @@ async function prepareSceneInput(args: {
   apiKey: string | null;
   sceneIdx: number;
   imageWidth: number;
+  imageHeight: number;
+  signal?: AbortSignal | undefined;
 }): Promise<SceneInput> {
   const { scene, capture, effectiveAudio, project, apiKey, sceneIdx, imageWidth } = args;
   let audioPath: string;
@@ -308,7 +316,16 @@ async function prepareSceneInput(args: {
         endSec: trim.endSec
       });
     }
-    const trimDur = trim.endSec - trim.startSec;
+    // The scene plays its trim minus any Library cuts inside it (unless
+    // it opted out). Everything below sizes the scene from what is KEPT.
+    const spans = sizzleMediaSpans({
+      trim,
+      segments: capture.video?.segments,
+      useCaptureCuts: sizzleUsesCaptureCuts(scene),
+      maxSec: SIZZLE_SCENE_MEDIA_MAX_SEC
+    });
+    const cut = sizzleMediaSpansHaveCuts(spans);
+    const trimDur = sizzleMediaSpansDurationSec(spans);
 
     // Scene duration policy for video scenes:
     //   • durationOverrideSec wins if explicitly set.
@@ -343,8 +360,13 @@ async function prepareSceneInput(args: {
     } else if (effectiveAudio === "native") {
       audioPath = await extractVideoAudio({
         videoPath: capture.legacy_src_path!,
-        startSec: trim.startSec,
-        durationSec: trimDur
+        hasSystemAudio: capture.video?.hasSystemAudio ?? false,
+        hasMicrophoneAudio: capture.video?.hasMicrophoneAudio ?? false,
+        requestedSystemAudio: capture.video?.requestedSystemAudio ?? false,
+        requestedMicrophone: capture.video?.requestedMicrophone ?? false,
+        startSec: spans[0]!.start,
+        durationSec: trimDur,
+        ...(cut ? { spans } : {})
       });
       durationSec =
         scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
@@ -361,12 +383,15 @@ async function prepareSceneInput(args: {
 
     return {
       kind: "video",
-      videoPath: capture.legacy_src_path!,
-      startSec: trim.startSec,
+      videoPath: await prepareSceneAvatar(capture, scene.avatar, args.signal, {
+        width: args.imageWidth, height: args.imageHeight
+      }),
+      startSec: spans[0]!.start,
       trimDurationSec: trimDur,
       durationSec,
       audioPath,
-      transition: scene.transition
+      transition: scene.transition,
+      ...(cut ? { spans } : {})
     };
   }
 
@@ -729,10 +754,22 @@ export function registerSizzleHandlers(
           startSec: video.defaultRange.start,
           endSec: video.defaultRange.end
         };
+        // Same spans the render plays, so the preview hears the cut.
+        const spans = sizzleMediaSpans({
+          trim,
+          segments: video.segments,
+          useCaptureCuts: sizzleUsesCaptureCuts(scene),
+          maxSec: SIZZLE_SCENE_MEDIA_MAX_SEC
+        });
         const audioPath = await extractVideoAudio({
           videoPath: capture.legacy_src_path,
-          startSec: trim.startSec,
-          durationSec: trim.endSec - trim.startSec
+          hasSystemAudio: video.hasSystemAudio,
+          hasMicrophoneAudio: video.hasMicrophoneAudio,
+          requestedSystemAudio: video.requestedSystemAudio,
+          requestedMicrophone: video.requestedMicrophone,
+          startSec: spans[0]!.start,
+          durationSec: sizzleMediaSpansDurationSec(spans),
+          ...(sizzleMediaSpansHaveCuts(spans) ? { spans } : {})
         });
         const durationSec = await probeDurationSec(audioPath);
         const bytes = await readFile(audioPath);
@@ -1241,9 +1278,21 @@ export function registerSizzleHandlers(
                 imagePathByCaptureId.set(beat.captureId, imagePath);
               })
             );
+            const presenterCaptures = new Map(captureMap);
+            for (const beat of scene.beats ?? []) {
+              const source = captureMap.get(beat.captureId);
+              if (source?.video?.camera) {
+                presenterCaptures.set(source.id, {
+                  ...source,
+                  legacy_src_path: await prepareSceneAvatar(source, scene.avatar, ctx.signal, {
+                    width: dims.w, height: dims.h
+                  })
+                });
+              }
+            }
             sceneInputGroups[i] = planSequenceScene({
               scene,
-              capturesById: captureMap,
+              capturesById: presenterCaptures,
               imagePathByCaptureId,
               narrationAudioPath: tts.audioPath,
               speechTiming
@@ -1256,7 +1305,9 @@ export function registerSizzleHandlers(
               project,
               apiKey,
               sceneIdx: i + 1,
-              imageWidth: dims.w
+              imageWidth: dims.w,
+              imageHeight: dims.h,
+              signal: ctx.signal
             });
             sceneInputGroups[i] = [sceneInput];
           }

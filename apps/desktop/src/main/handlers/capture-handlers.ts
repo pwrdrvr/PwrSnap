@@ -8,10 +8,9 @@
 //      cancellation.
 //   2. captureRegion() — shells out to /usr/sbin/screencapture, writes
 //      a temp PNG.
-//   3. putCaptureSource() — moves to ~/Documents/PwrSnap/<id>.png,
-//      hashes, returns metadata.
-//   4. insertCapture() — INSERT.
-//   5. webContents.send 'events:captures:changed' — library + float-over
+//   3. persistCaptureFromTempV2() — packs a v2 `.pwrsnap` bundle into
+//      the captures root, then INSERTs the row + its layer tree.
+//   4. webContents.send 'events:captures:changed' — library + float-over
 //      refetch.
 //
 // Phase 1.5 wires the float-over to actually fire after a successful
@@ -19,9 +18,9 @@
 
 import { mkdtemp, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { extname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { clipboard, screen } from "electron";
+import { screen } from "electron";
 import sharp from "sharp";
 import {
   ok,
@@ -37,15 +36,20 @@ import type {
   PwrSnapError,
   Rect,
   RenderPreset,
-  Result,
-  Settings
+  Result
 } from "@pwrsnap/shared";
-import { bus, type CommandContext } from "../command-bus";
+import { bus, type CommandContext, type CommandHandler } from "../command-bus";
 import {
   pickRegion,
   getLastWindowListSnapshot,
   hideSelector
 } from "../capture/region-selector";
+import {
+  regionSelectorUnsupported,
+  WAYLAND_SELECTOR_ERROR_CODE,
+  WAYLAND_SELECTOR_MESSAGE
+} from "../capture/linux-session";
+import { showWaylandRefusalNotice } from "../capture/wayland-refusal-notice";
 import { captureRegion, captureScreen, captureWindow } from "../capture/screencapture";
 import { displayScaleFactorForId } from "../capture/display-density";
 import { planExtentMask } from "../capture/extent-mask";
@@ -61,32 +65,50 @@ import {
   ensureCapturesDirReady,
   runWithCapturesDirFallback
 } from "../capture/capture-storage-gate";
-import { releaseSnapshot } from "../capture/screen-snapshot";
-import { type WindowInfo } from "../capture/window-list";
 import {
+  acquireSnapshotRaster,
+  releaseSnapshot,
+  type SnapshotRasterLease
+} from "../capture/screen-snapshot";
+import { listWindows, type WindowInfo } from "../capture/window-list";
+import {
+  resolveSelectedWindowTitle,
   resolveSelectionSourceApp,
   resolveSourceAppByRect
 } from "../capture/source-app";
 import {
-  clipboardImageBufferFormats,
   ingestImageBufferToTempPng,
   writeFirstDecodableClipboardBufferToPng,
   type RawClipboardDecodeFailure
 } from "../clipboard-image-buffer";
+import {
+  isSupportedClipboardImagePath,
+  readWindowsClipboardImageFile,
+  type WindowsClipboardImageErrorCode,
+  type WindowsClipboardImageReadResult
+} from "../clipboard/windows-file-clipboard-reader";
+import {
+  CaptureDuplicateError,
+  captureEditSummary,
+  startCaptureDuplicate
+} from "../capture/capture-duplicate";
+import { cancelDuplicateJob, listDuplicateJobs } from "../capture/duplicate-jobs";
 import { broadcastCapturesChanged } from "../events";
-import { setFloatOverState } from "../float-over";
+import { releaseFloatOverDock, setFloatOverState } from "../float-over";
 import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
 import { findMainLibraryWindow, scheduleDockReclaim } from "../window";
 import { maybeEnqueueCaptureEnrichment } from "./codex-handlers";
-import { getCaptureById, insertCapture } from "../persistence/captures-repo";
-import { ensureEffectiveSrcPath, putCaptureSource } from "../persistence/source-store";
+import { getCaptureById } from "../persistence/captures-repo";
+import { ensureEffectiveSrcPath } from "../persistence/source-store";
 import { persistCaptureFromTempV2 } from "../persistence/bundle-store";
+import { ingestSyntheticCapture } from "../capture/synthetic-ingest";
 import {
   resolveCursorLayerForRect,
   type CursorLayerPlacement,
   type CursorSample
 } from "../capture/cursor-sample";
 import { startCursorSampleIfEnabled } from "../capture/cursor-capture-settings";
+import { recordingBackendCapabilities } from "../recording/recording-capabilities";
 import { getMainLogger } from "../log";
 import { renderViaCoordinator } from "../render/coordinator";
 import { prepareRenderedFileAlias } from "../render/file-alias";
@@ -100,6 +122,7 @@ import {
 } from "../security/assertSafePastedFile";
 import { validateSafeRgbaRasterDimensions } from "../image/safe-raster-decode";
 import { CaptureLatencyTrace } from "../capture/capture-latency-trace";
+import { readClipboard, type ClipboardSnapshot } from "../clipboard/system-clipboard";
 
 const log = getMainLogger("pwrsnap:capture-handlers");
 
@@ -109,33 +132,17 @@ const CLIPBOARD_SOURCE = {
   bundleId: "com.pwrsnap.clipboard",
   appName: "Clipboard"
 } as const;
+// Electron 44 lists macOS's `public.file-url` as `text/uri-list` and rejects
+// a read by the UTI (see clipboard/system-clipboard.ts), so that is the name
+// Finder's file URL is found under. Only on macOS: on Windows the same type is
+// Chromium's rendering of Explorer's CF_HDROP, which this path deliberately
+// leaves to the native helper.
 const CLIPBOARD_FILE_URL_FORMATS = [
-  "public.file-url",
+  ...(process.platform === "darwin" ? ["text/uri-list"] : []),
   "public.url",
   "NSURLPboardType"
 ] as const;
-const IMAGE_FILE_EXTENSIONS = new Set([
-  ".avif",
-  ".bmp",
-  ".gif",
-  ".heic",
-  ".heif",
-  ".jpeg",
-  ".jpg",
-  ".png",
-  ".tif",
-  ".tiff",
-  ".webp"
-]);
-
 type CaptureSource = Pick<WindowInfo, "bundleId" | "appName"> | null;
-
-export function clipboardHasPasteableImage(): boolean {
-  if (!clipboard.readImage().isEmpty()) return true;
-  if (clipboardImageBufferFormats(clipboard.availableFormats()).length > 0) return true;
-  const filePath = clipboardImageFilePath();
-  return filePath !== null && looksLikeImageFile(filePath);
-}
 
 /**
  * The Library window id when THIS capture was triggered from inside the
@@ -275,6 +282,29 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     }
     const trace = new CaptureLatencyTrace(req.invocation, mode);
     trace.mark("dispatch_receive", { principal: ctx.principal });
+    // Refuse the one Linux configuration the selector genuinely cannot
+    // serve — Wayland with more than one display, where the pointer reads
+    // 0,0 wherever the mouse is and we therefore cannot tell which display
+    // to open on. Ahead of guardScreenCapture so a capture we are going to
+    // refuse never raises the portal's permission prompt. See
+    // linux-session.ts for why this is no longer every Wayland session.
+    if (regionSelectorUnsupported(screen.getAllDisplays().length)) {
+      trace.finish("error", { code: WAYLAND_SELECTOR_ERROR_CODE });
+      log.warn("interactive capture refused: Wayland session with multiple displays", {
+        mode,
+        principal: ctx.principal
+      });
+      // Tell the user, and only the user. `ipc` is every human entry point
+      // — the Library button, the tray tiles, the global hotkeys, the
+      // native tray menu. An agent over `mcp`/`rpc` gets the Result and no
+      // dialog: nobody is sitting in front of it to dismiss one.
+      if (ctx.principal === "ipc") showWaylandRefusalNotice();
+      return err({
+        kind: "capture",
+        code: WAYLAND_SELECTOR_ERROR_CODE,
+        message: WAYLAND_SELECTOR_MESSAGE
+      });
+    }
     try {
       const permissionStage = trace.begin("permission_preflight");
     // Gate BEFORE pickRegion: the selector freezes a screen snapshot on
@@ -422,17 +452,47 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     // for one capture, which is recoverable; the other direction
     // records their screen when they had asked it not to.
     const quickCaptureAction = settings?.recording.quickCaptureAction ?? "snap";
+    const recordingSources = recordingBackendCapabilities().sources;
     const selection = await pickRegion({
       mode: selectorMode,
       keepPwrSnapChrome,
       protectWindowIds,
       latencyTrace: trace,
+      cameraOffered: recordingSources.webcam,
       quickCaptureAction,
+      ...(settings !== null ? { hudStyle: settings.recording.selectorHud } : {}),
       // Seed the selector's `C` toggle from the persisted default. Only
       // consumed if the user chooses Record, but it has to be in the
       // mode signal BEFORE the selector shows — there is no second
       // chance to send it once the chooser is on screen.
-      ...(settings !== null ? { cursorDefault: settings.recording.videoCaptureCursor } : {})
+      ...(settings !== null ? { cursorDefault: settings.recording.videoCaptureCursor } : {}),
+      // The saved devices. A read failure omits them, which the chips
+      // read as "no choice": the default microphone, the first camera.
+      ...(settings !== null
+        ? {
+            devicesDefault: {
+              microphone: settings.recording.microphoneDevice,
+              camera: settings.recording.cameraDevice
+            }
+          }
+        : {}),
+      // Same timing constraint as `cursorDefault`, and the same
+      // fail-closed reasoning: a settings read failure omits the seed,
+      // which hides the chips rather than guessing. The recording entry
+      // point then falls back to the persisted defaults exactly as it
+      // did before the chips existed.
+      // Also gated on the backend capability table: a source this platform
+      // cannot record must not be offered, because arming it makes
+      // `recording:start` reject the whole take rather than record silent
+      // video (see `guardRecordingAttempt`).
+      ...(settings !== null && (recordingSources.microphone || recordingSources.systemAudio)
+        ? {
+            sourcesDefault: {
+              microphone: recordingSources.microphone && settings.recording.includeMicrophone,
+              systemAudio: recordingSources.systemAudio && settings.recording.includeSystemAudio
+            }
+          }
+        : {})
     });
     log.info("capture:interactive pickRegion returned", {
       mode,
@@ -558,7 +618,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
 
     // We own the screen snapshot now and MUST release it; the try/finally
     // is a safety net (both teardown + release are idempotent).
-    const { screenSnapshotId, screenSnapshotPath } = selection;
+    const { screenSnapshotId } = selection;
     let teardownDone = false;
     const tearDownSelector = async (): Promise<void> => {
       if (teardownDone) return;
@@ -619,6 +679,12 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
           snappedWindowId: selection.snappedWindowId
         });
       }
+      // Title attribution needs a live, exact-id check. Start the native
+      // enumeration alongside pixel capture so its ~30-50ms cost does not
+      // lengthen the normal path. A free region has no source-window title
+      // and therefore performs no extra lookup.
+      const liveWindowsPromise =
+        selection.snappedWindowId === undefined ? null : listWindows();
       const captureResult =
         selection.fullWindow === true &&
         selection.snappedWindowId !== undefined &&
@@ -626,13 +692,13 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
           ? await captureWindow(selection.snappedWindowId)
           : maskToExtents
             ? await cropScreenSnapshotExtents(
-                screenSnapshotPath,
+                screenSnapshotId,
                 selection.rect,
                 pickedExtents,
                 selection.displayId
               )
             : await cropScreenSnapshot(
-                screenSnapshotPath,
+                screenSnapshotId,
                 selection.rect,
                 selection.displayId
               );
@@ -664,6 +730,15 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
           message: captureResult.message
         });
       }
+
+      const sourceWindowTitle =
+        liveWindowsPromise === null
+          ? null
+          : resolveSelectedWindowTitle(
+              selection.snappedWindowId,
+              snapshot,
+              await liveWindowsPromise
+            );
 
       // We have the pixels. Tear the selector down NOW — BEFORE the save —
       // so the file write (and any Documents TCC prompt it triggers) runs
@@ -732,7 +807,8 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
           screen.getAllDisplays(),
           selection.displayId
         ),
-        cursorLayer
+        cursorLayer,
+        sourceWindowTitle
       });
       if (persisted.ok) {
         // Selector is already gone; this swaps the idle float-over to the
@@ -836,7 +912,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
   // panel — so there's nothing to recover. If a future change makes
   // this path activate PwrSnap (e.g. a confirmation HUD), re-introduce
   // both calls here in lockstep with capture-handlers.ts:254-262.
-  bus.register("capture:fullScreen", async (req) => {
+  bus.register("capture:fullScreen", releasingFloatOverDock<"capture:fullScreen">(async (req) => {
     const blocked = await guardScreenCapture();
     if (blocked) return blocked;
     const storageBlocked = await ensureCapturesDirReady();
@@ -855,7 +931,11 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     // normally settled by persist time.
     const cursorSamplePromise = startCursorSampleIfEnabled();
     await hidePwrSnapChromeAndSettle();
-    const captureResult = await captureScreen(displayId);
+    // `report`, not `enforce`: a full-screen grab maps no rect through the
+    // display, and on a portal session the portal's picker — which the
+    // Wayland refusal notice sends users to — chose the source. See
+    // `GrabDisplayMatch` in screencapture.ts.
+    const captureResult = await captureScreen(displayId, undefined, { displayMatch: "report" });
     if (!captureResult.ok) {
       return err({
         kind: "capture",
@@ -884,9 +964,9 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       });
     }
     return persisted;
-  });
+  }));
 
-  bus.register("capture:allScreens", async (req) => {
+  bus.register("capture:allScreens", releasingFloatOverDock<"capture:allScreens">(async (req) => {
     const blocked = await guardScreenCapture();
     if (blocked) return blocked;
     const storageBlocked = await ensureCapturesDirReady();
@@ -1032,7 +1112,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       record: persisted.value
     });
     return ok({ records: [persisted.value] });
-  });
+  }));
 
   bus.register("capture:window", async () => {
     return err({
@@ -1040,6 +1120,70 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       code: "not_implemented",
       message: "capture:window lands in Phase 1.5+"
     });
+  });
+
+  bus.register("capture:duplicate", async (req) => {
+    if (typeof req?.captureId !== "string" || typeof req.withEdits !== "boolean") {
+      return err({
+        kind: "validation",
+        code: "invalid_duplicate_request",
+        message: "capture:duplicate requires { captureId: string, withEdits: boolean }"
+      });
+    }
+    try {
+      // A background video copy commits after this answers, so the
+      // broadcast rides the commit, not the return.
+      return ok(
+        await startCaptureDuplicate(req.captureId, {
+          withEdits: req.withEdits,
+          onCommitted: (record) => {
+            broadcastCapturesChanged(
+              record.duplicated_from === null || record.duplicated_from === undefined
+                ? [record.id]
+                : [record.id, record.duplicated_from]
+            );
+          }
+        })
+      );
+    } catch (cause) {
+      if (cause instanceof CaptureDuplicateError) {
+        return err({ kind: "validation", code: cause.code, message: cause.message });
+      }
+      const fallbackError =
+        cause instanceof CapturesLocationFallbackError ? cause.pwrSnapError : null;
+      if (fallbackError !== null) return err(fallbackError);
+      log.error("capture duplicate failed", {
+        captureId: req.captureId,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err({
+        kind: "persistence",
+        code: "duplicate_failed",
+        message: "PwrSnap could not duplicate that snap.",
+        cause
+      });
+    }
+  });
+
+  bus.register("capture:duplicateJobs", async () => ok({ jobs: listDuplicateJobs() }));
+
+  bus.register("capture:cancelDuplicate", async (req) => {
+    if (typeof req?.jobId !== "string" || req.jobId.length === 0 || req.jobId.length > 64) {
+      return err({
+        kind: "validation",
+        code: "invalid_duplicate_job",
+        message: "capture:cancelDuplicate requires { jobId: string }"
+      });
+    }
+    return ok({ cancelled: cancelDuplicateJob(req.jobId) });
+  });
+
+  bus.register("capture:editSummary", async (req) => {
+    const record = typeof req?.captureId === "string" ? getCaptureById(req.captureId) : null;
+    if (record === null) {
+      return err({ kind: "validation", code: "not_found", message: "capture not found" });
+    }
+    return ok(captureEditSummary(record));
   });
 
   bus.register("capture:reveal", async (req) => {
@@ -1167,23 +1311,11 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
   // DB page packing, index maintenance, and broadcast cost reflect
   // production behavior. Production builds: this branch tree-shakes
   // out (electron-vite statically replaces `import.meta.env.DEV`).
+  // Every row becomes a real v2 bundle; see synthetic-ingest.ts.
   if (import.meta.env.DEV) {
     bus.register("capture:ingest", async (req) => {
       try {
-        const stored = await putCaptureSource(req.tempPngPath);
-        const { record } = insertCapture({
-          id: stored.id,
-          kind: "image",
-          captured_at: req.capturedAt,
-          source_app_bundle_id: req.sourceAppBundleId,
-          source_app_name: req.sourceAppName,
-          legacy_src_path: stored.srcPath,
-          width_px: req.widthPxHint ?? stored.widthPx,
-          height_px: req.heightPxHint ?? stored.heightPx,
-          device_pixel_ratio: req.devicePixelRatio ?? 2,
-          byte_size: stored.byteSize,
-          sha256: stored.sha256
-        });
+        const record = await ingestSyntheticCapture(req);
         broadcastCapturesChanged([record.id]);
         return ok({ record, isNew: true });
       } catch (cause) {
@@ -1202,12 +1334,17 @@ async function writeClipboardImageToTempPng(): Promise<
   | { ok: true; tempPath: string; devicePixelRatio: number }
   | {
       ok: false;
-      code: "no_image" | "unsupported_image" | "clipboard_file_unavailable";
+      code:
+        | "no_image"
+        | "unsupported_image"
+        | "clipboard_file_unavailable"
+        | WindowsClipboardImageErrorCode;
       message: string;
       cause?: unknown;
     }
 > {
   const decodeFailures: RawClipboardDecodeFailure[] = [];
+  const snapshot = await readClipboard();
 
   // Prefer the raw image flavors on the pasteboard. A PNG flavor is stored
   // verbatim — no re-encode inflation (the source 612 KB PNG stays 612 KB,
@@ -1217,8 +1354,8 @@ async function writeClipboardImageToTempPng(): Promise<
   // DPR. Only when no raw flavor decodes do we fall back to the decoded
   // bitmap (`readImage().toPNG()`), which inflates and drops DPI.
   const decodedBuffer = await writeFirstDecodableClipboardBufferToPng({
-    formats: clipboard.availableFormats(),
-    readBuffer: (format) => clipboard.readBuffer(format),
+    formats: snapshot.formats,
+    readBuffer: (format) => snapshot.readBuffer(format),
     makeTempPath: makeClipboardTempPngPath
   });
   if (decodedBuffer.ok) {
@@ -1226,13 +1363,26 @@ async function writeClipboardImageToTempPng(): Promise<
   }
   decodeFailures.push(...decodedBuffer.failures);
 
-  // A file URL on the clipboard (e.g. a PNG copied in Finder) — ingest the
-  // file directly so a PNG is preserved verbatim and its density is read.
-  const filePath = clipboardImageFilePath();
-  if (filePath !== null && looksLikeImageFile(filePath)) {
+  // Explorer CF_HDROP and Finder/file:// URLs are candidate-discovery
+  // mechanisms only. Both cross the same verified-file boundary, which opens
+  // once, bounds the read, and returns a stable byte snapshot. Never reopen a
+  // validated pathname here: doing so would restore a TOCTOU window.
+  const fileResult = await clipboardImageFilePath(snapshot);
+  let fileReadFailure: Exclude<WindowsClipboardImageReadResult, { ok: true }> | null = null;
+  if (!fileResult.ok) {
+    if (fileResult.error.terminal) {
+      return {
+        ok: false,
+        code: fileResult.error.code,
+        message: fileResult.error.message,
+        ...(fileResult.error.cause !== undefined ? { cause: fileResult.error.cause } : {})
+      };
+    }
+    fileReadFailure = fileResult;
+  } else if (fileResult.path !== null) {
     let fileBytes: Buffer;
     try {
-      fileBytes = await readSafePastedFile(filePath, {
+      fileBytes = await readSafePastedFile(fileResult.path, {
         maxBytes: PASTE_IMAGE_MAX_BYTES
       });
     } catch (cause) {
@@ -1243,7 +1393,7 @@ async function writeClipboardImageToTempPng(): Promise<
               code: "read_failed",
               message: "The clipboard image file is unavailable."
             };
-      log.warn("clipboard file URL unavailable", { code: refusal.code });
+      log.warn("clipboard image file unavailable", { code: refusal.code });
       return {
         ok: false,
         code: "clipboard_file_unavailable",
@@ -1255,11 +1405,11 @@ async function writeClipboardImageToTempPng(): Promise<
       const ingested = await ingestImageBufferToTempPng(fileBytes, makeClipboardTempPngPath);
       return { ok: true, ...ingested };
     } catch {
-      // The clipboard URL's absolute path is private. Do not retain the
+      // The clipboard file's absolute path is private. Do not retain the
       // decoder's error object: mocks and platform decoders can include
       // their source label in the message. A stable label/code gives the
       // renderer enough context without smuggling the path through `cause`.
-      log.warn("clipboard file URL image decode failed", { code: "decode_failed" });
+      log.warn("clipboard image file decode failed", { code: "decode_failed" });
       decodeFailures.push({
         source: "clipboard file",
         cause: { code: "decode_failed" }
@@ -1269,7 +1419,7 @@ async function writeClipboardImageToTempPng(): Promise<
 
   // Last resort: the decoded bitmap. This re-encodes via Chromium and
   // can't recover the source DPI, so the scale defaults to 1×.
-  const image = clipboard.readImage();
+  const image = await snapshot.readImage();
   if (!image.isEmpty()) {
     const size = image.getSize();
     validateSafeRgbaRasterDimensions(size.width, size.height);
@@ -1287,10 +1437,20 @@ async function writeClipboardImageToTempPng(): Promise<
   if (decodeFailures.length > 0) {
     return unsupportedClipboardImage(decodeFailures);
   }
+  if (fileReadFailure !== null) {
+    return {
+      ok: false,
+      code: fileReadFailure.error.code,
+      message: fileReadFailure.error.message,
+      ...(fileReadFailure.error.cause !== undefined
+        ? { cause: fileReadFailure.error.cause }
+        : {})
+    };
+  }
   return {
     ok: false,
     code: "no_image",
-    message: "The clipboard does not currently contain an image or image file URL."
+    message: "The clipboard does not currently contain an image or image file."
   };
 }
 
@@ -1319,26 +1479,25 @@ async function makeClipboardTempPngPath(): Promise<string> {
   return join(dir, `${Date.now()}.png`);
 }
 
-function clipboardImageFilePath(): string | null {
+async function clipboardImageFileUrlPath(snapshot: ClipboardSnapshot): Promise<string | null> {
   const candidates: string[] = [];
   try {
-    const bookmark = clipboard.readBookmark();
-    if (bookmark.url.length > 0) candidates.push(bookmark.url);
+    const bookmark = await snapshot.readBookmark();
+    if (bookmark !== null && bookmark.url.length > 0) candidates.push(bookmark.url);
   } catch {
-    // readBookmark is unavailable on some platforms; fall through to
-    // plain text / raw pasteboard formats.
+    // Fall through to plain text / raw pasteboard formats.
   }
 
   for (const format of CLIPBOARD_FILE_URL_FORMATS) {
     try {
-      const value = clipboard.readBuffer(format).toString("utf8");
+      const value = (await snapshot.readBuffer(format)).toString("utf8");
       if (value.length > 0) candidates.push(value);
     } catch {
-      // Experimental API, format may be absent.
+      // A flavor that vanished between the listing and the read.
     }
   }
 
-  const text = clipboard.readText();
+  const text = await snapshot.readText();
   if (text.length > 0) candidates.push(text);
 
   for (const candidate of candidates) {
@@ -1346,6 +1505,25 @@ function clipboardImageFilePath(): string | null {
     if (path !== null) return path;
   }
   return null;
+}
+
+/**
+ * Resolve one clipboard image-file candidate without asking Electron to
+ * interpret CF_HDROP. Native discovery returns a pathname only; verified,
+ * bounded reading remains exclusively owned by readSafePastedFile above.
+ */
+async function clipboardImageFilePath(
+  snapshot: ClipboardSnapshot
+): Promise<WindowsClipboardImageReadResult> {
+  const windowsResult = await readWindowsClipboardImageFile();
+  if (windowsResult.ok && windowsResult.path !== null) return windowsResult;
+  if (!windowsResult.ok && windowsResult.error.terminal) return windowsResult;
+
+  const fileUrlPath = await clipboardImageFileUrlPath(snapshot);
+  if (fileUrlPath !== null && isSupportedClipboardImagePath(fileUrlPath)) {
+    return { ok: true, path: fileUrlPath };
+  }
+  return windowsResult;
 }
 
 function fileUrlCandidateToPath(candidate: string): string | null {
@@ -1362,8 +1540,20 @@ function fileUrlCandidateToPath(candidate: string): string | null {
   }
 }
 
-function looksLikeImageFile(filePath: string): boolean {
-  return IMAGE_FILE_EXTENSIONS.has(extname(filePath).toLowerCase());
+async function snapshotRasterDimensions(
+  source: SnapshotRasterLease["source"]
+): Promise<{ width: number; height: number }> {
+  if (source.kind === "rgba8") return { width: source.width, height: source.height };
+  const metadata = await sharp(source.filePath).metadata();
+  return { width: metadata.width ?? 0, height: metadata.height ?? 0 };
+}
+
+function sharpForSnapshotRaster(source: SnapshotRasterLease["source"]) {
+  return source.kind === "rgba8"
+    ? sharp(source.data, {
+        raw: { width: source.width, height: source.height, channels: 4 }
+      })
+    : sharp(source.filePath);
 }
 
 /**
@@ -1378,7 +1568,7 @@ function looksLikeImageFile(filePath: string): boolean {
  * as captureRegion so the caller path stays identical.
  */
 async function cropScreenSnapshot(
-  snapshotPath: string,
+  snapshotId: string,
   rect: Rect,
   displayId: number
 ): Promise<
@@ -1397,7 +1587,15 @@ async function cropScreenSnapshot(
     return { ok: false, reason: "validation", message: scaleError };
   }
 
+  let lease: SnapshotRasterLease | null = null;
   try {
+    lease = await acquireSnapshotRaster(snapshotId, "crop");
+    if (lease === null) {
+      return { ok: false, reason: "error", message: "screen snapshot is no longer available" };
+    }
+    const { width: snapshotWidth, height: snapshotHeight } = await snapshotRasterDimensions(
+      lease.source
+    );
     // Geometry via `planExtentMask` with the rect as its own single
     // extent, so the plain crop and the masked crop share ONE rounding
     // rule and ONE clamping rule. They used to have two, and the copy
@@ -1408,13 +1606,12 @@ async function cropScreenSnapshot(
     // and had no zero-scale guard. Because the HUD's Windows/Rectangle
     // toggle routes between the two functions, the same pick could
     // produce two different images depending on which was selected.
-    const meta = await sharp(snapshotPath).metadata();
     const plan = planExtentMask({
       rect,
       extents: [rect],
       displayOrigin: { x: display.bounds.x, y: display.bounds.y },
       scaleFactor: display.scaleFactor,
-      snapshot: { width: meta.width ?? 0, height: meta.height ?? 0 }
+      snapshot: { width: snapshotWidth, height: snapshotHeight }
     });
     if (plan === null) {
       return {
@@ -1425,7 +1622,8 @@ async function cropScreenSnapshot(
     }
     const dir = await mkdtemp(join(tmpdir(), "pwrsnap-crop-"));
     const tempPath = join(dir, `${Date.now()}.png`);
-    await sharp(snapshotPath).extract(plan.box).png().toFile(tempPath);
+    const pipeline = sharpForSnapshotRaster(lease.source);
+    await pipeline.extract(plan.box).png().toFile(tempPath);
     return { ok: true, tempPath, displayId };
   } catch (cause) {
     log.warn("snapshot crop failed", {
@@ -1438,6 +1636,8 @@ async function cropScreenSnapshot(
       reason: "error",
       message: cause instanceof Error ? cause.message : String(cause)
     };
+  } finally {
+    await lease?.release();
   }
 }
 
@@ -1473,7 +1673,7 @@ function degenerateScaleMessage(scaleFactor: number): string | null {
  * stays identical.
  */
 async function cropScreenSnapshotExtents(
-  snapshotPath: string,
+  snapshotId: string,
   rect: Rect,
   extents: readonly Rect[],
   displayId: number
@@ -1496,7 +1696,12 @@ async function cropScreenSnapshotExtents(
     return { ok: false, reason: "validation", message: scaleError };
   }
 
+  let lease: SnapshotRasterLease | null = null;
   try {
+    lease = await acquireSnapshotRaster(snapshotId, "crop");
+    if (lease === null) {
+      return { ok: false, reason: "error", message: "screen snapshot is no longer available" };
+    }
     // Dimensions come from the PNG header, NOT from decoding the frame.
     // The first version decoded the whole display into a raw RGBA
     // Buffer (~59 MB at 5120×2880, ~81 MB at 6K) and then extracted
@@ -1506,13 +1711,15 @@ async function cropScreenSnapshotExtents(
     // MAX_SELECTOR_EXTENTS caps the COUNT of extents, not their area —
     // so a handful of maximized picks reached hundreds of MB and the
     // 64-extent ceiling reached multiple GB.
-    const meta = await sharp(snapshotPath).metadata();
+    const { width: snapshotWidth, height: snapshotHeight } = await snapshotRasterDimensions(
+      lease.source
+    );
     const plan = planExtentMask({
       rect,
       extents,
       displayOrigin: { x: display.bounds.x, y: display.bounds.y },
       scaleFactor: display.scaleFactor,
-      snapshot: { width: meta.width ?? 0, height: meta.height ?? 0 }
+      snapshot: { width: snapshotWidth, height: snapshotHeight }
     });
     if (plan === null) {
       return {
@@ -1542,7 +1749,8 @@ async function cropScreenSnapshotExtents(
 
     const dir = await mkdtemp(join(tmpdir(), "pwrsnap-crop-"));
     const tempPath = join(dir, `${Date.now()}.png`);
-    await sharp(snapshotPath)
+    const pipeline = sharpForSnapshotRaster(lease.source);
+    await pipeline
       .extract(plan.box)
       .ensureAlpha()
       .composite([
@@ -1570,6 +1778,8 @@ async function cropScreenSnapshotExtents(
       reason: "error",
       message: cause instanceof Error ? cause.message : String(cause)
     };
+  } finally {
+    await lease?.release();
   }
 }
 
@@ -1655,6 +1865,7 @@ async function persistAndBroadcast(
   options: {
     devicePixelRatio?: number | undefined;
     cursorLayer?: CursorLayerPlacement | undefined;
+    sourceWindowTitle?: string | null | undefined;
   } = {}
 ): Promise<Result<CaptureRecord, PwrSnapError>> {
   // New captures land as v2 layer-tree bundles. The read path in
@@ -1675,6 +1886,7 @@ async function persistAndBroadcast(
           sourceApp === null
             ? null
             : { bundleId: sourceApp.bundleId, appName: sourceApp.appName },
+        sourceWindowTitle: options.sourceWindowTitle ?? null,
         outputDir,
         devicePixelRatio: options.devicePixelRatio,
         cursorLayer: options.cursorLayer
@@ -1762,8 +1974,28 @@ async function unlinkTempPaths(paths: readonly string[]): Promise<void> {
  * the WindowServer to finish the hide, short enough that the user
  * doesn't perceive lag between click and shutter.
  */
+/**
+ * `capture:fullScreen` / `capture:allScreens` hide PwrSnap's chrome — the
+ * float-over's screen-edge dock included — with no selector session
+ * around them. A capture that lands opens its toast, which ends the
+ * hide; one that fails opens nothing, so the dock is brought back here
+ * or it stays down until the next capture. A no-op whenever anything
+ * else owns the float-over by then.
+ */
+function releasingFloatOverDock<C extends "capture:fullScreen" | "capture:allScreens">(
+  handler: CommandHandler<C>
+): CommandHandler<C> {
+  return async (req, ctx) => {
+    try {
+      return await handler(req, ctx);
+    } finally {
+      releaseFloatOverDock();
+    }
+  };
+}
+
 async function hidePwrSnapChromeAndSettle(): Promise<void> {
-  setFloatOverState({ kind: "cancel" });
+  setFloatOverState({ kind: "cancel", chromeHide: true });
   hideTrayPopoverIfVisible();
   await new Promise((resolve) => setTimeout(resolve, 50));
 }

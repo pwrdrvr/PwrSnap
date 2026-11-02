@@ -85,7 +85,8 @@ describe("library tool allowlist", () => {
         "reorder_layer",
         "reorder_layers",
         "add_tag",
-        "remove_tag"
+        "remove_tag",
+        "duplicate_capture"
       ])
     );
   });
@@ -349,6 +350,75 @@ describe("dispatchLibraryToolCall", () => {
     expect(response.success).toBe(false);
     if (response.contentItems[0]?.type === "inputText") {
       expect(response.contentItems[0].text).toContain("boom");
+    }
+  });
+});
+
+describe("duplicate_capture", () => {
+  const duplicateTool = LIBRARY_TOOL_ALLOWLIST.find((tool) => tool.name === "duplicate_capture");
+  if (duplicateTool === undefined) throw new Error("duplicate_capture tool missing");
+
+  it("requires with_edits, so the model has to choose rather than inherit a default", async () => {
+    const dispatchSpy = vi.spyOn(bus, "dispatch");
+    try {
+      const response = await dispatchLibraryToolCall(
+        makeCallParams({ tool: "duplicate_capture", arguments: { capture_id: "cap-oats" } }),
+        [duplicateTool]
+      );
+      expect(response.success).toBe(false);
+      expect(dispatchSpy).not.toHaveBeenCalled();
+    } finally {
+      dispatchSpy.mockRestore();
+    }
+  });
+
+  it("dispatches capture:duplicate under the chat's command context and returns the copy's id", async () => {
+    const dispatchSpy = vi.spyOn(bus, "dispatch").mockResolvedValue({
+      ok: true,
+      value: {
+        record: {
+          id: "cap-oats-copy",
+          kind: "image",
+          captured_at: "2026-06-07T12:00:00.000Z",
+          width_px: 1280,
+          height_px: 800,
+          source_app_name: "Cereal Box Designer",
+          bundle_format_version: 2,
+          family_id: "cap-oats",
+          duplicated_from: "cap-oats"
+        }
+      }
+    } as never);
+    const commandContext = {
+      principal: "mcp" as const,
+      localAgent: { clientId: "lag_one", capabilities: ["capture.edit"] as const }
+    };
+    try {
+      const response = await dispatchLibraryToolCall(
+        makeCallParams({
+          tool: "duplicate_capture",
+          arguments: { capture_id: "cap-oats", with_edits: true }
+        }),
+        [duplicateTool],
+        commandContext
+      );
+      expect(dispatchSpy.mock.calls[0]).toEqual([
+        "capture:duplicate",
+        { captureId: "cap-oats", withEdits: true },
+        commandContext
+      ]);
+      expect(response.success).toBe(true);
+      const text = response.contentItems[0]?.type === "inputText"
+        ? JSON.parse(response.contentItems[0].text)
+        : null;
+      expect(text).toMatchObject({
+        id: "cap-oats-copy",
+        family_id: "cap-oats",
+        duplicated_from: "cap-oats",
+        with_edits: true
+      });
+    } finally {
+      dispatchSpy.mockRestore();
     }
   });
 });

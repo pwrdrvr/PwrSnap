@@ -11,8 +11,17 @@
 // concurrency machinery without touching disk or SQLite.
 
 import { EventEmitter } from "node:events";
+import { dirname, extname } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { CaptureRecord, VideoCaptureMetadata } from "@pwrsnap/shared";
+import { AUDIO_PIPELINE_VERSION } from "../recording-audio";
+// The export cache token is DERIVED from `AUDIO_PIPELINE_VERSION`, so build
+// the expected filename from the same constant rather than retyping it. These
+// assertions used to spell `gop60-mixed-audio-v1` by hand and went on passing
+// after the mix moved to v2 — a hardcoded copy cannot catch the drift it is
+// the last line of defence against.
+const CACHE_TOKEN = `gop60-${AUDIO_PIPELINE_VERSION}`;
+
 
 // ── Spawn stub ────────────────────────────────────────────────────────
 //
@@ -21,7 +30,9 @@ import type { CaptureRecord, VideoCaptureMetadata } from "@pwrsnap/shared";
 // can assert "exactly N spawns happened" and "K were concurrent".
 
 type FakeChildProcess = EventEmitter & {
+  stdout: EventEmitter;
   stderr: EventEmitter;
+  kill: () => boolean;
 };
 
 const spawnQueue: Array<{ child: FakeChildProcess; args: string[] }> = [];
@@ -30,7 +41,9 @@ let activeSpawnPeak = 0;
 
 function makeFakeChild(): FakeChildProcess {
   const ee = new EventEmitter() as FakeChildProcess;
+  ee.stdout = new EventEmitter();
   ee.stderr = new EventEmitter();
+  ee.kill = () => true;
   return ee;
 }
 
@@ -50,9 +63,22 @@ vi.mock("node:fs", () => ({
   existsSync: () => false
 }));
 
+const renameCalls: Array<{ from: string; to: string }> = [];
+const rmCalls: Array<{ path: string; force: boolean | undefined }> = [];
+let statSize = 12345;
+let statIsFile = true;
+let renameFailure: Error | null = null;
+
 vi.mock("node:fs/promises", () => ({
   mkdir: async () => undefined,
-  stat: async () => ({ size: 12345 })
+  rename: async (from: string, to: string) => {
+    renameCalls.push({ from, to });
+    if (renameFailure !== null) throw renameFailure;
+  },
+  rm: async (path: string, options?: { force?: boolean }) => {
+    rmCalls.push({ path, force: options?.force });
+  },
+  stat: async () => ({ size: statSize, isFile: () => statIsFile })
 }));
 
 // ── Other module mocks ────────────────────────────────────────────────
@@ -65,6 +91,22 @@ vi.mock("../../persistence/paths", () => ({
   getCacheRoot: () => "/tmp/test-cache-root"
 }));
 
+const infoLogCalls: Array<{
+  message: string;
+  fields: Record<string, unknown> | undefined;
+}> = [];
+
+vi.mock("../../log", () => ({
+  getMainLogger: () => ({
+    debug: () => undefined,
+    info: (message: string, fields?: Record<string, unknown>) => {
+      infoLogCalls.push({ message, fields });
+    },
+    warn: () => undefined,
+    error: () => undefined
+  })
+}));
+
 // `lookupExport` always returns null so we exercise the encode path.
 // `recordExport` is a no-op since we're not validating DB writes here.
 vi.mock("../../persistence/video-repo", () => ({
@@ -73,7 +115,14 @@ vi.mock("../../persistence/video-repo", () => ({
 }));
 
 // Dynamically import after mocks are registered.
-const { exportVideoRange, ffmpegFailureSummary } = await import("../recording-exporter");
+const {
+  buildGifEncodeArgs,
+  buildMp4VideoEncoderArgs,
+  exportVideoRange,
+  ffmpegFailureSummary,
+  GIF_PRESETS,
+  MP4_PRESETS
+} = await import("../recording-exporter");
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -81,6 +130,12 @@ function resetSpawnState(): void {
   spawnQueue.length = 0;
   totalSpawnCount = 0;
   activeSpawnPeak = 0;
+  renameCalls.length = 0;
+  rmCalls.length = 0;
+  statSize = 12345;
+  statIsFile = true;
+  renameFailure = null;
+  infoLogCalls.length = 0;
 }
 
 /** Wait until `spawnQueue.length >= n`. Beats microtask-counting
@@ -104,11 +159,11 @@ async function resolveNextSpawn(exitCode: number = 0): Promise<void> {
   await waitForSpawnCount(1);
   const next = spawnQueue.shift();
   if (next === undefined) throw new Error("no pending spawn to resolve");
-  // Emit on a nextTick so the exporter's `child.on('exit', …)` listener
+  // Emit on a nextTick so the exporter's `child.on('close', …)` listener
   // is registered before we fire — mirroring real child_process behavior.
   await new Promise<void>((resolve) => {
     setImmediate(() => {
-      next.child.emit("exit", exitCode);
+      next.child.emit("close", exitCode);
       resolve();
     });
   });
@@ -156,7 +211,10 @@ const video: VideoCaptureMetadata = {
   containerFormat: "mp4",
   hasSystemAudio: false,
   hasMicrophoneAudio: false,
+  requestedSystemAudio: false,
+  requestedMicrophone: false,
   defaultRange: { start: 0, end: 10 },
+  segments: [{ start: 0, end: 10 }],
   previewPath: null,
   previewStatus: "ready"
 };
@@ -171,6 +229,62 @@ const baseInput = {
 };
 
 // ── Tests ─────────────────────────────────────────────────────────────
+
+describe("MP4 platform encoder contract", () => {
+  test("uses Media Foundation on Windows without VideoToolbox-only flags", () => {
+    const args = buildMp4VideoEncoderArgs("win32", MP4_PRESETS.med);
+
+    expect(args).toEqual(
+      expect.arrayContaining(["-c:v", "h264_mf", "-b:v", "5000k", "-g", "60"])
+    );
+    expect(args).not.toContain("h264_videotoolbox");
+    expect(args).not.toContain("-allow_sw");
+  });
+
+  test("uses VideoToolbox with software fallback on macOS", () => {
+    const args = buildMp4VideoEncoderArgs("darwin", MP4_PRESETS.med);
+
+    expect(args).toEqual(
+      expect.arrayContaining([
+        "-c:v",
+        "h264_videotoolbox",
+        "-allow_sw",
+        "1",
+        "-b:v",
+        "5000k",
+        "-g",
+        "60"
+      ])
+    );
+    expect(args).not.toContain("h264_mf");
+  });
+});
+
+describe("GIF production filter contract", () => {
+  test("shares the complete palette pipeline with artifact smoke coverage", () => {
+    expect(
+      buildGifEncodeArgs(
+        "C:\\captures\\source clip.mp4",
+        { start: 1.25, end: 2.5 },
+        GIF_PRESETS.low,
+        "C:\\exports\\output.gif"
+      )
+    ).toEqual([
+      "-y",
+      "-ss",
+      "1.250",
+      "-t",
+      "1.250",
+      "-i",
+      "C:\\captures\\source clip.mp4",
+      "-filter_complex",
+      "[0:v] fps=15,scale=480:-2:flags=lanczos,split [a][b];" +
+        "[a] palettegen=stats_mode=diff [p];" +
+        "[b][p] paletteuse=dither=bayer:bayer_scale=5",
+      "C:\\exports\\output.gif"
+    ]);
+  });
+});
 
 describe("exportVideoRange concurrency", () => {
   beforeEach(() => resetSpawnState());
@@ -238,13 +352,54 @@ describe("exportVideoRange concurrency", () => {
     expect(activeSpawnPeak).toBe(2);
   });
 
+  test("encodeMs starts after a queued export acquires its semaphore slot", async () => {
+    const realNow = Date.now.bind(Date);
+    let clockOffsetMs = 0;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => realNow() + clockOffsetMs);
+    try {
+      // Fill both encoder slots, then queue a third distinct export.
+      const first = exportVideoRange({ ...baseInput, format: "gif", preset: "low" });
+      const second = exportVideoRange({ ...baseInput, format: "gif", preset: "med" });
+      await waitForSpawnCount(2);
+      const queued = exportVideoRange({ ...baseInput, format: "mp4", preset: "high" });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(totalSpawnCount).toBe(2);
+
+      // Simulate a long scheduler wait, then release one slot. The queued MP4
+      // starts while this offset is active, so its encode timer must start here.
+      clockOffsetMs = 8_000;
+      await resolveNextSpawn(0);
+      await waitForSpawnCount(2);
+
+      // Finish the remaining work roughly 100 ms of logical encode time later.
+      clockOffsetMs = 8_100;
+      while (spawnQueue.length > 0) await resolveNextSpawn(0);
+      await Promise.all([first, second, queued]);
+
+      const queuedLog = infoLogCalls.find(
+        ({ message, fields }) => message === "video export encoded" && fields?.preset === "high"
+      );
+      expect(queuedLog).toBeDefined();
+      const encodeMs = queuedLog?.fields?.encodeMs;
+      expect(typeof encodeMs).toBe("number");
+      expect(encodeMs as number).toBeGreaterThanOrEqual(100);
+      expect(encodeMs as number).toBeLessThan(1_000);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   test("after rejection, the in-flight entry is cleared so retries work", async () => {
     // First call fails — ffmpeg exits non-zero.
     const failing = exportVideoRange(baseInput);
+    await waitForSpawnCount(1);
+    const failedTempPath = spawnQueue[0]?.args.at(-1);
     await resolveNextSpawn(1);
     await expect(failing).rejects.toThrow(/ffmpeg exited 1/);
 
     expect(totalSpawnCount).toBe(1);
+    expect(rmCalls).toContainEqual({ path: failedTempPath, force: true });
+    expect(renameCalls).toHaveLength(0);
 
     // Retry — should spawn fresh, NOT share the dead promise.
     const retry = exportVideoRange(baseInput);
@@ -254,24 +409,67 @@ describe("exportVideoRange concurrency", () => {
     expect(totalSpawnCount).toBe(2);
   });
 
-  test("LOW / MED MP4 re-encodes pass an explicit 60-frame GOP to VideoToolbox", async () => {
+  test("writes through a same-directory .mp4 temp and atomically promotes it", async () => {
+    const pending = exportVideoRange(baseInput);
+    await waitForSpawnCount(1);
+    const tempPath = spawnQueue[0]?.args.at(-1);
+    if (tempPath === undefined) throw new Error("missing ffmpeg output argument");
+
+    await resolveNextSpawn(0);
+    const result = await pending;
+
+    expect(tempPath).not.toBe(result.path);
+    expect(dirname(tempPath)).toBe(dirname(result.path));
+    expect(extname(tempPath)).toBe(".mp4");
+    expect(renameCalls).toEqual([{ from: tempPath, to: result.path }]);
+    expect(rmCalls).toEqual([{ path: tempPath, force: true }]);
+  });
+
+  test("rejects and removes a zero-byte ffmpeg output before promotion", async () => {
+    statSize = 0;
+    const pending = exportVideoRange(baseInput);
+    await waitForSpawnCount(1);
+    const tempPath = spawnQueue[0]?.args.at(-1);
+
+    await resolveNextSpawn(0);
+    await expect(pending).rejects.toThrow(/empty or invalid MP4 export/);
+
+    expect(renameCalls).toHaveLength(0);
+    expect(rmCalls).toContainEqual({ path: tempPath, force: true });
+  });
+
+  test("removes the temp output when atomic promotion fails", async () => {
+    renameFailure = new Error("EPERM: destination is temporarily locked");
+    const pending = exportVideoRange(baseInput);
+    await waitForSpawnCount(1);
+    const tempPath = spawnQueue[0]?.args.at(-1);
+
+    await resolveNextSpawn(0);
+    await expect(pending).rejects.toThrow(/destination is temporarily locked/);
+
+    expect(renameCalls).toHaveLength(1);
+    expect(rmCalls).toContainEqual({ path: tempPath, force: true });
+  });
+
+  test("LOW / MED MP4 re-encodes pass an explicit 60-frame GOP to the platform encoder", async () => {
     const low = exportVideoRange({ ...baseInput, preset: "low" });
     await waitForSpawnCount(1);
 
     expect(spawnQueue[0]?.args).toEqual(
       expect.arrayContaining([
         "-c:v",
-        "h264_videotoolbox",
+        process.platform === "win32" ? "h264_mf" : "h264_videotoolbox",
         "-g",
         "60",
         "-keyint_min",
         "60"
       ])
     );
-    expect(spawnQueue[0]?.args.join(" ")).toContain(".low.gop60.s0m0.mp4");
+    expect(spawnQueue[0]?.args.at(-1)).toMatch(new RegExp(`\\.low\\.${CACHE_TOKEN}\\.s0m0\\.mp4\\..+\\.partial\\.mp4$`));
 
     await resolveNextSpawn(0);
-    await low;
+    const lowResult = await low;
+    expect(lowResult.path).toContain(`.low.${CACHE_TOKEN}.s0m0.mp4`);
 
     const med = exportVideoRange({ ...baseInput, preset: "med" });
     await waitForSpawnCount(1);
@@ -279,17 +477,18 @@ describe("exportVideoRange concurrency", () => {
     expect(spawnQueue[0]?.args).toEqual(
       expect.arrayContaining([
         "-c:v",
-        "h264_videotoolbox",
+        process.platform === "win32" ? "h264_mf" : "h264_videotoolbox",
         "-g",
         "60",
         "-keyint_min",
         "60"
       ])
     );
-    expect(spawnQueue[0]?.args.join(" ")).toContain(".med.gop60.s0m0.mp4");
+    expect(spawnQueue[0]?.args.at(-1)).toMatch(new RegExp(`\\.med\\.${CACHE_TOKEN}\\.s0m0\\.mp4\\..+\\.partial\\.mp4$`));
 
     await resolveNextSpawn(0);
-    await med;
+    const medResult = await med;
+    expect(medResult.path).toContain(`.med.${CACHE_TOKEN}.s0m0.mp4`);
   });
 
   test("MP4 audio maps tolerate stale track metadata from older recordings", async () => {
@@ -307,10 +506,16 @@ describe("exportVideoRange concurrency", () => {
     });
     await waitForSpawnCount(1);
 
+    expect(spawnQueue[0]?.args).toContain("null");
+    spawnQueue[0]?.child.stderr.emit("data", Buffer.from(
+      "  Stream #0:0[0x1](und): Video: h264\n  Stream #0:1[0x2](und): Audio: aac\n"
+    ));
+    await resolveNextSpawn(0);
+    await waitForSpawnCount(1);
     const args = spawnQueue[0]?.args ?? [];
-    expect(args).toEqual(expect.arrayContaining(["-map", "0:a:0?", "-map", "0:a:1?"]));
-    expect(args).not.toContain("0:a:0");
-    expect(args).not.toContain("0:a:1");
+    expect(args).toContain("0:a:0?");
+    expect(args).not.toContain("0:a:1?");
+    expect(args).not.toContain("-filter_complex");
 
     await resolveNextSpawn(0);
     await encoded;
@@ -370,7 +575,7 @@ describe("exportVideoRange concurrency", () => {
     expect(args).toEqual(
       expect.arrayContaining([
         "-c:v",
-        "h264_videotoolbox",
+        process.platform === "win32" ? "h264_mf" : "h264_videotoolbox",
         "-b:v",
         "6000k",
         "-g",
@@ -381,10 +586,11 @@ describe("exportVideoRange concurrency", () => {
     );
     expect(args).not.toContain("copy");
     expect(args).not.toContain("-vf");
-    expect(args.join(" ")).toContain(".high.gop60.s0m0.mp4");
+    expect(args.at(-1)).toMatch(new RegExp(`\\.high\\.${CACHE_TOKEN}\\.s0m0\\.mp4\\..+\\.partial\\.mp4$`));
 
     await resolveNextSpawn(0);
-    await high;
+    const result = await high;
+    expect(result.path).toContain(`.high.${CACHE_TOKEN}.s0m0.mp4`);
   });
 
   test("HIGH MP4 snaps odd source dimensions to even codec-safe dimensions", async () => {
@@ -405,7 +611,7 @@ describe("exportVideoRange concurrency", () => {
         "-vf",
         "scale=1680:946:flags=lanczos",
         "-c:v",
-        "h264_videotoolbox"
+        process.platform === "win32" ? "h264_mf" : "h264_videotoolbox"
       ])
     );
 

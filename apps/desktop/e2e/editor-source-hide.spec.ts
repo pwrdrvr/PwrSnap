@@ -58,13 +58,17 @@ test("clipboard round-trip: copying a transparent bake and pasting it back keeps
     const b64 = (baked.value as { base64: string }).base64;
 
     // Put the transparent bake on the system clipboard exactly as the
-    // copy path does (clipboard.write({ image })), then paste it back as a
-    // NEW capture via the same handler "File > New > Paste from Clipboard"
-    // uses.
+    // copy path's Electron fallback does (one `image/png` item), then paste
+    // it back as a NEW capture via the same handler "File > New > Paste
+    // from Clipboard" uses.
     const newId = await app.electronApp.evaluate(async (electron, base64) => {
       const img = electron.nativeImage.createFromBuffer(Buffer.from(base64, "base64"));
       electron.clipboard.clear();
-      electron.clipboard.write({ image: img });
+      await electron.clipboard.write([
+        new electron.ClipboardItem({
+          "image/png": new Blob([new Uint8Array(img.toPNG())], { type: "image/png" })
+        })
+      ]);
       const bridge = (
         globalThis as unknown as {
           __PWRSNAP_TEST__: {

@@ -30,13 +30,13 @@
 // Reads the CSS as strings, like theme-contract.test.ts next door: the
 // files ARE the source of truth, and "this declaration is in this
 // block" is a string-match question, not a CSSOM one. The extractor
-// itself is shared with that suite — see ./css-block.
+// and the renderer-wide collector are shared — see ./css-block.
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, sep } from "node:path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { extractBlock, stripCssComments } from "./css-block";
+import { collectCssFiles, extractBlock, stripCssComments, toPosixLabel } from "./css-block";
 
 const LABEL = "scrollbar-contract";
 const RENDERER_SRC = join(__dirname, "..", "..");
@@ -51,45 +51,6 @@ const REQUIRED_CSS_AREAS = ["styles/", "features/"];
 /** Floor, not an exact count: adding a stylesheet must not need a test
  *  edit, but losing most of them must not pass silently. */
 const MIN_CSS_FILES = 20;
-
-type CssFile = [label: string, stripped: string];
-
-/**
- * Path under `RENDERER_SRC`, as a POSIX-separated label.
- *
- * `join` uses the platform separator, so on Windows the raw slice
- * yields `styles\\app.css` and every forward-slash comparison in this
- * file silently stops matching — which is exactly how this suite
- * landed red on the Windows lane while passing on macOS and Linux.
- *
- * Split out as a pure function ON PURPOSE: the obvious guard, asserting
- * that the collected labels contain no backslash, is VACUOUS on macOS
- * and Linux, so it can only fail on the one lane that already caught
- * the bug. Testing the function with a Windows-shaped input instead
- * makes the regression catchable on every platform.
- *
- * `separator` is injectable for that test; it defaults to the running
- * platform's.
- */
-export function toPosixLabel(fullPath: string, root: string, separator: string = sep): string {
-  return fullPath.slice(root.length + 1).split(separator).join("/");
-}
-
-/** Every `.css` file the renderer bundle can pull in, comment-stripped
- *  once at collection and relative-path labelled so a failure names the
- *  file to open. */
-function collectCssFiles(dir: string, out: CssFile[] = []): CssFile[] {
-  for (const entry of readdirSync(dir)) {
-    if (entry === "node_modules") continue;
-    const full = join(dir, entry);
-    if (statSync(full).isDirectory()) {
-      collectCssFiles(full, out);
-    } else if (entry.endsWith(".css")) {
-      out.push([toPosixLabel(full, RENDERER_SRC), stripCssComments(readFileSync(full, "utf8"))]);
-    }
-  }
-  return out;
-}
 
 const cssFiles = collectCssFiles(RENDERER_SRC);
 const appCss = stripCssComments(readFileSync(join(STYLES_DIR, "app.css"), "utf8"));

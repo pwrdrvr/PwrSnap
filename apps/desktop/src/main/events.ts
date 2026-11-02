@@ -7,6 +7,8 @@
 
 import { BrowserWindow } from "electron";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import { setDuplicateJobListener } from "./capture/duplicate-jobs";
+import { setFamiliesChangedListener } from "./persistence/family-change-signal";
 import { relayRendererEventToPeer } from "./process-split/event-relay";
 
 export type BroadcastCapturesChanged = (changedIds: string[]) => void;
@@ -33,6 +35,36 @@ export const broadcastCapturesChangedDefault: BroadcastCapturesChanged = (change
   broadcastRendererEventToLocalWindows(EVENT_CHANNELS.capturesChanged, { changedIds });
   relayRendererEventToPeer(EVENT_CHANNELS.capturesChanged, { changedIds });
 };
+
+/**
+ * `events:families:changed`, raised by the captures repo through
+ * family-change-signal.ts. Coalesced per tick, so a batch trash of
+ * fifty family members sends one event, not fifty.
+ */
+let pendingFamilyIds: Set<string> | null = null;
+setFamiliesChangedListener((familyIds) => {
+  if (pendingFamilyIds === null) {
+    pendingFamilyIds = new Set();
+    setImmediate(() => {
+      const ids = [...(pendingFamilyIds ?? [])];
+      pendingFamilyIds = null;
+      broadcastRendererEventToLocalWindows(EVENT_CHANNELS.familiesChanged, { familyIds: ids });
+      relayRendererEventToPeer(EVENT_CHANNELS.familiesChanged, { familyIds: ids });
+    });
+  }
+  for (const id of familyIds) pendingFamilyIds.add(id);
+});
+
+/**
+ * `events:capture-duplicate:job` — a background video duplicate's
+ * progress or end. Raised by the capture owner (the agent in split
+ * mode) and relayed, because the Library that shows it may be the other
+ * process. duplicate-jobs.ts throttles; nothing to coalesce here.
+ */
+setDuplicateJobListener((job) => {
+  broadcastRendererEventToLocalWindows(EVENT_CHANNELS.captureDuplicateJob, { job });
+  relayRendererEventToPeer(EVENT_CHANNELS.captureDuplicateJob, { job });
+});
 
 /**
  * Active broadcaster. The dev seeder swaps this out via

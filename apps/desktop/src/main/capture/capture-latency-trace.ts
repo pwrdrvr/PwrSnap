@@ -35,9 +35,10 @@ export const CAPTURE_LATENCY_STAGES = [
 
 export type CaptureLatencyStage = (typeof CAPTURE_LATENCY_STAGES)[number];
 
+type CaptureLatencyValue = string | number | boolean | null | undefined;
 type CaptureLatencyFields = Record<
   string,
-  string | number | boolean | null | undefined
+  CaptureLatencyValue | Readonly<Record<string, CaptureLatencyValue>>
 >;
 
 type CaptureLatencyLogger = {
@@ -62,6 +63,19 @@ const defaultLogger = getMainLogger("pwrsnap:capture-latency");
 
 function compactMs(value: number): number {
   return Math.round(Math.max(0, value) * 100) / 100;
+}
+
+/** Format diagnostic timing fields only at emission; preserve numeric types,
+ * byte counts, and the original samples used by timing calculations. */
+function compactTimingFields(fields: CaptureLatencyFields): CaptureLatencyFields {
+  return Object.fromEntries(Object.entries(fields).map(([key, value]) => [
+    key,
+    typeof value === "number" && key.endsWith("Ms") && Number.isFinite(value)
+      ? Math.round(value * 100) / 100
+      : value !== null && typeof value === "object"
+        ? compactTimingFields(value)
+        : value
+  ])) as CaptureLatencyFields;
 }
 
 /**
@@ -159,7 +173,7 @@ export class CaptureLatencyTrace {
         stage: stage.stage,
         elapsedMs: stage.elapsedMs,
         durationMs: stage.durationMs,
-        ...stage.fields
+        ...compactTimingFields(stage.fields)
       });
     }
     logger.info("capture latency summary", {
@@ -173,7 +187,7 @@ export class CaptureLatencyTrace {
       totalDurationMs,
       stageCount: this.stages.length,
       slowestStages,
-      ...fields
+      ...compactTimingFields(fields)
     });
   }
 

@@ -17,7 +17,8 @@
   height: 100%;
   display: grid;
   grid-template-columns: 220px 1fr;
-  grid-template-rows: 52px 1fr;
+  /* 41px title strip: 40px fill + 1px divider below (Pwr-family strip). */
+  grid-template-rows: 41px 1fr;
   background: var(--bg-app);
   border-radius: 12px;
   overflow: hidden;
@@ -26,27 +27,31 @@
   position: relative;
 }
 
-/* Title bar — Electron renders the real macOS traffic lights via
- * `titleBarStyle: "hiddenInset"`. Left padding clears them. Matches
- * the main library window's `.psl__topbar` chrome so the two surfaces
- * read as the same app. */
+/* Title bar — matches the main library window's `.psl__topbar` chrome so the
+ * two surfaces read as the same app, including its platform reservations: the
+ * base rule clears nothing (Linux has an ordinary frame) and macOS / Windows
+ * opt in below. */
 .pss__titlebar {
   grid-column: 1 / -1;
   grid-row: 1;
   display: flex;
   align-items: center;
-  padding: 0 16px 0 92px; /* left pad clears the OS traffic lights */
+  padding: 0 16px;
   background: var(--bg-sidebar);
   border-bottom: 1px solid var(--border-subtle);
   gap: 14px;
   position: relative;
   -webkit-app-region: drag;
 }
+/* macOS: `titleBarStyle: "hiddenInset"` draws the real traffic lights inside
+   this bar — left pad clears them. */
+:root[data-platform="darwin"] .pss__titlebar {
+  padding-left: var(--mac-traffic-light-reserve);
+}
 /* Windows: no macOS stoplights on the left; the native min/max/close buttons
    are drawn top-right via titleBarOverlay (the menu bar is hidden on Settings),
    so reserve room on the right so the title-bar icons clear them. */
 :root[data-platform="win32"] .pss__titlebar {
-  padding-left: 16px;
   padding-right: var(--win-caption-reserve);
 }
 .pss__titlebar button,
@@ -57,7 +62,7 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font: 700 14px/1 var(--font-display);
+  font: 700 17px/1 var(--font-display);
   letter-spacing: -0.01em;
 }
 .pss__title-mark {
@@ -76,6 +81,52 @@
   text-transform: uppercase;
 }
 .pss__title-crumb .sep { opacity: 0.5; }
+/* Strip text centres by its cap height (Pwr-family strip): flex centres a
+   text element's line box, and Geist's ascent/descent put the capitals off
+   the middle of it. `text-box` trimming (Chromium 133+) centres the ink that
+   is actually drawn instead, at any size, so the capitals share the y=20
+   line with the stoplights, the mark and the controls — no pixel nudges.
+
+   The chevron is drawn on the x-height, not up to the cap line, so it
+   centres by that band instead. The parent-crumb button is trimmed too, so
+   it gets `padding-block` back: without it the button's box, its hit area
+   and its focus ring shrink to the cap height, and the ring cuts through
+   the underline it draws on hover and focus. */
+.pss__title-brand .pwrsnap-wordmark,
+.pss__title-crumb > :not(.sep) {
+  text-box: trim-both cap alphabetic;
+}
+.pss__title-crumb .sep {
+  text-box: trim-both ex alphabetic;
+}
+/* Parent crumb on a child screen (Settings › AI Providers › Codex):
+   returns to that page's hub. Text-styled like the rest of the crumb. */
+.pss__title-crumb-link {
+  appearance: none;
+  /* Block padding restores the box the cap-height trim above takes away. */
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+.pss__title-crumb-link:hover,
+.pss__title-crumb-link:focus-visible {
+  color: var(--text-primary);
+  outline: none;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+/* The underline is also the hover paint, so focus draws the house ring
+   too: 2px off the text, as a borderless link does. */
+.pss__title-crumb-link:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
 .pss__title-crumb .here {
   color: var(--text-primary);
   text-transform: none;
@@ -170,7 +221,32 @@
   border-color: var(--accent-border);
   color: var(--accent-bright);
 }
-.pss__sb-nav.is-active::before {
+/* Rows stack flush, and each is positioned, so the row below paints over
+   a focused row's ring. When that row is the active one its opaque fill
+   hid the whole bottom edge. Lift the focused row. */
+.pss__sb-nav:focus-visible { z-index: 1; }
+
+/* Section row: caret gutter + label button, ported from PwrAgnt's settings
+   nav. Every row reserves the gutter — caret button or spacer — so labels
+   align down the column whether or not the page expands into children.
+   24px, not the mark's width: the caret is a real click target flush
+   against the label, and WCAG 2.2 target-size (AA) wants 24×24. */
+.pss__sb-row {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+}
+.pss__sb-row .pss__sb-nav {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  padding-left: 6px;
+}
+/* The accent edge bar hangs off the ROW, not the button: the button now
+   starts after the caret gutter, so a bar positioned from it would land
+   between the caret and the label. -10px = the sidebar's own padding. */
+.pss__sb-row.is-active::before {
   content: "";
   position: absolute;
   left: -10px;
@@ -180,6 +256,150 @@
   background: var(--accent);
   border-radius: 0 2px 2px 0;
 }
+.pss__sb-caret,
+.pss__sb-caret-spacer {
+  display: inline-flex;
+  flex: 0 0 24px;
+  width: 24px;
+  align-items: center;
+  justify-content: center;
+}
+.pss__sb-caret {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+}
+.pss__sb-caret:hover,
+.pss__sb-caret:focus-visible {
+  background: var(--bg-panel-hover);
+  outline: none;
+}
+/* The hover tint alone does not say which control has focus. The ring is
+   inset because the label button sits flush against the caret and would
+   paint over an outset one. */
+.pss__sb-caret:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+/* Filled disclosure triangle: points right collapsed, down expanded. */
+.pss__sb-caret-mark {
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid var(--text-muted);
+  transition: transform 120ms ease;
+}
+.pss__sb-caret:hover .pss__sb-caret-mark,
+.pss__sb-caret:focus-visible .pss__sb-caret-mark {
+  border-left-color: var(--text-primary);
+}
+.pss__sb-caret-mark.is-open { transform: rotate(90deg); }
+
+/* Collapsible child list — a 0fr→1fr grid-rows collapse so the height
+   animates without measuring. The clip carries the overflow, not the
+   grid, so the rows never paint outside the animating track. */
+.pss__sb-sublist {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 120ms ease, opacity 120ms ease;
+}
+.pss__sb-sublist.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.pss__sb-sublist-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pss__sb-sublist,
+  .pss__sb-caret-mark {
+    transition: none;
+  }
+}
+
+/* Indent = the 24px caret gutter + the label button's 1px border and 6px
+   padding, so the child rule lands under the parent label's first glyph.
+   The explicit width is load-bearing and tracks the margin: a <button>
+   shrink-to-fits even as a flex box, so `width: auto` would collapse the
+   row to its label and strand the chip mid-row. */
+.pss__sb-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% - 31px);
+  height: 26px;
+  margin: 0 0 1px 31px;
+  padding: 0 8px 0 10px;
+  appearance: none;
+  border: 0;
+  border-left: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-secondary);
+  font: 500 12px/1.4 var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+.pss__sb-sub:first-child { margin-top: 2px; }
+.pss__sb-sub:last-child { margin-bottom: 6px; }
+.pss__sb-sub:hover,
+.pss__sb-sub:focus-visible {
+  border-left-color: var(--accent-border);
+  color: var(--text-primary);
+  outline: none;
+}
+/* Focus was the hover paint: a 42% accent tick on the left rule. The ring
+   is inset because `.pss__sb-sublist-clip` clips its overflow. */
+.pss__sb-sub:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
+}
+.pss__sb-sub.is-active {
+  border-left-color: var(--accent);
+  color: var(--accent-bright);
+}
+.pss__sb-sublabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pss__sb-subchip {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 1px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  color: var(--text-muted);
+  font: 600 9px/1.3 var(--font-sans);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* Provider status dot — shared by the sidebar children and the AI
+   Providers hub index, which render the same status. No tone class =
+   not known yet: the dot keeps its box (labels don't jump when a status
+   lands) but paints nothing. `off` is deliberately not `bad` — "you left
+   this off" and "this is broken" are the two states the dot exists to
+   tell apart. The dot is aria-hidden; every non-ok state also carries a
+   word (sidebar chip / hub badge). */
+.pss__status-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: transparent;
+}
+.pss__status-dot--ok { background: var(--success); }
+.pss__status-dot--off { background: color-mix(in srgb, var(--text-primary) 18%, transparent); }
+.pss__status-dot--warn { background: var(--warn); }
+.pss__status-dot--bad { background: var(--danger); }
 
 /* ============================================================
    MAIN AREA
@@ -223,6 +443,12 @@
   flex-shrink: 0;
 }
 .pss__top-btn {
+  /* `.pss__row-r` is a stretch column, so a bare button inside a Row
+     fills the row's full width. Every other Row control hugs via
+     align-self (.pss__seg, .pss__hk, .pss__select, .pss__switch); this
+     one was the outlier. Harmless in the header, where the parent is a
+     row flexbox. */
+  align-self: flex-start;
   height: 28px;
   padding: 0 12px;
   background: var(--bg-panel);
@@ -234,8 +460,36 @@
 }
 .pss__top-btn:hover { color: var(--text-primary); border-color: var(--accent-border); }
 .pss__top-btn.is-active { color: var(--text-primary); }
+.pss__top-btn.is-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--button-text-on-accent);
+}
+.pss__top-btn.is-primary:hover {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: var(--button-text-on-accent);
+}
 .pss__top-btn.is-muted { color: var(--text-muted); border-color: var(--border-subtle); }
 .pss__top-btn + .pss__top-btn { margin-left: 6px; }
+/* About's "On GitHub" row wears this skin on an `<a href>` — it reaches a
+   URL, while its two siblings open an in-app document window. Additive and
+   anchor-scoped on purpose: a `<button>` already centres its label and
+   honours `height`, an inline anchor does neither, and `:disabled` does not
+   exist for one. */
+a.pss__top-btn {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+a.pss__top-btn[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: default;
+}
+a.pss__top-btn[aria-disabled="true"]:hover {
+  color: var(--text-secondary);
+  border-color: var(--border-default);
+}
 
 /* ============================================================
    CARD — collapsible settings card
@@ -274,6 +528,18 @@
 .pss__card-hdr:hover {
   background: var(--bg-panel-hover);
 }
+/* Keyboard focus, and where a sidebar jump link parks focus. The house
+   ring, inset because `.pss__card` clips its overflow. The radius follows
+   the card's inner corners (10px less its 1px border) so the clip does
+   not cut the ring's corners. */
+.pss__card-hdr:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+  border-radius: 9px 9px 0 0;
+}
+.pss__card.is-collapsed .pss__card-hdr:focus-visible {
+  border-radius: 9px;
+}
 .pss__card-hdr-action {
   display: inline-flex;
   align-items: center;
@@ -309,6 +575,34 @@
 }
 .pss__card.is-collapsed .pss__card-body {
   display: none;
+}
+/* A sidebar jump link scrolls its card to the top of the pane; leave a
+   little air above it rather than parking the border on the edge. */
+.pss__card {
+  scroll-margin-top: 20px;
+}
+
+/* Inline link inside running copy (a page's header text pointing at a
+   sibling page). A button, since it routes in-app rather than to a URL. */
+.pss__text-link {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: var(--accent-bright);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent-bright) 40%, transparent);
+  text-underline-offset: 3px;
+}
+.pss__text-link:hover {
+  text-decoration-color: currentColor;
+}
+.pss__text-link:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 /* ============================================================
@@ -402,6 +696,12 @@
   color: var(--accent-bright);
   z-index: 1;
 }
+/* Segments overlap by 1px and each paints an opaque fill, so a focused
+   segment's ring disappeared under its neighbours (and under the lifted
+   active one). Lift the focused segment above both. */
+.pss__seg-btn:focus-visible {
+  z-index: 2;
+}
 
 .pss__update-channel {
   display: flex;
@@ -426,7 +726,12 @@
 .pss__slots {
   display: grid;
   grid-template-columns: 92px minmax(0, 1fr) minmax(0, 1fr);
-  gap: 8px;
+  column-gap: 8px;
+  /* Wider than the column gap on purpose. Each cell now ends in a
+     "Release notes" link, and with an even 8px both ways that link sat as
+     close to the NEXT row's tile as to its own — it has to read as a
+     caption on the tile above it. */
+  row-gap: 14px;
   align-items: stretch;
 }
 .pss__slots-colhdr,
@@ -445,6 +750,19 @@
   font: 600 12px/1 var(--font-sans);
   text-transform: none;
   color: var(--text-secondary);
+}
+/* The grid cell, not the tile. The tile is a radio and cannot contain an
+   interactive element, so its "Release notes" link is a sibling below it —
+   the cell is what makes the two read as one unit and keeps tiles in a row
+   the same height whether or not their slot resolved to a version. */
+.pss__slot-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.pss__slot-cell > .pss__slot {
+  flex: 1 1 auto;
 }
 .pss__slot {
   display: flex;
@@ -465,9 +783,9 @@
    between tiles WITHOUT selecting. Without a focus ring distinct from
    `.is-selected` there is no way to see which slot Space would commit. */
 .pss__slot:focus-visible {
-  outline: none;
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-shadow);
 }
 .pss__slot.is-selected {
   background: var(--bg-row-active);
@@ -516,6 +834,49 @@
   background: var(--success-soft);
   color: var(--success-text);
 }
+/* "Release notes" — quiet by default, accent on hover. It sits under a tile
+   the user is deciding about, so it must not compete with the tile itself
+   for the click; the underline only appears on hover/focus for the same
+   reason. Text-sized rather than button-sized: four of these in the matrix
+   at button weight would out-shout the four versions above them. */
+/* Real `<a href>`s (see ReleaseNotesLink.tsx), hence `text-decoration: none`
+   at rest — the underline below is the hover affordance. */
+.pss__slot-notes,
+.pss__update-notes {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-muted);
+  font: 500 10px/1.2 var(--font-sans);
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 120ms var(--ease-out);
+}
+.pss__slot-notes:hover,
+.pss__update-notes:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.pss__slot-notes:focus-visible,
+.pss__update-notes:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: 3px;
+  color: var(--accent);
+}
+/* Indented to the tile's own text column (12px padding + 1px border) so it
+   hangs under the version rather than off the tile's outer edge. */
+.pss__slot-notes {
+  align-self: flex-start;
+  padding-left: 13px;
+}
+/* Inline with the status sentence it qualifies — it is scoped to the
+   version that sentence just named, so it must not float away from it. */
+.pss__update-notes {
+  margin-left: 6px;
+  vertical-align: baseline;
+}
+
 .pss__update-actions {
   display: flex;
   flex-wrap: wrap;
@@ -612,6 +973,96 @@
   color: var(--danger-text);
   background: var(--danger-soft);
   border-color: var(--danger-border);
+}
+.pss__badge.is-warn {
+  color: var(--warn-text);
+  background: var(--warn-soft);
+  border-color: var(--warn-border);
+}
+
+/* AI Providers hub — provider index. One row per provider, same order and
+   status as the sidebar children; clicking opens that provider's screen. */
+.pss__prov-index {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pss__prov-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px 10px 14px;
+  appearance: none;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.pss__prov-row:hover,
+.pss__prov-row:focus-visible {
+  border-color: var(--accent-border);
+  outline: none;
+}
+/* That tint is also the hover paint, and measures 2.2:1. */
+.pss__prov-row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.pss__prov-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pss__prov-name {
+  font: 600 13px/1.3 var(--font-sans);
+  color: var(--text-primary);
+}
+.pss__prov-row.is-off .pss__prov-name { color: var(--text-secondary); }
+.pss__prov-meta {
+  font: 500 11px/1.3 var(--font-mono);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pss__prov-chev {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font: 500 16px/1 var(--font-sans);
+}
+.pss__prov-row:hover .pss__prov-chev { color: var(--accent-bright); }
+
+/* Provider screen — which jobs actually run on this provider, with a link
+   to AI Features → Default agents. Sits between the page header and the
+   card. */
+.pss__prov-strip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+  padding: 10px 12px 10px 16px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+}
+.pss__prov-strip-eyebrow {
+  flex-shrink: 0;
+  font: 600 9px/1 var(--font-sans);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.pss__prov-strip-items {
+  flex: 1;
+  min-width: 0;
+  font: 500 12px/1.4 var(--font-sans);
+  color: var(--text-secondary);
 }
 .pss__opt-use {
   flex-shrink: 0;
@@ -712,6 +1163,10 @@
   outline: none;
   border-color: var(--accent-border);
 }
+.pss__acp-override-input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
 
 /* Codex discovery candidate cards. The path gets a dedicated full-width line so
    it never competes with the badges for space (that squeeze chopped the binary
@@ -778,11 +1233,46 @@
 }
 .pss__cand-sep { color: var(--border-default); }
 .pss__cand-unavail { color: var(--danger-text); }
+.pss__cand-outdated { color: var(--warn-text); }
 .pss__cand-action {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
+  gap: 6px;
   margin-top: 1px;
+}
+
+/* Codex upgrade help, folded under the binary it is about (the same seam as
+   the attached connection test). Command + Copy is the Local Agents recipe
+   pair. Danger-tinted when no installation can run at all. */
+.pss__codex-update {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: -2px;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--warn-border);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--warn) 7%, var(--bg-panel));
+}
+.pss__codex-update.is-blocking {
+  border-color: var(--danger-border);
+  background: color-mix(in srgb, var(--danger) 7%, var(--bg-panel));
+}
+.pss__codex-update-hdr {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.pss__codex-update-title {
+  flex: 1;
+  min-width: 0;
+  font: 600 12px/1.35 var(--font-sans);
+  color: var(--text-primary);
+}
+.pss__codex-update-sub {
+  font: 500 11px/1.4 var(--font-sans);
+  color: var(--text-muted);
 }
 
 /* connection test, folded under the candidate list (was its own labeled Row) */
@@ -857,7 +1347,7 @@
 }
 .pss__hotkey-retry:hover { border-color: var(--danger-text); }
 .pss__hotkey-retry:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 .pss__hotkey-retry:disabled {
@@ -895,7 +1385,7 @@
   cursor: pointer;
 }
 .pss__hk-capture-trigger:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 3px;
 }
 .pss__hk-capture-trigger:disabled,
@@ -926,7 +1416,7 @@
 }
 .pss__hk-capture-clear:focus-visible,
 .pss__hk-capture-cancel:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 .pss__hk-capture.is-recording {
@@ -1045,6 +1535,13 @@
   width: 100%;
 }
 .pss__input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-shadow); }
+/* Fields draw the house ring like every other control. The 3px halo
+   would show through the ring's 1px gap, so the ring replaces it. */
+.pss__input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  box-shadow: none;
+}
 
 /* select-like dropdown */
 .pss__select {
@@ -1084,7 +1581,7 @@
   align-self: center;
 }
 
-/* Codex auth-profile management (Settings → AI → Codex) */
+/* Codex auth-profile management (Settings → AI Providers → Codex) */
 .pss__codex-profiles {
   display: flex;
   flex-direction: column;
@@ -1704,7 +2201,15 @@
 }
 .pss__role-control b { font: 600 12px/1 var(--font-sans); color: var(--accent-bright); }
 
-/* Short intro line at the top of the consolidated Job-routing card. */
+/* AI Features → Default agents body. `.pss__card-body` has no padding of
+   its own (every other card child is a self-padding Row), so the intro and
+   the job rows carry the same 20px inset a Row does — without it the intro
+   text sat flush against the card's left edge. */
+.pss__roles {
+  padding: 16px 20px 20px;
+}
+
+/* Short intro line at the top of the Default agents card. */
 .pss__role-intro {
   margin: 0 0 12px;
   font: 500 12px/1.5 var(--font-sans);
@@ -1739,6 +2244,48 @@
 .pss__role-controls .pss__ai-surface-select {
   width: 100%;
   min-width: 0;
+}
+
+/* Caption fallback, nested under the Captions job's own fields and aligned
+   with them. Its fields reuse .pss__role-controls; the padding-left that
+   aligns a job's fields with its text column is already applied by this box. */
+.pss__role-fallback {
+  margin-left: 42px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+}
+.pss__role-fallback .pss__role-controls { padding-left: 0; }
+.pss__role-fallback-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+/* Both sit on the heading's line, not centred against the explanation. */
+.pss__role-fallback-arrow {
+  flex: none;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font: 600 12px/1 var(--font-mono);
+}
+.pss__role-fallback-head > .pss__switch { flex: none; }
+.pss__role-fallback-sub {
+  font: 400 11px/1.4 var(--font-sans);
+  color: var(--text-muted);
+  text-wrap: pretty;
+}
+.pss__role-fallback-note {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--info-border);
+  border-radius: 6px;
+  background: var(--info-soft);
+  font: 400 11.5px/1.45 var(--font-sans);
+  color: var(--text-secondary);
 }
 
 /* Customization-count badge in page-header actions — shows
@@ -1876,7 +2423,7 @@
    * `pss__main-hdr` rules. Reserved for future per-page tweaks. */
 }
 
-/* ---- Library Chat settings card (Settings → AI → Library Chat) ---- */
+/* ---- Chat guidance card (Settings → AI Features → Guidance) ---- */
 .pss__chat-banner {
   display: flex;
   gap: 12px;
@@ -1910,6 +2457,13 @@
   outline: none;
 }
 .pss__textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-shadow); }
+/* As `.pss__input:focus-visible`: the house ring replaces the halo. */
+.pss__textarea:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  box-shadow: none;
+  scroll-margin: 4px;
+}
 .pss__chat-counter {
   display: flex;
   justify-content: space-between;
@@ -1931,6 +2485,27 @@
 .pss__chat-pattern-row { display: flex; gap: 8px; align-items: center; }
 .pss__chat-pattern-row .pss__input:first-child { max-width: 160px; }
 .pss__input.is-error { border-color: var(--accent); }
+
+/* AI Features → Rate limit: two short number fields and their buttons. */
+.pss__ratelimit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 10px;
+}
+.pss__ratelimit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 96px;
+  color: var(--text-secondary);
+  font: 600 10px/1 var(--font-sans);
+}
+.pss__ratelimit-error {
+  flex-basis: 100%;
+  color: var(--danger-text);
+  font: 500 11px/1.4 var(--font-sans);
+}
 
 /* ---- Local Agents settings page ---- */
 .pss__main-hdr--agents .pss__main-sub { max-width: 700px; }
@@ -2098,6 +2673,10 @@
   font: 500 10px/1 var(--font-sans);
 }
 .pss__auth-select:focus { border-color: var(--accent); }
+.pss__auth-select:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
 .pss__auth-node.is-permission {
   display: grid;
   grid-template-columns: 26px minmax(0, 1fr);
@@ -2244,5 +2823,505 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+}
+
+/* ============================================================
+   DIRECT API — connections on the AI Providers hub, and the stepped
+   connection page. Ported from the Claude Design "PwrSnap Direct API
+   Connections" boards (1a hub, 2a stepped add). Child combinators
+   throughout: rows nest inputs and selects of their own.
+   ============================================================ */
+
+/* Sidebar: the "Direct API" group label, and the trailing add row. */
+.pss__sb-subhead {
+  margin: 8px 0 3px 31px;
+  padding-left: 11px;
+  font: 600 9px/1.3 var(--font-sans);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+}
+.pss__sb-subplus {
+  flex: none;
+  width: 7px;
+  color: var(--text-muted);
+  font: 600 12px/1 var(--font-sans);
+  text-align: center;
+}
+.pss__sb-sub.is-add { color: var(--text-muted); }
+.pss__sb-sub.is-add:hover .pss__sb-subplus,
+.pss__sb-sub.is-add.is-active .pss__sb-subplus { color: var(--accent-bright); }
+.pss__sb-subchip.is-warn {
+  color: var(--warn-text);
+  border-color: var(--warn-border);
+}
+
+.pss__dapi-mono {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--bg-panel-elevated);
+  color: var(--text-secondary);
+  font: 600 12px/1 var(--font-mono);
+}
+.pss__dapi-cap {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+  color: var(--text-muted);
+  font: 600 9.5px/1 var(--font-mono);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.pss__dapi-cap.is-local {
+  color: var(--accent-bright);
+  border-color: var(--accent-border);
+  background: var(--accent-tint);
+}
+.pss__dapi-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.pss__dapi-name > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pss__dapi-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+.pss__dapi-mchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: var(--bg-panel-elevated);
+  color: var(--text-secondary);
+  font: 500 11px/1 var(--font-mono);
+  white-space: nowrap;
+}
+.pss__dapi-mchip > .pss__dapi-img {
+  color: var(--success-text);
+  font: 700 8.5px/1 var(--font-sans);
+  letter-spacing: 0.06em;
+}
+.pss__dapi-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 44px;
+  width: 100%;
+  appearance: none;
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 500 12.5px/1 var(--font-sans);
+  cursor: pointer;
+}
+.pss__dapi-empty:hover { border-color: var(--accent-border); color: var(--text-primary); }
+
+/* Steps */
+.pss__dapi-step {
+  margin-bottom: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--bg-panel);
+}
+.pss__dapi-step.is-current { border-color: var(--accent-border); }
+.pss__dapi-step.is-locked { opacity: 0.5; }
+.pss__dapi-step-h {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 10px 18px;
+}
+.pss__dapi-step-n {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  color: var(--text-muted);
+  font: 700 11px/1 var(--font-mono);
+}
+.pss__dapi-step.is-done .pss__dapi-step-n {
+  background: var(--success-soft);
+  border-color: var(--success-border);
+  color: var(--success-text);
+}
+.pss__dapi-step.is-current .pss__dapi-step-n {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--button-text-on-accent);
+}
+.pss__dapi-step-t {
+  flex: none;
+  font: 600 13.5px/1.2 var(--font-sans);
+  color: var(--text-primary);
+}
+.pss__dapi-step-s {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 400 11.5px/1.3 var(--font-mono);
+  color: var(--text-muted);
+}
+.pss__dapi-step-s.is-ok { color: var(--success-text); }
+.pss__dapi-step-r {
+  flex: none;
+  display: flex;
+  gap: 6px;
+}
+.pss__dapi-step-b {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 4px 18px 18px 52px;
+}
+/* A saved connection's cards: an edit form or a models table spans the
+   card body at the row padding, instead of sitting in a Row's right column. */
+.pss__dapi-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 20px 20px;
+}
+.pss__dapi-value {
+  color: var(--text-primary);
+  font: 500 12.5px/28px var(--font-sans);
+}
+.pss__main-hdr > .pss__badge { flex: none; margin-top: 30px; }
+.pss__test-sub.pss__dapi-check.is-ok { color: var(--success-text); }
+.pss__test-sub.pss__dapi-check.is-bad { color: var(--danger-text); }
+.pss__dapi-cap.is-yes {
+  color: var(--success-text);
+  border-color: var(--success-border);
+}
+.pss__dapi-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.pss__dapi-field > .pss__dapi-k {
+  font: 600 10px/1 var(--font-sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.pss__dapi-field > .pss__select { width: 100%; min-width: 0; }
+.pss__dapi-field > .pss__input.is-text { font-family: var(--font-sans); }
+.pss__dapi-field > .pss__input[type="number"] { max-width: 180px; }
+.pss__dapi-grid2 {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+.pss__dapi-grid3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.pss__dapi-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.pss__dapi-actions > .pss__dapi-spacer { flex: 1; }
+.pss__dapi-hint {
+  margin: 0;
+  font: 400 11.5px/1.45 var(--font-sans);
+  color: var(--text-muted);
+}
+.pss__dapi-hint > code,
+.pss__dapi-note code {
+  padding: 1px 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  background: var(--bg-panel-elevated);
+  color: var(--text-secondary);
+  font: 500 10.5px/1 var(--font-mono);
+}
+.pss__dapi-quick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.pss__dapi-quick > .pss__dapi-k {
+  margin-right: 2px;
+  font: 400 11px/1 var(--font-sans);
+  color: var(--text-muted);
+}
+.pss__dapi-quick > button {
+  height: 22px;
+  padding: 0 8px;
+  appearance: none;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  font: 500 11px/1 var(--font-mono);
+  cursor: pointer;
+}
+.pss__dapi-quick > button:hover { border-color: var(--accent-border); color: var(--text-primary); }
+.pss__dapi-quick > button.is-active {
+  border-color: var(--accent-border);
+  background: var(--accent-tint);
+  color: var(--accent-bright);
+}
+.pss__dapi-req {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 7px;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font: 500 12px/1.3 var(--font-mono);
+}
+.pss__dapi-req > .pss__dapi-m {
+  flex: none;
+  padding: 3px 5px;
+  border: 1px solid var(--accent-border);
+  border-radius: 4px;
+  color: var(--accent-bright);
+  font: 700 10px/1 var(--font-mono);
+}
+.pss__dapi-req > .pss__dapi-u {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pss__dapi-req > .pss__dapi-u > b { color: var(--text-primary); font-weight: 600; }
+.pss__dapi-req > .pss__dapi-l {
+  flex: none;
+  color: var(--text-muted);
+  font: 500 10.5px/1 var(--font-sans);
+}
+.pss__dapi-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--bg-panel-elevated);
+  color: var(--text-secondary);
+  font: 400 12px/1.5 var(--font-sans);
+}
+.pss__dapi-note > .pss__dapi-g {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font: 700 10px/1 var(--font-mono);
+}
+.pss__dapi-note b { color: var(--text-primary); font-weight: 600; }
+.pss__dapi-note.is-ok { border-color: var(--success-border); background: var(--success-soft); }
+.pss__dapi-note.is-ok > .pss__dapi-g { color: var(--success-text); }
+.pss__dapi-note.is-warn { border-color: var(--warn-border); background: var(--warn-soft); }
+.pss__dapi-note.is-warn > .pss__dapi-g { color: var(--warn-text); }
+.pss__dapi-note.is-bad { border-color: var(--danger-border); background: var(--danger-soft); }
+.pss__dapi-note.is-bad > .pss__dapi-g { color: var(--danger-text); }
+
+/* Models table */
+.pss__dapi-models {
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.pss__dapi-mrow {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1.3fr) minmax(0, 1.1fr) minmax(0, 1fr) 64px;
+  gap: 14px;
+  align-items: center;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-input);
+}
+.pss__dapi-mrow:last-child { border-bottom: 0; }
+/* Read-only rows: no checkbox, no name input. */
+.pss__dapi-mrow.is-view {
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.8fr) minmax(0, 1.2fr) 64px;
+  padding-top: 11px;
+  padding-bottom: 11px;
+}
+.pss__dapi-mrow.is-head.is-view { padding-top: 8px; padding-bottom: 8px; }
+.pss__dapi-mname {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.pss__dapi-mname > span:first-child {
+  color: var(--text-primary);
+  font: 600 12.5px/1.3 var(--font-sans);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pss__dapi-mname > .pss__dapi-mid {
+  color: var(--text-muted);
+  font: 400 11px/1.3 var(--font-mono);
+}
+.pss__dapi-used {
+  min-width: 0;
+  color: var(--text-secondary);
+  font: 400 12px/1.4 var(--font-sans);
+}
+.pss__dapi-used.is-none { color: var(--text-subtle); }
+.pss__dapi-mrow.is-head {
+  padding-top: 8px;
+  padding-bottom: 8px;
+  background: var(--bg-panel-elevated);
+  color: var(--text-muted);
+  font: 500 9.5px/1 var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.pss__dapi-mrow > input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.pss__dapi-mid {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font: 500 12px/1.3 var(--font-mono);
+}
+.pss__dapi-mrow.is-off .pss__dapi-mid { color: var(--text-secondary); }
+.pss__dapi-caps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.pss__dapi-src {
+  color: var(--text-muted);
+  font: 400 10.5px/1.2 var(--font-sans);
+}
+.pss__dapi-reasoning {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  color: var(--text-muted);
+  font: 400 10.5px/1.2 var(--font-sans);
+}
+.pss__dapi-reasoning > .pss__input { height: 26px; }
+.pss__dapi-mrow > .pss__input { height: 26px; font-family: var(--font-sans); }
+.pss__dapi-mrow > .pss__dapi-none { color: var(--text-subtle); font: 400 11.5px/1 var(--font-sans); }
+.pss__dapi-tri {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-default);
+  border-radius: 7px;
+  background: var(--bg-input);
+}
+.pss__dapi-tri > button {
+  height: 22px;
+  padding: 0 8px;
+  appearance: none;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  font: 500 11px/1 var(--font-sans);
+  cursor: pointer;
+}
+.pss__dapi-tri > button:hover:not(:disabled) { color: var(--text-primary); }
+.pss__dapi-tri > button:disabled { cursor: default; }
+.pss__dapi-tri > button.is-on {
+  background: var(--bg-row-active);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+  color: var(--accent-bright);
+}
+.pss__dapi-tri > button.is-q.is-on {
+  background: var(--warn-soft);
+  box-shadow: inset 0 0 0 1px var(--warn-border);
+  color: var(--warn-text);
+}
+.pss__dapi-test {
+  justify-self: end;
+  height: 24px;
+  padding: 0 8px;
+  appearance: none;
+  border: 1px solid var(--border-default);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 500 11px/1 var(--font-sans);
+  cursor: pointer;
+}
+.pss__dapi-test:hover:not(:disabled) { border-color: var(--accent-border); color: var(--text-primary); }
+.pss__dapi-test:disabled { opacity: 0.5; cursor: default; }
+.pss__dapi-result {
+  grid-column: 2 / -1;
+  margin-top: -4px;
+  font: 400 11px/1.35 var(--font-sans);
+  color: var(--text-muted);
+}
+.pss__dapi-result.is-ok { color: var(--success-text); }
+.pss__dapi-result.is-bad { color: var(--danger-text); }
+.pss__dapi-add {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+}
+.pss__dapi-details > summary {
+  width: fit-content;
+  color: var(--text-muted);
+  font: 500 11.5px/1.4 var(--font-sans);
+  cursor: pointer;
+}
+.pss__dapi-details > summary:hover { color: var(--text-primary); }
+.pss__dapi-details[open] > summary { margin-bottom: 10px; }
+.pss__dapi-oauth {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }

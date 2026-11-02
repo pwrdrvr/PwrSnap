@@ -14,6 +14,16 @@ and Windows 11 on x64; there is no Windows Arm64 package yet.
 | Updates | Packaged releases consume the `latest.yml` metadata published beside each Windows installer |
 | Video dependency | Tagged releases bundle the controlled `PwrSnapFFmpeg.exe`; users do not install FFmpeg separately |
 
+For source development, `pnpm dev` also uses the controlled build. On the first
+Windows launch it downloads the exact release-CI-pinned controlled artifact,
+validates its target, codec/device contract, forbidden flags, and SHA-256, then
+reuses it from
+`%USERPROFILE%\.pwrsnap\dev\bin\ffmpeg\<build-sha>\windows-x64\` across
+worktrees. Maintainers authenticate once with
+`gh auth login --hostname github.com`.
+`PWRSNAP_FFMPEG_PATH` remains the explicit override for offline or diagnostic
+work and must name a native `.exe`/`.com`, never a `.cmd`/`.bat` shim.
+
 Linux builds gate the cross-platform TypeScript build in the release workflow,
 but PwrSnap does not distribute a Linux desktop package.
 
@@ -21,10 +31,9 @@ but PwrSnap does not distribute a Linux desktop package.
 
 1. For the current stable release, open
    [GitHub Releases — Latest](https://github.com/pwrdrvr/PwrSnap/releases/latest).
-   To install a 1.1 prerelease, open the main
+   For prerelease testing, open the main
    [Releases page](https://github.com/pwrdrvr/PwrSnap/releases); GitHub's
-   `latest` route intentionally excludes prereleases. Once 1.1 is promoted
-   stable, it appears under the Latest link instead.
+   `latest` route intentionally excludes prereleases.
 2. Download `PwrSnap-<version>-windows-x64-setup.exe`. The `.blockmap` and
    `latest.yml` assets are for the updater, not manual installation.
 3. Run the installer. It installs for the current user and lets you change the
@@ -66,7 +75,7 @@ automatically.
 Release builds check the selected GitHub release channel at startup and
 periodically while PwrSnap is running. Under **Settings → General → Updates**,
 choose a release train (Stable or Beta) and an update track (Latest or
-Prerelease). **Help → Check for Updates** starts the same check on demand, and
+Prerelease). **Help → Check for Updates…** starts the same check on demand, and
 **Restart to Update** installs a completed download.
 
 The Windows updater requires `latest.yml`, the versioned installer, and its
@@ -155,7 +164,7 @@ design; the Library window does not open automatically.
 ### Updates do not appear
 
 Confirm the desired Stable/Beta and Latest/Prerelease choices under
-**Settings → General → Updates**, then use **Help → Check for Updates**. The
+**Settings → General → Updates**, then use **Help → Check for Updates…**. The
 `pnpm dev` process simulates manual update UI but does not use the production
 feed; use a published release to test real updates.
 
@@ -164,8 +173,8 @@ feed; use a published release to test real updates.
 Run these steps on Windows 10 or Windows 11 x64. Install:
 
 - Git.
-- Node.js `v24.14.1` (the version pinned in `.nvmrc`).
-- `pnpm@10.33.0` (the version pinned in the root `package.json`).
+- Node.js `v24.21.0` (the version pinned in `.nvmrc`).
+- `pnpm@12.9.1` (the version pinned in the root `package.json`).
 - Visual Studio Build Tools 2022 with the **Desktop development with C++**
   workload.
 
@@ -173,7 +182,7 @@ From the repository root:
 
 ```powershell
 corepack enable
-corepack prepare pnpm@10.33.0 --activate
+corepack prepare pnpm@12.9.1 --activate
 corepack pnpm install
 corepack pnpm --filter @pwrsnap/desktop build:native
 corepack pnpm --filter @pwrsnap/desktop package:win

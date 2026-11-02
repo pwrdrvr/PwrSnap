@@ -13,7 +13,14 @@ copyright: "Copyright © 2026 PwrDrvr LLC. All rights reserved."
 # exemptions, this is a sandboxed Quick Look provider).
 afterPack: "scripts/afterpack-sign-appex.mjs"
 
-electronVersion: 41.10.7
+electronVersion: 44.9.3
+
+# No @electron/rebuild pass while packaging. The only native module it finds
+# is better-sqlite3, whose N-API prebuilds already load in Electron (sharp
+# loads its @img prebuilt packages and is not touched). On 44.4.5 the pass
+# ran once per arch and compiled nothing, but its fallback is a node-gyp
+# source build that needs Python and a C++ toolchain. PwrGit sets the same.
+npmRebuild: false
 
 asar: true
 asarUnpack:
@@ -70,10 +77,6 @@ files:
   # Our own workspace package metadata is unused at runtime — vite inlines.
   - "!**/node_modules/@pwrsnap/*/AGENTS.md"
   - "!**/node_modules/@pwrsnap/*/src/**"
-  # better-sqlite3 ships a native test extension that is not loaded at
-  # runtime. If included, @electron/universal sees identical test binaries in
-  # both temp app trees and aborts the universal merge.
-  - "!**/node_modules/better-sqlite3/build/Release/test_extension.node"
   # App-owned prompt assets are intentionally readable Markdown in app.asar.
   - "out/main/prompts/**/*.md"
 
@@ -88,12 +91,15 @@ extraResources:
     to: "THIRD_PARTY_LICENSES"
   - from: "CHANGELOG.md"
     to: "CHANGELOG.md"
+  # Help → View License opens this in an app window (app-documents.ts).
+  - from: "LICENSE"
+    to: "LICENSE"
   # Tray icons. macOS reads the alpha-only *template* PNG (system tints
-  # it for dark/light/accent menubars); Windows/Linux read the colored
+  # it for dark/light/accent menubars); Windows reads the colored
   # `tray-icon.png`. Electron's nativeImage auto-loads the @Nx siblings
   # when given the base path, so each base PNG needs its @2x/@3x next to
   # it under resourcesPath. resolveTrayIconPath() in main/tray.ts picks
-  # the right base per platform. Both sets are tiny (<2 KB total) and
+  # the right base per platform. All three sets are tiny (<4 KB total) and
   # exist in the repo on every platform, so they ship everywhere rather
   # than fiddling with per-platform tray-icon resource lists.
   - from: "build/tray-icon-template.png"
@@ -108,10 +114,34 @@ extraResources:
     to: "tray-icon@2x.png"
   - from: "build/tray-icon@3x.png"
     to: "tray-icon@3x.png"
+  # Linux reads its OWN 48px PNG with no @Nx siblings — Electron's
+  # StatusIconLinuxDbus publishes the image's scale-1 representation into
+  # the StatusNotifierItem `IconPixmap` property, which for the set above
+  # is the 16×16 base. See scripts/generate-tray-icon.mjs. There is no
+  # `linux:` target in this file (Linux is not a distribution target — the
+  # Linux CI job is E2E only), so this entry only matters to a build run
+  # by hand; it lives here with its siblings rather than in a fourth
+  # per-platform list that nothing would keep in step.
+  - from: "build/tray-icon-linux.png"
+    to: "tray-icon-linux.png"
 
 electronFuses:
   runAsNode: false
-  enableCookieEncryption: true
+  # MUST stay false. This fuse encrypts the Chromium cookie store, and to do
+  # that Electron fetches the "PwrSnap Safe Storage" key from the login
+  # keychain when the network service starts -- before any window exists, on
+  # every launch. PwrSnap has no cookies to protect: every window loads
+  # file:// or data:, and the only outbound HTTP comes from the main process
+  # via Node fetch, which has no Chromium cookie jar. So the fuse bought
+  # nothing and cost the one thing users notice -- a macOS keychain password
+  # prompt at startup for any binary not already on that keychain item's
+  # access list (a rebuilt local package, a second install, a dev Electron).
+  # Turning it off leaves ONE keychain consumer: DesktopSecretStore, which
+  # runs only when the user saves an API key or approves an agent pairing --
+  # moments our own UI can explain first.
+  # See docs/solutions/2026-09-11-startup-keychain-prompt-cookie-encryption.md.
+  # Pinned by scripts/check-electron-fuses-policy.mjs.
+  enableCookieEncryption: false
   enableNodeOptionsEnvironmentVariable: false
   enableNodeCliInspectArguments: false
   enableEmbeddedAsarIntegrityValidation: true
@@ -195,9 +225,12 @@ mac:
       to: "PlugIns/PwrSnapPreviewExtension.appex"
   # These files are intentionally identical in both temp app trees before
   # @electron/universal merges them. The Swift helper is prebuilt universal;
-  # Sharp and ffmpeg optional dependency directories are arch-named and each
-  # final app needs both Darwin CPU payloads available at runtime.
-  x64ArchFiles: "Contents/Resources/{PwrSnapWindowList,PwrSnapPasteboardWriter,PwrSnapFFmpeg,app.asar.unpacked/node_modules/@img/{sharp-darwin-*,sharp-libvips-darwin-*}/**/*}"
+  # Sharp and ffmpeg optional dependency directories are arch-named, and
+  # better-sqlite3's prebuilds/darwin-<arch>.node are thin per-arch files its
+  # loader picks by process.arch, so each final app needs both Darwin CPU
+  # payloads available at runtime. A thin Mach-O identical in both trees and
+  # missing from this glob aborts the merge.
+  x64ArchFiles: "Contents/Resources/{PwrSnapWindowList,PwrSnapPasteboardWriter,PwrSnapFFmpeg,app.asar.unpacked/node_modules/@img/{sharp-darwin-*,sharp-libvips-darwin-*}/**/*,app.asar.unpacked/node_modules/better-sqlite3/prebuilds/darwin-*.node}"
   helperBundleId: com.pwrdrvr.pwrsnap.helper
   helperRendererBundleId: com.pwrdrvr.pwrsnap.helper.Renderer
   helperGPUBundleId: com.pwrdrvr.pwrsnap.helper.GPU
@@ -281,6 +314,9 @@ mac:
         LSHandlerRank: Owner
         LSItemContentTypes:
           - com.pwrdrvr.pwrsnap.bundle
+  # Universal is the compatibility default. release.mjs creates an isolated
+  # arm64 stage by replacing these two target architectures. Each stage emits
+  # its own metadata; macos-release-artifacts.mjs validates and merges once.
   target:
     - target: dmg
       arch: [universal]
@@ -306,12 +342,11 @@ dmg:
 
 # Windows (Phase 8 cross-platform port). x64 NSIS installer. The .ico is
 # derived by electron-builder from the 512+px build/icon.png (1024×1024 in
-# the repo) — no hand-authored .ico needed. Native modules: better-sqlite3
-# ships its Electron-native win32-x64 sidecar via rebuild-native-for-electron
-# (run with npm_config_arch=x64 before packaging), and sharp's win32-x64
-# optional dependency is pulled in by pnpm-workspace.yaml's
-# supportedArchitectures. asarUnpack `**/*.node` above keeps both binaries on
-# a real filesystem path.
+# the repo) — no hand-authored .ico needed. Native modules: better-sqlite3's
+# own N-API prebuild (prebuilds/win32-x64.node; package-win.mjs prunes the
+# other platforms' files from the stage), and sharp's win32-x64 optional
+# dependency, pulled in by pnpm-workspace.yaml's supportedArchitectures.
+# asarUnpack `**/*.node` above keeps both binaries on a real filesystem path.
 win:
   icon: build/icon.png
   requestedExecutionLevel: asInvoker
@@ -333,15 +368,20 @@ win:
     - target: nsis
       arch: [x64]
   # window-list C++ helper (native/window-list-win/main.cpp → built by
-  # scripts/build-native.mjs into build/native/window-list.exe). Same role as
-  # PwrSnapWindowList on macOS: drives snap-to-window in the region selector +
-  # source-app metadata. Resolved at runtime via process.resourcesPath as
-  # PwrSnapWindowList.exe in src/main/capture/window-list.ts.
+  # scripts/build-native.mjs into build/native/window-list.exe). Drives
+  # snap-to-window/source-app metadata and owns the native CF_HDROP file-copy
+  # subcommand (Electron cannot address numeric clipboard format 15).
+  # Resolved at runtime via process.resourcesPath as PwrSnapWindowList.exe.
   extraResources:
     - from: "build/native/window-list.exe"
       to: "PwrSnapWindowList.exe"
     - from: "build/native/verified-file.exe"
       to: "PwrSnapVerifiedFile.exe"
+    # Pagefile-backed frozen-selector snapshot broker. The sandboxed
+    # renderer never receives its mapping name or a native handle; main
+    # authenticates the selector sender and brokers bounded RGBA copies.
+    - from: "build/native/screen-snapshot.exe"
+      to: "PwrSnapScreenSnapshot.exe"
 
 nsis:
   oneClick: false

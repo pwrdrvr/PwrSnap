@@ -175,6 +175,44 @@ describe("blur tool exposes explicit effect modes", () => {
   });
 });
 
+describe("draw shape tools carry stroke_style (the shape twin of an arrow's stem_style)", () => {
+  for (const name of [
+    "draw_rect",
+    "draw_square",
+    "draw_circle",
+    "draw_oval",
+    "draw_parallelogram"
+  ] as const) {
+    it(`${name} writes stroke_style as the overlay's strokeStyle`, async () => {
+      const res = await toolByName(name).dispatch(
+        { capture_id: "cap1", rect: { x: 0.1, y: 0.1, w: 0.3, h: 0.3 }, stroke_style: "dashed" },
+        { threadId: "t1" }
+      );
+      expect(res.ok).toBe(true);
+      const layer = lastUpsertedLayer();
+      expect((layer.shape as { strokeStyle?: string }).strokeStyle).toBe("dashed");
+      expect(BundleLayerNode.safeParse(layer).success).toBe(true);
+    });
+  }
+
+  it("omitting it leaves the row without the field (renders solid)", async () => {
+    await toolByName("draw_rect").dispatch(
+      { capture_id: "cap1", rect: { x: 0.1, y: 0.1, w: 0.3, h: 0.3 } },
+      { threadId: "t1" }
+    );
+    expect(lastUpsertedLayer().shape).not.toHaveProperty("strokeStyle");
+  });
+
+  it("rejects a value outside solid|dashed|dotted", () => {
+    const parsed = toolByName("draw_rect").argsSchema.safeParse({
+      capture_id: "cap1",
+      rect: { x: 0.1, y: 0.1, w: 0.3, h: 0.3 },
+      stroke_style: "wavy"
+    });
+    expect(parsed.success).toBe(false);
+  });
+});
+
 describe("update_layer edits existing layers in place", () => {
   it("uses layers:update, not delete+redraw, when changing arrow thickness", async () => {
     const now = new Date().toISOString();
@@ -396,5 +434,74 @@ describe("effect tools emit a valid v2 EffectLayer with a pixel clip_rect", () =
     expect(layer.kind).toBe("effect");
     expect((layer.effect as { type: string; style: string }).style).toBe("pixelate");
     expect(BundleLayerNode.safeParse(layer).success).toBe(true);
+  });
+});
+
+describe("update_layer stroke_style", () => {
+  function vectorLayer(id: string, shape: Record<string, unknown>) {
+    const now = new Date().toISOString();
+    return {
+      id,
+      parent_id: null,
+      kind: "vector",
+      name: "AI layer",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 1000,
+      source: "codex",
+      ai_run_id: null,
+      applied_at: now,
+      rejected_at: null,
+      superseded_by: null,
+      created_at: now,
+      shape
+    };
+  }
+
+  function serve(existing: unknown): void {
+    dispatch.mockImplementation(async (name: string, req: { layer?: unknown }) => {
+      if (name === "layers:list") return { ok: true, value: [existing] };
+      if (name === "layers:update") return { ok: true, value: req.layer };
+      return { ok: true, value: {} };
+    });
+  }
+
+  it("makes an existing box dashed in place", async () => {
+    serve(
+      vectorLayer("box_layer_000001", {
+        kind: "shape",
+        shape: "rect",
+        rect: { x: 0.1, y: 0.1, w: 0.3, h: 0.3 },
+        color: "auto"
+      })
+    );
+    const res = await toolByName("update_layer").dispatch(
+      { capture_id: "cap1", layer_id: "box_layer_000001", stroke_style: "dashed" },
+      { threadId: "t1" }
+    );
+    expect(res.ok).toBe(true);
+    const updated = lastUpdatedLayer();
+    expect((updated.shape as { strokeStyle?: string }).strokeStyle).toBe("dashed");
+    expect(BundleLayerNode.safeParse(updated).success).toBe(true);
+  });
+
+  it("refuses stroke_style on an arrow, which spells it stem_style", async () => {
+    serve(
+      vectorLayer("arrow_layer_0002", {
+        kind: "arrow",
+        from: { x: 0.1, y: 0.9 },
+        to: { x: 0.7, y: 0.2 },
+        color: "auto"
+      })
+    );
+    const res = await toolByName("update_layer").dispatch(
+      { capture_id: "cap1", layer_id: "arrow_layer_0002", stroke_style: "dashed" },
+      { threadId: "t1" }
+    );
+    expect(res.ok).toBe(false);
+    expect(dispatch.mock.calls.some((call) => call[0] === "layers:update")).toBe(false);
   });
 });

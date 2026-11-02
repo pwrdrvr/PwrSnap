@@ -237,7 +237,8 @@ export function WordRibbon({
                 type="button"
                 className={"szt__wtick" + (isAnchor ? " is-anch" : "")}
                 style={{ left: `${p.x}px` }}
-                title={p.word.word}
+                // A tick has no text: the fast tooltip is the word.
+                data-tip={p.word.word}
                 aria-label={`Anchor to “${p.word.word}”`}
                 onClick={(event) => {
                   event.stopPropagation();

@@ -6,6 +6,7 @@ type UpdateEventHandler = (info?: { version?: string }) => void;
 const mocks = vi.hoisted(() => {
   const handlers = new Map<string, Set<UpdateEventHandler>>();
   return {
+    logInfo: vi.fn(),
     appPaths: { userData: "", home: "" },
     handlers,
     installAttemptStore: {
@@ -64,6 +65,19 @@ vi.mock("electron", (): Partial<typeof import("electron")> => ({
   } as unknown as typeof import("electron").BrowserWindow
 }));
 
+// These behavior suites use a mature profile. Disk/restart/grace-period
+// behavior is exercised with the real store in auto-updater-restarts.test.ts.
+vi.mock("../update-release-state", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../update-release-state")>(),
+  createUpdateReleaseStateStore: () => ({
+    read: async () => ({
+      schemaVersion: 1, firstSeenAt: 0, lastAttemptAt: null,
+      retryAt: null, rateLimitResetAt: null, failures: 0, cache: null
+    }),
+    write: async () => undefined
+  })
+}));
+
 vi.mock("electron-updater", () => ({
   default: {
     autoUpdater: mocks.autoUpdater
@@ -72,6 +86,10 @@ vi.mock("electron-updater", () => ({
 
 vi.mock("../update-install-attempt-store", () => ({
   createAppUpdateInstallAttemptStore: () => mocks.installAttemptStore
+}));
+
+vi.mock("../log", () => ({
+  getMainLogger: () => ({ info: mocks.logInfo, warn: vi.fn(), error: vi.fn(), debug: vi.fn() })
 }));
 
 vi.mock("../events", () => ({
@@ -146,6 +164,23 @@ describe("compareSemver", () => {
   });
 });
 
+describe("macOS update compatibility assets", () => {
+  test.skipIf(process.platform === "win32")("requires universal fallback and accepts mixed architecture releases", async () => {
+    const { selectAppUpdateReleases } = await importAutoUpdater();
+    const legacy = githubRelease("v1.0.0");
+    const mixed = githubRelease("v1.0.1", { assets: [
+      ...macUpdateAssets("1.0.1"),
+      { name: "PwrSnap-1.0.1-arm64-mac.zip", state: "uploaded" }
+    ] });
+    const incomplete = githubRelease("v1.0.2", { assets: [
+      { name: "latest-mac.yml", state: "uploaded" },
+      { name: "PwrSnap-1.0.2-arm64-mac.zip", state: "uploaded" }
+    ] });
+    expect(selectAppUpdateReleases([legacy, mixed, incomplete]).latest?.tag_name).toBe("v1.0.1");
+    expect(selectAppUpdateReleases([legacy, incomplete]).latest?.tag_name).toBe("v1.0.0");
+  });
+});
+
 describe("selectChannelReleases", () => {
   test("classifies main-train alpha and beta without stealing stable latest", async () => {
     const { selectChannelReleases } = await importAutoUpdater();
@@ -187,8 +222,8 @@ describe("selectChannelReleases", () => {
     ]);
     expect(selected.stableLatest?.tag_name).toBe("v1.0.1");
     expect(selected.stablePrerelease?.tag_name).toBe("v1.0.1");
-    expect(selected.betaLatest).toBeUndefined();
-    expect(selected.betaPrerelease).toBeUndefined();
+    expect(selected.betaLatest?.tag_name).toBe(selected.stableLatest?.tag_name);
+    expect(selected.betaPrerelease?.tag_name).toBe(selected.stableLatest?.tag_name);
   });
 
   test("does not advertise leftover same-core betas after that train becomes Latest", async () => {
@@ -200,8 +235,8 @@ describe("selectChannelReleases", () => {
       { tag_name: "v1.0.1", prerelease: false, draft: false }
     ]);
     expect(selected.stableLatest?.tag_name).toBe("v1.1.0");
-    expect(selected.betaLatest).toBeUndefined();
-    expect(selected.betaPrerelease).toBeUndefined();
+    expect(selected.betaLatest?.tag_name).toBe(selected.stableLatest?.tag_name);
+    expect(selected.betaPrerelease?.tag_name).toBe(selected.stableLatest?.tag_name);
   });
 
   test("keeps a newer main-train alpha on Beta after Stable is promoted", async () => {
@@ -212,7 +247,7 @@ describe("selectChannelReleases", () => {
       { tag_name: "v1.2.0-alpha.1", prerelease: true, draft: false }
     ]);
     expect(selected.stableLatest?.tag_name).toBe("v1.1.0");
-    expect(selected.betaLatest).toBeUndefined();
+    expect(selected.betaLatest?.tag_name).toBe(selected.stableLatest?.tag_name);
     expect(selected.betaPrerelease?.tag_name).toBe("v1.2.0-alpha.1");
   });
 
@@ -222,8 +257,55 @@ describe("selectChannelReleases", () => {
       { tag_name: "v1.1.0-alpha.7", prerelease: true, draft: false },
       { tag_name: "v1.0.0", prerelease: false, draft: false }
     ]);
-    expect(selected.betaLatest).toBeUndefined();
+    expect(selected.betaLatest?.tag_name).toBe(selected.stableLatest?.tag_name);
     expect(selected.betaPrerelease?.tag_name).toBe("v1.1.0-alpha.7");
+  });
+
+  // Beta · Prerelease is the most adventurous slot. It must never sit behind
+  // Stable · Prerelease, which used to happen whenever the newest build was a
+  // Stable candidate rather than an alpha or beta.
+  test.each([
+    ["maintenance candidate", "v1.1.16-prerelease.1"],
+    ["later maintenance release candidate", "v1.1.16-rc.1"],
+    ["staged final", "v1.1.16"]
+  ])("offers a newer %s on Beta · Prerelease", async (_label, candidate) => {
+    const { selectChannelReleases } = await importAutoUpdater();
+    const selected = selectChannelReleases([
+      { tag_name: candidate, prerelease: true, draft: false },
+      { tag_name: "v1.1.15", prerelease: false, draft: false },
+      { tag_name: "v1.1.13", prerelease: true, draft: false },
+      { tag_name: "v1.1.0-beta.5", prerelease: true, draft: false },
+      { tag_name: "v1.1.0-alpha.11", prerelease: true, draft: false }
+    ]);
+    expect(selected.stableLatest?.tag_name).toBe("v1.1.15");
+    expect(selected.stablePrerelease?.tag_name).toBe(candidate);
+    expect(selected.betaLatest?.tag_name).toBe("v1.1.15");
+    expect(selected.betaPrerelease?.tag_name).toBe(candidate);
+  });
+
+  test("prefers a newer main-train alpha over a maintenance candidate", async () => {
+    const { selectChannelReleases } = await importAutoUpdater();
+    const selected = selectChannelReleases([
+      { tag_name: "v1.2.0-alpha.1", prerelease: true, draft: false },
+      { tag_name: "v1.1.16-prerelease.1", prerelease: true, draft: false },
+      { tag_name: "v1.1.15", prerelease: false, draft: false }
+    ]);
+    expect(selected.stablePrerelease?.tag_name).toBe("v1.1.16-prerelease.1");
+    expect(selected.betaLatest?.tag_name).toBe("v1.1.15");
+    expect(selected.betaPrerelease?.tag_name).toBe("v1.2.0-alpha.1");
+  });
+
+  test("keeps Stable candidates at or below Stable Latest off Beta · Prerelease", async () => {
+    const { selectChannelReleases } = await importAutoUpdater();
+    const selected = selectChannelReleases([
+      { tag_name: "v1.1.15", prerelease: false, draft: false },
+      { tag_name: "v1.1.15-rc.1", prerelease: true, draft: false },
+      { tag_name: "v1.1.15-prerelease.2", prerelease: true, draft: false },
+      { tag_name: "v1.1.13", prerelease: true, draft: false }
+    ]);
+    expect(selected.stableLatest?.tag_name).toBe("v1.1.15");
+    expect(selected.stablePrerelease?.tag_name).toBe("v1.1.15");
+    expect(selected.betaPrerelease?.tag_name).toBe("v1.1.15");
   });
 });
 
@@ -242,6 +324,7 @@ describe("auto updater selection", () => {
     process.env.NODE_ENV = "production";
     delete process.env.PWRSNAP_UPDATE_SMOKE;
     mocks.handlers.clear();
+    mocks.logInfo.mockReset();
     mocks.autoUpdater.checkForUpdates.mockReset();
     mocks.autoUpdater.quitAndInstall.mockReset();
     mocks.autoUpdater.setFeedURL.mockReset();
@@ -272,6 +355,7 @@ describe("auto updater selection", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     process.env.NODE_ENV = originalNodeEnv;
     if (originalUpdateSmoke === undefined) {
       delete process.env.PWRSNAP_UPDATE_SMOKE;
@@ -287,6 +371,217 @@ describe("auto updater selection", () => {
     disposeAutoUpdater();
     await vi.resetModules();
   });
+
+  async function startWithoutUpdate() {
+    mockGitHubReleases([githubRelease("v1.0.0")]);
+    const updater = await importAutoUpdater();
+    updater.initAppUpdater(() => mocks.resolveSelection());
+    await updater.checkForAppUpdatesNow("startup");
+    return updater;
+  }
+
+  test("changing the selected track revalidates and downloads, unrelated writes do not", async () => {
+    const updater = await startWithoutUpdate();
+    mockGitHubReleases([
+      githubRelease("v1.0.0"),
+      githubRelease("v1.1.0-alpha.1", { prerelease: true })
+    ]);
+    mocks.autoUpdater.checkForUpdates.mockImplementation(async () => {
+      mocks.emit("update-available", { version: "1.1.0-alpha.1" });
+      return { updateInfo: { version: "1.1.0-alpha.1" } };
+    });
+    const reads = fetchMock.mock.calls.length;
+    updater.handleAppUpdateSelectionChanged();
+    expect(fetchMock).toHaveBeenCalledTimes(reads);
+    mocks.resolveSelection.mockReturnValue({ train: "beta", channel: "prerelease" });
+    updater.handleAppUpdateSelectionChanged();
+    await vi.waitFor(() => expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1));
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(reads);
+    expect(mocks.autoUpdater.autoDownload).toBe(true);
+    mocks.emit("update-downloaded", { version: "1.1.0-alpha.1" });
+    expect(updater.readAppUpdateStatus()).toEqual({ status: "downloaded", version: "1.1.0-alpha.1" });
+    updater.handleAppUpdateSelectionChanged();
+    expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    ["checking", "downloaded"], ["checking", "canceled"],
+    ["downloading", "downloaded"], ["downloading", "canceled"],
+    ["downloading", "error"], ["downloading", "canceled-current"]
+  ] as const)("track changes during %s wait for download %s and use only the latest track", async (phase, outcome) => {
+    const updater = await startWithoutUpdate();
+    mockGitHubReleases([
+      githubRelease("v1.0.1"),
+      githubRelease("v1.1.0-beta.1", { prerelease: true }),
+      githubRelease("v1.2.0-alpha.1", { prerelease: true })
+    ]);
+    let finishDownload!: () => void;
+    let failDownload!: (error: Error) => void;
+    const downloadPromise = new Promise<void>((resolve, reject) => {
+      finishDownload = resolve;
+      failDownload = reject;
+    });
+    const cancel = vi.fn();
+    let finishCheck!: () => void;
+    const checkGate = new Promise<void>((resolve) => { finishCheck = resolve; });
+    mocks.autoUpdater.checkForUpdates.mockImplementationOnce(async () => {
+      mocks.emit("update-available", { version: "1.0.1" });
+      await checkGate;
+      return { updateInfo: { version: "1.0.1" }, downloadPromise, cancellationToken: { cancel } };
+    }).mockImplementation(async () => {
+      mocks.emit("update-available", { version: "1.2.0-alpha.1" });
+      return { updateInfo: { version: "1.2.0-alpha.1" } };
+    });
+    const checking = updater.checkForAppUpdatesNow();
+    await vi.waitFor(() => expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1));
+    if (phase === "downloading") {
+      finishCheck();
+      await checking;
+    }
+    mocks.resolveSelection.mockReturnValue({ train: "beta", channel: "latest" });
+    updater.handleAppUpdateSelectionChanged();
+    mocks.resolveSelection.mockReturnValue({ train: "beta", channel: "prerelease" });
+    updater.handleAppUpdateSelectionChanged();
+    if (outcome === "canceled-current") {
+      mocks.resolveSelection.mockReturnValue({ train: "stable", channel: "latest" });
+      updater.handleAppUpdateSelectionChanged();
+    }
+    finishCheck();
+    await checking;
+    await updater.readAppUpdateReleaseVersions();
+    expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+    mocks.emit("download-progress", { percent: 50, transferred: 50, total: 100 });
+    expect(updater.readAppUpdateStatus()).toMatchObject({ status: "downloading", version: "1.0.1" });
+
+    if (outcome === "canceled" || outcome === "canceled-current") {
+      expect(updater.cancelAppUpdateDownload()).toEqual({ canceled: true });
+      expect(cancel).toHaveBeenCalledTimes(1);
+      mocks.emit("update-cancelled", { version: "1.0.1" });
+    } else if (outcome === "downloaded") {
+      mocks.emit("update-downloaded", { version: "1.0.1" });
+      expect(mocks.autoUpdater.autoInstallOnAppQuit).toBe(false);
+    } else {
+      mocks.emit("error", new Error("network failed"));
+    }
+    // Events can arrive before electron-updater releases its shared promise.
+    // Even another settings write/read in that gap must not start a check.
+    updater.handleAppUpdateSelectionChanged();
+    await updater.readAppUpdateReleaseVersions();
+    expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+    if (outcome === "downloaded") finishDownload();
+    else failDownload(new Error(outcome));
+    if (outcome === "canceled-current") {
+      await downloadPromise.catch(() => undefined);
+      await updater.readAppUpdateReleaseVersions();
+      expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+      expect(updater.readAppUpdateStatus().status).toBe("canceled");
+      return;
+    }
+    await vi.waitFor(() => expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(2));
+    expect(mocks.autoUpdater.setFeedURL).toHaveBeenLastCalledWith({
+      provider: "generic",
+      url: "https://github.com/pwrdrvr/PwrSnap/releases/download/v1.2.0-alpha.1/"
+    });
+    mocks.emit("update-downloaded", { version: "1.2.0-alpha.1" });
+    expect(updater.readAppUpdateStatus()).toEqual({ status: "downloaded", version: "1.2.0-alpha.1" });
+  });
+
+  test("Settings discovery downloads from its fresh cache, shares checks and preserves cancellation", async () => {
+    const updater = await startWithoutUpdate();
+    // Age the shared feed, as when opening Settings after an hour.
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now + 61 * 60_000);
+    mockGitHubReleases([githubRelease("v1.0.1")]);
+    let rejectDownload!: (error: Error) => void;
+    const downloadPromise = new Promise<void>((_resolve, reject) => { rejectDownload = reject; });
+    mocks.autoUpdater.checkForUpdates.mockImplementation(async () => {
+      mocks.emit("update-available", { version: "1.0.1" });
+      return {
+        updateInfo: { version: "1.0.1" }, downloadPromise,
+        cancellationToken: { cancel: () => rejectDownload(new Error("canceled")) }
+      };
+    });
+    const matrix = await updater.readAppUpdateReleaseVersions();
+    expect(matrix.stable.latest.version).toBe("v1.0.1");
+    await vi.waitFor(() => expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1));
+    const reads = fetchMock.mock.calls.length;
+    await updater.readAppUpdateReleaseVersions();
+    expect(fetchMock).toHaveBeenCalledTimes(reads);
+    expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+    expect(updater.cancelAppUpdateDownload()).toEqual({ canceled: true });
+    await vi.waitFor(() => expect(updater.readAppUpdateStatus().status).toBe("canceled"));
+    await updater.readAppUpdateReleaseVersions();
+    expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+    vi.restoreAllMocks();
+  });
+
+  test("opening Settings on the prerelease track discovers and offers a newer build", async () => {
+    mocks.resolveSelection.mockReturnValue({ train: "beta", channel: "prerelease" });
+    const updater = await startWithoutUpdate();
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61 * 60_000);
+    mockGitHubReleases([githubRelease("v1.1.0-alpha.2", { prerelease: true })]);
+    mocks.autoUpdater.checkForUpdates.mockImplementation(async () => {
+      mocks.emit("update-available", { version: "1.1.0-alpha.2" });
+      return { updateInfo: { version: "1.1.0-alpha.2" } };
+    });
+    const reads = fetchMock.mock.calls.length;
+    await Promise.all([updater.readAppUpdateReleaseVersions(), updater.readAppUpdateReleaseVersions()]);
+    await vi.waitFor(() => expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1));
+    expect(fetchMock).toHaveBeenCalledTimes(reads + 2);
+    mocks.emit("update-downloaded", { version: "1.1.0-alpha.2" });
+    expect(updater.readAppUpdateStatus()).toEqual({ status: "downloaded", version: "1.1.0-alpha.2" });
+    await updater.readAppUpdateReleaseVersions();
+    expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+  });
+
+  test("selecting an older track does not silently authorize a downgrade", async () => {
+    const updater = await startWithoutUpdate();
+    mocks.autoUpdater.currentVersion = { version: "1.2.0" };
+    mocks.resolveSelection.mockReturnValue({ train: "beta", channel: "prerelease" });
+    mockGitHubReleases([githubRelease("v1.1.0-alpha.1", { prerelease: true })]);
+    updater.handleAppUpdateSelectionChanged();
+    await updater.checkForAppUpdatesNow("selection");
+    await updater.readAppUpdateReleaseVersions();
+    expect(mocks.autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+    expect(mocks.autoUpdater.allowDowngrade).toBe(false);
+  });
+
+  test.each(["1.1.0-beta.1", "1.0.3"])(
+    "startup uses saved Beta/Prerelease settings when running %s",
+    async (installedVersion) => {
+      mocks.autoUpdater.currentVersion = { version: installedVersion };
+      mocks.resolveSelection.mockReturnValue({ channel: "prerelease", train: "beta" });
+      mockGitHubReleases([
+        githubRelease("v1.1.0-beta.2", { prerelease: true }),
+        githubRelease("v1.0.3")
+      ]);
+      mocks.autoUpdater.checkForUpdates.mockResolvedValue({
+        updateInfo: { version: "1.1.0-beta.2" }
+      });
+      const updater = await importAutoUpdater();
+      // No earlier setter/hotkey wiring: bootstrap must supply settings
+      // before init can launch its automatic check.
+      updater.initAppUpdater(() => mocks.resolveSelection());
+
+      await vi.waitFor(() => {
+        expect(mocks.autoUpdater.setFeedURL).toHaveBeenCalledWith({
+          provider: "generic",
+          url: "https://github.com/pwrdrvr/PwrSnap/releases/download/v1.1.0-beta.2/"
+        });
+      });
+      expect(mocks.logInfo).toHaveBeenCalledWith("checking for app updates", {
+        trigger: "startup",
+        updateChannel: "prerelease",
+        updateTrain: "beta"
+      });
+      expect(mocks.autoUpdater.allowPrerelease).toBe(true);
+      mocks.emit("update-downloaded", { version: "1.1.0-beta.2" });
+      expect(updater.readAppUpdateStatus()).toMatchObject({
+        status: "downloaded",
+        version: "1.1.0-beta.2"
+      });
+    }
+  );
 
   test("pins electron-updater to the selected GitHub Release download feed", async () => {
     mocks.resolveSelection.mockReturnValue({ channel: "prerelease", train: "stable" });
@@ -419,7 +714,7 @@ describe("auto updater selection", () => {
       feedUrl: "http://127.0.0.1:43123/",
       userDataDir: "D:\\pwrsnap-smoke\\user-data"
     });
-    updater.initAppUpdater();
+    updater.initAppUpdater(() => mocks.resolveSelection());
     await expect(updater.checkForAppUpdatesNow("startup")).resolves.toEqual({
       status: "available",
       version: targetVersion
@@ -454,7 +749,7 @@ describe("auto updater selection", () => {
       feedUrl: "http://127.0.0.1:43123/",
       userDataDir: "D:\\pwrsnap-smoke\\user-data"
     });
-    updater.initAppUpdater();
+    updater.initAppUpdater(() => mocks.resolveSelection());
     expect(mocks.autoUpdater).toEqual(expect.objectContaining({
       verifyUpdateCodeSignature: expect.any(Function)
     }));
@@ -468,6 +763,38 @@ describe("auto updater selection", () => {
       status: "restarting"
     });
     expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledWith(true, false);
+  });
+
+  test.each(
+    ["1.1.0-alpha.7", "1.1.0-beta.5"].flatMap((currentVersion) =>
+      (["latest", "prerelease"] as const).flatMap((channel) =>
+        (["manual", "periodic"] as const).map((trigger) => ({ currentVersion, channel, trigger }))
+      )
+    )
+  )("offers final 1.1.0 from $currentVersion on Beta/$channel during $trigger checks", async ({ currentVersion, channel, trigger }) => {
+    mocks.autoUpdater.currentVersion = { version: currentVersion };
+    mocks.resolveSelection.mockReturnValue({ channel, train: "beta" });
+    mockGitHubReleases([
+      githubRelease("v1.1.0"),
+      githubRelease("v1.1.0-beta.5", { prerelease: true }),
+      githubRelease("v1.1.0-alpha.7", { prerelease: true })
+    ]);
+    mocks.autoUpdater.checkForUpdates.mockResolvedValue({ updateInfo: { version: "1.1.0" } });
+    const updater = await importAutoUpdater();
+    updater.setUpdateSelectionResolver(() => mocks.resolveSelection());
+
+    const versions = await updater.readAppUpdateReleaseVersions();
+    expect(versions.beta[channel].version).toBe("v1.1.0");
+    await expect(updater.checkForAppUpdatesNow(trigger)).resolves.toEqual({
+      status: "available",
+      version: "1.1.0"
+    });
+    expect(mocks.autoUpdater.setFeedURL).toHaveBeenCalledWith({
+      provider: "generic",
+      url: "https://github.com/pwrdrvr/PwrSnap/releases/download/v1.1.0/"
+    });
+    expect(mocks.autoUpdater.allowDowngrade).toBe(false);
+    expect(mocks.resolveSelection()).toEqual({ channel, train: "beta" });
   });
 
   test("pins the beta train to the smoke-checked main-train tag", async () => {
@@ -509,6 +836,73 @@ describe("auto updater selection", () => {
     expect(mocks.autoUpdater.checkForUpdates).not.toHaveBeenCalled();
   });
 
+  test("releases the check slot after returning an already downloaded update", async () => {
+    const updater = await importAutoUpdater();
+    updater.setUpdateSelectionResolver(() => mocks.resolveSelection());
+    mockGitHubReleases([
+      githubRelease("v1.0.1"),
+      githubRelease("v1.1.0-beta.2", { prerelease: true })
+    ]);
+    mocks.autoUpdater.checkForUpdates.mockResolvedValue({ updateInfo: { version: "1.0.1" } });
+    updater.initAppUpdater(() => mocks.resolveSelection());
+    await updater.checkForAppUpdatesNow("manual");
+    mocks.autoUpdater.checkForUpdates.mockClear();
+    mocks.emit("update-downloaded", { version: "1.0.1" });
+
+    await expect(updater.checkForAppUpdatesNow("periodic")).resolves.toEqual({
+      status: "downloaded",
+      version: "1.0.1"
+    });
+
+    // Bound the old microtask loop so a regression fails instead of starving
+    // Vitest's timeout and exhausting the worker's heap.
+    let waits = 0;
+    const info = mocks.logInfo.mockImplementation((message) => {
+      if (String(message).includes("waiting for in-flight") && ++waits > 5) {
+        throw new Error("Update check is spinning on a completed promise");
+      }
+    });
+    try {
+      await expect(updater.checkForAppUpdatesNow("periodic")).resolves.toEqual({
+        status: "downloaded",
+        version: "1.0.1"
+      });
+      mockGitHubReleases([]);
+      await expect(updater.checkForAppUpdatesNow("manual", {
+        channel: "latest", train: "beta"
+      })).resolves.toEqual({ status: "no-update", version: "1.0.0" });
+      expect(waits).toBe(0);
+      expect(mocks.autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+    } finally {
+      info.mockReset();
+    }
+  });
+
+  test("reports a stalled wait as an error without starting another update check", async () => {
+    const updater = await importAutoUpdater();
+    const waitModule = await import("../update-check-wait");
+    const wait = waitModule.waitForUpdateCheckSlot;
+    const orphan = {
+      selection: undefined,
+      promise: Promise.resolve({ status: "no-update", version: "1.1.0" } as const)
+    };
+    const spy = vi.spyOn(waitModule, "waitForUpdateCheckSlot")
+      .mockImplementationOnce((selection, _read, onWait, start) =>
+        wait(selection, () => orphan, onWait, start));
+    try {
+      const result = await updater.checkForAppUpdatesNow("periodic");
+      expect(result).toEqual({
+        status: "error",
+        message: expect.stringContaining("did not release its completed request")
+      });
+      expect(updater.readAppUpdateStatus()).toEqual(result);
+      expect(mocks.autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   test("does not offer a downloaded update after switching trains", async () => {
     mocks.resolveSelection.mockReturnValue({ channel: "latest", train: "beta" });
     mockGitHubReleases([
@@ -520,7 +914,7 @@ describe("auto updater selection", () => {
     });
     const updater = await importAutoUpdater();
     updater.setUpdateSelectionResolver(() => mocks.resolveSelection());
-    updater.initAppUpdater();
+    updater.initAppUpdater(() => mocks.resolveSelection());
     await vi.waitFor(() => {
       expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
     });
@@ -705,7 +1099,7 @@ describe("auto updater selection", () => {
     });
     const updater = await importAutoUpdater();
     updater.setUpdateSelectionResolver(() => mocks.resolveSelection());
-    updater.initAppUpdater();
+    updater.initAppUpdater(() => mocks.resolveSelection());
     // The startup check is background: it must not have reached
     // electron-updater at all.
     await vi.waitFor(() => {
@@ -753,7 +1147,7 @@ describe("auto updater selection", () => {
     });
     const updater = await importAutoUpdater();
     updater.setUpdateSelectionResolver(() => mocks.resolveSelection());
-    updater.initAppUpdater();
+    updater.initAppUpdater(() => mocks.resolveSelection());
     await vi.waitFor(() => {
       expect(updater.readAppUpdateStatus().status).toBe("no-update");
     });
@@ -783,7 +1177,7 @@ describe("auto updater selection", () => {
     });
     const updater = await importAutoUpdater();
     updater.setUpdateSelectionResolver(() => mocks.resolveSelection());
-    updater.initAppUpdater();
+    updater.initAppUpdater(() => mocks.resolveSelection());
     await vi.waitFor(() => {
       expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
     });

@@ -17,11 +17,16 @@
 //   4. Crash-safety on partial writes — readers can see EITHER the old
 //      bundle OR the new one, never a partial body.
 
-import { mkdtemp, rm, writeFile, symlink, readFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, symlink, readFile, mkdir, open } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, open: vi.fn(actual.open) };
+});
 
 import {
   assertSafeBundleFile,
@@ -68,6 +73,61 @@ describe("assertSafeBundleFile — symlink + lstat gate", () => {
 });
 
 describe("atomicWriteBundle — same-directory temp + fsync", () => {
+  test("closes the directory handle when directory fsync is unsupported", async () => {
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    const close = vi.fn().mockResolvedValue(undefined);
+    const sync = vi.fn().mockRejectedValue(Object.assign(new Error("unsupported"), { code: "EINVAL" }));
+    vi.mocked(open)
+      .mockImplementationOnce(actual.open)
+      .mockResolvedValueOnce({ sync, close } as unknown as Awaited<ReturnType<typeof open>>);
+    const dest = join(workDir, "out.pwrsnap");
+
+    await expect(atomicWriteBundle(dest, Buffer.from("durable body"))).resolves.toBeUndefined();
+
+    expect(sync).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+    expect(await readFile(dest, "utf8")).toBe("durable body");
+  });
+
+  // Counts fsyncs across every handle atomicWriteBundle opens (the temp
+  // file, then the directory).
+  async function countSyncs(write: () => Promise<void>): Promise<number> {
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    let syncs = 0;
+    vi.mocked(open).mockImplementation(async (...args: Parameters<typeof actual.open>) => {
+      const handle = await actual.open(...args);
+      const realSync = handle.sync.bind(handle);
+      handle.sync = async () => {
+        syncs += 1;
+        await realSync();
+      };
+      return handle;
+    });
+    try {
+      await write();
+    } finally {
+      vi.mocked(open).mockImplementation(actual.open);
+    }
+    return syncs;
+  }
+
+  test("fsyncs the file and its directory by default", async () => {
+    const dest = join(workDir, "out.pwrsnap");
+    const syncs = await countSyncs(() => atomicWriteBundle(dest, Buffer.from("durable")));
+    expect(syncs).toBe(2);
+  });
+
+  test("durable: false skips both fsyncs and still renames into place", async () => {
+    const dest = join(workDir, "out.pwrsnap");
+    const syncs = await countSyncs(() =>
+      atomicWriteBundle(dest, Buffer.from("synthetic"), { durable: false })
+    );
+    expect(syncs).toBe(0);
+    expect(await readFile(dest, "utf8")).toBe("synthetic");
+    const { readdir } = await import("node:fs/promises");
+    expect((await readdir(workDir)).filter((n) => n.includes(".tmp"))).toEqual([]);
+  });
+
   test("writes the destination atomically when the parent dir exists", async () => {
     const dest = join(workDir, "out.pwrsnap");
     const payload = Buffer.from("synthetic bundle content");

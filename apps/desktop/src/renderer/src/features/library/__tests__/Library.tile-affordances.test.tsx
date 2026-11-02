@@ -16,7 +16,15 @@
 import { act, createElement, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import type { CaptureRecord, DraftCart, Settings } from "@pwrsnap/shared";
+import type {
+  CaptureDuplicateJob,
+  CaptureEditSummary,
+  CaptureRecord,
+  DraftCart,
+  Settings,
+  StorageSnapshot
+} from "@pwrsnap/shared";
+import { EVENT_CHANNELS, emptyCaptureEditSummary } from "@pwrsnap/shared";
 
 const dispatchMock = vi.fn();
 const subscribeMock = vi.fn((_channel: string, _handler: (payload: unknown) => void) => {
@@ -58,10 +66,7 @@ vi.mock("../../editor/useEditorToolState", () => ({
     activeStyle: { tool: "pointer" },
     setActiveTool: vi.fn(),
     isSingleShot: false,
-    matchingText: { kind: "idle" },
     onAnnotationPlaced: vi.fn(),
-    armMatchingText: vi.fn(),
-    dismissMatchingText: vi.fn(),
     updateActiveStyle: vi.fn()
   })
 }));
@@ -126,12 +131,17 @@ const imageRecord: CaptureRecord = {
   sha256: "sha_cap_image",
   source_app_bundle_id: "com.example.app",
   source_app_name: "Example",
+  source_window_title: null,
   edits_version: 0,
   has_alpha: false,
   deleted_at: null
 };
 
 const settings = {
+  // `satisfies` so a new `Settings["hotkeys"]` field is a compile error
+  // here rather than reaching the renderer as `undefined` — the outer
+  // object is a deliberate partial behind the cast below, but this block
+  // is read key-by-key by useHotkeys.
   hotkeys: {
     quickCapture: "",
     region: "",
@@ -140,8 +150,9 @@ const settings = {
     allScreens: "",
     timed: "",
     videoCapture: "",
-    reshowFloatOver: ""
-  },
+    reshowFloatOver: "",
+    openLibrary: ""
+  } satisfies Settings["hotkeys"],
   ai: {
     enabled: false,
     consentAcceptedAt: null,
@@ -181,6 +192,7 @@ const confirmMock = vi.fn(() => true);
  *  CANCELLED shape (`ok({ path: null })`) — the handler distinguishes a
  *  dismissed save sheet from a real failure, and only the latter should
  *  reach the user. */
+let editSummaryResult: CaptureEditSummary = emptyCaptureEditSummary();
 let saveAsResult: { ok: true; value: { path: string | null } } | { ok: false; error: unknown } = {
   ok: true,
   value: { path: null }
@@ -192,6 +204,7 @@ beforeEach(() => {
   } as unknown as NonNullable<Window["pwrsnapApi"]>;
   cartState = emptyCart;
   saveAsResult = { ok: true, value: { path: null } };
+  editSummaryResult = emptyCaptureEditSummary();
   confirmMock.mockReset();
   confirmMock.mockReturnValue(true);
   vi.stubGlobal("confirm", confirmMock);
@@ -218,6 +231,18 @@ beforeEach(() => {
     if (name === "app:version") return ok({ version: "0.0.0-test" });
     if (name === "cart:get" || name === "cart:toggle") return ok(cartState);
     if (name === "capture:saveAs") return saveAsResult;
+    if (name === "capture:editSummary") return ok(editSummaryResult);
+    if (name === "capture:duplicate") {
+      return ok({
+        record: {
+          ...imageRecord,
+          id: "cap_copy",
+          family_id: "cap_image",
+          duplicated_from: "cap_image"
+        }
+      });
+    }
+    if (name === "library:families") return ok({ families: [] });
     return ok(undefined);
   });
   subscribeMock.mockClear();
@@ -260,7 +285,8 @@ async function openMenu(): Promise<HTMLElement> {
         clientY: 120
       })
     );
-    await Promise.resolve();
+    // The menu waits for the edit summary (one dispatch) before drawing.
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
   });
   const menu = container?.querySelector<HTMLElement>('[role="menu"]');
   expect(menu).not.toBeNull();
@@ -285,6 +311,8 @@ describe("capture tile context menu", () => {
     );
     expect(labels).toEqual([
       "Edit",
+      "Edit a Copy",
+      "Duplicate",
       "Copy Low",
       "Copy Med",
       "Copy High",
@@ -483,6 +511,495 @@ describe("capture tile context menu", () => {
     });
 
     expect(container?.querySelector('[role="menu"]')).toBeNull();
+  });
+});
+
+// Keyboard. Before: the menu focused its own root, every row was a Tab stop
+// (Tab walked the rows and then out of the menu, leaving it open), no arrow
+// key did anything, and Escape dropped focus to <body>.
+describe("capture tile context menu — duplicate", () => {
+  const withEdits: CaptureEditSummary = {
+    ...emptyCaptureEditSummary(),
+    hasEdits: true,
+    cropped: true,
+    arrows: 2
+  };
+
+  function submenuOf(menu: HTMLElement): HTMLElement | null {
+    return menu.querySelector<HTMLElement>(".psl__context-menu--sub");
+  }
+
+  test("families are re-read on families-changed only, never on an edit's captures-changed", async () => {
+    await renderLibrary();
+    const handlersFor = (channel: string): Array<(payload: unknown) => void> =>
+      subscribeMock.mock.calls
+        .filter(([name]) => name === channel)
+        .map(([, handler]) => handler);
+    const familiesReads = (): number =>
+      dispatchMock.mock.calls.filter(([name]) => name === "library:families").length;
+    const before = familiesReads();
+
+    await act(async () => {
+      for (let edit = 0; edit < 10; edit += 1) {
+        for (const handler of handlersFor(EVENT_CHANNELS.capturesChanged)) {
+          handler({ changedIds: ["cap_image"] });
+        }
+      }
+      await Promise.resolve();
+    });
+    expect(familiesReads()).toBe(before);
+
+    await act(async () => {
+      for (const handler of handlersFor(EVENT_CHANNELS.familiesChanged)) {
+        handler({ familyIds: ["fam_cereal"] });
+      }
+      await Promise.resolve();
+    });
+    expect(familiesReads()).toBe(before + 1);
+  });
+
+  test("a snap with no edits duplicates straight away, keeping the selection", async () => {
+    await renderLibrary();
+    const menu = await openMenu();
+    const row = rowByLabel(menu, "Duplicate");
+    expect(row.getAttribute("aria-haspopup")).toBeNull();
+    await act(async () => {
+      row.click();
+      await Promise.resolve();
+    });
+    expect(dispatchMock).toHaveBeenCalledWith("capture:duplicate", {
+      captureId: "cap_image",
+      withEdits: true
+    });
+    expect(dispatchMock.mock.calls.some(([name]) => name === "editor:open")).toBe(false);
+    // No choice was offered, so nothing is remembered.
+    expect(dispatchMock.mock.calls.some(([name]) => name === "settings:write")).toBe(false);
+  });
+
+  test("a snap with edits asks, names the edits, and remembers the answer", async () => {
+    editSummaryResult = withEdits;
+    await renderLibrary();
+    const menu = await openMenu();
+    const duplicate = Array.from(
+      menu.querySelectorAll<HTMLElement>('[aria-haspopup="menu"]')
+    ).find((el) => el.textContent?.includes("Duplicate") && !el.textContent.includes("Copy"));
+    expect(duplicate).toBeDefined();
+    await act(async () => {
+      duplicate!.click();
+      await Promise.resolve();
+    });
+    const sub = submenuOf(menu);
+    expect(sub).not.toBeNull();
+    const choices = Array.from(sub!.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+    expect(choices.map((el) => el.querySelector("span")?.textContent)).toEqual([
+      "With Edits",
+      "Base Image Only"
+    ]);
+    expect(sub!.querySelector(".psl__context-menu-hint")?.textContent).toBe("crop · 2 arrows");
+
+    await act(async () => {
+      choices[1]!.click();
+      await Promise.resolve();
+    });
+    expect(dispatchMock).toHaveBeenCalledWith("capture:duplicate", {
+      captureId: "cap_image",
+      withEdits: false
+    });
+    expect(dispatchMock).toHaveBeenCalledWith("settings:write", {
+      library: { duplicateWithEdits: { image: false } }
+    });
+    expect(container?.querySelector('[role="menu"]')).toBeNull();
+  });
+
+  test("Edit a Copy opens the copy, not the original", async () => {
+    await renderLibrary();
+    const menu = await openMenu();
+    await act(async () => {
+      rowByLabel(menu, "Edit a Copy").click();
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    });
+    expect(dispatchMock).toHaveBeenCalledWith("editor:open", { captureId: "cap_copy" });
+  });
+
+  test("ArrowRight opens the submenu on its first row; ArrowLeft backs out to the row", async () => {
+    editSummaryResult = withEdits;
+    await renderLibrary();
+    const menu = await openMenu();
+    const trigger = Array.from(menu.querySelectorAll<HTMLElement>('[aria-haspopup="menu"]'))[0]!;
+    trigger.focus();
+    const press = async (key: string): Promise<void> => {
+      const target = document.activeElement as HTMLElement;
+      await act(async () => {
+        target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+        await Promise.resolve();
+      });
+    };
+    await press("ArrowRight");
+    const sub = submenuOf(menu);
+    expect(sub).not.toBeNull();
+    expect(document.activeElement?.closest(".psl__context-menu--sub")).toBe(sub);
+    // The parent's arrows do not walk into the submenu's rows.
+    await press("ArrowDown");
+    expect(document.activeElement?.closest(".psl__context-menu--sub")).toBe(sub);
+    await press("ArrowLeft");
+    expect(submenuOf(menu)).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(container?.querySelector('[role="menu"]')).not.toBeNull();
+  });
+
+  test("the pointer can cross the menu's padding to the submenu; resting on another row closes it", async () => {
+    editSummaryResult = withEdits;
+    await renderLibrary();
+    const menu = await openMenu();
+    const duplicate = Array.from(
+      menu.querySelectorAll<HTMLElement>('[aria-haspopup="menu"]')
+    ).find((el) => el.textContent?.includes("Duplicate") && !el.textContent.includes("Copy"))!;
+    const over = async (target: Element): Promise<void> => {
+      await act(async () => {
+        target.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+        await Promise.resolve();
+      });
+    };
+    // Hover and click share one open path (see ContextSubmenuRow).
+    await act(async () => {
+      duplicate.click();
+      await Promise.resolve();
+    });
+    const sub = submenuOf(menu);
+    expect(sub).not.toBeNull();
+
+    // The strip between the row and the submenu is the menu root's padding.
+    await over(menu);
+    await over(sub!.querySelector('[role="menuitem"]')!);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(submenuOf(menu)).toBe(sub);
+
+    // A path that clips the next row on its way over keeps it open...
+    await over(rowByLabel(menu, "Copy Low"));
+    await over(sub!.querySelector('[role="menuitem"]')!);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(submenuOf(menu)).toBe(sub);
+
+    // ...but resting on another row closes it.
+    await over(rowByLabel(menu, "Copy Low"));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    expect(submenuOf(menu)).toBeNull();
+  });
+
+  test("hover opens the submenu without taking focus into it; a click keeps it open; a key off the row closes it", async () => {
+    editSummaryResult = withEdits;
+    await renderLibrary();
+    const menu = await openMenu();
+    const duplicate = Array.from(
+      menu.querySelectorAll<HTMLElement>('[aria-haspopup="menu"]')
+    ).find((el) => el.textContent?.includes("Duplicate") && !el.textContent.includes("Copy"))!;
+    await act(async () => {
+      duplicate.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+      duplicate.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      duplicate.dispatchEvent(new MouseEvent("mouseenter"));
+      await Promise.resolve();
+    });
+    const sub = submenuOf(menu);
+    expect(sub).not.toBeNull();
+    // The row the pointer is on keeps focus; nothing in the submenu is lit.
+    expect(document.activeElement).toBe(duplicate);
+
+    // A pointer click on the open row used to toggle the submenu shut.
+    await act(async () => {
+      duplicate.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+      await Promise.resolve();
+    });
+    expect(submenuOf(menu)).toBe(sub);
+
+    await act(async () => {
+      duplicate.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })
+      );
+      await Promise.resolve();
+    });
+    expect(document.activeElement).toBe(rowByLabel(menu, "Copy Low"));
+    expect(submenuOf(menu)).toBeNull();
+  });
+
+  test("ArrowRight on a row whose submenu the pointer opened enters it rather than closing it", async () => {
+    editSummaryResult = withEdits;
+    await renderLibrary();
+    const menu = await openMenu();
+    const trigger = Array.from(menu.querySelectorAll<HTMLElement>('[aria-haspopup="menu"]'))[0]!;
+    await act(async () => {
+      trigger.click();
+      await Promise.resolve();
+    });
+    const sub = submenuOf(menu);
+    expect(sub).not.toBeNull();
+    trigger.focus();
+    await act(async () => {
+      trigger.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })
+      );
+      await Promise.resolve();
+    });
+    expect(submenuOf(menu)).toBe(sub);
+    expect(document.activeElement?.closest(".psl__context-menu--sub")).toBe(sub);
+  });
+});
+
+describe("background video duplicate progress", () => {
+  // A recording main could not clone comes back as a job; the copy has no
+  // tile until it is whole, so progress shows on the SOURCE tile and in a
+  // toast with Cancel, and the source refuses a second copy meanwhile.
+  // (The source here is the suite's image tile: the progress UI keys on
+  // the source id, not the kind.)
+  const copying = (bytesCopied: number, state: CaptureDuplicateJob["state"] = "copying") =>
+    ({
+      jobId: "job_granola",
+      sourceId: "cap_image",
+      captureId: "cap_copy_pending",
+      withEdits: true,
+      state,
+      bytesCopied,
+      totalBytes: 2_000_000,
+      error: state === "failed" ? "The original recording was deleted while it was being copied." : null
+    }) satisfies CaptureDuplicateJob;
+
+  function emitJob(job: CaptureDuplicateJob): void {
+    for (const [channel, handler] of subscribeMock.mock.calls) {
+      if (channel === EVENT_CHANNELS.captureDuplicateJob) handler({ job });
+    }
+  }
+
+  function toast(): HTMLElement | null {
+    return document.querySelector<HTMLElement>(".ps-duplicate-progress");
+  }
+
+  function tileBar(): HTMLElement | null {
+    return cellEl()?.querySelector<HTMLElement>(".psl__tile-duplicate-progress") ?? null;
+  }
+
+  function duplicateCalls(): number {
+    return dispatchMock.mock.calls.filter(([name]) => name === "capture:duplicate").length;
+  }
+
+  beforeEach(() => {
+    const base = dispatchMock.getMockImplementation()!;
+    dispatchMock.mockImplementation(async (name: string, req: unknown) => {
+      if (name === "capture:duplicate") return ok({ record: null, job: copying(0) });
+      if (name === "capture:duplicateJobs") return ok({ jobs: [] });
+      if (name === "capture:cancelDuplicate") return ok({ cancelled: true });
+      return base(name, req);
+    });
+  });
+
+  test("progress shows on the source tile and in a toast, then clears when the copy ends", async () => {
+    await renderLibrary();
+    expect(toast()).toBeNull();
+    expect(tileBar()).toBeNull();
+
+    const menu = await openMenu();
+    await act(async () => {
+      rowByLabel(menu, "Duplicate").click();
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    });
+    expect(toast()?.textContent).toContain("Copying recording");
+    expect(tileBar()?.getAttribute("aria-valuenow")).toBe("0");
+
+    await act(async () => {
+      emitJob(copying(1_000_000));
+    });
+    expect(toast()?.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBe("50");
+    expect(toast()?.textContent).toContain("977 KB of 1.9 MB");
+    expect(tileBar()?.getAttribute("aria-valuenow")).toBe("50");
+
+    await act(async () => {
+      emitJob(copying(2_000_000, "done"));
+    });
+    expect(toast()).toBeNull();
+    expect(tileBar()).toBeNull();
+  });
+
+  test("a second Duplicate of the same source is refused while its copy runs", async () => {
+    await renderLibrary();
+    let menu = await openMenu();
+    await act(async () => {
+      rowByLabel(menu, "Duplicate").click();
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    });
+    expect(duplicateCalls()).toBe(1);
+
+    menu = await openMenu();
+    await act(async () => {
+      rowByLabel(menu, "Duplicate").click();
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    });
+    expect(duplicateCalls()).toBe(1);
+    expect(document.querySelector(".psl__action-error-message")?.textContent).toContain(
+      "already copying this recording"
+    );
+  });
+
+  test("Cancel asks main to stop the copy; the cancelled event clears it", async () => {
+    await renderLibrary();
+    const menu = await openMenu();
+    await act(async () => {
+      rowByLabel(menu, "Duplicate").click();
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    });
+    const cancel = Array.from(toast()!.querySelectorAll("button")).find(
+      (button) => button.textContent === "Cancel"
+    );
+    await act(async () => {
+      cancel!.click();
+      await Promise.resolve();
+    });
+    expect(dispatchMock).toHaveBeenCalledWith("capture:cancelDuplicate", { jobId: "job_granola" });
+    // Still copying until main says otherwise.
+    expect(toast()).not.toBeNull();
+
+    await act(async () => {
+      emitJob(copying(400_000, "cancelled"));
+    });
+    expect(toast()).toBeNull();
+    expect(tileBar()).toBeNull();
+    // A cancel is not an error.
+    expect(document.querySelector(".psl__action-error")).toBeNull();
+  });
+
+  test("a copy already running when the Library mounts shows; a failure is reported", async () => {
+    const base = dispatchMock.getMockImplementation()!;
+    dispatchMock.mockImplementation(async (name: string, req: unknown) => {
+      if (name === "capture:duplicateJobs") return ok({ jobs: [copying(500_000)] });
+      return base(name, req);
+    });
+    await renderLibrary();
+    expect(tileBar()?.getAttribute("aria-valuenow")).toBe("25");
+
+    await act(async () => {
+      emitJob(copying(500_000, "failed"));
+    });
+    expect(toast()).toBeNull();
+    expect(document.querySelector(".psl__action-error-message")?.textContent).toContain(
+      "deleted while it was being copied"
+    );
+  });
+
+  test("Edit a Copy opens the copy when its background copy finishes, not before", async () => {
+    await renderLibrary();
+    const menu = await openMenu();
+    await act(async () => {
+      rowByLabel(menu, "Edit a Copy").click();
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    });
+    expect(dispatchMock.mock.calls.some(([name]) => name === "editor:open")).toBe(false);
+
+    await act(async () => {
+      emitJob(copying(2_000_000, "done"));
+      await Promise.resolve();
+    });
+    expect(dispatchMock).toHaveBeenCalledWith("editor:open", { captureId: "cap_copy_pending" });
+  });
+});
+
+describe("capture tile context menu — keyboard", () => {
+  async function press(key: string): Promise<KeyboardEvent> {
+    const target = (document.activeElement as HTMLElement | null) ?? document.body;
+    const e = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+    await act(async () => {
+      target.dispatchEvent(e);
+      await Promise.resolve();
+    });
+    return e;
+  }
+
+  function railState(): string | null {
+    return container?.querySelector<HTMLElement>(".psl")?.getAttribute("data-right") ?? null;
+  }
+
+  test("focus lands on the first row, the menu is one Tab stop, and the arrows walk it", async () => {
+    await renderLibrary();
+    const menu = await openMenu();
+    expect(document.activeElement).toBe(rowByLabel(menu, "Edit"));
+    const stops = Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]')).filter(
+      (el) => el.tabIndex === 0
+    );
+    expect(stops).toHaveLength(1);
+    await press("ArrowDown");
+    expect(document.activeElement).toBe(rowByLabel(menu, "Edit a Copy"));
+    await press("End");
+    expect(document.activeElement).toBe(rowByLabel(menu, "Move to Trash"));
+    await press("Home");
+    expect(document.activeElement).toBe(rowByLabel(menu, "Edit"));
+    await press("ArrowUp");
+    expect(document.activeElement).toBe(rowByLabel(menu, "Move to Trash"));
+  });
+
+  test("Tab closes the menu", async () => {
+    await renderLibrary();
+    await openMenu();
+    await press("Tab");
+    expect(container?.querySelector('[role="menu"]')).toBeNull();
+  });
+
+  test("Escape from a row closes the menu and does not also collapse the pinned rail", async () => {
+    await renderLibrary();
+    expect(railState()).toBe("pinned");
+    await openMenu();
+    const e = await press("Escape");
+    expect(container?.querySelector('[role="menu"]')).toBeNull();
+    expect(e.defaultPrevented).toBe(true);
+    expect(railState()).toBe("pinned");
+  });
+});
+
+// The storage popover in the status bar. Before: its window Escape listener
+// closed it and let the Library's own Escape run too, so one press closed
+// the popover AND collapsed the pinned inspector rail (in Focus it left
+// Focus). And focus dropped to <body>.
+describe("storage popover — keyboard", () => {
+  function railState(): string | null {
+    return container?.querySelector<HTMLElement>(".psl")?.getAttribute("data-right") ?? null;
+  }
+
+  const bucket = { bytes: 1024, fileCount: 1 };
+  const snapshot: StorageSnapshot = {
+    capturedAt: "2026-05-15T18:24:00.000Z",
+    totalBytes: 8192,
+    sourceCaptures: { ...bucket, captureCount: 1, documentsBytes: 1024, homeBytes: 0, appSupportBytes: 0 },
+    renderCache: bucket,
+    chromiumHttpCache: { ...bucket, reportedBytes: 1024, limitBytes: 4096 },
+    chromiumCodeCache: bucket,
+    chromiumGpuCaches: bucket,
+    database: { bytes: 2048, walBytes: 0, shmBytes: 0, pageCount: 2, pageSize: 1024, freelistCount: 0 },
+    otherAppSupport: bucket
+  };
+
+  test("Escape closes the popover only, and focus goes back to its trigger", async () => {
+    const base = dispatchMock.getMockImplementation()!;
+    dispatchMock.mockImplementation(async (name: string, ...rest: unknown[]) =>
+      name === "storage:snapshot" ? ok(snapshot) : base(name, ...rest)
+    );
+    await renderLibrary();
+    expect(railState()).toBe("pinned");
+    const trigger = container!.querySelector<HTMLButtonElement>(".psl__storage-trigger")!;
+    trigger.focus();
+    await act(async () => {
+      trigger.click();
+      await Promise.resolve();
+    });
+    const popover = container!.querySelector<HTMLElement>(".psl__storage-popover");
+    expect(popover).not.toBeNull();
+    const clear = popover!.querySelector<HTMLButtonElement>("button:not([disabled])");
+    (clear ?? trigger).focus();
+    await act(async () => {
+      document.activeElement!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+      );
+      await Promise.resolve();
+    });
+    expect(container!.querySelector(".psl__storage-popover")).toBeNull();
+    expect(railState()).toBe("pinned");
+    expect(document.activeElement).toBe(trigger);
   });
 });
 

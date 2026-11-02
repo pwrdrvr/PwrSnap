@@ -94,8 +94,12 @@ The application writes append-only events plus an atomic `result.json` under
 `<userData>/windows-update-smoke`. The workflow always uploads the runner log,
 stdout/stderr, feed transcript, continuity/result files, main-process logs,
 installed marker/signature evidence, process inventory, and updater-cache file
-inventory. Cleanup targets only processes whose executable path is under the
-isolated install directory and uses a bounded Windows process-tree kill.
+inventory. The process inventory includes pending NSIS executables beneath the
+run's work directory and their live descendants (including system PowerShell),
+with names, PIDs, parent PIDs, and creation times; it omits command lines and
+environment variables. Cleanup targets only executables beneath that exact
+work directory and uses a bounded Windows process-tree kill. This covers both
+the installed app and installers extracted into the isolated cache/temp paths.
 
 ## Local validation and remaining limitation
 
@@ -126,5 +130,5 @@ The hosted runner deliberately does not assert assisted NSIS's production
 test-only isolated environment, so forcing it could boot PwrSnap outside the
 throwaway userData. The smoke instead proves the signed electron-updater
 download and silent NSIS replacement, then relaunches the installed target from
-the credential-free harness. Production's user-facing assisted-installer
-finish-page relaunch remains a manual Windows check.
+the credential-free harness. Production's silent install and installer-owned
+relaunch remain a manual Windows check.

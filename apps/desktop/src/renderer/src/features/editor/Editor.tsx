@@ -20,7 +20,7 @@
 //
 // Phase 1 v2 wiring (chrome === "full" only):
 //   • useEditorToolState — owns active tool + per-tool style memory +
-//     COLOR-slot fan-out + matching-text affordance lifecycle.
+//     the armed tool-bag slot.
 //   • EditorChrome — VS-Code-style activity bar + collapsible panel
 //     that wraps the editor viewport in standalone-window mode only.
 //   • ToolStylePopover — anchored to the toolbar's active tool button
@@ -29,9 +29,6 @@
 //   • CropTool — rendered as an overlay when activeTool === "crop";
 //     commits a CropOverlay via overlays:upsert and stays in crop
 //     mode (sticky) until the user picks another tool.
-//   • Matching-text affordance — small "+ Add label" button positioned
-//     near the just-placed arrow's tail; click → flips to text tool
-//     for one placement, then returns to arrow.
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
@@ -41,10 +38,11 @@ import type {
   BlurToolStyle,
   BundleLayerNode,
   CaptureRecord,
+  DrawToolStyle,
   HighlightToolStyle,
   Overlay,
+  StrokeOverlay,
   OverlayOutlineAutoColor,
-  OverlayOutlineMode,
   OverlayRow,
   PwrSnapError,
   Result,
@@ -52,6 +50,7 @@ import type {
   ShapeKind,
   ShapeToolStyle,
   TextToolStyle,
+  ToolBagSlot,
   ToolColor,
   ToolSizePreset
 } from "@pwrsnap/shared";
@@ -69,17 +68,30 @@ import {
   readShapeFilled,
   readShapeKind,
   readShapeSkewDeg,
+  readShapeStrokeStyle,
   readHighlightOpacity,
   readOverlayRotation,
   readTextWeight,
   resolveCropViewport,
-  revealInFileManagerLabel
+  revealInFileManagerLabel,
+  distanceToPolylinePx,
+  eraserRadiusPx,
+  simplifyStrokePoints,
+  strokePointsToNormalized,
+  strokePointsToPx,
+  strokeBoundsN,
+  strokeReachPx,
+  strokePointsFromSegments,
+  strokeSegments,
+  StrokeEraseSession,
+  type EraseTarget
 } from "@pwrsnap/shared";
 import { nanoid } from "nanoid";
 import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import { editorZoomShortcut } from "./editor-zoom-shortcut";
 import { selectBaseRaster } from "./base-raster";
+import { burstTarget, STROKE_BURST_GAP_MS } from "./stroke-burst";
 import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
 import { RasterLayers } from "./RasterLayers";
 import { RasterResizeHandles } from "./RasterResizeHandles";
@@ -94,8 +106,20 @@ import {
 } from "./outline-auto-sampler";
 import { shapeStrokeGeometry } from "./shape-stroke-geometry";
 import { TOOLS, type Tool } from "./editor-tools";
+import {
+  bagSlotIndexForCode,
+  slotFieldsForLayer,
+  styleValuesEqual,
+  type PasteTargetTool,
+  type SlotStyleField
+} from "./tool-bag";
 import { useZoomPan, type ZoomMode } from "./useZoomPan";
-import { useUndoRedo, type InteractionToken, type RecordOptions } from "./useUndoRedo";
+import {
+  useUndoRedo,
+  type CreateDeleteItem,
+  type InteractionToken,
+  type RecordOptions
+} from "./useUndoRedo";
 import { decideClickSelection } from "./decideClickSelection";
 import {
   adoptDraftGeometry,
@@ -119,6 +143,7 @@ import { BlurOverlays } from "./BlurOverlays";
 import { TextDraftInput } from "./TextDraftInput";
 import { TextHtmlOverlays } from "./TextHtmlOverlays";
 import { resolveTextDraftStyle } from "./text-draft-style";
+import { labelLeftAnchorXn, labelStyleForArrow, planArrowLabel } from "./arrow-label";
 import { TEXT_BBOX_CHAR_ADVANCE } from "./text-bbox-constants";
 import { measureTextWidthPx } from "./text-measure";
 import { getGlyphSize } from "./text-measure-registry";
@@ -145,9 +170,7 @@ import {
   MIN_DRAG_LENGTH,
   rectFromDrag,
   type Draft,
-  type DraftArrow,
-  type DraftShape,
-  type DraftText
+  type DraftStroke
 } from "./editor-types";
 import type { PasteImagePosition } from "./usePasteImage";
 import { useDropImage } from "./useDropImage";
@@ -218,6 +241,9 @@ export type LayersPanelApi = {
    *  stale-id cleanup drops ids absent from the rendered set) — that's
    *  the accepted "hide deselects" behavior. */
   selectLayers: (id: string, additive: boolean) => void;
+  /** Drop the canvas selection. Arming a tool-bag slot from the toolbar
+   *  does this, the way the 1–9 keys do. */
+  clearSelection: () => void;
   /** Flip a layer's `visible` flag via a full-node `layers:update`. */
   setLayerVisibility: (id: string, visible: boolean) => Promise<void>;
   /** Soft-delete a layer, recording undo when the layer projects to an
@@ -247,18 +273,103 @@ export type LayersPanelApi = {
    *  updateOverlay + undo path. This edits the placed layer instead of
    *  changing the active drawing tool's defaults. */
   updateLayerStyle: (id: string, field: string, value: unknown) => void;
+  /** Paste a tool-bag slot onto layers (⇧-click a slot; ⇧1–9 is the
+   *  editor's own twin and calls the same code). Each layer takes the
+   *  fields the slot says that its kind can carry — see
+   *  `slotFieldsForLayer` — as ONE edit: one dispatch, one undo step per
+   *  layer, so ⌘Z takes a slot's color, heads and border back at once. */
+  applyBagSlot: (slot: ToolBagSlot, ids: readonly string[]) => void;
+  /** Open a label draft at an arrow's tail (the property bar's "Add
+   *  label"; Return on a selected arrow is the editor's own twin).
+   *  False when `id` is not an arrow or a draft is already open. */
+  addArrowLabel: (id: string) => boolean;
 };
+
+/** Multiplier for one ⌘+ / ⌘- press. Deliberately NOT ZoomMenu's
+ *  `ZOOM_STEP` (1.2): the keyboard steps coarser than the +/- buttons.
+ *  ⌘- uses the reciprocal so a press pair returns to the original scale. */
+const KEYBOARD_ZOOM_STEP = 1.25;
+
+/** Focus targets whose own Return/Space the editor must leave alone. */
+const INTERACTIVE_KEY_TARGETS =
+  'button, a[href], select, summary, [role="button"], [role="menuitem"], ' +
+  '[role="option"], [role="tab"], [role="slider"], [role="checkbox"], ' +
+  '[role="radio"], [role="switch"], [role="spinbutton"], [role="combobox"]';
+
+/** A stroke row and the row that replaces it — the same stroke with
+ *  different segments — or `null` to delete it. An eraser drag cuts
+ *  strokes this way, and a burst of strokes grows one this way. */
+type StrokeReplacement = { readonly id: string; readonly replacement: StrokeOverlay | null };
+
+/** What a stroke replace wrote: whether every change applied, and the
+ *  ids of the rows it added, in order. */
+type StrokeReplaceResult = { readonly allApplied: boolean; readonly addedIds: readonly string[] };
+
+/** A stroke row's centerline box. Rows are immutable — an edit writes
+ *  a new object — so the box is cached by row for the hover hit-test. */
+const strokeBoundsCache = new WeakMap<StrokeOverlay, ReturnType<typeof strokeBoundsN>>();
+function cachedStrokeBoundsN(data: StrokeOverlay): ReturnType<typeof strokeBoundsN> {
+  let box = strokeBoundsCache.get(data);
+  if (box === undefined) {
+    box = strokeBoundsN(data.points);
+    strokeBoundsCache.set(data, box);
+  }
+  return box;
+}
+
+/** The stroke rows an eraser may cut. */
+function* strokeTargets(rows: readonly OverlayRow[]): Generator<EraseTarget> {
+  for (const row of rows) {
+    if (row.data.kind === "stroke") yield { id: row.id, data: row.data };
+  }
+}
+
+/** The render copy of a live Draw stroke. It shares the stroke's point
+ *  array — appended in place for the whole drag — and says how much of
+ *  it to show, so a pointer event costs its own samples, not a copy of
+ *  everything drawn so far. */
+function liveStrokeDraft(stroke: DraftStroke, erase: StrokeEraseSession | null): DraftStroke {
+  return {
+    ...stroke,
+    count: stroke.points.length,
+    ...(erase !== null ? { erased: erase.cuts() } : {})
+  };
+}
+
+/** How far a simplified stroke may stray from the pointer path, in
+ *  canvas pixels. Under a pixel, so the smoothing is invisible; enough
+ *  to drop most of a 120Hz pointer stream. */
+const STROKE_SIMPLIFY_TOLERANCE_PX = 0.5;
 
 const STYLED_TOOLS: ReadonlySet<Tool> = new Set<Tool>([
   "arrow",
   "text",
   "shape",
   "blur",
-  "highlight"
+  "highlight",
+  "draw"
 ]);
 
 function isStyledToolKind(tool: Tool): tool is StyledToolKind {
   return STYLED_TOOLS.has(tool);
+}
+
+/** Which tool family a placed overlay restyles as, for a bag paste.
+ *  Crop and legacy step layers take nothing. */
+function pasteTargetFor(kind: Overlay["kind"]): PasteTargetTool | null {
+  switch (kind) {
+    case "arrow":
+    case "text":
+    case "shape":
+    case "blur":
+    case "highlight":
+      return kind;
+    case "stroke":
+      return "draw";
+    case "crop":
+    case "step":
+      return null;
+  }
 }
 
 /** Phase 3.3 — derive the OverlaySvg DraftStyle from the live active
@@ -294,6 +405,7 @@ function resolveDraftStyleForActiveTool(
         filled: activeStyle.style.filled,
         shape: activeStyle.style.shape,
         skewDeg: activeStyle.style.skewDeg,
+        strokeStyle: activeStyle.style.strokeStyle,
         outline: activeStyle.style.outline
       };
     case "highlight":
@@ -304,6 +416,12 @@ function resolveDraftStyleForActiveTool(
       };
     case "text":
       return { color: resolveToolColor(activeStyle.style.color) };
+    case "draw":
+      // Thickness drives the stroke's width AND the eraser trail's.
+      return {
+        color: resolveToolColor(activeStyle.style.color),
+        thickness: activeStyle.style.thickness
+      };
     default:
       return undefined;
   }
@@ -389,6 +507,10 @@ export function overlayDataToGeometry(data: Overlay): GeometryUpdate | null {
     // Step has no rotation field.
     return { kind: "step", point: data.point };
   }
+  if (data.kind === "stroke") {
+    // No rotation either: a stroke's direction is in its points.
+    return { kind: "stroke", points: data.points };
+  }
   return null;
 }
 
@@ -430,6 +552,12 @@ export function translateOverlayData(
     return {
       ...data,
       point: { x: data.point.x + dxn, y: data.point.y + dyn }
+    };
+  }
+  if (data.kind === "stroke") {
+    return {
+      ...data,
+      points: data.points.map((p) => ({ x: p.x + dxn, y: p.y + dyn }))
     };
   }
   // crop — no anchor to translate; pass through unchanged. Crop is
@@ -488,6 +616,12 @@ export function translateOverlayGeometry(
       point: { x: data.point.x + dxn, y: data.point.y + dyn }
     };
   }
+  if (data.kind === "stroke") {
+    return {
+      kind: "stroke",
+      points: data.points.map((p) => ({ x: p.x + dxn, y: p.y + dyn }))
+    };
+  }
   return null;
 }
 
@@ -522,6 +656,8 @@ function selectedOverlayToStyledTool(
       return { tool: "blur", label: "blur" };
     case "text":
       return { tool: "text", label: "text" };
+    case "stroke":
+      return { tool: "draw", label: data.tool };
     default:
       // step, crop — no popover surface in Phase 3.5.
       return null;
@@ -544,6 +680,7 @@ function selectedOverlayToToolStyle(
     shape: ShapeToolStyle;
     blur: BlurToolStyle;
     highlight: HighlightToolStyle;
+    draw: DrawToolStyle;
   }
 ):
   | { tool: "arrow"; style: ArrowToolStyle }
@@ -551,7 +688,19 @@ function selectedOverlayToToolStyle(
   | { tool: "shape"; style: ShapeToolStyle }
   | { tool: "blur"; style: BlurToolStyle }
   | { tool: "highlight"; style: HighlightToolStyle }
+  | { tool: "draw"; style: DrawToolStyle }
   | null {
+  if (data.kind === "stroke") {
+    return {
+      tool: "draw",
+      style: {
+        ...defaults.draw,
+        mode: data.tool,
+        color: storedColorToToolColor(data.color, defaults.draw.color),
+        thickness: data.thickness ?? defaults.draw.thickness
+      }
+    };
+  }
   if (data.kind === "arrow") {
     return {
       tool: "arrow",
@@ -582,6 +731,9 @@ function selectedOverlayToToolStyle(
           readShapeKind(data) === "parallelogram"
             ? readShapeSkewDeg(data)
             : defaults.shape.skewDeg,
+        // Legacy rows have no field and paint solid — project what is
+        // painted, not the active tool's default.
+        strokeStyle: readShapeStrokeStyle(data),
         // Legacy stroked shapes paint the white halo; legacy filled
         // shapes paint no rim (Off is the honest projection).
         outline: data.outline ?? (readShapeFilled(data) ? "none" : "white")
@@ -851,6 +1003,26 @@ export function layerStyleUpdate(
     };
   }
 
+  // Draw's "mode" is the stroke's `tool`. Opacity is cleared alongside it
+  // so the stroke takes the new tool's default (a pen made a marker turns
+  // translucent); the undo patch restores both, explicitly undefined when
+  // the row had no opacity, so undo can clear it again.
+  if (current.data.kind === "stroke" && field === "mode") {
+    if (value !== "pen" && value !== "marker" && value !== "airbrush") return null;
+    if (value === current.data.tool) return null;
+    return {
+      patch: { kind: "stroke", tool: value, opacity: undefined },
+      fallbackPreviousPatch: {
+        kind: "stroke",
+        tool: current.data.tool,
+        opacity: current.data.opacity
+      },
+      // Not a persisted field name: previousStylePatchFromQueuedUpdate
+      // has a "mode" arm that restores tool + opacity together.
+      undoField: "mode"
+    };
+  }
+
   // Blur ToolStyleBody intentionally speaks in terms of a user-facing mode
   // and radius setting. Persisted overlays use `style` and `radiusPx`; v2
   // effect layers use the same overlay-shaped patch and project it to their
@@ -1071,6 +1243,10 @@ export function previousStylePatchFromQueuedUpdate(
       shape: readShapeKind(previous),
       ...(nextPatch.rect !== undefined ? { rect: previous.rect } : {})
     };
+  }
+
+  if (previous.kind === "stroke" && nextPatch.kind === "stroke" && field === "mode") {
+    return { kind: "stroke", tool: previous.tool, opacity: previous.opacity };
   }
 
   // Border edits write outline + outlineAuto together (Auto stores the
@@ -1328,6 +1504,34 @@ export function hitTestOverlays(
       ) {
         return row.id;
       }
+      continue;
+    }
+    if (o.kind === "stroke") {
+      // Distance to the centerline in PIXELS (a normalized distance is
+      // stretched on a non-square canvas), within the painted half-width
+      // plus the usual forgiveness. Without dims, fall back to a square
+      // canvas of the short side and forgiveness only.
+      const w = imageDims?.widthPx ?? canvasPxShortSide;
+      const h = imageDims?.heightPx ?? canvasPxShortSide;
+      const reachPx = textDims !== undefined ? strokeReachPx(o, annotationBasis) : 0;
+      const limitPx = reachPx + hitRadiusN * Math.min(w, h);
+      // Hover runs this for every stroke on every move: reject on the
+      // (cached) box before walking the stroke.
+      const box = cachedStrokeBoundsN(o);
+      if (
+        (xn - box.x) * w < -limitPx ||
+        (xn - box.x - box.w) * w > limitPx ||
+        (yn - box.y) * h < -limitPx ||
+        (yn - box.y - box.h) * h > limitPx
+      ) {
+        continue;
+      }
+      // Per segment: the gap the eraser left between two is empty.
+      const at = { x: xn * w, y: yn * h };
+      const hit = strokeSegments(o).some(
+        (segment) => distanceToPolylinePx(at, strokePointsToPx(segment, w, h)) <= limitPx
+      );
+      if (hit) return row.id;
       continue;
     }
     if (o.kind === "arrow") {
@@ -1672,8 +1876,8 @@ export function Editor({
   //     both passed. Library is the single owner; per-tool style memory
   //     lives in the floating EditToolbar's own hook in task #10.
   //   • Full editor chrome (chrome === "full"): we own the hook here.
-  //     Active tool + per-tool style memory + matching-text affordance
-  //     all live in `useEditorToolState`.
+  //     Active tool + per-tool style memory + the armed bag slot all
+  //     live in `useEditorToolState`.
   //
   // The hook is ALWAYS instantiated (hooks rules) but its result is only
   // consumed when not in controlled mode. The controlled branch keeps
@@ -1738,6 +1942,21 @@ export function Editor({
   }, [effectiveToolState.activeStyle]);
 
   const [draft, setDraft] = useState<Draft | null>(null);
+  // The live Draw stroke. Pointer samples land here synchronously and the
+  // draft state is a render copy: pointermove is a continuous event, so a
+  // release can arrive before React has rendered the last move, and a
+  // commit that read `draft` would drop the stroke's final points.
+  const strokeDraftRef = useRef<DraftStroke | null>(null);
+  // An eraser drag's cuts so far. Each move tests only its own new
+  // samples (see `StrokeEraseSession`); the draft shows the session's
+  // pieces and the release commits them, so the two cannot disagree.
+  const eraseSessionRef = useRef<StrokeEraseSession | null>(null);
+  // When the current Draw drag started, and when the last committed
+  // stroke ended and which layer it landed in — the gap between them
+  // decides whether the new stroke joins that layer
+  // (`STROKE_BURST_GAP_MS`).
+  const strokeStartedAtRef = useRef(0);
+  const lastStrokeRef = useRef<{ endedAt: number; layerId: string } | null>(null);
   // Multi-select model. Tracks the ids of all currently-selected
   // overlays/layers; empty array means nothing selected.
   //
@@ -1777,6 +1996,10 @@ export function Editor({
   // the user saw the layer move 1px and the grippers vanish.
   // Subsequent arrow keys fell through to the Library reel.
   const inFlightSelectionIdsRef = useRef<Set<string>>(new Set());
+  // Canvas presses so far. An async draw commit snapshots it and only
+  // selects the layer it wrote if no newer press happened meanwhile
+  // (see `selectPlacedLayer`).
+  const canvasGestureSeqRef = useRef(0);
   /** Replace selection with ids that just came back from a successful
    *  dispatch. The ids exist in the DB but may not be in
    *  `overlaysForRender` yet — the in-flight set keeps the cleanup
@@ -2208,19 +2431,6 @@ export function Editor({
     };
   }
 
-  /** Translate normalized [0,1] coords back to canvas-pixel coords —
-   *  used to anchor the matching-text affordance at the arrow's tail
-   *  in the same coordinate space the canvas overlay renders in. */
-  function normalizedToCanvasPx(
-    xn: number,
-    yn: number
-  ): { x: number; y: number } | null {
-    const canvas = canvasRef.current;
-    if (canvas === null) return null;
-    const rect = canvas.getBoundingClientRect();
-    return { x: xn * rect.width, y: yn * rect.height };
-  }
-
   /** Shared click→selection dispatch for the pointer tool AND every
    *  drawing tool: hit-test overlays and non-source raster layers,
    *  route the result through `decideClickSelection`, apply the
@@ -2475,6 +2685,8 @@ export function Editor({
 
   function onPointerDown(event: React.PointerEvent<HTMLDivElement>): void {
     if (event.button !== 0) return;
+    canvasGestureSeqRef.current += 1;
+    releaseOutsideControlFocus();
     // Defensive clear of any stale multi-drag state. The arming path
     // below stores snapshots in `multiDragStartRef.current` and
     // relies on `onPointerUp` / `onPointerCancel` to clear it; if
@@ -2529,6 +2741,43 @@ export function Editor({
 
     const start = clientToNormalized(event.clientX, event.clientY);
     if (start === null) return;
+
+    // Draw draws OVER whatever is there. A freehand mark is usually made
+    // on top of other annotations — a marker under a label, a scribble
+    // across a box — so unlike the other drawing tools a press on a
+    // layer does not select it. The eraser needs the same: it is dragged
+    // across strokes on purpose.
+    if (tool === "draw") {
+      if (draft?.kind === "text") return;
+      if (selectedLayerIds.length > 0) clearSelection();
+      event.preventDefault();
+      (canvasRef.current ?? (event.target as HTMLElement)).setPointerCapture(event.pointerId);
+      if (beginInteractionRef.current !== null) {
+        activeInteractionTokenRef.current = beginInteractionRef.current("drag", "draft-draw");
+      }
+      const active = effectiveToolState.activeStyle;
+      const stroke: DraftStroke = {
+        kind: "stroke",
+        mode: active.tool === "draw" ? active.style.mode : "pen",
+        points: [{ x: start.xn, y: start.yn }]
+      };
+      strokeDraftRef.current = stroke;
+      strokeStartedAtRef.current = performance.now();
+      eraseSessionRef.current = null;
+      const dims = textHitDimsRef.current;
+      if (stroke.mode === "eraser" && dims !== null) {
+        const { canvasWidthPx: cw, canvasHeightPx: ch } = dims;
+        // SOURCE dims, as for every annotation (AGENTS.md "Annotation
+        // sizing"), and the thickness the trail is drawn at.
+        const basis = annotationBasisPx(dims.sourceWidthPx, dims.sourceHeightPx);
+        const thickness = active.tool === "draw" ? active.style.thickness : undefined;
+        const session = new StrokeEraseSession(eraserRadiusPx(thickness, basis), cw, ch, basis);
+        session.extend([{ x: start.xn * cw, y: start.yn * ch }], strokeTargets(overlaysRef.current));
+        eraseSessionRef.current = session;
+      }
+      setDraft(liveStrokeDraft(stroke, eraseSessionRef.current));
+      return;
+    }
 
     // Drawing tools (arrow / rect / highlight / blur / text) hit-test
     // existing layers BEFORE starting a new draft. A click that lands
@@ -2614,6 +2863,24 @@ export function Editor({
       setDraft({ kind: "text", xn: start.xn, yn: start.yn, body: "" });
       return;
     }
+  }
+
+  /** A press on the canvas takes focus off a control outside it. The
+   *  drawing branches `preventDefault` the pointerdown, which suppresses
+   *  the browser's own "a press elsewhere moves focus", so after picking
+   *  a tool or slot with the mouse its button kept focus through the
+   *  drawing — and Return then re-pressed that button (re-arming the
+   *  slot, dropping the selection) instead of labelling the arrow just
+   *  drawn. Text fields are left alone: a draft's own blur commits it,
+   *  and that click-away path already works natively. */
+  function releaseOutsideControlFocus(): void {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement) || active === document.body) return;
+    if (canvasRef.current?.contains(active) === true) return;
+    if (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable) {
+      return;
+    }
+    active.blur();
   }
 
   // -------------------- Hover cursor affordance --------------------
@@ -2798,6 +3065,31 @@ export function Editor({
       }
       return;
     }
+    // Draw: take every coalesced sample, not just the one this event
+    // reports — at 60Hz a fast flick would otherwise come out as a few
+    // straight segments. Unclamped, so a stroke can run off the edge.
+    const stroke = strokeDraftRef.current;
+    if (stroke !== null) {
+      const native = event.nativeEvent;
+      const coalesced =
+        typeof native.getCoalescedEvents === "function" ? native.getCoalescedEvents() : [];
+      const from = stroke.points.length;
+      for (const sample of coalesced.length > 0 ? coalesced : [native]) {
+        const p = clientToNormalizedUnclamped(sample.clientX, sample.clientY);
+        if (p !== null) stroke.points.push({ x: p.xn, y: p.yn });
+      }
+      if (stroke.points.length === from) return;
+      const session = eraseSessionRef.current;
+      const dims = textHitDimsRef.current;
+      if (session !== null && dims !== null) {
+        session.extend(
+          strokePointsToPx(stroke.points.slice(from), dims.canvasWidthPx, dims.canvasHeightPx),
+          strokeTargets(overlaysRef.current)
+        );
+      }
+      setDraft(liveStrokeDraft(stroke, session));
+      return;
+    }
     // No gesture in progress (or only an idle text draft): this move
     // is a HOVER — update the cursor affordance and stop.
     if (draft === null || draft.kind === "text") {
@@ -2889,6 +3181,17 @@ export function Editor({
   }
 
   function onPointerCancel(event: React.PointerEvent<HTMLDivElement>): void {
+    // A cancelled Draw gesture commits nothing: an OS-cancelled scribble
+    // is not one the user finished.
+    if (strokeDraftRef.current !== null) {
+      strokeDraftRef.current = null;
+      eraseSessionRef.current = null;
+      setDraft(null);
+      const token = activeInteractionTokenRef.current;
+      activeInteractionTokenRef.current = null;
+      if (token !== null) endInteractionRef.current?.(token);
+      return;
+    }
     // Raster drag cancelled mid-gesture — drop the armed gesture + live
     // override; no commit, so the <img> snaps back to its persisted
     // transform.
@@ -2932,6 +3235,7 @@ export function Editor({
   }
 
   async function onPointerUp(event: React.PointerEvent<HTMLDivElement>): Promise<void> {
+    const gestureSeq = canvasGestureSeqRef.current;
     // Re-aim the hover affordance at the release point. A captured
     // gesture suppresses pointerleave, so a drag released outside the
     // canvas (or over a different layer) would otherwise strand a
@@ -3039,6 +3343,23 @@ export function Editor({
       }
       return;
     }
+    const strokeDraft = strokeDraftRef.current;
+    if (strokeDraft !== null) {
+      strokeDraftRef.current = null;
+      try {
+        (event.target as HTMLElement).releasePointerCapture(event.pointerId);
+      } catch {
+        // Best-effort release; capture may already be gone.
+      }
+      const token = activeInteractionTokenRef.current;
+      activeInteractionTokenRef.current = null;
+      try {
+        await commitStroke(strokeDraft);
+      } finally {
+        if (token !== null) endInteractionRef.current?.(token);
+      }
+      return;
+    }
     if (draft === null) return;
     if (draft.kind === "text") return;
     (event.target as HTMLElement).releasePointerCapture(event.pointerId);
@@ -3068,11 +3389,9 @@ export function Editor({
       // it BEFORE the first await. The awaits below can park for real
       // time when `settings:read` is slow, and a deferred
       // `setDraft(null)` would wipe a second gesture's in-progress
-      // draft when this commit resumed. The tail lookup also wants the
-      // live canvas rect at release time, so it happens here too.
+      // draft when this commit resumed.
       const from = { x: draft.fromXn, y: draft.fromYn };
       const to = { x: draft.toXn, y: draft.toYn };
-      const tailCanvasPx = normalizedToCanvasPx(to.x, to.y);
       setDraft(null);
       // Phase 3.1 fix #2/#4 + Phase 3.2 lift: thread the active arrow
       // style (color + endStyle + stemStyle + doubleEnded) into the
@@ -3117,15 +3436,9 @@ export function Editor({
       }
       const wrote = await persistOverlay(arrowOverlay);
       closeInteraction();
+      if (wrote.ok) selectPlacedLayer(wrote.newId, gestureSeq);
       if (wrote.ok && !isControlled) {
-        // Standalone Editor: the canvas-side affordance reads
-        // anchorPoint in canvas-px from this same hook instance, so
-        // post directly.
-        effectiveToolState.onAnnotationPlaced(
-          tailCanvasPx !== null
-            ? { tool: "arrow", anchorPoint: tailCanvasPx }
-            : { tool: "arrow" }
-        );
+        effectiveToolState.onAnnotationPlaced({ tool: "arrow" });
       }
       // Library Focus path uses the EditToolbar's broadcast-driven
       // diff to call onAnnotationPlaced (see EditToolbar.tsx,
@@ -3175,6 +3488,7 @@ export function Editor({
           thickness: shapeStyleSrc.thickness,
           filled: shapeStyleSrc.filled,
           shape: shapeStyleSrc.shape,
+          strokeStyle: shapeStyleSrc.strokeStyle,
           // Border mode + sampled Auto pick — see the arrow commit.
           outline: shapeStyleSrc.outline
         };
@@ -3220,6 +3534,7 @@ export function Editor({
       }
       const wrote = await persistOverlay(overlay);
       closeInteraction();
+      if (wrote.ok) selectPlacedLayer(wrote.newId, gestureSeq);
       if (wrote.ok && !isControlled) {
         effectiveToolState.onAnnotationPlaced({ tool: placedKind });
       }
@@ -3227,6 +3542,84 @@ export function Editor({
     }
     // Fallthrough: close interaction even if no draft branch matched.
     closeInteraction();
+  }
+
+  /** Commit a finished Draw gesture: a pen / marker / airbrush stroke, or
+   *  an eraser pass. Clears the draft before the first await, like every
+   *  other commit, so a second stroke started while this one writes is
+   *  not wiped when it resumes. */
+  async function commitStroke(stroke: DraftStroke): Promise<void> {
+    setDraft(null);
+    const releasedAt = performance.now();
+    const startedAt = strokeStartedAtRef.current;
+    const session = eraseSessionRef.current;
+    eraseSessionRef.current = null;
+    if (stroke.mode === "eraser") {
+      // The session the drag built IS the commit: the pieces the preview
+      // showed, not a second pass over the whole drag. Strokes only —
+      // arrows, boxes and text are never cut; the eraser is part of the
+      // Draw family and edits what Draw made.
+      // Re-sync first: a row edited or added since the last move is cut
+      // from what is on the canvas now, not from what it was then.
+      session?.extend([], strokeTargets(overlaysRef.current));
+      const changes: StrokeReplacement[] = session?.changes() ?? [];
+      if (changes.length > 0) await replaceStrokesRef.current?.(changes);
+      // A burst does not reach across an eraser pass.
+      lastStrokeRef.current = null;
+      return;
+    }
+    const dims = textHitDimsRef.current;
+    if (dims === null) return;
+    const { canvasWidthPx: cw, canvasHeightPx: ch } = dims;
+    // The mode is the one the drag started in; color and weight are the
+    // settled styles (see the arrow commit for why they are awaited).
+    const style = (await effectiveToolState.settledToolStyles()).draw;
+
+    const simplified = simplifyStrokePoints(
+      strokePointsToPx(stroke.points, cw, ch),
+      STROKE_SIMPLIFY_TOLERANCE_PX
+    );
+    const overlay: StrokeOverlay = {
+      kind: "stroke",
+      tool: stroke.mode,
+      points: strokePointsToNormalized(simplified, cw, ch),
+      color: resolveToolColor(style.color),
+      thickness: style.thickness
+    };
+    // A burst — this stroke started soon after the last one ended, in
+    // the same style, with that stroke still the top layer — joins it as
+    // another segment instead of becoming a layer of its own. Writing a
+    // word is a dozen strokes; it should be one layer. It is still its
+    // own undo step: ⌘Z takes back this stroke, not the burst.
+    const previous = lastStrokeRef.current;
+    // Cleared across the write: a stroke released before this one lands
+    // must not join a layer this write is about to replace.
+    lastStrokeRef.current = null;
+    const target =
+      previous !== null && startedAt - previous.endedAt <= STROKE_BURST_GAP_MS
+        ? burstTarget(overlaysRef.current, rastersRef.current, overlay, previous.layerId)
+        : null;
+    let wrote: { ok: true; newId: string } | { ok: false } = { ok: false };
+    if (target !== null) {
+      const merged: StrokeOverlay = {
+        ...target.data,
+        ...strokePointsFromSegments([...strokeSegments(target.data), overlay.points])
+      };
+      const joined = await replaceStrokesRef.current?.([{ id: target.id, replacement: merged }]);
+      const newId = joined?.allApplied === true ? joined.addedIds[0] : undefined;
+      if (newId !== undefined) wrote = { ok: true, newId };
+    }
+    // No burst, or a join that could not be written: the stroke is a
+    // layer of its own.
+    if (!wrote.ok) wrote = await persistOverlay(overlay);
+    if (wrote.ok) lastStrokeRef.current = { endedAt: releasedAt, layerId: wrote.newId };
+    // The new stroke is NOT selected, unlike an arrow or a box. Strokes
+    // come in runs — a word, a circle and an underline — and selecting
+    // each would put handles over the next one and point the property
+    // bar at the stroke instead of the pen.
+    if (wrote.ok && !isControlled) {
+      effectiveToolState.onAnnotationPlaced({ tool: "draw" });
+    }
   }
 
   /**
@@ -3320,8 +3713,9 @@ export function Editor({
     return { ok: true, newId };
   }
 
-  async function commitText(): Promise<void> {
+  async function commitText(measure?: { widthFrac: number }): Promise<void> {
     if (draft?.kind !== "text") return;
+    const gestureSeq = canvasGestureSeqRef.current;
     const body = draft.body.trim();
     if (body.length === 0) {
       setDraft(null);
@@ -3338,15 +3732,33 @@ export function Editor({
     // persist a duplicate. Clearing here makes any re-entrant call
     // hit the `draft?.kind !== "text"` guard. It also unmounts the
     // input immediately — the pre-await UX.
-    const point = { x: draft.xn, y: draft.yn };
+    const label = draft.editingId === undefined ? draft.label : undefined;
+    // A label drafted end- or center-aligned becomes the left anchor
+    // every text row uses, now that its width is known.
+    const point = {
+      x:
+        label !== undefined
+          ? labelLeftAnchorXn(draft.xn, label.align, measure?.widthFrac ?? 0)
+          : draft.xn,
+      y: draft.yn
+    };
     const editingId = draft.editingId;
     setDraft(null);
     // Phase 3.1 fix #2 + Phase 3.2 lift: thread the active text style
     // (color + fontSize mapped to v1's two-bucket size enum) —
     // awaited so a commit racing `settings:read` stamps the user's
-    // configured weight / Border / color (see the arrow commit).
-    const textStyleSrc = (await effectiveToolState.settledToolStyles()).text;
-    const resolvedSize = resolveTextSize(textStyleSrc.fontSize);
+    // configured weight / Border / color (see the arrow commit). An
+    // arrow label takes its arrow's style instead (arrow-label.ts).
+    let textStyleSrc: Pick<TextToolStyle, "color" | "weight" | "outline">;
+    let resolvedSize: TextSizeBucket;
+    if (label !== undefined) {
+      textStyleSrc = label.style;
+      resolvedSize = label.style.size;
+    } else {
+      const toolText = (await effectiveToolState.settledToolStyles()).text;
+      textStyleSrc = toolText;
+      resolvedSize = resolveTextSize(toolText.fontSize);
+    }
     // pwrdrvr/PwrSnap#110: every new text overlay persists an
     // absolute `sizePx` resolved at PLACEMENT time using the current
     // source raster's shortSide. From this point on the row's
@@ -3357,15 +3769,7 @@ export function Editor({
     //
     // Source dims come from the raster layer's natural_*_px; fall back
     // to record dims (= canvas dims) if no raster layer is found.
-    let placementSourceW = model.record.width_px;
-    let placementSourceH = model.record.height_px;
-    for (const layer of model.layers) {
-      if (layer.kind === "raster" && layer.parent_id !== null) {
-        placementSourceW = layer.natural_width_px;
-        placementSourceH = layer.natural_height_px;
-        break;
-      }
-    }
+    const { w: placementSourceW, h: placementSourceH } = placementSourceDims();
     const sizePxAtPlacement = computeTextGlyphSize({
       size: resolvedSize,
       sourceWidthPx: placementSourceW,
@@ -3444,9 +3848,78 @@ export function Editor({
       return;
     }
     const wrote = await persistOverlay(overlay);
-    if (wrote.ok && !isControlled) {
+    if (wrote.ok) selectPlacedLayer(wrote.newId, gestureSeq);
+    // A label was not drawn with the text tool, so it must not spend a
+    // single-shot (⌥-click) placement armed on some other tool.
+    if (wrote.ok && !isControlled && label === undefined) {
       effectiveToolState.onAnnotationPlaced({ tool: "text" });
     }
+  }
+
+  /** Source raster dims for sizing a new text row: the first raster
+   *  layer's natural size, else the record's (= canvas) dims. */
+  function placementSourceDims(): { w: number; h: number } {
+    if (model.kind !== "loaded") return { w: 1, h: 1 };
+    for (const layer of model.layers) {
+      if (layer.kind === "raster" && layer.parent_id !== null) {
+        return { w: layer.natural_width_px, h: layer.natural_height_px };
+      }
+    }
+    return { w: model.record.width_px, h: model.record.height_px };
+  }
+
+  /** "Add label" on an arrow: open a text draft beyond its tail, in its
+   *  color and matching size, caret ready — the user just types. Enter,
+   *  Escape or a click away ends it (empty = nothing written). The arrow
+   *  stays selected while the label is drafted, so Escape lands back on
+   *  it; a committed label becomes the selection, as a drawing does. */
+  function startArrowLabel(arrowId: string): boolean {
+    if (model.kind !== "loaded") return false;
+    if (draft !== null) return false;
+    const row = overlaysRef.current.find((o) => o.id === arrowId);
+    if (row === undefined || row.data.kind !== "arrow") return false;
+    const arrow = row.data;
+    const style = labelStyleForArrow(arrow);
+    const { w: sourceW, h: sourceH } = placementSourceDims();
+    const fontPx = computeTextGlyphSize({
+      size: style.size,
+      sourceWidthPx: sourceW,
+      sourceHeightPx: sourceH,
+      canvasWidthPx: model.record.width_px,
+      canvasHeightPx: model.record.height_px
+    }).sizePx;
+    const plan = planArrowLabel({
+      from: arrow.from,
+      to: arrow.to,
+      canvasWidthPx: model.record.width_px,
+      canvasHeightPx: model.record.height_px,
+      fontPx
+    });
+    setDraft({
+      kind: "text",
+      xn: plan.xn,
+      yn: plan.yn,
+      body: "",
+      label: { arrowId, align: plan.align, style }
+    });
+    return true;
+  }
+  const startArrowLabelRef = useRef(startArrowLabel);
+  startArrowLabelRef.current = startArrowLabel;
+
+  /** A freshly drawn annotation becomes the selection, so the property
+   *  bar shows what was just drawn and ⇧1–9 restyles it without a
+   *  second click. The drawing tool stays armed — the next drag on
+   *  empty canvas clears this selection and draws again (see
+   *  onPointerDown). Skipped if the user pressed on the canvas again
+   *  while the write was in flight (`gestureSeq` is the canvas press
+   *  count when this commit began): that press already decided the
+   *  selection, and selecting now would yank the outline back onto
+   *  the old layer mid-gesture. */
+  function selectPlacedLayer(newId: string, gestureSeq: number): void {
+    if (newId === "") return;
+    if (canvasGestureSeqRef.current !== gestureSeq) return;
+    setSelectionTrustingDispatch([newId]);
   }
 
   /** Phase 3.6 — double-click an existing text overlay to re-open
@@ -3982,6 +4455,15 @@ export function Editor({
       if (event.key === "Escape" && draft !== null) {
         event.preventDefault();
         setDraft(null);
+        // A Draw drag in progress is abandoned, not committed: the
+        // release that follows finds no stroke to write.
+        if (strokeDraftRef.current !== null) {
+          strokeDraftRef.current = null;
+          eraseSessionRef.current = null;
+          const token = activeInteractionTokenRef.current;
+          activeInteractionTokenRef.current = null;
+          if (token !== null) endInteractionRef.current?.(token);
+        }
         return;
       }
       // Escape on the open right-click context menu closes the menu
@@ -4033,7 +4515,34 @@ export function Editor({
       // helper below (set up in EditorLoaded which has the record).
       if (event.key === "Escape" && selectedLayerIds.length > 0) {
         event.preventDefault();
+        // Stop here, the way the arrow-key nudge below does: Library's
+        // Focus-mode Escape (bubble phase, no defaultPrevented check)
+        // would otherwise close the editor on the same press. Every
+        // drawing is selected on release, so "Esc to let go of what I
+        // just drew" is the common case — one Escape deselects, the
+        // next one leaves.
+        event.stopImmediatePropagation();
         clearSelection();
+        return;
+      }
+      // Return on a lone selected arrow labels it — the keyboard twin of
+      // the property bar's "Add label". Every drawing is selected on
+      // release, so draw-then-Return is the whole gesture. Not from a
+      // focused control, where Return is that control's own key.
+      if (
+        event.key === "Enter" &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.shiftKey &&
+        draft === null &&
+        tool !== "crop" &&
+        selectedLayerIds.length === 1 &&
+        !(target instanceof Element && target.closest(INTERACTIVE_KEY_TARGETS) !== null) &&
+        startArrowLabelRef.current(selectedLayerIds[0]!)
+      ) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
         return;
       }
       if (
@@ -4202,6 +4711,25 @@ export function Editor({
       // Modifier presses (⌘/⌃/⌥) belong to other handlers — don't eat
       // ⌘A or similar as the arrow shortcut. (⌘A handled above.)
       if (event.metaKey || event.ctrlKey || event.altKey) return;
+      // Tool bag. 1–9 arms slot N for the next drawing; ⇧1–9 pastes
+      // slot N onto the selection instead (Factorio's paste-settings:
+      // the layer takes whatever the slot says that it can carry). A
+      // plain digit clears the selection, so the property bar shows the
+      // armed slot rather than the layer the user just finished with.
+      // Keyed on `event.code` — see bagSlotIndexForCode.
+      const slotIndex = bagSlotIndexForCode(event.code);
+      if (slotIndex !== null && draft === null) {
+        const slot = effectiveToolState.bag.slots[slotIndex] ?? null;
+        if (slot === null) return;
+        event.preventDefault();
+        if (event.shiftKey && selectedLayerIds.length > 0) {
+          applyBagSlotRef.current?.(slot, selectedLayerIds);
+          return;
+        }
+        if (selectedLayerIds.length > 0) clearSelection();
+        effectiveToolState.armSlot(slotIndex);
+        return;
+      }
       const upper = event.key.toUpperCase();
       const matched = TOOLS.find((t) => t.key === upper);
       if (matched !== undefined) {
@@ -4219,6 +4747,9 @@ export function Editor({
           return;
         }
         lastShortcutToolRef.current = matched.id;
+        // A drawing tool's key lets go of the selection, like its button
+        // and like a slot key, so the property bar shows the tool.
+        if (matched.id !== "pointer" && selectedLayerIds.length > 0) clearSelection();
         setTool(matched.id);
       }
     }
@@ -4232,7 +4763,15 @@ export function Editor({
     window.addEventListener("keydown", onKey, { capture: true });
     return () =>
       window.removeEventListener("keydown", onKey, { capture: true });
-  }, [contextMenuState, draft, isControlled, selectedLayerIds, setTool, tool]);
+  }, [
+    contextMenuState,
+    draft,
+    effectiveToolState,
+    isControlled,
+    selectedLayerIds,
+    setTool,
+    tool
+  ]);
 
   // Hook-owned deleter (populated by EditorLoaded once it knows the
   // bundle format). Like recordCreateRef, this lives in the outer
@@ -4251,6 +4790,12 @@ export function Editor({
   const deleteSelectedRef = useRef<
     ((row: Pick<OverlayRow, "id">, opts?: RecordOptions) => Promise<void>) | null
   >(null);
+  // Hook-owned stroke replace (same pattern as deleteSelectedRef): the
+  // eraser's commit and a burst join — swaps each stroke for the row
+  // that replaces it as ONE undo step.
+  const replaceStrokesRef = useRef<
+    ((changes: readonly StrokeReplacement[]) => Promise<StrokeReplaceResult>) | null
+  >(null);
   // Burst SETTLE choke point (populated by EditorLoaded's nudge
   // effect): commits any pending arrow-key burst + closes its bracket.
   // The outer pointerdown and the copy/duplicate/delete/paste verbs
@@ -4264,6 +4809,11 @@ export function Editor({
   // dyn) from the arrow-key + Shift modifier and calls in.
   const nudgeSelectedRef =
     useRef<((dxn: number, dyn: number) => void) | null>(null);
+  // Hook-owned tool-bag paste (same pattern). The ⇧1–9 handler above
+  // and the toolbar's ⇧-click (through LayersPanelApi) both call in;
+  // EditorLoaded owns the overlay list, dispatch and undo.
+  const applyBagSlotRef =
+    useRef<((slot: ToolBagSlot, ids: readonly string[]) => void) | null>(null);
   // Hook-owned reorderer. Same pattern as deleteSelectedRef /
   // nudgeSelectedRef — EditorLoaded populates with a closure that
   // owns the current overlay list + dispatchEdit, so the outer
@@ -4530,7 +5080,10 @@ export function Editor({
       setSelectionTrustingDispatch={setSelectionTrustingDispatch}
       primarySelectedLayerId={primarySelectedLayerId}
       deleteSelectedRef={deleteSelectedRef}
+      replaceStrokesRef={replaceStrokesRef}
       nudgeSelectedRef={nudgeSelectedRef}
+      applyBagSlotRef={applyBagSlotRef}
+      startArrowLabelRef={startArrowLabelRef}
       settleNudgeBurstRef={settleNudgeBurstRef}
       reorderSelectedRef={reorderSelectedRef}
       commitMultiDragRef={commitMultiDragRef}
@@ -4616,7 +5169,10 @@ function EditorLoaded({
   setSelectionTrustingDispatch,
   primarySelectedLayerId,
   deleteSelectedRef,
+  replaceStrokesRef,
   nudgeSelectedRef,
+  applyBagSlotRef,
+  startArrowLabelRef,
   settleNudgeBurstRef,
   reorderSelectedRef,
   commitMultiDragRef,
@@ -4752,7 +5308,7 @@ function EditorLoaded({
   setRasterDrafts: React.Dispatch<
     React.SetStateAction<ReadonlyMap<string, AffineTransform> | null>
   >;
-  commitText: () => Promise<void>;
+  commitText: (measure?: { widthFrac: number }) => Promise<void>;
   onZoomChange: ((api: ZoomApi) => void) | undefined;
   onSelectionChange: ((ids: readonly string[]) => void) | undefined;
   onLayersApi: ((api: LayersPanelApi | null) => void) | undefined;
@@ -4800,12 +5356,26 @@ function EditorLoaded({
   deleteSelectedRef: React.RefObject<
     ((row: Pick<OverlayRow, "id">, opts?: RecordOptions) => Promise<void>) | null
   >;
+  /** Stroke replace — the eraser's commit and a burst join: each change
+   *  names a stroke layer and the display-space row that replaces it
+   *  (`null` = erased whole). */
+  replaceStrokesRef: React.RefObject<
+    ((changes: readonly StrokeReplacement[]) => Promise<StrokeReplaceResult>) | null
+  >;
   /** Outer keyboard handler calls into this on arrow-key presses with
    *  source-pixel deltas; EditorLoaded's closure converts to normalized
    *  coords and dispatches one updateGeometry per selected layer. */
   nudgeSelectedRef: React.RefObject<
     ((dxnSteps: number, dynSteps: number) => void) | null
   >;
+  /** Populated here with the tool-bag paste; the outer ⇧1–9 handler
+   *  and LayersPanelApi.applyBagSlot both call into it. */
+  applyBagSlotRef: React.RefObject<
+    ((slot: ToolBagSlot, ids: readonly string[]) => void) | null
+  >;
+  /** The outer editor's "Add label" (it owns the draft); published to
+   *  LayersPanelApi.addArrowLabel. */
+  startArrowLabelRef: React.RefObject<(arrowId: string) => boolean>;
   /** Commit-and-close for a pending arrow-key nudge burst. Populated by
    *  EditorLoaded's nudge effect; the OUTER pointerdown + clipboard
    *  verbs call it so nothing races an un-committed burst. */
@@ -4985,6 +5555,34 @@ function EditorLoaded({
   // changes), which is the live behavior we want.
   const textDraftAutoOutline = useMemo((): OverlayOutlineAutoColor | null => {
     if (draft?.kind !== "text" || draft.editingId !== undefined) return null;
+    if (draft.label !== undefined) {
+      // Sampled over the box the label actually covers: an end- or
+      // center-aligned draft's anchor is not its left edge, and sampling
+      // as if it were reads the pixels on the far side (often the arrow)
+      // and can pick the opposite border to the one commit stamps.
+      if (draft.label.style.outline !== "auto") return null;
+      const body = draft.body.length > 0 ? draft.body : "Label";
+      const fontPx = computeTextGlyphSize({
+        size: draft.label.style.size,
+        sourceWidthPx,
+        sourceHeightPx,
+        canvasWidthPx: record.width_px,
+        canvasHeightPx: record.height_px
+      }).sizePx;
+      const widthPx =
+        measureTextWidthPx(body, fontPx, readTextWeight({ weight: draft.label.style.weight })) ??
+        body.length * fontPx * TEXT_BBOX_CHAR_ADVANCE;
+      return resolveOutlineAuto({
+        kind: "text",
+        point: {
+          x: labelLeftAnchorXn(draft.xn, draft.label.align, widthPx / Math.max(1, record.width_px)),
+          y: draft.yn
+        },
+        body,
+        size: draft.label.style.size,
+        color: "auto"
+      });
+    }
     const style =
       toolState.activeStyle.tool === "text" ? toolState.activeStyle.style : null;
     if (style === null || style.outline !== "auto") return null;
@@ -4995,7 +5593,15 @@ function EditorLoaded({
       size: resolveTextSize(style.fontSize),
       color: "auto"
     });
-  }, [draft, toolState.activeStyle, resolveOutlineAuto]);
+  }, [
+    draft,
+    toolState.activeStyle,
+    resolveOutlineAuto,
+    sourceWidthPx,
+    sourceHeightPx,
+    record.width_px,
+    record.height_px
+  ]);
   useLayoutEffect(() => {
     const el = canvasRef.current;
     if (el === null) return;
@@ -5183,6 +5789,81 @@ function EditorLoaded({
     undo.endInteraction
   ]);
 
+  // Stroke replace — the eraser's commit, and a burst stroke joining the
+  // stroke before it. A cut stroke stays ONE layer: it is replaced by one
+  // row holding its surviving pieces as segments, at the original's
+  // z_index, so it stays where it was in the stack. A stroke erased whole
+  // is deleted. The replacement is built from the DISPLAY node (the
+  // wrapped dispatcher maps it into stored space, as for any draw); the
+  // removed original is recorded from the STORED tree, because undo
+  // replays through the raw dispatcher.
+  //
+  // The original is deleted only once its replacement is written. A
+  // replacement that fails leaves the original alone — an eraser that
+  // deleted a stroke it could not re-create would turn one rejected
+  // write into the loss of the whole stroke — and one whose original
+  // will not delete is taken back.
+  useEffect(() => {
+    replaceStrokesRef.current = async (changes): Promise<StrokeReplaceResult> => {
+      const removed: CreateDeleteItem[] = [];
+      const added: CreateDeleteItem[] = [];
+      let allApplied = true;
+      for (const change of changes) {
+        const display = modelLayers.find((l) => l.id === change.id);
+        const stored = storedLayers.find((l) => l.id === change.id) ?? null;
+        if (display === undefined || display.kind !== "vector") {
+          allApplied = false;
+          continue;
+        }
+        let written: CreateDeleteItem | null = null;
+        if (change.replacement !== null) {
+          // eslint-disable-next-line no-await-in-loop
+          const result = await dispatchEdit({
+            kind: "upsert",
+            // Layer ids are 16-char nanoids — the bundle schema rejects
+            // any other length.
+            node: { ...display, id: nanoid(16), shape: change.replacement }
+          });
+          if (!result.ok) {
+            // eslint-disable-next-line no-console
+            console.error("stroke replace: upsert failed", result.error);
+            allApplied = false;
+            continue;
+          }
+          if (result.value.kind !== "upsert") {
+            // Nothing to record or take back: leave the original alone
+            // rather than delete it with no replacement on file.
+            allApplied = false;
+            continue;
+          }
+          const node = result.value.artifact.node;
+          written = { row: { id: node.id }, node };
+        }
+        // eslint-disable-next-line no-await-in-loop
+        const deleted = await dispatchEdit({ kind: "delete", id: change.id });
+        if (!deleted.ok) {
+          // eslint-disable-next-line no-console
+          console.error("stroke replace: delete failed", deleted.error);
+          if (written !== null) {
+            // eslint-disable-next-line no-await-in-loop
+            await dispatchEdit({ kind: "delete", id: written.row.id });
+          }
+          allApplied = false;
+          continue;
+        }
+        if (written !== null) added.push(written);
+        removed.push({ row: { id: change.id }, node: stored });
+      }
+      if (!undoApplyingRef.current && (removed.length > 0 || added.length > 0)) {
+        undo.recordReplace({ removed, added });
+      }
+      return { allApplied, addedIds: added.map((item) => item.row.id) };
+    };
+    return () => {
+      replaceStrokesRef.current = null;
+    };
+  }, [replaceStrokesRef, dispatchEdit, modelLayers, storedLayers, undo, undoApplyingRef]);
+
   // Phase 3.2 — selection deleter. The outer Editor's keyboard handler
   // reads `deleteSelectedRef.current` on Delete/Backspace. Routes
   // through the format-aware dispatchEdit so v1 captures hit
@@ -5263,9 +5944,16 @@ function EditorLoaded({
             : [id]
         );
       },
+      clearSelection: () => {
+        setSelectedLayerIds([]);
+      },
       updateLayerStyle: (id, field, value) => {
         updateLayerStyleRef.current?.(id, field, value);
       },
+      applyBagSlot: (slot, ids) => {
+        applyBagSlotRef.current?.(slot, ids);
+      },
+      addArrowLabel: (id) => startArrowLabelRef.current(id),
       setLayerVisibility: async (id, visible) => {
         // RAW node: this is a FULL-NODE replace, so it must carry stored
         // (cropped-space) coords. `modelLayers` is the virtual source-
@@ -6306,10 +6994,102 @@ function EditorLoaded({
     ]
   );
 
+  // Several fields as ONE edit — the tool bag's paste. Each field goes
+  // through `layerStyleUpdate` exactly as a Properties control would,
+  // folded against the row as the earlier fields left it (so a shape
+  // arm that reads `rect` sees the right one), then the patches merge
+  // into one updateOverlay and one undo entry. A patch that would change
+  // nothing is dropped whole: pasting slot 2 onto something that is
+  // already slot 2 must not leave a no-op on the undo stack.
+  const applyOverlayStyleFields = useCallback(
+    (current: OverlayRow, fields: readonly SlotStyleField[]): void => {
+      void (async (): Promise<void> => {
+        if (fields.some(([field, value]) => field === "outline" && value === "auto")) {
+          await ensureOutlineSampler(captureSrcUrl(record.id));
+        }
+        const dims = {
+          sourceWidthPx,
+          sourceHeightPx,
+          canvasWidthPx: record.width_px,
+          canvasHeightPx: record.height_px,
+          resolveOutlineAuto
+        };
+        let working: OverlayRow = current;
+        const patch: Record<string, unknown> = { kind: current.data.kind };
+        const previousPatch: Record<string, unknown> = { kind: current.data.kind };
+        for (const [field, value] of fields) {
+          const update = layerStyleUpdate(working, field, value, dims);
+          if (update === null) continue;
+          Object.assign(patch, update.patch);
+          // First write of a key wins: it is the value BEFORE any of
+          // this paste's fields touched it.
+          for (const [key, prev] of Object.entries(update.fallbackPreviousPatch)) {
+            if (!(key in previousPatch)) previousPatch[key] = prev;
+          }
+          working = {
+            ...working,
+            data: { ...working.data, ...update.patch } as Overlay
+          };
+        }
+        const changed = Object.keys(patch).some(
+          (key) => key !== "kind" && !styleValuesEqual(patch[key], previousPatch[key])
+        );
+        if (!changed) return;
+        const nextPatch = patch as Partial<Overlay>;
+        const result = await dispatchEdit({
+          kind: "updateOverlay",
+          layerId: current.id,
+          patch: nextPatch
+        });
+        if (!result.ok) {
+          // eslint-disable-next-line no-console
+          console.error("updateOverlay (bag paste) failed", result.error);
+          return;
+        }
+        if (result.value.kind !== "update") return;
+        const newId = result.value.artifact.node.id;
+        // Keep the selection on the restyled layer — the id can change
+        // on update, and a multi-selection paste keeps every member.
+        setSelectedLayerIds((prev) => prev.map((id) => (id === current.id ? newId : id)));
+        if (!undoApplyingRef.current) {
+          undo.recordStyle({
+            currentIdRef: { current: newId },
+            previousPatch: previousPatch as Partial<Overlay>,
+            nextPatch
+          });
+        }
+      })();
+    },
+    [
+      dispatchEdit,
+      record.height_px,
+      record.id,
+      record.width_px,
+      resolveOutlineAuto,
+      setSelectedLayerIds,
+      sourceHeightPx,
+      sourceWidthPx,
+      undo,
+      undoApplyingRef
+    ]
+  );
+
   // Feed the sibling DetailRail through the exact same mutation path.
   // It resolves by id rather than by the currently selected row so the
   // inspector never edits a different layer during a selection change.
   useEffect(() => {
+    applyBagSlotRef.current = (slot, ids): void => {
+      for (const id of ids) {
+        const current = overlays.find((row) => row.id === id);
+        if (current === undefined) continue;
+        const target = pasteTargetFor(current.data.kind);
+        if (target === null) continue;
+        const fields = slotFieldsForLayer(slot, target);
+        if (fields.length > 0) {
+          applyOverlayStyleFields(adoptDraftGeometry(current, draftGeometry), fields);
+        }
+      }
+    };
     updateLayerStyleRef.current = (id, field, value): void => {
       const current = overlays.find((row) => row.id === id);
       // Adopt the live override, exactly as the editor's own popover
@@ -6329,6 +7109,7 @@ function EditorLoaded({
       }
     };
     return () => {
+      applyBagSlotRef.current = null;
       updateLayerStyleRef.current = null;
     };
     // `draftGeometry` is a dep because the closure above reads it —
@@ -6336,7 +7117,14 @@ function EditorLoaded({
     // would be back to editing the pre-drag geometry. Re-running is a
     // bare ref assignment, so the per-frame churn during a drag costs
     // nothing.
-  }, [overlays, draftGeometry, updateLayerStyleRef, updateOverlayStyleField]);
+  }, [
+    overlays,
+    draftGeometry,
+    applyBagSlotRef,
+    applyOverlayStyleFields,
+    updateLayerStyleRef,
+    updateOverlayStyleField
+  ]);
 
   // Selected-overlay style edit handler for the standalone popover.
   const onSelectedStyleFieldChange = useCallback(
@@ -6366,10 +7154,10 @@ function EditorLoaded({
         zoom.resetToFit();
       } else if (shortcut === "in") {
         e.preventDefault();
-        zoom.zoomBy(1.25);
+        zoom.zoomBy(KEYBOARD_ZOOM_STEP);
       } else if (shortcut === "out") {
         e.preventDefault();
-        zoom.zoomBy(1 / 1.25);
+        zoom.zoomBy(1 / KEYBOARD_ZOOM_STEP);
       }
     }
     window.addEventListener("keydown", onKey);
@@ -7117,7 +7905,8 @@ function EditorLoaded({
                   editingOverlay,
                   activeToolStyle,
                   sampledAutoOutline:
-                    editingOverlay === null ? textDraftAutoOutline : null
+                    editingOverlay === null ? textDraftAutoOutline : null,
+                  labelStyle: draft.label?.style ?? null
                 });
               return (
                 <TextDraftInput
@@ -7134,8 +7923,15 @@ function EditorLoaded({
                   weight={weight}
                   rotation={rotation}
                   outline={outline}
+                  {...(draft.label !== undefined && editingOverlay === null
+                    ? {
+                        align: draft.label.align,
+                        placeholder: "Label",
+                        ariaLabel: "Arrow label"
+                      }
+                    : {})}
                   onChange={(body) => setDraft({ ...draft, body })}
-                  onCommit={() => void commitText()}
+                  onCommit={(measure) => void commitText(measure)}
                   onCancel={() => setDraft(null)}
                 />
               );
@@ -7150,28 +7946,6 @@ function EditorLoaded({
               onCommit={onCropCommit}
               onCancel={onCropCancel}
             />
-          )}
-          {/* Matching-text affordance — only in standalone mode (the
-              hook is dormant when controlled). Positioned relative to
-              the canvas so the anchor coords (canvas-px) line up
-              directly. */}
-          {!isControlled && toolState.matchingText.kind === "available" && (
-            <button
-              type="button"
-              className="pse-affordance"
-              data-testid="matching-text-affordance"
-              style={{
-                position: "absolute",
-                left: toolState.matchingText.anchorPoint.x,
-                top: toolState.matchingText.anchorPoint.y + 8,
-                transform: "translate(-50%, 0)"
-              }}
-              onClick={() => {
-                toolState.clickMatchingTextAffordance();
-              }}
-            >
-              + Add label
-            </button>
           )}
         </div>
         {/* Phase 5 paste/drop notice. Surfaces user-friendly errors
@@ -7304,7 +8078,10 @@ function EditorLoaded({
                 : fallbackStyles.blur,
               highlight: toolState.activeStyle.tool === "highlight"
                 ? toolState.activeStyle.style
-                : fallbackStyles.highlight
+                : fallbackStyles.highlight,
+              draw: toolState.activeStyle.tool === "draw"
+                ? toolState.activeStyle.style
+                : fallbackStyles.draw
             }
           );
           if (projection === null) return null;

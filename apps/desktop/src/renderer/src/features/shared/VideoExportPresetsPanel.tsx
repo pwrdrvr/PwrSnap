@@ -10,24 +10,34 @@
 // per-cell render metrics for image fallback). The two surfaces
 // here just want the cards — pass a captureId and you get the same
 // behavior: click-to-copy a re-encoded file to clipboard, click FILE
-// chip to copy the POSIX path, drag FILE chip for native drag-out.
+// chip to copy the platform-native absolute path, drag FILE chip for
+// native drag-out.
 //
 // `captureId === null` renders an idle grid with no metric IPC fired
 // — same shape as `useVideoExportPresets` accepting a null input, so
 // the panel is safe to mount even before a video selection lands.
 
-import { useEffect, useRef, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import type {
   FloatOverVideoCopyShortcutEvent,
   ShortcutPlatform,
   VideoRange
 } from "@pwrsnap/shared";
+import { useMp4ExportAudio, type RecordedAudioTracks } from "./useMp4ExportAudio";
 import { useVideoExportPresets } from "./useVideoExportPresets";
 import { useVideoPresetMetrics } from "./useVideoPresetMetrics";
-import { VideoExportPresetGrid } from "./VideoExportPresetGrid";
+import {
+  VideoExportPresetGrid,
+  type FormatSwitch,
+  type VideoExportFormat
+} from "./VideoExportPresetGrid";
 
 export type VideoExportPresetsPanelProps = {
   readonly captureId: string | null;
+  /** Audio tracks the take recorded (`recordedAudioTracks(record.video)`).
+   *  Drives the MP4 row's Mic / System toggles; the toggled choice rides
+   *  on every MP4 copy, path copy and drag from this grid. */
+  readonly audioTracks: RecordedAudioTracks;
   /** Trim range to export (rides explicitly on every copy / drag /
    *  export call and re-keys the metrics). Omitted → main falls back
    *  to the record's persisted `defaultRange`. */
@@ -44,16 +54,30 @@ export type VideoCopyShortcutRequest = FloatOverVideoCopyShortcutEvent & {
   readonly sequence: number;
 };
 
+// The format a compact popover shows. It starts on MP4 (the one that carries
+// audio and the one people paste) and remembers the last pick for the life of
+// the window, so a second recording opens on what the last one did. Not a
+// setting: nothing outside the popover reads it.
+let lastFormat: VideoExportFormat = "mp4";
+
 export function VideoExportPresetsPanel({
   captureId,
+  audioTracks,
   range,
   copyShortcut,
   shortcutPlatform,
   showShortcutHints
 }: VideoExportPresetsPanelProps): ReactElement {
+  const { audio, control } = useMp4ExportAudio(audioTracks);
   const { states, triggerCopy, triggerCopyPath, triggerDrag } =
-    useVideoExportPresets(captureId === null ? null : { captureId, range });
-  const metrics = useVideoPresetMetrics(captureId, range);
+    useVideoExportPresets(captureId === null ? null : { captureId, range, audio });
+  const metrics = useVideoPresetMetrics(captureId, range, undefined, audio);
+  const [format, setFormatState] = useState<VideoExportFormat>(lastFormat);
+  const setFormat = useCallback((next: VideoExportFormat): void => {
+    lastFormat = next;
+    setFormatState(next);
+  }, []);
+  const formatSwitch: FormatSwitch = { active: format, onChange: setFormat };
   const handledShortcutSequenceRef = useRef<number | null>(null);
   useEffect(() => {
     if (
@@ -65,8 +89,11 @@ export function VideoExportPresetsPanel({
     }
     handledShortcutSequenceRef.current = copyShortcut.sequence;
     if (copyShortcut.captureId !== captureId) return;
+    // A chord for the format the compact switch is hiding brings that row
+    // forward, so the card's "Copied" feedback is on screen.
+    setFormat(copyShortcut.format);
     triggerCopy(copyShortcut.format, copyShortcut.preset);
-  }, [captureId, copyShortcut, triggerCopy]);
+  }, [captureId, copyShortcut, setFormat, triggerCopy]);
   return (
     <VideoExportPresetGrid
       metrics={metrics}
@@ -74,6 +101,8 @@ export function VideoExportPresetsPanel({
       onCopy={triggerCopy}
       onCopyPath={triggerCopyPath}
       onDrag={triggerDrag}
+      mp4Audio={control}
+      formatSwitch={formatSwitch}
       {...(shortcutPlatform === undefined ? {} : { shortcutPlatform })}
       {...(showShortcutHints === undefined ? {} : { showShortcutHints })}
     />

@@ -48,3 +48,18 @@ describe("validateSettingsWrite — ai.defaults.<surface>.model", () => {
     expect(result.ok).toBe(false);
   });
 });
+
+describe("Direct API connections are main-owned", () => {
+  // A raw patch could repoint a connection without clearing the key bound to
+  // its old address; only the customModels:* verbs keep the two in step.
+  test.each(["customConnections", "customModels"])("settings:write refuses ai.%s", (key) => {
+    const result = validateSettingsWrite({ ai: { [key]: [] } });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("custom_models_main_owned");
+  });
+  test("a job may be routed to a saved custom model", () => {
+    const result = validateSettingsWrite({ ai: { defaults: { libraryChat: {
+      provider: "custom:12345678-1234-4234-8234-123456789001", model: "vendor/model name:with spaces", reasoning: "" } } } });
+    expect(result.ok).toBe(true);
+  });
+});

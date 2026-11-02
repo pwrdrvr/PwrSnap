@@ -14,6 +14,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import type { ChatApprovalRequest } from "@pwrsnap/shared";
 import { ChatApprovalModal } from "../ChatApprovalModal";
+import { DeleteConfirm } from "../../DeleteConfirm";
 import { ConfirmBatchCard } from "../ConfirmBatchCard";
 import { AiRunBadge } from "../AiRunBadge";
 
@@ -443,5 +444,109 @@ describe("AiRunBadge", () => {
     );
     const badge = query(el, '[data-testid="ps-airun-badge"]');
     expect(badge.getAttribute("aria-label")).toBe("Undo blur");
+  });
+});
+
+// What ChatApprovalModal's own hand-rolled trap got wrong, measured in
+// headless Chromium: its cycle was [Deny, Approve] and nothing else, so a
+// long command in the scrolling detail block could never be reached from the
+// keyboard to scroll it. It now uses the shared trap, which also settles who
+// owns Tab when another modal is already open underneath it.
+describe("ChatApprovalModal — shared focus trap", () => {
+  const LONG: ChatApprovalRequest = {
+    ...REQUEST,
+    detail: Array.from({ length: 40 }, (_, i) => `waffle-cli --stack ${i}`).join("\n")
+  };
+
+  async function press(key: string, shiftKey = false): Promise<KeyboardEvent> {
+    const target = (document.activeElement as HTMLElement | null) ?? document.body;
+    const e = new KeyboardEvent("keydown", { key, shiftKey, bubbles: true, cancelable: true });
+    await act(async () => {
+      target.dispatchEvent(e);
+    });
+    return e;
+  }
+
+  test("the scrolling command detail is in the Tab cycle", async () => {
+    const el = await mount(
+      createElement(ChatApprovalModal, { request: LONG, onResolve: vi.fn(() => Promise.resolve()) })
+    );
+    const detail = query<HTMLPreElement>(el, '[data-testid="ps-approval-detail"]');
+    // What `.ps-approval__detail { max-height: 240px; overflow: auto }` and
+    // Chromium's layout give it; jsdom has neither.
+    detail.style.overflowY = "auto";
+    Object.defineProperty(detail, "scrollHeight", { configurable: true, value: 800 });
+    Object.defineProperty(detail, "clientHeight", { configurable: true, value: 240 });
+    const focusDetail = vi.spyOn(detail, "focus");
+
+    const approve = query<HTMLButtonElement>(el, '[data-testid="ps-approval-approve"]');
+    approve.focus();
+    expect((await press("Tab")).defaultPrevented).toBe(true);
+    expect(focusDetail).toHaveBeenCalled();
+
+    // Shift+Tab from Deny is Chromium's own step back onto the detail — the
+    // old trap claimed it and jumped to Approve instead.
+    query<HTMLButtonElement>(el, '[data-testid="ps-approval-deny"]').focus();
+    expect((await press("Tab", true)).defaultPrevented).toBe(false);
+  });
+
+  test("Shift+Tab from the focused dialog frame goes to its last control, not out of it", async () => {
+    const el = await mount(
+      createElement(ChatApprovalModal, { request: REQUEST, onResolve: vi.fn(() => Promise.resolve()) })
+    );
+    query<HTMLDivElement>(el, '[data-testid="ps-approval"]').focus();
+    expect((await press("Tab", true)).defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(
+      query<HTMLButtonElement>(el, '[data-testid="ps-approval-approve"]')
+    );
+  });
+
+  test("over an open DeleteConfirm: Tab stays in the approval, and focus goes back to the confirm after", async () => {
+    // A trash confirm the user had open in the rail when the agent asked.
+    const confirmHost = document.createElement("div");
+    document.body.appendChild(confirmHost);
+    const confirmRoot = createRoot(confirmHost);
+    try {
+      await act(async () => {
+        confirmRoot.render(
+          createElement(DeleteConfirm, {
+            message: "Move to Trash?",
+            onConfirm: vi.fn(),
+            children: (trig) => createElement("button", { type: "button", id: "trash", ...trig }, "trash")
+          })
+        );
+      });
+      const trash = document.getElementById("trash")!;
+      trash.focus();
+      await act(async () => {
+        trash.click();
+        await Promise.resolve();
+      });
+      const moveToTrash = document.querySelector<HTMLButtonElement>(".ps-confirm__btn.is-danger")!;
+      expect(document.activeElement).toBe(moveToTrash);
+
+      const el = await mount(
+        createElement(ChatApprovalModal, { request: REQUEST, onResolve: vi.fn(() => Promise.resolve()) })
+      );
+      const deny = query<HTMLButtonElement>(el, '[data-testid="ps-approval-deny"]');
+      const approve = query<HTMLButtonElement>(el, '[data-testid="ps-approval-approve"]');
+      expect(document.activeElement).toBe(deny);
+      // Two traps are open. The older one must not treat focus in the newer
+      // one as stray and drag it behind the scrim.
+      expect((await press("Tab")).defaultPrevented).toBe(false);
+      approve.focus();
+      expect((await press("Tab")).defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(deny);
+      // Escape denies the approval only; the confirm underneath stays open.
+      await press("Escape");
+      expect(document.querySelector(".ps-confirm")).not.toBeNull();
+
+      await act(async () => root?.unmount());
+      root = null;
+      expect(document.activeElement).toBe(moveToTrash);
+    } finally {
+      await act(async () => confirmRoot.unmount());
+      confirmHost.remove();
+    }
   });
 });

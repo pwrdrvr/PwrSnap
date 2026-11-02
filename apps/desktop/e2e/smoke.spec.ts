@@ -16,10 +16,12 @@ import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 test("library window boots and renders the brand mark", async () => {
   const app = await launchPwrSnap();
   try {
-    // The wordmark splits "Pwr" + "Snap" across two spans (so the
-    // accent on "Snap" survives any flex gap). Match by the SVG mark's
-    // aria-label, which is a single accessible token.
-    await expect(app.window.getByRole("img", { name: "PwrSnap" }).first()).toBeVisible();
+    // The title strip's mark is aria-hidden — the wordmark beside it names
+    // the app — so assert the two separately. The wordmark splits "Pwr" +
+    // "Snap" across two spans, so match the outer span's whole text.
+    const brand = app.window.locator(".psl__title");
+    await expect(brand.locator("svg")).toBeVisible();
+    await expect(brand.locator(".pwrsnap-wordmark")).toHaveText("PwrSnap");
   } finally {
     await app.close();
   }

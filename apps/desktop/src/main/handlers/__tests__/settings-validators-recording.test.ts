@@ -39,3 +39,69 @@ describe("validateSettingsWrite — recording.quickCaptureAction", () => {
     expect(validateSettingsWrite({ recording: {} }).ok).toBe(true);
   });
 });
+
+describe("validateSettingsWrite — recording.mp4Include*", () => {
+  test.each(["mp4IncludeMicrophone", "mp4IncludeSystemAudio"])("%s accepts booleans", (key) => {
+    expect(validateSettingsWrite({ recording: { [key]: false } }).ok).toBe(true);
+    expect(validateSettingsWrite({ recording: { [key]: true } }).ok).toBe(true);
+  });
+
+  // Main reads these to decide whether an MP4 carries someone's
+  // microphone; a string "false" is truthy and must never be persisted.
+  test.each(["mp4IncludeMicrophone", "mp4IncludeSystemAudio"])("%s rejects non-booleans", (key) => {
+    for (const value of ["false", 0, null, {}]) {
+      const result = validateSettingsWrite({ recording: { [key]: value } });
+      expect(result.ok, `${key}=${JSON.stringify(value)}`).toBe(false);
+      if (!result.ok) expect(result.error.code).toBe(`invalid_recording_${key}`);
+    }
+  });
+});
+
+describe("validateSettingsWrite — recording.showRecentCaptureSidebar", () => {
+  test("accepts booleans", () => {
+    for (const value of [true, false]) {
+      expect(validateSettingsWrite({ recording: { showRecentCaptureSidebar: value } }).ok).toBe(
+        true
+      );
+    }
+  });
+
+  // Main reads this to decide whether the dock window shows; a string
+  // "false" is truthy and must never be persisted.
+  test("rejects non-booleans", () => {
+    for (const value of ["false", 0, null, {}]) {
+      const result = validateSettingsWrite({ recording: { showRecentCaptureSidebar: value } });
+      expect(result.ok, JSON.stringify(value)).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("invalid_recording_showRecentCaptureSidebar");
+      }
+    }
+  });
+});
+
+describe("validateSettingsWrite — recording.microphoneDevice / cameraDevice", () => {
+  const desk = { deviceId: "chromium-id-oatmeal", label: "Oatmeal Desk Mic (USB)" };
+
+  test.each(["microphoneDevice", "cameraDevice"])("%s accepts a full choice and null", (key) => {
+    expect(validateSettingsWrite({ recording: { [key]: desk } }).ok).toBe(true);
+    // null is "System default", the picker's first row.
+    expect(validateSettingsWrite({ recording: { [key]: null } }).ok).toBe(true);
+  });
+
+  // A choice the chips can neither open by id nor find by name would be
+  // persisted, then silently fail to open on every later show.
+  test.each(["microphoneDevice", "cameraDevice"])("%s refuses a half-filled or stray shape", (key) => {
+    for (const bad of [
+      { deviceId: "chromium-id-oatmeal" },
+      { label: "Oatmeal Desk Mic" },
+      { deviceId: "", label: "Oatmeal Desk Mic" },
+      { ...desk, extra: true },
+      "chromium-id-oatmeal",
+      0
+    ]) {
+      const result = validateSettingsWrite({ recording: { [key]: bad } });
+      expect(result.ok, JSON.stringify(bad)).toBe(false);
+      if (!result.ok) expect(result.error.code).toBe(`invalid_recording_${key}`);
+    }
+  });
+});

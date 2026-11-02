@@ -6,6 +6,7 @@
 // any platform without TCC or ScreenCaptureKit.
 
 import { EventEmitter } from "node:events";
+import { dirname, extname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 // Hoisted mock state so every imported module sees the same
@@ -17,6 +18,8 @@ const mocks = vi.hoisted(() => {
     nextSpawnError: null as Error | null,
     binaryPath: "/fake/PwrSnapRecorder",
     binaryExists: true,
+    beginCamera: vi.fn(async () => undefined),
+    cancelCamera: vi.fn(async () => undefined),
     isPackaged: false,
     stateLog: [] as Array<{ phase: string }>,
     /** Full broadcast log including rect/displayId payloads — used
@@ -28,9 +31,29 @@ const mocks = vi.hoisted(() => {
       message: string;
       context: Record<string, unknown> | undefined;
     }>,
-    pendingTimeouts: [] as Array<() => void>
+    pendingTimeouts: [] as Array<() => void>,
+    liveWindows: [] as Array<{
+      windowId: number;
+      pid: number;
+      title: unknown;
+    }>,
+    removedRecordingDirs: [] as string[],
+    warningLogs: [] as Array<{
+      message: string;
+      fields: Record<string, unknown> | undefined;
+    }>
   };
 });
+
+vi.mock("../camera-recording", () => ({
+  beginCameraRecording: mocks.beginCamera,
+  cancelCameraRecording: mocks.cancelCamera,
+  finishCameraRecording: async () => null,
+  markCameraScreenStart: vi.fn(),
+  markCameraScreenStartUtc: vi.fn(),
+  prepareCameraPreview: vi.fn(),
+  confirmCameraPreviewExclusion: vi.fn()
+}));
 
 class FakeChild extends EventEmitter {
   stdin = { write: vi.fn() };
@@ -77,7 +100,10 @@ vi.mock("node:fs", () => ({
 }));
 
 vi.mock("node:fs/promises", () => ({
-  mkdtemp: vi.fn(async () => "/tmp/pwrsnap-recording-fake")
+  mkdtemp: vi.fn(async () => "/tmp/pwrsnap-recording-fake"),
+  rm: vi.fn(async (path: string) => {
+    mocks.removedRecordingDirs.push(path);
+  })
 }));
 
 vi.mock("electron", () => ({
@@ -166,12 +192,42 @@ vi.mock("../../handlers/codex-handlers", () => ({
   maybeEnqueueCaptureEnrichment: vi.fn()
 }));
 
-vi.mock("../../persistence/captures-repo", () => ({
-  insertCapture: vi.fn(() => ({
-    record: { id: "cap-1", kind: "video" }
-  })),
-  getCaptureById: vi.fn(() => ({ id: "cap-1", kind: "video", video: {} }))
+vi.mock("../../capture/window-list", () => ({
+  listWindows: vi.fn(async () => mocks.liveWindows)
 }));
+
+vi.mock("../../persistence/captures-repo", () => {
+  const SOURCE_WINDOW_TITLE_MAX_CODE_POINTS = 512;
+  const normalizeSourceWindowTitle = (
+    value: string | null | undefined
+  ): string | null => {
+    if (value === null || value === undefined) return null;
+    const safeFormatCharacters = value.replace(
+      /\p{Default_Ignorable_Code_Point}/gu,
+      (character) =>
+        /(?:\u200c|\u200d|[\ufe00-\ufe0f])/u.test(character) ? character : ""
+    );
+    const normalized = safeFormatCharacters
+      .replace(/[\p{White_Space}\p{Cc}]+/gu, " ")
+      .trim();
+    if (normalized.replace(/\p{Default_Ignorable_Code_Point}/gu, "").length === 0) {
+      return null;
+    }
+    return [...normalized]
+      .slice(0, SOURCE_WINDOW_TITLE_MAX_CODE_POINTS)
+      .join("")
+      .trimEnd();
+  };
+
+  return {
+    SOURCE_WINDOW_TITLE_MAX_CODE_POINTS,
+    normalizeSourceWindowTitle,
+    insertCapture: vi.fn(() => ({
+      record: { id: "cap-1", kind: "video" }
+    })),
+    getCaptureById: vi.fn(() => ({ id: "cap-1", kind: "video", video: {} }))
+  };
+});
 
 vi.mock("../../persistence/source-store", () => ({
   adoptExistingFileAsSource: vi.fn(async () => ({
@@ -199,7 +255,9 @@ vi.mock("../../log", () => ({
     info: (message: string, context?: Record<string, unknown>) => {
       mocks.infoLogs.push({ message, context });
     },
-    warn: () => undefined,
+    warn: (message: string, fields?: Record<string, unknown>) => {
+      mocks.warningLogs.push({ message, fields });
+    },
     error: () => undefined
   })
 }));
@@ -223,6 +281,9 @@ beforeEach(() => {
   mocks.currentState = { phase: "idle" };
   mocks.infoLogs.length = 0;
   mocks.pendingTimeouts.length = 0;
+  mocks.liveWindows.length = 0;
+  mocks.removedRecordingDirs.length = 0;
+  mocks.warningLogs.length = 0;
   // resolveRecorderBinary() returns null off-darwin AND probes
   // `process.resourcesPath/PwrSnapRecorder` via path.join — neither
   // works in a plain Node test runner. Stub both so the binary-
@@ -423,6 +484,56 @@ describe("RecordingService.start excludePids", () => {
     await vi.advanceTimersByTimeAsync(16_000);
     await startPromise;
     expect(outcome).toBeInstanceOf(Error);
+  });
+});
+
+describe("RecordingService.start microphoneDevice", () => {
+  // The selector's microphone pick has to reach the recorder, which used
+  // to open the system default no matter what the chip showed.
+  async function startCommand(capabilities: typeof CAPS & {
+    microphoneDevice?: { label: string };
+  }): Promise<Record<string, unknown>> {
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+    const startPromise = service
+      .start({ subject: SUBJECT, capabilities, countdownSeconds: 0 })
+      .catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(0);
+    const child = mocks.spawnedChildren[0]!;
+    const startCmd = JSON.parse(child.stdin.write.mock.calls[0]![0].trim()) as Record<string, unknown>;
+    const cancelDone = service.cancel();
+    await vi.advanceTimersByTimeAsync(600);
+    await cancelDone;
+    await vi.advanceTimersByTimeAsync(16_000);
+    await startPromise;
+    return startCmd;
+  }
+
+  test("a named input reaches the recorder by its label", async () => {
+    const startCmd = await startCommand({
+      ...CAPS,
+      microphone: true,
+      microphoneDevice: { label: "Granola Interface (USB)" }
+    });
+    expect(startCmd.microphone).toBe(true);
+    expect(startCmd.microphoneDevice).toBe("Granola Interface (USB)");
+  });
+
+  test("no named input sends no name, so the recorder opens the default", async () => {
+    const startCmd = await startCommand({ ...CAPS, microphone: true });
+    expect("microphoneDevice" in startCmd).toBe(false);
+  });
+
+  test("a name with the microphone off is not sent", async () => {
+    const startCmd = await startCommand({
+      ...CAPS,
+      microphone: false,
+      microphoneDevice: { label: "Granola Interface (USB)" }
+    });
+    expect("microphoneDevice" in startCmd).toBe(false);
   });
 });
 
@@ -679,17 +790,22 @@ describe("RecordingService.stop source-app metadata → capture row", () => {
   // here long before it ships to the Library.
 
   async function runFullCapture(
-    subject: import("@pwrsnap/shared").RecordingSubject
+    subject: import("@pwrsnap/shared").RecordingSubject,
+    liveTitle?: unknown,
+    livePid = 700
   ): Promise<Record<string, unknown>> {
+    const removedDirsBefore = mocks.removedRecordingDirs.length;
     const { __setRecordingServiceForTests, getRecordingService } = await import(
       "../recording-service"
     );
     __setRecordingServiceForTests(null);
     const service = getRecordingService();
 
-    const startPromise = service
-      .start({ subject, capabilities: CAPS, countdownSeconds: 0 })
-      .catch(() => undefined);
+    const startPromise = service.start({
+      subject,
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
     // Let the spawn + start command write land.
     await vi.advanceTimersByTimeAsync(0);
     const child = mocks.spawnedChildren.at(-1)!;
@@ -700,7 +816,22 @@ describe("RecordingService.stop source-app metadata → capture row", () => {
       physicalRect: { x: 0, y: 0, w: 100, h: 100 }
     });
     await vi.advanceTimersByTimeAsync(0);
-    await startPromise;
+    const started = await startPromise;
+
+    if (subject.kind === "window" && liveTitle !== undefined) {
+      mocks.liveWindows.splice(0, mocks.liveWindows.length, {
+        windowId: subject.windowId,
+        pid: livePid,
+        title: liveTitle
+      });
+      expect(
+        service.attachTrustedWindowIdentity?.(started.sessionId, {
+          windowId: subject.windowId,
+          pid: 700
+        })
+      ).toBe(true);
+      await vi.advanceTimersByTimeAsync(0);
+    }
 
     // Now stop and pump the "stopped" event so the post-stop
     // pipeline (adoptExistingFileAsSource → insertCapture)
@@ -713,10 +844,15 @@ describe("RecordingService.stop source-app metadata → capture row", () => {
       containerFormat: "mp4",
       hasSystemAudio: false,
       hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
       outputPath: "/fake/captures/src-1.mp4"
     });
     await vi.advanceTimersByTimeAsync(0);
     await stopPromise;
+    expect(mocks.removedRecordingDirs.slice(removedDirsBefore)).toEqual([
+      "/tmp/pwrsnap-recording-fake"
+    ]);
 
     // Pull the row that landed on insertCapture. The mock at
     // the top of this file returns a fixed record; we want the
@@ -728,30 +864,90 @@ describe("RecordingService.stop source-app metadata → capture row", () => {
     return calls.at(-1)![0] as Record<string, unknown>;
   }
 
-  test("window subject with appName + appBundleId lands both on the capture row", async () => {
-    const row = await runFullCapture({
-      kind: "window",
-      windowId: 12345,
-      rect: { x: 0, y: 0, w: 100, h: 100 },
-      displayId: 1,
-      appName: "Microsoft Edge",
-      appBundleId: "com.microsoft.edgemac"
-    });
+  test("trusted live title observed after start lands on the capture row", async () => {
+    const row = await runFullCapture(
+      {
+        kind: "window",
+        windowId: 12345,
+        rect: { x: 0, y: 0, w: 100, h: 100 },
+        displayId: 1,
+        appName: "Microsoft Edge",
+        appBundleId: "com.microsoft.edgemac"
+      },
+      "設計レビュー — Edge 🚀"
+    );
     expect(row.source_app_name).toBe("Microsoft Edge");
     expect(row.source_app_bundle_id).toBe("com.microsoft.edgemac");
+    expect(row.source_window_title).toBe("設計レビュー — Edge 🚀");
   });
 
-  test("window subject without optional app fields writes null (Library falls back to 'Unknown app')", async () => {
-    const row = await runFullCapture({
+  test("normalizes controls and bounds a very long window title before insert", async () => {
+    const row = await runFullCapture(
+      {
+        kind: "window",
+        windowId: 12345,
+        rect: { x: 0, y: 0, w: 100, h: 100 },
+        displayId: 1
+      },
+      `\u0000  Quarterly\tPlan\n${"🚀".repeat(600)}  \u0007`
+    );
+    const persistedTitle = row.source_window_title;
+    expect(typeof persistedTitle).toBe("string");
+    expect(persistedTitle).toMatch(/^Quarterly Plan 🚀/u);
+    expect(persistedTitle).not.toMatch(/[\p{White_Space}\p{Cc}]$/u);
+    expect([...(persistedTitle as string)]).toHaveLength(512);
+  });
+
+  test("window subject with no app fields and a control-only live title writes null", async () => {
+    const row = await runFullCapture(
+      {
+        kind: "window",
+        windowId: 12345,
+        rect: { x: 0, y: 0, w: 100, h: 100 },
+        displayId: 1
+      },
+      "\u0000\t\n\u0007"
+    );
+    expect(row.source_app_name).toBeNull();
+    expect(row.source_app_bundle_id).toBeNull();
+    expect(row.source_window_title).toBeNull();
+  });
+
+  test("vanished or reused window identity persists null", async () => {
+    const vanished = await runFullCapture({
       kind: "window",
       windowId: 12345,
       rect: { x: 0, y: 0, w: 100, h: 100 },
       displayId: 1
-      // appName + appBundleId intentionally omitted — protocol
-      // marks them optional for callers that lack the helper.
     });
-    expect(row.source_app_name).toBeNull();
-    expect(row.source_app_bundle_id).toBeNull();
+    expect(vanished.source_window_title).toBeNull();
+
+    const reused = await runFullCapture(
+      {
+        kind: "window",
+        windowId: 12345,
+        rect: { x: 0, y: 0, w: 100, h: 100 },
+        displayId: 1
+      },
+      "Wrong process title",
+      701
+    );
+    expect(reused.source_window_title).toBeNull();
+  });
+
+  test("malformed native title cannot fail stop after the durable file is ready", async () => {
+    const row = await runFullCapture(
+      {
+        kind: "window",
+        windowId: 12345,
+        rect: { x: 0, y: 0, w: 100, h: 100 },
+        displayId: 1
+      },
+      42
+    );
+    const sourceStore = await import("../../persistence/source-store");
+    expect(sourceStore.adoptExistingFileAsSource).toHaveBeenCalled();
+    expect(row.source_window_title).toBeNull();
   });
 
   test("region subject writes null app metadata (no single source app)", async () => {
@@ -762,10 +958,347 @@ describe("RecordingService.stop source-app metadata → capture row", () => {
     });
     expect(row.source_app_name).toBeNull();
     expect(row.source_app_bundle_id).toBeNull();
+    expect(row.source_window_title).toBeNull();
+  });
+});
+
+describe("RecordingService trusted window-title timing", () => {
+  const windowSubject: import("@pwrsnap/shared").RecordingSubject = {
+    kind: "window",
+    windowId: 12345,
+    rect: { x: 0, y: 0, w: 100, h: 100 },
+    displayId: 1,
+    appName: "Example",
+    appBundleId: "com.example"
+  };
+
+  async function finishNativeStop(
+    service: import("../recording-service").RecordingService,
+    child: FakeChild
+  ): Promise<Record<string, unknown>> {
+    const stopPromise = service.stop();
+    child.emitLine({
+      event: "stopped",
+      durationSec: 2.5,
+      containerFormat: "mp4",
+      hasSystemAudio: false,
+      hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
+      outputPath: "/fake/captures/src-1.mp4"
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await stopPromise;
+    const captures = await import("../../persistence/captures-repo");
+    const calls = (captures.insertCapture as unknown as { mock: { calls: unknown[][] } })
+      .mock.calls;
+    return calls.at(-1)![0] as Record<string, unknown>;
+  }
+
+  test("resolves the changed title only after the countdown and actual start", async () => {
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+    mocks.liveWindows.push({ windowId: 12345, pid: 700, title: "Selector title" });
+
+    const startPromise = service.start({
+      subject: windowSubject,
+      capabilities: CAPS,
+      countdownSeconds: 3
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    mocks.liveWindows[0]!.title = "Changed during countdown — 東京 🚀";
+    await vi.advanceTimersByTimeAsync(2_100);
+    const child = mocks.spawnedChildren[0]!;
+    child.emitLine({
+      event: "started",
+      physicalRect: { x: 0, y: 0, w: 100, h: 100 }
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const started = await startPromise;
+    expect(
+      service.attachTrustedWindowIdentity?.(started.sessionId, {
+        windowId: 12345,
+        pid: 700
+      })
+    ).toBe(true);
+
+    const row = await finishNativeStop(service, child);
+    expect(row.source_window_title).toBe("Changed during countdown — 東京 🚀");
+  });
+
+  test("persists null when the selected window disappears during countdown", async () => {
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+    mocks.liveWindows.push({ windowId: 12345, pid: 700, title: "Closing window" });
+
+    const startPromise = service.start({
+      subject: windowSubject,
+      capabilities: CAPS,
+      countdownSeconds: 3
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    mocks.liveWindows.length = 0;
+    await vi.advanceTimersByTimeAsync(2_100);
+    const child = mocks.spawnedChildren[0]!;
+    child.emitLine({
+      event: "started",
+      physicalRect: { x: 0, y: 0, w: 100, h: 100 }
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const started = await startPromise;
+    expect(
+      service.attachTrustedWindowIdentity?.(started.sessionId, {
+        windowId: 12345,
+        pid: 700
+      })
+    ).toBe(true);
+
+    const row = await finishNativeStop(service, child);
+    expect(row.source_window_title).toBeNull();
+  });
+
+  test("restart re-resolves the title for the new actual start", async () => {
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+    mocks.liveWindows.push({ windowId: 12345, pid: 700, title: "First start" });
+
+    const firstStartPromise = service.start({
+      subject: windowSubject,
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const firstChild = mocks.spawnedChildren[0]!;
+    firstChild.emitLine({
+      event: "started",
+      physicalRect: { x: 0, y: 0, w: 100, h: 100 }
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const firstStarted = await firstStartPromise;
+    expect(
+      service.attachTrustedWindowIdentity?.(firstStarted.sessionId, {
+        windowId: 12345,
+        pid: 700
+      })
+    ).toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
+
+    const restartPromise = service.restart();
+    firstChild.emitLine({
+      event: "stopped",
+      durationSec: 0.5,
+      containerFormat: "mp4",
+      hasSystemAudio: false,
+      hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
+      outputPath: "/tmp/discarded.mp4"
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    mocks.liveWindows[0]!.title = "Restarted title";
+    await vi.advanceTimersByTimeAsync(2_100);
+    const restartedChild = mocks.spawnedChildren[1]!;
+    restartedChild.emitLine({
+      event: "started",
+      physicalRect: { x: 0, y: 0, w: 100, h: 100 }
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await restartPromise;
+
+    const row = await finishNativeStop(service, restartedChild);
+    expect(row.source_window_title).toBe("Restarted title");
+  });
+});
+
+describe.each(["darwin", "win32"])("window-title retries on %s", (platform) => {
+  test.each(["start failure", "post-start failure", "reused window"])("%s refreshes trusted provenance", async (scenario) => {
+    Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    const { __setRecordingServiceForTests, getRecordingService } = await import("../recording-service");
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+    const identity = { windowId: 12345, pid: 700 };
+    const subject = { kind: "window" as const, windowId: 12345,
+      displayId: 1, rect: { x: 0, y: 0, w: 100, h: 100 } };
+    mocks.liveWindows.push({ ...identity, title: "Original title" });
+    const acknowledge = async (): Promise<void> => {
+      await vi.advanceTimersByTimeAsync(0);
+      if (platform === "darwin") mocks.spawnedChildren.at(-1)!.emitLine({
+        event: "started", physicalRect: { x: 0, y: 0, w: 100, h: 100 }
+      });
+      await vi.advanceTimersByTimeAsync(0);
+    };
+    if (scenario === "post-start failure") {
+      const starting = service.start({ subject, capabilities: CAPS, countdownSeconds: 0 });
+      await acknowledge();
+      const started = await starting;
+      expect(service.attachTrustedWindowIdentity?.(started.sessionId, identity)).toBe(true);
+      mocks.spawnedChildren.at(-1)!.emit("error", new Error("recorder failed"));
+    } else {
+      mocks.nextSpawnError = new Error("start failed");
+      await expect(service.start({ subject, capabilities: CAPS, countdownSeconds: 0 })).rejects.toThrow("start failed");
+      expect(service.attachTrustedWindowIdentity?.(mocks.currentState.sessionId as string, identity)).toBe(true);
+    }
+    expect(mocks.currentState.phase).toBe("failed");
+    mocks.liveWindows[0]!.title = "Refreshed title — 東京";
+    if (scenario === "reused window") mocks.liveWindows[0]!.pid = 701;
+    const retry = service.retry(mocks.currentState.sessionId as string);
+    await acknowledge();
+    await retry;
+    const child = mocks.spawnedChildren.at(-1)!;
+    const stopped = service.stop();
+    if (platform === "darwin") child.emitLine({
+      event: "stopped", durationSec: 2, containerFormat: "mp4",
+      hasSystemAudio: false, hasMicrophoneAudio: false,
+ requestedSystemAudio: false,
+ requestedMicrophone: false,
+      outputPath: "/fake/captures/src-1.mp4"
+    });
+    else child.emit("exit", 0, null);
+    await vi.advanceTimersByTimeAsync(0);
+    await stopped;
+    const { insertCapture } = await import("../../persistence/captures-repo");
+    expect(vi.mocked(insertCapture).mock.calls.at(-1)![0].source_window_title)
+      .toBe(scenario === "reused window" ? null : "Refreshed title — 東京");
+  });
+});
+
+describe("RecordingService.stop recorder temp lifecycle", () => {
+  test("preserves native recorder output and clears lifecycle state when adoption fails", async () => {
+    const sourceStore = await import("../../persistence/source-store");
+    vi.mocked(sourceStore.adoptExistingFileAsSource).mockRejectedValueOnce(
+      new Error("native source adoption failed")
+    );
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    const started = service.start({
+      subject: SUBJECT,
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const child = mocks.spawnedChildren[0]!;
+    child.emitLine({
+      event: "started",
+      physicalRect: { x: 0, y: 0, w: 100, h: 100 }
+    });
+    await started;
+
+    const recoveryPath = "/tmp/pwrsnap-recording-fake/native-session.mp4";
+    const stopped = service.stop();
+    child.emitLine({
+      event: "stopped",
+      durationSec: 2.5,
+      containerFormat: "mp4",
+      hasSystemAudio: false,
+      hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
+      outputPath: recoveryPath
+    });
+
+    await expect(stopped).rejects.toThrow("native source adoption failed");
+    expect(service.isActive()).toBe(false);
+    expect(mocks.stateLogFull.at(-1)).toEqual({
+      phase: "failed",
+      sessionId: expect.any(String),
+      code: "processing_failed",
+      canRetry: false,
+      displayId: 1
+    });
+    expect(mocks.removedRecordingDirs).toEqual([]);
+    expect(mocks.warningLogs).toContainEqual({
+      message: "recording adoption failed; recorder output preserved for recovery",
+      fields: {
+        outputPath: recoveryPath,
+        tempDir: "/tmp/pwrsnap-recording-fake",
+        message: "native source adoption failed"
+      }
+    });
+  });
+
+  test("clears native lifecycle without a recovery claim after adoption succeeds", async () => {
+    const sourceStore = await import("../../persistence/source-store");
+    vi.mocked(sourceStore.statSource).mockRejectedValueOnce(
+      new Error("post-adoption stat failed")
+    );
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    const started = service.start({
+      subject: SUBJECT,
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const child = mocks.spawnedChildren[0]!;
+    child.emitLine({
+      event: "started",
+      physicalRect: { x: 0, y: 0, w: 100, h: 100 }
+    });
+    await started;
+
+    const stopped = service.stop();
+    child.emitLine({
+      event: "stopped",
+      durationSec: 2.5,
+      containerFormat: "mp4",
+      hasSystemAudio: false,
+      hasMicrophoneAudio: false,
+      requestedSystemAudio: false,
+      requestedMicrophone: false,
+      outputPath: "/tmp/pwrsnap-recording-fake/native-session.mp4"
+    });
+
+    await expect(stopped).rejects.toThrow("post-adoption stat failed");
+    expect(service.isActive()).toBe(false);
+    expect(mocks.stateLogFull.at(-1)).toEqual({
+      phase: "failed",
+      sessionId: expect.any(String),
+      code: "processing_failed",
+      canRetry: false,
+      displayId: 1
+    });
+    expect(mocks.removedRecordingDirs).toEqual(["/tmp/pwrsnap-recording-fake"]);
+    expect(mocks.warningLogs.map(({ message }) => message)).not.toContain(
+      "recording adoption failed; recorder output preserved for recovery"
+    );
   });
 });
 
 describe("RecordingService.start startedPromise timeout", () => {
+  test("a microphone setup failure becomes an actionable durable failure", async () => {
+    const { __setRecordingServiceForTests, getRecordingService } = await import("../recording-service");
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+    const result = service.start({
+      subject: SUBJECT,
+      capabilities: { systemAudio: false, microphone: true },
+      countdownSeconds: 0
+    }).catch((cause: unknown) => cause);
+    await vi.advanceTimersByTimeAsync(0);
+    const child = mocks.spawnedChildren[0]!;
+    child.emitLine({ event: "error", code: "microphone_unavailable", message: "private device details" });
+    await result;
+    expect(child.killCalled).toBe(true);
+    expect(mocks.currentState).toMatchObject({ phase: "failed", code: "microphone_unavailable", canRetry: true });
+    expect(JSON.stringify(mocks.stateLogFull)).not.toContain("private device details");
+  });
   test("recorder that never acks `started` is killed after 15s and state goes to failed", async () => {
     const { __setRecordingServiceForTests, getRecordingService } = await import(
       "../recording-service"
@@ -793,6 +1326,7 @@ describe("RecordingService.start startedPromise timeout", () => {
     expect(child.killCalled).toBe(true);
     // State path includes a `failed` transition for the HUD/tray.
     expect(mocks.stateLog.map((s) => s.phase)).toContain("failed");
+    expect(mocks.removedRecordingDirs).toEqual(["/tmp/pwrsnap-recording-fake"]);
   });
 
   test("native recorder exit after start becomes a durable safe failure", async () => {
@@ -852,6 +1386,29 @@ describe("Windows FFmpeg recorder", () => {
     await vi.advanceTimersByTimeAsync(0);
     await cancelPromise;
   }
+
+  test("restart keeps the selected camera and a later camera-off take stays off", async () => {
+    const service = await loadWindowsService();
+    const camera = { deviceId: "presenter-camera", label: "Presenter camera" };
+    await service.start({ subject: SUBJECT, capabilities: { ...CAPS, camera }, countdownSeconds: 0 });
+    expect(mocks.beginCamera).toHaveBeenLastCalledWith(camera);
+    // Caller state can change after start; the take owns a snapshot.
+    camera.deviceId = "different-camera";
+    const restart = service.restart();
+    mocks.spawnedChildren[0]!.emit("exit", 0, null);
+    await vi.advanceTimersByTimeAsync(3_100);
+    await restart;
+
+    expect(mocks.beginCamera).toHaveBeenCalledTimes(2);
+    expect(mocks.beginCamera).toHaveBeenLastCalledWith({ deviceId: "presenter-camera", label: "Presenter camera" });
+    expect(mocks.cancelCamera).toHaveBeenCalled();
+    expect(mocks.spawnCalls[1]!.args).toContain("info");
+    await cancelAndExit(service, mocks.spawnedChildren[1]!);
+
+    await service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+    expect(mocks.beginCamera).toHaveBeenCalledTimes(2);
+    await cancelAndExit(service, mocks.spawnedChildren[2]!);
+  });
 
   test.each([
     { label: "explicit true", captureCursor: true, drawMouse: "1" },
@@ -1098,6 +1655,131 @@ describe("Windows FFmpeg recorder", () => {
     expect(stopped.captureId).toBe("cap-1");
     expect(mocks.stateLog.map((s) => s.phase)).toContain("processing");
     expect(mocks.stateLog.map((s) => s.phase)).toContain("ready");
+
+    const captures = await import("../../persistence/captures-repo");
+    const calls = (captures.insertCapture as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls;
+    const row = calls.at(-1)![0] as Record<string, unknown>;
+    expect(row.source_window_title).toBeNull();
+    expect(mocks.removedRecordingDirs).toEqual(["/tmp/pwrsnap-recording-fake"]);
+  });
+
+  test("persists source_window_title for a window subject", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    const started = await service.start({
+      subject: {
+        kind: "window",
+        windowId: 133048,
+        rect: { x: 0, y: 0, w: 100, h: 100 },
+        displayId: 1,
+        appName: "slack",
+        appBundleId: "C:\\Program Files\\Slack\\slack.exe"
+      },
+      capabilities: CAPS,
+      countdownSeconds: 0
+    });
+    mocks.liveWindows.push({
+      windowId: 133048,
+      pid: 900,
+      title: "项目状态 — Café 🚀"
+    });
+    expect(
+      service.attachTrustedWindowIdentity?.(started.sessionId, {
+        windowId: 133048,
+        pid: 900
+      })
+    ).toBe(true);
+
+    const child = mocks.spawnedChildren[0]!;
+    const stopPromise = service.stop();
+    child.emit("exit", 0, null);
+    await stopPromise;
+
+    const captures = await import("../../persistence/captures-repo");
+    const calls = (captures.insertCapture as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls;
+    const row = calls.at(-1)![0] as Record<string, unknown>;
+    expect(row.source_window_title).toBe("项目状态 — Café 🚀");
+  });
+
+  test("preserves the complete recorder output when source adoption fails", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const sourceStore = await import("../../persistence/source-store");
+    vi.mocked(sourceStore.adoptExistingFileAsSource).mockRejectedValueOnce(
+      new Error("source adoption failed")
+    );
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    await service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+    const child = mocks.spawnedChildren[0]!;
+    const stopPromise = service.stop();
+    child.emit("exit", 0, null);
+
+    await expect(stopPromise).rejects.toThrow("source adoption failed");
+    expect(service.isActive()).toBe(false);
+    expect(mocks.stateLogFull.at(-1)).toEqual({
+      phase: "failed",
+      sessionId: expect.any(String),
+      code: "processing_failed",
+      canRetry: false,
+      displayId: 1
+    });
+    expect(mocks.removedRecordingDirs).toEqual([]);
+    const preservationLog = mocks.warningLogs.find(
+      ({ message }) => message === "recording adoption failed; recorder output preserved for recovery"
+    );
+    expect(preservationLog?.fields?.tempDir).toBe("/tmp/pwrsnap-recording-fake");
+    const recoveryOutputPath = preservationLog?.fields?.outputPath;
+    expect(typeof recoveryOutputPath).toBe("string");
+    expect(dirname(recoveryOutputPath as string)).toBe(
+      join("/tmp", "pwrsnap-recording-fake")
+    );
+    expect(extname(recoveryOutputPath as string)).toBe(".mp4");
+  });
+
+  test("cleans lifecycle without a false recovery claim after durable Windows adoption", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    (process as { resourcesPath?: string }).resourcesPath = "C:\\fake";
+    const sourceStore = await import("../../persistence/source-store");
+    vi.mocked(sourceStore.statSource).mockRejectedValueOnce(
+      new Error("post-adoption metadata failed")
+    );
+    const { __setRecordingServiceForTests, getRecordingService } = await import(
+      "../recording-service"
+    );
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+
+    await service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+    const child = mocks.spawnedChildren[0]!;
+    const stopPromise = service.stop();
+    child.emit("exit", 0, null);
+
+    await expect(stopPromise).rejects.toThrow("post-adoption metadata failed");
+    expect(service.isActive()).toBe(false);
+    expect(mocks.stateLogFull.at(-1)).toEqual({
+      phase: "failed",
+      sessionId: expect.any(String),
+      code: "processing_failed",
+      canRetry: false,
+      displayId: 1
+    });
+    expect(mocks.removedRecordingDirs).toEqual(["/tmp/pwrsnap-recording-fake"]);
+    expect(mocks.warningLogs.map(({ message }) => message)).not.toContain(
+      "recording adoption failed; recorder output preserved for recovery"
+    );
   });
 
   test("converts selected DIP rects to physical pixels before gdigrab", async () => {
@@ -1149,5 +1831,6 @@ describe("Windows FFmpeg recorder", () => {
     expect(mocks.stateLog.map((s) => s.phase)).toContain("failed");
     expect(mocks.stateLog.map((s) => s.phase)).not.toContain("processing");
     expect(mocks.stateLog.map((s) => s.phase)).not.toContain("ready");
+    expect(mocks.removedRecordingDirs).toEqual(["/tmp/pwrsnap-recording-fake"]);
   });
 });

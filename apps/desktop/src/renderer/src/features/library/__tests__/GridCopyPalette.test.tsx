@@ -74,6 +74,7 @@ const imageRecord: CaptureRecord = {
   sha256: "sha_cap_image",
   source_app_bundle_id: "com.example.app",
   source_app_name: "Example",
+  source_window_title: null,
   edits_version: 0,
   has_alpha: false,
   deleted_at: null
@@ -88,7 +89,10 @@ const videoRecord: CaptureRecord = {
     containerFormat: "mp4",
     hasSystemAudio: false,
     hasMicrophoneAudio: false,
+    requestedSystemAudio: false,
+    requestedMicrophone: false,
     defaultRange: { start: 0, end: 4 },
+    segments: [{ start: 0, end: 4 }],
     previewPath: null,
     previewStatus: "ready"
   }

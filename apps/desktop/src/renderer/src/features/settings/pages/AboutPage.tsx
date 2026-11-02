@@ -4,6 +4,7 @@
 // repo LICENSE file); links open the changelog + third-party notices.
 
 import { useEffect, useState, type ReactElement } from "react";
+import { PWRSNAP_RELEASES_URL, releaseNotesUrl } from "@pwrsnap/shared";
 import { Card, Row } from "../components";
 import { dispatch } from "../../../lib/pwrsnap";
 
@@ -51,6 +52,16 @@ export function AboutPage(): ReactElement {
       setLinkError(result.error.message);
     }
   }
+
+  // Kept as `undefined` rather than collapsed into the index URL: the rest of
+  // the row needs to know WHICH of the two it got, and recovering that by
+  // comparing a composed URL against a constant would be a coincidence rather
+  // than a decision.
+  const taggedReleaseUrl = releaseNotesUrl(info?.version);
+  // `info` is null until `app:version` answers. Every other row on this page
+  // prints "—" rather than guessing, so this one must not spend that window
+  // claiming the running build has no published release.
+  const versionKnown = info !== null;
 
   return (
     <>
@@ -127,6 +138,43 @@ export function AboutPage(): ReactElement {
           >
             Open changelog
           </button>
+        </Row>
+        {/* The bundled changelog can only describe the build it shipped
+            inside. Everything published since — including whatever the
+            updater is currently offering — is on GitHub, so the card that
+            is literally called "Release notes" has to point there too. A
+            build whose version is not a published release (a dev build, an
+            E2E override) falls back to the index rather than a dead tag. */}
+        <Row
+          label="On GitHub"
+          sub={
+            !versionKnown
+              ? "Reading this build's version..."
+              : taggedReleaseUrl === undefined
+                ? "Notes for every published build."
+                : "Notes for this version, plus everything published since."
+          }
+          tag="github"
+        >
+          {/* An `<a href>`, unlike the two buttons above it, because this row
+              reaches a URL and they open an in-app document window — there is
+              no address for those to carry. The `onClick` -> `openExternal`
+              pairing is the same one the Links card uses, and the navigation
+              guard is what makes the href safe (root AGENTS.md, "No
+              webContents opens a window, and none navigates away"). */}
+          <a
+            className="pss__top-btn"
+            {...(versionKnown
+              ? { href: taggedReleaseUrl ?? PWRSNAP_RELEASES_URL }
+              : { "aria-disabled": true, tabIndex: -1 })}
+            onClick={(e) => {
+              e.preventDefault();
+              if (!versionKnown) return;
+              void openExternal(taggedReleaseUrl ?? PWRSNAP_RELEASES_URL);
+            }}
+          >
+            {taggedReleaseUrl === undefined ? "Open releases" : "Open release notes"}
+          </a>
         </Row>
       </Card>
 

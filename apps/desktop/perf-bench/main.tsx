@@ -68,7 +68,8 @@ const VIDEO = {
   durationSec: DURATION_SEC,
   hasSystemAudio: false,
   hasMicrophoneAudio: false,
-  defaultRange: { start: 0, end: DURATION_SEC }
+  defaultRange: { start: 0, end: DURATION_SEC },
+  segments: [{ start: 0, end: DURATION_SEC }]
 } as never;
 
 function Bench(): ReactElement {

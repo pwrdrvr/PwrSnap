@@ -57,6 +57,7 @@ import {
   type CopyPreset
 } from "../shared/CopyButton";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
+import { recordedAudioTracks } from "../shared/useMp4ExportAudio";
 import { VideoExportPresetsPanel } from "../shared/VideoExportPresetsPanel";
 import { dispatch, startCaptureDrag, subscribe } from "../../lib/pwrsnap";
 import { copyImagePreset, copyImagePresetPath } from "../../lib/clipboard-copy";
@@ -163,7 +164,6 @@ export function GridCopyPalette({
   // write updates the visible state first, but must roll back to this
   // value when persistence fails rather than leaving a session-only mode.
   const confirmedAnchor = useRef<GridCopyPaletteAnchor>("follow");
-  const pendingPreviewOpen = useRef<PendingWrite<boolean>>(null);
   // One anchor flip per drag — a burst of pointermoves inside a single
   // React batch would otherwise fire several identical settings writes.
   const flippedThisDrag = useRef(false);
@@ -471,7 +471,8 @@ export function GridCopyPalette({
           type="button"
           className="psl__et-grip"
           aria-label="Drag copy palette (double-click to reset)"
-          title="Drag to move · double-click to reset"
+          data-tip="Drag to move"
+          data-tip-detail="Double-click to reset"
           data-testid="psl-grid-copy-palette-grip"
           onPointerDown={onGripPointerDown}
           onPointerMove={onGripPointerMove}
@@ -492,7 +493,8 @@ export function GridCopyPalette({
             type="button"
             className="psl__grid-copy-palette-locate"
             aria-label="Scroll the selected capture back into view"
-            title="Selected capture is off screen — click to scroll to it"
+            data-tip="Scroll to the selected capture"
+            data-tip-detail="It is off screen"
             data-testid="psl-grid-copy-palette-locate"
             onClick={() => onLocate(record.id)}
           >
@@ -519,10 +521,9 @@ export function GridCopyPalette({
           }
           aria-label={isFollow ? "Follow selection" : "Stay put"}
           aria-pressed={isFollow}
-          title={
-            isFollow
-              ? "Following the selection · click to stay put"
-              : "Staying put · click to follow the selection"
+          data-tip={isFollow ? "Following the selection" : "Staying put"}
+          data-tip-detail={
+            isFollow ? "Click to stay put" : "Click to follow the selection"
           }
           data-testid="psl-grid-copy-palette-anchor-toggle"
           onClick={() => writeAnchor(isFollow ? "pinned" : "follow")}
@@ -558,6 +559,7 @@ export function GridCopyPalette({
           <div data-testid="psl-grid-copy-palette-video">
             <VideoExportPresetsPanel
               captureId={record.id}
+              audioTracks={recordedAudioTracks(record.video)}
               shortcutPlatform={shortcutPlatform}
             />
           </div>

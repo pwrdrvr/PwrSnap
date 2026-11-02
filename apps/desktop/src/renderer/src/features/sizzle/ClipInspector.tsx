@@ -13,8 +13,10 @@
 import type { ReactElement } from "react";
 import {
   SIZZLE_TRANSITIONS,
+  sizzleLibraryCutSummary,
   sizzleTransitionDurationSec,
   sizzleTransitionType,
+  sizzleUsesCaptureCuts,
   type CaptureRecord,
   type SizzleBeatTiming,
   type SizzleSequenceBeat,
@@ -110,7 +112,9 @@ export function ClipInspector(props: ClipInspectorProps): ReactElement {
           className="szl__insp-close"
           onClick={onClose}
           aria-label="Close inspector"
-          title="Close inspector (click bare track or press Esc)"
+          data-tip="Close inspector"
+          data-tip-keys="Esc"
+          data-tip-detail="Or click the bare track"
           data-testid="sizzle-inspector-close"
         >
           ✕
@@ -340,6 +344,9 @@ export function ClipInspector(props: ClipInspectorProps): ReactElement {
             </select>
           </div>
         ) : null}
+
+        {/* ── Library cuts ── */}
+        <LibraryCutsField beat={beat} capture={capture} onEditBeat={onEditBeat} />
       </div>
 
       <footer className="szl__insp-foot">
@@ -348,7 +355,8 @@ export function ClipInspector(props: ClipInspectorProps): ReactElement {
           className="szl__scene-mini"
           onClick={() => onReorder(-1)}
           disabled={isFirst}
-          title="Move clip earlier"
+          aria-label="Move clip earlier"
+          data-tip="Move clip earlier"
           data-testid="sizzle-inspector-move-earlier"
         >
           ◀
@@ -358,7 +366,8 @@ export function ClipInspector(props: ClipInspectorProps): ReactElement {
           className="szl__scene-mini"
           onClick={() => onReorder(1)}
           disabled={isFinal}
-          title="Move clip later"
+          aria-label="Move clip later"
+          data-tip="Move clip later"
           data-testid="sizzle-inspector-move-later"
         >
           ▶
@@ -376,6 +385,65 @@ export function ClipInspector(props: ClipInspectorProps): ReactElement {
         </button>
       </footer>
     </section>
+  );
+}
+
+/**
+ * Skip or play the cuts made to this clip's capture in the Library. Only
+ * shown when there are cuts inside the clip's trim — a clip with nothing
+ * to skip has no decision to make. Skipping is the default: the stored
+ * beat carries only the opt-out.
+ */
+function LibraryCutsField({
+  beat,
+  capture,
+  onEditBeat
+}: {
+  beat: SizzleSequenceBeat;
+  capture: CaptureRecord | null;
+  onEditBeat: (patch: Partial<SizzleSequenceBeat>) => void;
+}): ReactElement | null {
+  const video = capture?.kind === "video" ? capture.video ?? null : null;
+  if (video === null) return null;
+  const trim = beat.mediaTrim ?? { startSec: video.defaultRange.start, endSec: video.defaultRange.end };
+  const summary = sizzleLibraryCutSummary(trim, video.segments);
+  if (summary === null) return null;
+  const { removedSec, cutCount } = summary;
+  const skipping = sizzleUsesCaptureCuts(beat);
+  const cuts = `${cutCount} cut${cutCount === 1 ? "" : "s"}`;
+  return (
+    <div className="szl__insp-field">
+      <span className="szl__insp-label">Library cuts</span>
+      <div className="szl__insp-seg" role="group" aria-label="Library cuts">
+        <button
+          type="button"
+          className={skipping ? "is-on" : undefined}
+          aria-pressed={skipping}
+          onClick={() => {
+            if (!skipping) onEditBeat({ useCaptureCuts: true });
+          }}
+          data-testid="sizzle-inspector-cuts-skip"
+        >
+          Skip
+        </button>
+        <button
+          type="button"
+          className={skipping ? undefined : "is-on"}
+          aria-pressed={!skipping}
+          onClick={() => {
+            if (skipping) onEditBeat({ useCaptureCuts: false });
+          }}
+          data-testid="sizzle-inspector-cuts-play"
+        >
+          Play
+        </button>
+      </div>
+      <p className="szl__insp-hint" data-testid="sizzle-inspector-cuts-hint">
+        {skipping
+          ? `Skips ${cuts} made in the Library (−${removedSec.toFixed(1)} s).`
+          : `Plays the ${removedSec.toFixed(1)} s removed in the Library.`}
+      </p>
+    </div>
   );
 }
 

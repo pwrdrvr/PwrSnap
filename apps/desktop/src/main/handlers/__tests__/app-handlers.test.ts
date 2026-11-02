@@ -113,7 +113,7 @@ describe("app:* handlers", () => {
     expect(result.value.content).toContain("# Changelog");
   });
 
-  test("app:readDocument reads third-party licenses", async () => {
+  test("app:readDocument reads the third-party notices", async () => {
     const result = await bus.dispatch(
       "app:readDocument",
       { kind: "third-party-licenses" },
@@ -122,8 +122,21 @@ describe("app:* handlers", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected ok");
-    expect(result.value.title).toBe("Third-Party Licenses");
+    expect(result.value.title).toBe("Third-Party Notices");
     expect(result.value.content).toContain("PwrSnap Third-Party Licenses");
+  });
+
+  test("app:readDocument reads the license (Help → View License)", async () => {
+    const result = await bus.dispatch(
+      "app:readDocument",
+      { kind: "license" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.value.title).toBe("License");
+    expect(result.value.content).toContain("MIT License");
   });
 
   test("app:readDocument rejects an unknown kind", async () => {
@@ -173,7 +186,8 @@ describe("app:* handlers", () => {
       "https://pwrsnap.com",
       "https://docs.pwrsnap.com",
       "https://github.com/pwrdrvr",
-      "https://github.com/pwrdrvr/PwrSnap"
+      "https://github.com/pwrdrvr/PwrSnap",
+      "https://github.com/openai/codex/releases"
     ]) {
       const result = await bus.dispatch("app:openExternal", { url }, { principal: "ipc" });
       expect(result.ok).toBe(true);
@@ -190,6 +204,10 @@ describe("app:* handlers", () => {
       "https://pwrsnap.com.evil.com", // suffix-spoof
       "https://github.com/someone-else/repo", // github, wrong org
       "https://github.com/pwrdrvrx/evil", // /pwrdrvr prefix-spoof
+      "https://github.com/openai/codex",
+      "https://github.com/openai/codex/releases/download/anything",
+      "https://github.com/openai/codex/releases?redirect=elsewhere",
+      "https://github.com/openai/codex/releases-evil",
       "javascript:alert(1)",
       "not a url"
     ]) {

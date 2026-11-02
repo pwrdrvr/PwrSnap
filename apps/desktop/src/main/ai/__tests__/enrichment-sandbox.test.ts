@@ -68,6 +68,7 @@ describe("codexEnrichmentPermissionProfile", () => {
   // three. See docs/solutions/2026-08-17-enrichment-read-scoping-probe.md.
   it("denies the filesystem root, keeps the jail readable", () => {
     expect(codexEnrichmentPermissionProfile("/tmp/jail")).toEqual({
+      default_permissions: "pwrsnap_enrichment",
       permissions: {
         pwrsnap_enrichment: {
           filesystem: {
@@ -78,6 +79,11 @@ describe("codexEnrichmentPermissionProfile", () => {
         }
       }
     });
+  });
+
+  it("leaves the named profile unselected for the legacy sandbox fallback", () => {
+    expect(codexEnrichmentPermissionProfile("/tmp/jail", "sandbox"))
+      .not.toHaveProperty("default_permissions");
   });
 
   // Without `:minimal`, denying `:root` also denies reading /bin/cat, so no

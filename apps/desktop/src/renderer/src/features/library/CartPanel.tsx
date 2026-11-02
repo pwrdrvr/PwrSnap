@@ -28,6 +28,8 @@ import { formatBytes } from "../../lib/format-bytes";
 import { useCart } from "./CartContext";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
 import { DeleteConfirm } from "../shared/DeleteConfirm";
+import { useDismissable } from "../../lib/useDismissable";
+import { useFocusReturn } from "../../lib/useFocusReturn";
 import { FoIcon } from "../float-over/FoIcons";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 
@@ -117,6 +119,20 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
   const [rowsById, setRowsById] = useState<Map<string, CartRow>>(new Map());
   const [committing, setCommitting] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const pickerTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const pickerRef = useRef<HTMLUListElement | null>(null);
+  // The picker had no way to close but picking or re-clicking: Escape fell
+  // through to the rail behind it (which unpinned or hid the whole panel),
+  // and Tab walked off the list with it still open. Escape and Tab-out now
+  // close only the picker, and focus goes back to "Add to Existing Sizzle…".
+  useDismissable({
+    open: pickerOpen,
+    onDismiss: () => setPickerOpen(false),
+    surfaceRef: pickerRef,
+    triggerRef: pickerTriggerRef,
+    dismissOnFocusLeave: true
+  });
+  useFocusReturn({ open: pickerOpen, containerRef: pickerRef, returnFocusRef: pickerTriggerRef });
   const [zipping, setZipping] = useState<RenderPreset | null>(null);
   const [zipError, setZipError] = useState<string | null>(null);
   const [zipNote, setZipNote] = useState<string | null>(null);
@@ -332,7 +348,8 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
           <button
             type="button"
             className="psl__cart-clear"
-            title="Empty the cart (does not delete the captures)"
+            data-tip="Empty the cart"
+            data-tip-detail="Does not delete the captures"
             aria-label="Empty the cart"
             onClick={onClear}
           >
@@ -363,7 +380,7 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
                 }
                 draggable
                 onClick={() => onJumpTo?.(captureId)}
-                title={onJumpTo !== undefined ? "Show in the library" : undefined}
+                data-tip={onJumpTo !== undefined ? "Show in the library" : undefined}
                 onDragStart={(e) => {
                   e.dataTransfer.setData("text/plain", String(idx));
                   e.dataTransfer.effectAllowed = "move";
@@ -390,6 +407,9 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
                       ×
                     </span>
                   ) : isVideo ? (
+                    // `muted`, no controls: silent by construction, so the
+                    // audible-track resolution (`video:playback`) would buy
+                    // nothing and can cost a source-sized remux per row.
                     <video
                       src={captureSrcUrl(row.record.id)}
                       preload="metadata"
@@ -417,7 +437,7 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
                   type="button"
                   className="psl__cart-remove"
                   aria-label="Remove from cart"
-                  title="Remove from cart"
+                  data-tip="Remove from cart"
                   onClick={(e) => {
                     e.stopPropagation();
                     onRemove(captureId);
@@ -470,6 +490,7 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
         </button>
         <div className="psl__cart-add-existing">
           <button
+            ref={pickerTriggerRef}
             type="button"
             className="psl__cart-btn"
             disabled={isEmpty || committing || projects.length === 0}
@@ -480,7 +501,7 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
             Add to Existing Sizzle…
           </button>
           {pickerOpen && projects.length > 0 ? (
-            <ul className="psl__cart-picker" role="listbox">
+            <ul ref={pickerRef} className="psl__cart-picker" role="listbox">
               {projects.map((p) => (
                 <li key={p.id}>
                   <button
@@ -549,7 +570,7 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
                     className="fo__copy-file"
                     draggable={!disabled}
                     href="#"
-                    title={`Drag the ${ZIP_PRESET_LABELS[p]} Zip out`}
+                    data-tip={`Drag the ${ZIP_PRESET_LABELS[p]} Zip out`}
                     aria-label={`Drag the ${ZIP_PRESET_LABELS[p]} Zip file out`}
                     role="button"
                     onClick={(e) => e.preventDefault()}

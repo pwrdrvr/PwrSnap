@@ -1,3 +1,4 @@
+import { RecordingCameraSchema, RecordingMicrophoneSchema } from "@pwrsnap/shared";
 // Pre-warmed per-display region-selector windows. Cold BrowserWindow
 // creation is 150–400ms; the ⌘⇧P → first-paint budget is 120ms. So
 // we create one window per display at boot (`show: false`), rebuild
@@ -15,9 +16,23 @@
 // captured), CSS-only — pure positioning + a 1.5px accent border. NO
 // `backdrop-filter` — single biggest cause of jank over Splashtop.
 
-import { app, BrowserWindow, globalShortcut, ipcMain, screen, type Display } from "electron";
+import {
+  app,
+  BrowserWindow,
+  globalShortcut,
+  ipcMain,
+  screen,
+  type Display,
+  type IpcMainInvokeEvent
+} from "electron";
 import { join } from "node:path";
-import type { QuickCaptureAction } from "@pwrsnap/shared";
+import type {
+  QuickCaptureAction,
+  RecordingCapabilities,
+  RecordingDeviceDefaults,
+  SelectorHudStyle
+} from "@pwrsnap/shared";
+import { linuxSquareCorners } from "../linux-window-corners";
 import { getMainLogger } from "../log";
 import { getPreloadPath } from "../window";
 import {
@@ -26,7 +41,14 @@ import {
   selfPidSet,
   type WindowInfo
 } from "./window-list";
-import { captureAndRegister, releaseSnapshot, type ScreenSnapshot } from "./screen-snapshot";
+import {
+  captureAndRegister,
+  readSnapshotForRenderer,
+  recordSnapshotCanvasUpload,
+  releaseAllSnapshots,
+  releaseSnapshot,
+  type ScreenSnapshot
+} from "./screen-snapshot";
 import { isExtentRect, MAX_SELECTOR_EXTENTS } from "./extent-mask";
 import { hideTrayPopoverIfVisible } from "../tray";
 import { setFloatOverState, ensureFloatOverTopmost } from "../float-over";
@@ -53,9 +75,34 @@ let displayListenersAttached = false;
 /** The capture currently waiting for its snapshot to paint before the
  *  selector is shown. Resolved by the SELECTOR_PAINTED_CHANNEL ack
  *  (matching screenUrl) or by its own timeout. */
+type SnapshotPaintOutcome = "loaded" | "timeout" | "superseded";
+// Separate diagnostic ownership from the 250 ms reveal gate. A timeout must
+// not discard the eventual bitmap acknowledgement or its byte accounting.
+let snapshotPaintObservation: {
+  screenUrl: string;
+  senderId: number;
+  startedAt: number;
+  received: boolean;
+  trace: CaptureLatencyTrace | undefined;
+  fields: Record<string, string | number | boolean | null>;
+} | null = null;
+
+function diagnosticMs(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 300_000
+    ? Math.round(value * 100) / 100
+    : null;
+}
+type SnapshotPaintDetails = Readonly<{
+  transport: "img" | "raw-rgba";
+  decodeMs: number | null;
+  mainToRendererBytes: number | null;
+  canvasUploadBytes: number | null;
+}>;
+
 let pendingPaintWait: {
   screenUrl: string;
-  settle: (outcome: "loaded" | "timeout" | "superseded") => void;
+  senderId: number;
+  settle: (outcome: SnapshotPaintOutcome, details?: SnapshotPaintDetails) => void;
   trace?: CaptureLatencyTrace;
 } | null = null;
 
@@ -70,6 +117,42 @@ type PendingPresentation = {
 
 let pendingPresentation: PendingPresentation | null = null;
 let selectorPresentationGeneration = 0;
+let activeSelectorSenderId: number | null = null;
+
+function isTopLevelSelectorFrame(event: IpcMainInvokeEvent): boolean {
+  if (event.sender.isDestroyed()) return false;
+  const senderFrame = event.senderFrame;
+  const mainFrame = event.sender.mainFrame;
+  return (
+    senderFrame !== null &&
+    mainFrame !== null &&
+    senderFrame.processId === mainFrame.processId &&
+    senderFrame.routingId === mainFrame.routingId
+  );
+}
+
+function abortActiveSelector(senderId: number, reason: string): void {
+  if (activeSelectorSenderId !== senderId) return;
+  snapshotPaintObservation = null;
+  activeSelectorSenderId = null;
+  if (pendingPaintWait?.senderId === senderId) {
+    const waiter = pendingPaintWait;
+    pendingPaintWait = null;
+    waiter.settle("superseded");
+  }
+  finishPendingPresentation("destroy", reason, senderId);
+  if (activeScreenSnapshot !== null) {
+    const stale = activeScreenSnapshot;
+    activeScreenSnapshot = null;
+    void releaseSnapshot(stale.id);
+  }
+  previousAppPid = null;
+  if (pendingResolver !== null) {
+    const resolver = pendingResolver;
+    pendingResolver = null;
+    resolver({ ok: false, reason: "destroyed" });
+  }
+}
 
 function finishPendingPresentation(
   outcome: "cancel" | "destroy",
@@ -90,6 +173,7 @@ function finishPendingPresentation(
  */
 function waitForSnapshotPainted(
   screenUrl: string,
+  senderId: number,
   timeoutMs: number,
   trace?: CaptureLatencyTrace
 ): Promise<void> {
@@ -99,19 +183,48 @@ function waitForSnapshotPainted(
     stale.settle("superseded");
   }
   return new Promise<void>((resolve) => {
+    const observation = {
+      screenUrl,
+      senderId,
+      startedAt: performance.now(),
+      received: false,
+      trace,
+      fields: {
+        transport: activeScreenSnapshot?.selectorDescriptor?.transport ?? "img",
+        gateOutcome: "waiting"
+      } as Record<string, string | number | boolean | null>
+    };
+    snapshotPaintObservation = observation;
     const resourceStage = trace?.begin("frozen_source_decode_ready");
     let settled = false;
-    const finish = (outcome: "loaded" | "timeout" | "superseded"): void => {
+    const finish = (
+      outcome: SnapshotPaintOutcome,
+      details?: SnapshotPaintDetails
+    ): void => {
       if (settled) return;
       settled = true;
+      observation.fields.gateOutcome = outcome;
       clearTimeout(timer);
       if (pendingPaintWait?.settle === settlePaint) pendingPaintWait = null;
       if (resourceStage !== undefined) {
+        const transport = details?.transport ?? observation.fields.transport;
         trace?.end(resourceStage, {
           outcome,
-          renderer: "img",
-          signal: outcome === "loaded" ? "load" : "none",
-          canvas: "not_used"
+          renderer: transport === "raw-rgba" ? "canvas" : "img",
+          signal:
+            outcome === "loaded"
+              ? transport === "raw-rgba"
+                ? "ipc"
+                : "load"
+              : "none",
+          canvas: transport === "raw-rgba" ? "put_image_data" : "not_used",
+          ...(details !== undefined
+            ? {
+                decodeMs: details.decodeMs,
+                mainToRendererBytes: details.mainToRendererBytes,
+                canvasUploadBytes: details.canvasUploadBytes
+              }
+            : {})
         });
       }
       resolve();
@@ -120,6 +233,7 @@ function waitForSnapshotPainted(
     const timer = setTimeout(() => finish("timeout"), timeoutMs);
     pendingPaintWait = {
       screenUrl,
+      senderId,
       settle: settlePaint,
       ...(trace !== undefined ? { trace } : {})
     };
@@ -163,7 +277,7 @@ const selectorPrewarmTimings = new Map<number, SelectorPrewarmTiming>();
 let lastSnapshot: WindowInfo[] = [];
 
 // Active screen snapshot for the in-flight pickRegion. The selector
-// shows this PNG as a full-window background image; the user drags
+// shows this immutable generation as a full-window background; the user drags
 // against the snapshot, and commit crops the snapshot rather than
 // re-shooting the live screen. Released on hide.
 let activeScreenSnapshot: ScreenSnapshot | null = null;
@@ -196,11 +310,9 @@ export type SelectorResult =
       ok: true;
       rect: { x: number; y: number; w: number; h: number };
       displayId: number;
-      /** Path to the frozen-at-show screen snapshot. The capture
-       *  handler crops this file at `rect * scaleFactor` rather than
-       *  re-shooting the live screen. */
-      screenSnapshotPath: string;
-      /** Registry id matching the path. Capture-handlers MUST call
+      /** Registry id for the exact generation painted by the selector.
+       *  The backing store is a PNG file on macOS/Linux/fallback and a
+       *  retained raw buffer on the Windows fast path. Capture-handlers MUST call
        *  `releaseSnapshot(id)` from screen-snapshot.ts after
        *  cropping — ownership transfers from the selector module to
        *  the consumer when this result is produced, so
@@ -228,6 +340,16 @@ export type SelectorResult =
        *  `settings.recording.videoCaptureCursor`). Undefined for image
        *  captures, which don't consume it yet (Phase 3). */
       captureCursor?: boolean;
+      /** Recording-only: the audio sources the user armed on the
+       *  selector's source chips, seeded per show from
+       *  `settings.recording.includeMicrophone` / `.includeSystemAudio`.
+       *
+       *  Undefined means "the selector did not ask" — an image commit,
+       *  or a show that never rendered the chips — and the recording
+       *  entry point then falls back to the persisted defaults. It does
+       *  NOT mean "both off": a selector that answered the question is
+       *  always explicit about both sources. */
+      sources?: RecordingCapabilities;
       /** The terminal action the user chose at commit (issue #75).
        *  Present ONLY for `"record"`; a snap commit omits it and every
        *  reader treats a missing value as `"snap"`, so a pre-chooser
@@ -279,14 +401,17 @@ const SELECTOR_KEY_CHANNEL = "region-selector:key";
 // before show() and the renderer flips its UI accordingly. Possible
 // values: 'auto' | 'region' | 'window'.
 const SELECTOR_MODE_CHANNEL = "region-selector:mode";
-// Renderer → main: the renderer fires this once the frozen-snapshot
-// <img> for a given screenUrl has loaded/decoded. Main waits for it
+// Renderer → main: the renderer fires this once the frozen snapshot has
+// painted through either canvas or <img>. Main waits for it
 // before `win.show()` so the window never appears as an empty
 // transparent overlay (which would flash the live screen / desktop
 // behind it for a frame before the snapshot paints). Carries the
 // screenUrl so a late ack from a previous capture can't satisfy the
 // current wait.
 const SELECTOR_PAINTED_CHANNEL = "region-selector:painted";
+// Renderer → main request for one validated RGBA copy of the active Windows
+// retained raw buffer. Accepted only from the active selector's top-level frame.
+const SELECTOR_SNAPSHOT_READ_CHANNEL = "region-selector:snapshot-read";
 // Main → renderer after show/focus/moveTop; renderer crosses two rAF
 // boundaries then acks on SELECTOR_PRESENTED_CHANNEL. Diagnostic only:
 // unlike SELECTOR_PAINTED_CHANNEL, this never gates selector lifecycle.
@@ -308,6 +433,14 @@ export type SelectorMode = "auto" | "region" | "window";
  */
 export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup"): void {
   // Build one window per display we don't already have.
+  //
+  // Deliberately NOT skipped where `capture:interactive` refuses (Wayland
+  // with more than one display). Returning early here to save the
+  // renderers makes a second, invisible refusal: every OTHER `pickRegion`
+  // caller — the Record path in index.ts drives it directly — finds no
+  // selector windows and resolves `destroyed`, so its button does nothing
+  // and says nothing. The refusal lives in one place, the one that can
+  // explain itself; see wayland-refusal-notice.ts.
   const displays = screen.getAllDisplays();
   const liveIds = new Set<number>();
   for (const display of displays) {
@@ -352,22 +485,92 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
       lastViewportByWebContents.set(wcId, summary);
       log.info(`renderer viewport wc=${wcId} ${summary}`);
     });
-    ipcMain.on(SELECTOR_PAINTED_CHANNEL, (_event, payload: unknown) => {
-      // Renderer acked that the frozen snapshot finished painting.
-      // Only satisfy the current wait if the URL matches (a stale ack
-      // from a superseded capture must not reveal the selector early).
-      if (pendingPaintWait === null) return;
-      const ackedUrl =
-        typeof payload === "object" && payload !== null && "screenUrl" in payload
-          ? (payload as { screenUrl?: unknown }).screenUrl
+    ipcMain.handle(SELECTOR_SNAPSHOT_READ_CHANNEL, async (event, payload: unknown) => {
+      const snapshotId =
+        typeof payload === "object" && payload !== null && "id" in payload
+          ? (payload as { id?: unknown }).id
           : null;
-      if (ackedUrl !== null && ackedUrl !== pendingPaintWait.screenUrl) return;
+      if (
+        event.sender.id !== activeSelectorSenderId ||
+        !isTopLevelSelectorFrame(event) ||
+        typeof snapshotId !== "string" ||
+        !/^[A-Za-z0-9_-]{1,64}$/.test(snapshotId) ||
+        activeScreenSnapshot?.id !== snapshotId ||
+        activeScreenSnapshot.selectorDescriptor === undefined
+      ) {
+        log.warn("selector raw snapshot read rejected", {
+          senderMatches: event.sender.id === activeSelectorSenderId,
+          topLevelFrame: isTopLevelSelectorFrame(event),
+          snapshotMatches: activeScreenSnapshot?.id === snapshotId
+        });
+        return { ok: false, code: "unauthorized" } as const;
+      }
+      const observation = snapshotPaintObservation;
+      const readStartedAt = performance.now();
+      const result = await readSnapshotForRenderer(snapshotId);
+      if (observation !== null && observation === snapshotPaintObservation) {
+        observation.fields.mainBitmapReadMs = diagnosticMs(performance.now() - readStartedAt);
+        observation.fields.mainBitmapReadOutcome = result.ok ? "read" : result.code;
+      }
+      if (!result.ok && result.code === "read_failed") {
+        abortActiveSelector(event.sender.id, "raw_snapshot_read_failed");
+      }
+      return result;
+    });
+    ipcMain.on(SELECTOR_PAINTED_CHANNEL, (event, payload: unknown) => {
+      // Renderer acked that the frozen snapshot finished painting.
+      // Only satisfy the current wait if the sender and URL match (a stale
+      // ack from a superseded capture must not reveal the selector early).
+      const observation = snapshotPaintObservation;
+      if (observation === null || observation.received) return;
+      if (event.sender.id !== observation.senderId || event.sender.id !== activeSelectorSenderId) return;
+      if (typeof payload !== "object" || payload === null) return;
+      const painted = payload as Record<string, unknown>;
+      if (painted.screenUrl !== observation.screenUrl) return;
+      observation.received = true;
+      const late = observation.fields.gateOutcome === "timeout";
+      const transport =
+        painted.transport === "raw-rgba" ? "raw-rgba" : "img";
+      const canvasUploadBytes = painted.canvasUploadBytes;
+      if (
+        transport === "raw-rgba" &&
+        activeScreenSnapshot !== null &&
+        Number.isSafeInteger(canvasUploadBytes) &&
+        (canvasUploadBytes as number) >= 0
+      ) {
+        recordSnapshotCanvasUpload(activeScreenSnapshot.id, canvasUploadBytes as number);
+      }
       const waiter = pendingPaintWait;
       pendingPaintWait = null;
-      waiter.trace?.mark("renderer_signal_receipt", {
-        signal: "snapshot_painted"
+      Object.assign(observation.fields, {
+        transport,
+        gateOutcome: late ? "timeout" : "loaded",
+        late,
+        paintedAfterRequestMs: diagnosticMs(performance.now() - observation.startedAt),
+        readRoundTripMs: diagnosticMs(painted.readRoundTripMs),
+        canvasUploadMs: diagnosticMs(painted.canvasUploadMs),
+        rendererReadyMs: diagnosticMs(painted.decodeMs)
       });
-      waiter.settle("loaded");
+      observation.trace?.mark("renderer_signal_receipt", {
+        signal: "snapshot_painted",
+        ...observation.fields
+      });
+      waiter?.settle("loaded", {
+        transport,
+        decodeMs:
+          typeof painted.decodeMs === "number" && Number.isFinite(painted.decodeMs)
+            ? painted.decodeMs
+            : null,
+        mainToRendererBytes:
+          typeof painted.mainToRendererBytes === "number" &&
+          Number.isSafeInteger(painted.mainToRendererBytes)
+            ? painted.mainToRendererBytes
+            : null,
+        canvasUploadBytes:
+          typeof canvasUploadBytes === "number" && Number.isSafeInteger(canvasUploadBytes)
+            ? canvasUploadBytes
+            : null
+      });
     });
     ipcMain.on(SELECTOR_PRESENTED_CHANNEL, (event, payload: unknown) => {
       const pending = pendingPresentation;
@@ -408,18 +611,36 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
         return;
       }
       pendingPresentation = null;
+      const timings = payload as Record<string, unknown>;
+      const presentation = {
+        snapshotWaitMs: diagnosticMs(timings.snapshotWaitMs),
+        firstFrameWaitMs: diagnosticMs(timings.firstFrameWaitMs),
+        secondFrameWaitMs: diagnosticMs(timings.secondFrameWaitMs),
+        rendererTotalMs: diagnosticMs(timings.rendererTotalMs),
+        firstTimerWaitMs: diagnosticMs(timings.firstTimerWaitMs),
+        secondTimerWaitMs: diagnosticMs(timings.secondTimerWaitMs),
+        firstTimerFired: diagnosticMs(timings.firstTimerFired),
+        secondTimerFired: diagnosticMs(timings.secondTimerFired),
+        hiddenAtFrames: diagnosticMs(timings.hiddenAtFrames),
+        hiddenAtAck: diagnosticMs(timings.hiddenAtAck)
+      };
       pending.trace.mark("renderer_signal_receipt", {
         signal: "selector_presented",
         authenticated: true
       });
       pending.trace.end(pending.visibleStage, {
+        ...presentation,
         generation: pending.generation,
         frameBarrier: 2,
         authenticated: true
       });
       pending.trace.finish("presented", {
         generation: pending.generation,
-        frameBarrier: 2
+        frameBarrier: 2,
+        presentation,
+        ...(snapshotPaintObservation?.trace === pending.trace
+          ? { snapshotReadiness: { ...snapshotPaintObservation.fields } }
+          : {})
       });
     });
     ipcMain.on(SELECTOR_RESULT_CHANNEL, (_event, payload: unknown) => {
@@ -430,6 +651,7 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
       if (pendingResolver === null) return;
       const resolver = pendingResolver;
       pendingResolver = null;
+      activeSelectorSenderId = null;
       if (isSelectorPayload(payload) && payload.ok) {
         // Renderer ships rects in WINDOW-LOCAL display logical
         // coords. The selector window covers display.bounds via
@@ -472,7 +694,6 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
               h: payload.rect.h
             },
             displayId: payload.displayId,
-            screenSnapshotPath: snapshot.filePath,
             screenSnapshotId: snapshot.id,
             previousAppPid: prevPid
           };
@@ -484,6 +705,13 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
           }
           if (typeof payload.captureCursor === "boolean") {
             result.captureCursor = payload.captureCursor;
+          }
+          if (payload.sources !== undefined) {
+            result.sources = {
+              microphone: payload.sources.microphone,
+              systemAudio: payload.sources.systemAudio,
+              ...(payload.sources.camera ? { camera: payload.sources.camera } : {})
+            };
           }
           if (payload.action === "record") {
             result.action = "record";
@@ -591,6 +819,22 @@ export async function pickRegion(
      *  when the chooser can reach a recording, or `C` starts from the
      *  wrong default. */
     cursorDefault?: boolean;
+    /** Recording seed for the selector's source chips, from
+     *  `settings.recording.includeMicrophone` / `.includeSystemAudio`.
+     *  Forwarded to the renderer in the mode signal; the committed
+     *  value rides back on the result as `sources`.
+     *
+     *  Omitting it hides the chips entirely, which is the right answer
+     *  for a caller that cannot reach a recording. Pass it on the snap
+     *  path too whenever the chooser can reach one, for the same reason
+     *  `cursorDefault` is passed there. */
+    sourcesDefault?: RecordingCapabilities;
+    /** The saved microphone and camera, from `settings.recording.
+     *  microphoneDevice` / `.cameraDevice`. Forwarded in the mode signal so
+     *  the chips open the saved device and name it before the first frame.
+     *  Omitted means "no saved choice", the same as two nulls. */
+    devicesDefault?: RecordingDeviceDefaults;
+    cameraOffered?: boolean;
     /** Selector-based image-capture diagnostics. Omitted by video flows. */
     latencyTrace?: CaptureLatencyTrace;
     /** Snap-vs-Record policy for this show (issue #75), from
@@ -604,6 +848,9 @@ export async function pickRegion(
      *  otherwise render a Record button, bind `R`, and then quietly
      *  take a still. Ignored when `intent === "video"`. */
     quickCaptureAction?: QuickCaptureAction;
+    /** How the HUD is drawn, from `settings.recording.selectorHud`.
+     *  Omitted means the default (shutter). */
+    hudStyle?: SelectorHudStyle;
   } = {}
 ): Promise<SelectorResult> {
   const mode: SelectorMode = opts.mode ?? "auto";
@@ -611,8 +858,11 @@ export async function pickRegion(
   const protectWindowIds = opts.protectWindowIds ?? [];
   const intent = opts.intent ?? "snap";
   const cursorDefault = opts.cursorDefault;
+  const sourcesDefault = opts.sourcesDefault;
+  const devicesDefault = opts.devicesDefault;
   const latencyTrace = opts.latencyTrace;
   const quickCaptureAction = opts.quickCaptureAction;
+  const hudStyle = opts.hudStyle;
   const requestStartedAt = Date.now();
   const elapsedFromRequest = (): number => Date.now() - requestStartedAt;
   log.info("capture selector requested", {
@@ -703,7 +953,7 @@ export async function pickRegion(
   const chromeStage = latencyTrace?.begin("pwrsnap_chrome_protection");
   if (!keepPwrSnapChrome) {
     hideTrayPopoverIfVisible();
-    setFloatOverState({ kind: "cancel" });
+    setFloatOverState({ kind: "cancel", chromeHide: true });
   }
   // Content-protect the windows the trigger says shouldn't appear in
   // the snapshot (e.g. the Library when the capture was started from
@@ -832,18 +1082,39 @@ export async function pickRegion(
   });
   try {
     const screenSnapshot = await captureAndRegister(targetDisplay.id, latencyTrace);
+    if (win.isDestroyed()) {
+      await releaseSnapshot(screenSnapshot.id);
+      if (screenFrameStage !== undefined) {
+        latencyTrace?.end(screenFrameStage, {
+          outcome: "selector_destroyed",
+          displayId: targetDisplay.id,
+          transport: screenSnapshot.transport,
+          ...screenSnapshot.acquisition
+        });
+      }
+      acceptingWindowList = false;
+      void windowListPromise;
+      latencyTrace?.finish("destroy", {
+        reason: "selector_destroyed_during_screen_acquisition"
+      });
+      return { ok: false, reason: "destroyed" };
+    }
     activeScreenSnapshot = screenSnapshot;
     if (screenFrameStage !== undefined) {
       latencyTrace?.end(screenFrameStage, {
         outcome: "completed",
-        displayId: targetDisplay.id
+        displayId: targetDisplay.id,
+        transport: screenSnapshot.transport,
+        ...screenSnapshot.acquisition
       });
     }
     log.info("completed screen snapshot", {
       displayId: targetDisplay.id,
       durationMs: Date.now() - screenSnapshotRequestedAt,
       durationFromUserRequestMs: elapsedFromRequest(),
-      snapshotId: screenSnapshot.id
+      snapshotId: screenSnapshot.id,
+      transport: screenSnapshot.transport,
+      ...screenSnapshot.acquisition
     });
   } catch (err) {
     if (screenFrameStage !== undefined) {
@@ -882,10 +1153,11 @@ export async function pickRegion(
   installSelectorGlobalShortcuts(win);
 
   const result = await new Promise<SelectorResult>((resolve) => {
+    activeSelectorSenderId = win.webContents.id;
     pendingResolver = resolve;
     windowListResolver = resolve;
-    // Tell the renderer which mode + snapshot URL to use, then let it
-    // render + DECODE the frozen-snapshot <img> while the window is
+    // Tell the renderer which mode + snapshot descriptor/URL to use, then let
+    // it paint the raw canvas or decode the fallback <img> while the window is
     // STILL HIDDEN. We reveal the window only once the renderer acks
     // that paint (or a short timeout elapses) — see `reveal()` below.
     // Showing first (the old behavior) made the window appear as an
@@ -899,9 +1171,16 @@ export async function pickRegion(
         ? {
             mode,
             screenUrl: `pwrsnap-screen://r/${activeScreenSnapshot.id}`,
+            ...(activeScreenSnapshot.selectorDescriptor !== undefined
+              ? { snapshot: activeScreenSnapshot.selectorDescriptor }
+              : {}),
             intent,
             cursor: cursorDefault,
+            ...(sourcesDefault !== undefined ? { sources: sourcesDefault } : {}),
+            ...(devicesDefault !== undefined ? { devices: devicesDefault } : {}),
+            cameraOffered: opts.cameraOffered === true,
             quickCaptureAction,
+            ...(hudStyle !== undefined ? { hudStyle } : {}),
             ...(latencyTrace !== undefined && presentationGeneration !== undefined
               ? {
                   invocationId: latencyTrace.invocation.id,
@@ -1028,6 +1307,7 @@ export async function pickRegion(
     } else {
       void waitForSnapshotPainted(
         modePayload.screenUrl,
+        win.webContents.id,
         SHOW_AFTER_PAINT_TIMEOUT_MS,
         latencyTrace
       ).then(reveal);
@@ -1470,10 +1750,17 @@ export function hideSelector(): void {
 }
 
 function hideAllSelectors(): void {
+  snapshotPaintObservation = null;
   // Release the globalShortcut binding before we lower the window;
   // leaving Esc / ↵ globally bound after the selector is gone would
   // hijack those keys for the rest of the app session.
   uninstallSelectorGlobalShortcuts();
+  activeSelectorSenderId = null;
+  if (pendingPaintWait !== null) {
+    const waiter = pendingPaintWait;
+    pendingPaintWait = null;
+    waiter.settle("superseded");
+  }
   // Release the screen snapshot UNLESS ownership has already
   // transferred to a consumer (the OK code path clears
   // `activeScreenSnapshot` before calling hideAllSelectors). On
@@ -1559,13 +1846,38 @@ function hideAllSelectors(): void {
  * window can return to its normal-bounds state for next time.
  */
 function enterMenuBarOverlayMode(win: BrowserWindow): void {
-  if (process.platform === "win32") {
+  if (process.platform === "win32" || process.platform === "linux") {
     // Windows: the taskbar (Shell_TrayWnd) is itself topmost, so a plain
     // always-on-top overlay renders BELOW it — the real taskbar shows through
     // on top of the frozen screenshot (which already includes a taskbar →
     // "two taskbars"). Native fullscreen spans the whole monitor including the
     // taskbar, so the overlay covers it. (Verified working on Windows; the
     // earlier 0xC0000005 crash was an unrelated tray-right-click bug.)
+    //
+    // Linux is the same class of bug, and it was the whole Ubuntu report.
+    // A non-fullscreen window does not own the screen under GNOME: mutter
+    // MOVES a monitor-sized toplevel into the work area, below the top bar
+    // and right of the dock (measured on mutter 46 with a 32px top / 67px
+    // left strut: the window's pixels landed at 67,32 on both backends), and
+    // chrome stacked above a window can cover it outright. Either way the
+    // live top bar and dock sat next to the frozen snapshot's own copy of
+    // them, which the user reported as a duplicated, offset desktop — and on
+    // Ubuntu 24 the probe measured 32 foreign rows / 67 foreign columns over
+    // the bare overlay against 0 / 0 in fullscreen. setFullScreen(true) owns
+    // the whole output, measured pixel-exact on mutter and sway.
+    //
+    // Do not "verify" placement from main: on a native Wayland client (the
+    // Electron 41 default on a Wayland session) getBounds(), getContentBounds()
+    // and the renderer's screenX/Y all echo the request — they read 0,0 on
+    // the window mutter had moved to 67,32. Only pixels tell.
+    //
+    // Under X11 (a GNOME Xorg session, or forced XWayland) mutter IGNORES the
+    // fullscreen request from a non-resizable window, while Electron's
+    // isFullScreen() still reports true. That is why createSelectorWindow
+    // builds the Linux selector resizable.
+    //
+    // This branch used to `return` for every platform that is neither win32
+    // nor darwin, which is why Linux never entered overlay mode at all.
     //
     // Note: setFullScreen(true) grows the window to the full display (taskbar
     // covered) but isFullScreen() stays false on Windows, and the
@@ -1599,7 +1911,7 @@ function enterMenuBarOverlayMode(win: BrowserWindow): void {
 }
 
 function leaveMenuBarOverlayMode(win: BrowserWindow): void {
-  if (process.platform === "win32") {
+  if (process.platform === "win32" || process.platform === "linux") {
     // Unconditional, NOT guarded on isFullScreen(): that getter stays false on
     // Windows even while the window is grown full-screen (see
     // enterMenuBarOverlayMode), so `if (win.isFullScreen())` would never fire
@@ -1627,6 +1939,7 @@ function createSelectorWindow(
   // display logical px 1:1.
   const { bounds } = display;
   const window = new BrowserWindow({
+    ...linuxSquareCorners(),
     // `type: 'panel'` — NSPanel + NSWindowStyleMaskNonactivatingPanel.
     // Same primitive used by createFloatOverWindow / createTrayWindow.
     // The selector's show()/focus() must NOT cause macOS to switch
@@ -1643,9 +1956,9 @@ function createSelectorWindow(
     // without activating the app.)
     //
     // macOS-only — Windows/Linux have no NSPanel; the frameless,
-    // transparent, always-on-top window below covers the display directly
-    // (setSimpleFullScreen / enterMenuBarOverlayMode are already
-    // darwin-gated).
+    // transparent, always-on-top window below covers the display, and
+    // enterMenuBarOverlayMode takes it native-fullscreen there
+    // (setSimpleFullScreen is the darwin-only arm).
     ...(process.platform === "darwin" ? { type: "panel" as const } : {}),
     title: SELECTOR_WINDOW_TITLE,
     x: bounds.x,
@@ -1655,15 +1968,31 @@ function createSelectorWindow(
     show: false,
     frame: false,
     transparent: true,
-    resizable: false,
+    // Resizable on Linux ONLY, because mutter refuses to fullscreen an X11
+    // window that is not. A non-resizable window carries min == max size
+    // hints, and mutter drops _NET_WM_STATE_FULLSCREEN for it unless those
+    // equal the monitor — which they stop doing the moment mutter has
+    // squeezed the bare window into the work area. Measured on mutter 46 as
+    // an Xorg WM and under XWayland, with this constructor, 32px top / 67px
+    // left struts, and enterMenuBarOverlayMode before show():
+    //
+    //   resizable: false  -> stays at 67,32 1853x1048 (isFullScreen() true!)
+    //   resizable: true   -> 0,0 1920x1080, pixel-exact
+    //
+    // A native Wayland client goes fullscreen either way, so this only
+    // matters on X11 — which is where the Wayland refusal notice sends
+    // multi-display users. Nothing is lost: the window is frameless and
+    // fullscreen while visible, so there is nothing to grab. Windows keeps
+    // `false`; its fullscreen path is verified as is.
+    resizable: process.platform === "linux",
     movable: false,
     minimizable: false,
     maximizable: false,
-    // Windows needs native fullscreen (enterMenuBarOverlayMode) to draw OVER
-    // the taskbar (a topmost window a plain always-on-top overlay can't cover),
-    // so it must be fullscreenable there. macOS uses setSimpleFullScreen and
-    // keeps this false.
-    fullscreenable: process.platform === "win32",
+    // Windows and Linux both need native fullscreen (enterMenuBarOverlayMode)
+    // to draw OVER shell chrome a plain always-on-top overlay cannot cover —
+    // the Windows taskbar, and GNOME's top bar + dock. Both must therefore be
+    // fullscreenable. macOS uses setSimpleFullScreen and keeps this false.
+    fullscreenable: process.platform !== "darwin",
     skipTaskbar: true,
     alwaysOnTop: true,
     hasShadow: false,
@@ -1674,11 +2003,14 @@ function createSelectorWindow(
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
-      // On macOS this window is intentionally hidden while it warms.
-      // Keep Chromium from throttling that hidden renderer load,
-      // otherwise the first shortcut after launch can still wait on
-      // the prewarm to finish.
-      ...(process.platform === "darwin" ? { backgroundThrottling: false } : {}),
+      // This window is intentionally hidden while it warms and between
+      // captures. Keep Chromium from throttling the dedicated renderer:
+      // otherwise a reused Windows selector can carry hidden-page scheduling
+      // into the post-show two-rAF presentation barrier and add a background
+      // scheduling bucket before the first interactive frame. The tradeoff is
+      // that selector animations are not power-throttled while hidden; keep
+      // recurring work off this renderer unless it is scoped to an active pick.
+      backgroundThrottling: false,
       // The renderer needs the display id baked in so it can post the
       // right value back to main on commit. Pass via a query string.
       additionalArguments: [`--display-id=${display.id}`]
@@ -1692,7 +2024,17 @@ function createSelectorWindow(
       "selector_window_closed_before_visible_ack",
       selectorSenderId
     );
+    abortActiveSelector(selectorSenderId, "selector_window_closed");
   });
+  window.webContents.on("render-process-gone", () => {
+    abortActiveSelector(selectorSenderId, "selector_renderer_gone");
+  });
+  window.webContents.on(
+    "did-start-navigation",
+    (_event, _url, _isInPlace, isMainFrame) => {
+      if (isMainFrame) abortActiveSelector(selectorSenderId, "selector_renderer_navigated");
+    }
+  );
 
   // Highest-of-windows ordering — clears menu bar / other overlays.
   window.setAlwaysOnTop(true, "screen-saver");
@@ -1931,6 +2273,7 @@ function isSelectorPayload(value: unknown): value is {
   snappedWindowId?: number;
   fullWindow?: boolean;
   captureCursor?: boolean;
+  sources?: RecordingCapabilities;
   action?: "snap" | "record";
   extents?: { x: number; y: number; w: number; h: number }[];
   outputMode?: "windows" | "rectangle";
@@ -1959,6 +2302,23 @@ function isSelectorPayload(value: unknown): value is {
   if (v.captureCursor !== undefined && typeof v.captureCursor !== "boolean") {
     return false;
   }
+  if (v.sources !== undefined) {
+    // Both booleans or nothing. A half-filled object would be read as
+    // "the user answered" while silently defaulting one source to
+    // `undefined`, which `recording:start` would then treat as off —
+    // the exact class of quiet lie the chips exist to remove.
+    const sources = v.sources as Record<string, unknown> | null;
+    if (sources === null || typeof sources !== "object") return false;
+    if (typeof sources.microphone !== "boolean") return false;
+    if (typeof sources.systemAudio !== "boolean") return false;
+    if (sources.camera !== undefined && !RecordingCameraSchema.safeParse(sources.camera).success) return false;
+    if (
+      sources.microphoneDevice !== undefined &&
+      (sources.microphone !== true || !RecordingMicrophoneSchema.safeParse(sources.microphoneDevice).success)
+    ) {
+      return false;
+    }
+  }
   if (v.action !== undefined && v.action !== "snap" && v.action !== "record") {
     return false;
   }
@@ -1983,6 +2343,16 @@ function isSelectorPayload(value: unknown): value is {
 
 export function disposeRegionSelector(): void {
   finishPendingPresentation("destroy", "selector_disposed_before_visible_ack");
+  if (activeSelectorSenderId !== null) {
+    abortActiveSelector(activeSelectorSenderId, "selector_disposed");
+  } else if (pendingResolver !== null) {
+    const resolver = pendingResolver;
+    pendingResolver = null;
+    resolver({ ok: false, reason: "destroyed" });
+  }
+  activeSelectorSenderId = null;
+  activeScreenSnapshot = null;
+  void releaseAllSnapshots();
   for (const win of selectorWindows.values()) {
     if (!win.isDestroyed()) win.destroy();
   }
@@ -1997,6 +2367,7 @@ export function disposeRegionSelector(): void {
     ipcMain.removeAllListeners(SELECTOR_RESULT_CHANNEL);
     ipcMain.removeAllListeners(SELECTOR_PAINTED_CHANNEL);
     ipcMain.removeAllListeners(SELECTOR_PRESENTED_CHANNEL);
+    ipcMain.removeHandler(SELECTOR_SNAPSHOT_READ_CHANNEL);
     resultListenerAttached = false;
   }
 }
@@ -2005,3 +2376,4 @@ export const REGION_SELECTOR_RESULT_CHANNEL = SELECTOR_RESULT_CHANNEL;
 export const REGION_SELECTOR_WINDOW_LIST_CHANNEL = SELECTOR_WINDOW_LIST_CHANNEL;
 export const REGION_SELECTOR_KEY_CHANNEL = SELECTOR_KEY_CHANNEL;
 export const REGION_SELECTOR_MODE_CHANNEL = SELECTOR_MODE_CHANNEL;
+export const REGION_SELECTOR_SNAPSHOT_READ_CHANNEL = SELECTOR_SNAPSHOT_READ_CHANNEL;

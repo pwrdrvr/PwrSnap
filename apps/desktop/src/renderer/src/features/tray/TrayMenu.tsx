@@ -1,10 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
+  canStartRecordingAttempt,
   desktopFileManagerName,
+  EVENT_CHANNELS,
+  popoverDensityForWorkArea,
+  popoverWidthCss,
   type CaptureInvocationOrigin,
   type CaptureRecord,
   type HotkeyRegistrationStatusSnapshot,
-  type HotkeySettingKey
+  type HotkeySettingKey,
+  type RecordingState
 } from "@pwrsnap/shared";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
@@ -12,13 +17,13 @@ import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { Kbd } from "../shared/Primitives";
 import { useHotkeys } from "../shared/useHotkeys";
+import { recordedAudioTracks } from "../shared/useMp4ExportAudio";
 import { VideoExportPresetsPanel } from "../shared/VideoExportPresetsPanel";
 import { useSurfaceCopyShortcuts } from "../shared/useSurfaceCopyShortcuts";
 import { AppUpdateRow } from "../update/AppUpdateRow";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import {
   cacheUrl,
-  captureSrcUrl,
   dispatch,
   dispatchInteractiveCapture,
   startCaptureDrag
@@ -39,6 +44,27 @@ function fmtTrayDuration(seconds: number): string {
 }
 
 type ModeKind = "auto" | "region" | "window" | "full" | "all" | "timed";
+
+function trayPopoverLayout(workArea?: { widthDip: number; heightDip: number }): {
+  density: "regular" | "compact";
+  widthCss: number;
+} {
+  const widthDip =
+    workArea?.widthDip ??
+    (typeof window.screen?.availWidth === "number" ? window.screen.availWidth : null);
+  const heightDip =
+    workArea?.heightDip ??
+    (typeof window.screen?.availHeight === "number" ? window.screen.availHeight : null);
+  return {
+    density: popoverDensityForWorkArea({ widthDip, heightDip }),
+    widthCss: popoverWidthCss({
+      kind: "tray",
+      workAreaWidthDip: widthDip,
+      workAreaHeightDip: heightDip,
+      zoomFactor: window.pwrsnapApi?.getZoomFactor?.() ?? 1
+    })
+  };
+}
 
 /** The explicit-mode grid. `auto` (Quick Capture) and video both live
  *  above the grid as prominent headline buttons; the grid holds the
@@ -209,7 +235,7 @@ function relativeTime(iso: string): string {
 // formatBytes moved to features/shared/CopyButton.tsx (used internally
 // by presetMetrics there; not exported separately).
 
-export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
+export function TrayMenu() {
   const shortcutPlatform = rendererShortcutPlatform();
   const { rows } = useLibrary();
   const hotkeys = useHotkeys();
@@ -218,6 +244,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   const [registrationStatusRefresh, setRegistrationStatusRefresh] = useState(0);
   const lastSnap: CaptureRecord | undefined = rows[0];
   const lastSnapIsVideo = lastSnap?.kind === "video";
+  const [recordingState, setRecordingState] = useState<RecordingState | null>(null);
   // Skip the image render-metrics IPC for video captures — the
   // sharp-based preset pipeline returns nothing for `.mp4`, and the
   // tray's video branch uses GIF / MP4 export buttons instead of the
@@ -248,6 +275,30 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
     })();
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void dispatch("recording:state", {}).then((result) => {
+      if (!cancelled && result.ok) setRecordingState(result.value);
+    });
+    const off = window.pwrsnapApi?.on(EVENT_CHANNELS.recordingState, (payload) => {
+      setRecordingState(payload as RecordingState);
+    });
+    return () => {
+      cancelled = true;
+      off?.();
+    };
+  }, []);
+
+  // An unresolved or failed `recording:state` must not disable the button.
+  // The tray popover is kept resident for first-click latency, so this
+  // mount happens once per process: treating `null` as "cannot record"
+  // left the button dead for the whole process lifetime after one failed
+  // dispatch, and dead for the round-trip on every cold open. Main gates
+  // the attempt itself (`capture-video-handler`), so the safe default for
+  // "we do not know yet" is to let the click through.
+  const canRecordVideo =
+    recordingState?.phase === undefined || canStartRecordingAttempt(recordingState);
 
   const hotkeyFingerprint = Object.values(hotkeys).join("\u0000");
   useEffect(() => {
@@ -283,6 +334,14 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   };
   const quickHk = activeHk("quickCapture");
   const videoHk = activeHk("videoCapture");
+  // Open Library is UNBOUND by default, so the header button's tooltip
+  // has to read live from settings rather than hard-coding a chord.
+  // (It used to advertise a flat "(⌘⇧L)" that main never registered —
+  // the button worked, the chord did nothing.) `activeHk` returns [] both
+  // when it's unbound and when registration failed, so the tooltip only
+  // ever promises a chord the OS actually handed us.
+  const openLibraryHk = activeHk("openLibrary");
+  const openLibraryKeys = openLibraryHk.length > 0 ? openLibraryHk.join("") : undefined;
 
   // Measure the popover's natural content height and tell main to
   // setContentSize the BrowserWindow to match. Mirrors the float-
@@ -314,16 +373,34 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   // Hard floor + ceiling sit in main (`tray.ts` clamps 200–880), so
   // a renderer-side measurement bug can't shrink the popover to
   // nothing or grow it off-screen.
+  //
+  // ONE deliberate asymmetry with the float-over: the toast also caps
+  // its OWN height (`--fo-max-h`) and scrolls its middle, because when
+  // it measures past main's clamp the window clips the bottom and
+  // takes the footer's Discard / Dismiss / Edit with it. The measurer
+  // itself is unchanged and still identical on both surfaces — the cap
+  // is published by the host, not computed here. The tray has no such
+  // cap because its content is structurally bounded (a fixed mode
+  // grid, one preview, one hotkey list) while the toast's grows with
+  // whatever the model wrote and however many tags came back. If a
+  // tray section ever becomes genuinely unbounded, copy the float-over
+  // pattern rather than raising the ceiling again — and do NOT derive
+  // the cap from the window's own size (see FloatOverHost.tsx).
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const initialLayout = trayPopoverLayout();
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (el === null) return;
-    let posted = -1;
+    let posted: { width: number; height: number } | null = null;
+    let positionedWorkArea: { widthDip: number; heightDip: number } | undefined;
     const post = (force = false): void => {
+      const layout = trayPopoverLayout(positionedWorkArea);
+      el.dataset.popoverDensity = layout.density;
+      el.style.width = `${layout.widthCss}px`;
       const rect = el.getBoundingClientRect();
       const target = Math.ceil(rect.height);
-      if (!force && target === posted) return;
-      posted = target;
+      if (!force && posted?.width === layout.widthCss && posted.height === target) return;
+      posted = { width: layout.widthCss, height: target };
       // Direct IPC — same shape as FloatOverHost.tsx. The earlier
       // version of this code dispatched a `pwrsnap:tray:resize`
       // CustomEvent that a sibling `<TrayResizeForwarder/>` (with
@@ -336,9 +413,29 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
       // observer didn't re-fire and the popover got stuck at its
       // 440×440 constructor frame. Calling the preload API directly
       // removes the race entirely.
-      window.pwrsnapApi?.requestTrayResize?.({ width: 440, height: target });
+      window.pwrsnapApi?.requestTrayResize?.({
+        width: layout.widthCss,
+        height: target
+      });
     };
     post();
+    const offWorkArea = window.pwrsnapApi?.on(
+      EVENT_CHANNELS.trayWorkAreaChanged,
+      (payload) => {
+        if (payload === null || typeof payload !== "object") return;
+        const { widthDip, heightDip } = payload as { widthDip?: unknown; heightDip?: unknown };
+        if (
+          typeof widthDip !== "number" ||
+          !Number.isFinite(widthDip) ||
+          widthDip <= 0 ||
+          typeof heightDip !== "number" ||
+          !Number.isFinite(heightDip) ||
+          heightDip <= 0
+        ) return;
+        positionedWorkArea = { widthDip, heightDip };
+        post();
+      }
+    );
     const ro = new ResizeObserver(() => post());
     ro.observe(el);
     // Zoom self-detection. The session zoom factor can change out
@@ -377,6 +474,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
     armDprQuery();
     return () => {
       ro.disconnect();
+      offWorkArea?.();
       dprQuery?.removeEventListener("change", onDprChange);
     };
   }, []);
@@ -400,7 +498,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
     // Mirrors the videoCapture global hotkey: opens the auto-mode
     // selector, then records what the user picks. Fire-and-forget — the
     // recording lifecycle surfaces via the events:recording:* broadcasts.
-    void dispatch("capture:videoInteractive", {});
+    if (canRecordVideo) void dispatch("capture:videoInteractive", {});
   };
   const onCopyLastSnap = (preset: "low" | "med" | "high"): void => {
     if (lastSnap === undefined) return;
@@ -418,6 +516,9 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
         return;
       }
       if (lastSnap.kind !== "video") return;
+      // No `audio`: main fills it from the saved MP4 audio preference —
+      // the same value this popover's MP4 toggles write — so ⌘4–⌘6
+      // cannot ship a track the grid shows as off.
       void dispatch("clipboard:copyVideoFile", {
         captureId: lastSnap.id,
         format: shortcut.format,
@@ -427,7 +528,11 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   });
 
   return (
-    <div ref={containerRef} style={{ display: "inline-block", width: "100%" }}>
+    <div
+      ref={containerRef}
+      data-popover-density={initialLayout.density}
+      style={{ display: "inline-block", width: `${initialLayout.widthCss}px` }}
+    >
     <div className="ps-tray">
       <div className="ps-tray__hdr">
         <div className="ps-tray__brand">
@@ -440,7 +545,9 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
           <button
             className="ps-tray__hdr-btn"
             type="button"
-            title="Open Library"
+            // Icon-only: the app's fast tooltip names it, with the chord.
+            data-tip="Open Library"
+            data-tip-keys={openLibraryKeys}
             onClick={() => { void dispatch("library:focus", {}); }}
           >
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -452,7 +559,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
           <button
             className="ps-tray__hdr-btn"
             type="button"
-            title="Settings"
+            data-tip="Settings"
             onClick={() => { void dispatch("settings:open", {}); }}
           >
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -507,6 +614,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
       <button
         className="ps-tray__quick ps-tray__quick--video"
         type="button"
+        disabled={!canRecordVideo}
         onClick={onCaptureVideo}
       >
         <span className="ps-tray__quick-icon" aria-hidden="true">
@@ -549,7 +657,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
               }
               type="button"
               disabled={!m.available}
-              title={m.available ? undefined : "Coming in a later phase"}
+              data-tip={m.available ? undefined : "Coming in a later phase"}
               onClick={tileClick}
             >
               <span className="ps-mode__icon">
@@ -577,7 +685,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
                       "ps-mode__seg-opt" +
                       (allScreensMode === "split" ? " is-on" : "")
                     }
-                    title={
+                    data-tip={
                       displayCount > 1
                         ? `One capture per display (${displayCount} images)`
                         : "One capture per display"
@@ -597,7 +705,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
                       "ps-mode__seg-opt" +
                       (allScreensMode === "stitched" ? " is-on" : "")
                     }
-                    title="Single stitched image spanning all displays"
+                    data-tip="Single stitched image spanning all displays"
                     onClick={(e) => {
                       e.stopPropagation();
                       setAllScreensMode("stitched");
@@ -650,7 +758,8 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
                    click the volume control to hear sound. */
                 <HoverAutoplayVideo
                   key={lastSnap.id}
-                  src={captureSrcUrl(lastSnap.id)}
+                  captureId={lastSnap.id}
+                  video={lastSnap.video}
                 />
               ) : (
                 <img
@@ -695,6 +804,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
               <div className="ps-tray__last-export">
                 <VideoExportPresetsPanel
                   captureId={lastSnap.id}
+                  audioTracks={recordedAudioTracks(lastSnap.video)}
                   shortcutPlatform={shortcutPlatform}
                 />
               </div>

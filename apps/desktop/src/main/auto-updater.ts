@@ -14,15 +14,17 @@
 //   - Status transitions broadcast over EVENT_CHANNELS.appUpdateStatus
 //     to every BrowserWindow. The renderer banner subscribes via
 //     preload.
-//   - Periodic check fires every APP_UPDATE_CHECK_INTERVAL_MS. The
-//     initial check fires shortly after boot (after the main window
-//     has had a chance to mount the banner subscription).
+//   - Automatic checks use a persisted hourly attempt budget. A profile
+//     without updater state gets a ten-minute grace period; restarts keep
+//     the deadline, cached release list, ETags, and server backoff.
 
-import { app } from "electron";
+import { app, autoUpdater as electronNativeUpdater } from "electron";
+import { waitForUpdateCheckSlot } from "./update-check-wait";
 import electronUpdater from "electron-updater";
 import type { NsisUpdater } from "electron-updater";
 import { verifyWindowsSmokeSignature } from "./windows-update-smoke-signature";
 import type {
+  AppUpdateCancelResult,
   AppUpdateCheckResult,
   AppUpdateInstallResult,
   AppUpdateReleaseInfo,
@@ -47,6 +49,16 @@ import {
   type WindowsUpdateSmokeConfig
 } from "./windows-update-smoke";
 
+import {
+  APP_UPDATE_CHECK_INTERVAL_MS,
+  automaticReleaseCheckAt,
+  createUpdateReleaseStateStore,
+  type GitHubRelease,
+  type ReleaseCacheEntry,
+  type UpdateReleaseState
+} from "./update-release-state";
+export { APP_UPDATE_CHECK_INTERVAL_MS, APP_UPDATE_FIRST_CHECK_DELAY_MS } from "./update-release-state";
+
 // Access `autoUpdater` lazily. electron-updater exposes it as a
 // property getter that constructs `MacUpdater` on first access,
 // and MacUpdater's constructor reads `app.getVersion()`. A
@@ -59,21 +71,77 @@ function autoUpdater(): typeof electronUpdater.autoUpdater {
   return electronUpdater.autoUpdater;
 }
 
+let warnedAboutUnavailableAutoUpdater = false;
+
+/**
+ * The same lazy access, for the paths that must survive not getting one.
+ *
+ * That constructor parses `app.getVersion()` and THROWS
+ * `ERR_UPDATER_INVALID_VERSION` for anything that is not semver — and an
+ * unpackaged Electron on Linux reports `"0.0"`. Nothing in such a build can
+ * auto-update anyway, so a status read (or the dev/QA fake, which reconciles
+ * its held download the same way a real one does) must not blow up on it.
+ * Reads that only make sense against a real updater keep using
+ * `autoUpdater()` directly.
+ */
+function optionalAutoUpdater(): typeof electronUpdater.autoUpdater | undefined {
+  try {
+    return autoUpdater();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // Expected in a build that could not auto-update anyway, and noisy on
+    // every status read — so say it once. A PACKAGED build failing here is a
+    // real fault (a downloaded update will not install on quit, because
+    // `syncAutoInstallOnAppQuit` has nothing to set), and muffling that to a
+    // single warn for the life of the process would hide it: log every time,
+    // at error.
+    if (!devFakeUpdateCheckEnabled()) {
+      log.error("electron-updater is unavailable in this build", { message });
+      return undefined;
+    }
+    if (!warnedAboutUnavailableAutoUpdater) {
+      warnedAboutUnavailableAutoUpdater = true;
+      log.warn("electron-updater is unavailable in this build", { message });
+    }
+    return undefined;
+  }
+}
+
+/** Electron's own `autoUpdater` — on macOS, the Squirrel.Mac wrapper that
+ *  electron-updater drives. Read lazily and defensively for the same reason
+ *  `optionalAutoUpdater` is: test suites partial-mock `electron`. */
+function optionalNativeUpdater(): Pick<NodeJS.EventEmitter, "once" | "removeListener"> | undefined {
+  try {
+    return typeof electronNativeUpdater?.once === "function" ? electronNativeUpdater : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 const log = getMainLogger("pwrsnap:updater");
 const GITHUB_RELEASES_URL = "https://api.github.com/repos/pwrdrvr/PwrSnap/releases";
 const GITHUB_LATEST_RELEASE_URL = `${GITHUB_RELEASES_URL}/latest`;
 const RELEASE_PAGE_SIZE = 100;
 const RELEASE_MAX_PAGES = 10;
-const RELEASE_FETCH_TIMEOUT_MS = 5_000;
-export const APP_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1_000;
+// This covers headers AND the full JSON body (up to 100 releases per page).
+// A short deadline can abort healthy transfers on weak connections before
+// download even starts. Keep a bounded deadline without retrying requests
+// against the shared GitHub API quota.
+const RELEASE_FETCH_TIMEOUT_MS = 60_000;
+
 // The GitHub REST API allows 60 anonymous requests per hour per IP, shared by
 // every process on the machine, and one release read here costs at least two
 // of them (`/releases/latest` plus a page). Settings reads the release
-// versions on every mount, so main caches the list and serves those reads
-// from memory instead of spending requests each time.
-export const APP_UPDATE_RELEASE_CACHE_TTL_MS = 15 * 60 * 1_000;
+// versions on every mount, so main persists one cache and attempt budget
+// across windows and restarts. Explicit checks can bypass the hourly budget.
+export const APP_UPDATE_RELEASE_CACHE_TTL_MS = APP_UPDATE_CHECK_INTERVAL_MS;
 const RATE_LIMIT_FALLBACK_BACKOFF_MS = 15 * 60 * 1_000;
 const UPDATE_RETRY_DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1_000;
+/** How long a superseding macOS download may wait for Squirrel.Mac to stage
+ *  it before the older staged update is offered again. Squirrel re-fetches the
+ *  whole zip from electron-updater's loopback proxy, unpacks it and checks its
+ *  signature, so this is sized like a download rather than a request. */
+const SQUIRREL_STAGE_TIMEOUT_MS = 5 * 60 * 1_000;
 const MAC_UPDATE_CHANNEL_FILE = "latest-mac.yml";
 const WIN_UPDATE_CHANNEL_FILE = "latest.yml";
 
@@ -81,15 +149,32 @@ const WIN_UPDATE_CHANNEL_FILE = "latest.yml";
  *  reports (see `simulateDevUpdateCheck`), so a previewed toast can
  *  never be mistaken for a genuine update. */
 const DEV_FAKE_UPDATE_VERSION = "420.0.0";
+/** Long enough to watch each transition land, short enough not to feel hung. */
+const DEV_FAKE_UPDATE_DEFAULT_STEP_MS = 300;
+/** Percent ticks the fake download reports. Enough of them that the meter is
+ *  visibly a meter and the Cancel button has a window to be pressed in. */
+const DEV_FAKE_UPDATE_PERCENT_STEPS = [0, 15, 34, 58, 79, 93, 100];
+/** A plausible universal-mac zip, so the byte line is exercised too. */
+const DEV_FAKE_UPDATE_TOTAL_BYTES = 186_000_000;
 
-type AppUpdateCheckTrigger = "startup" | "periodic" | "manual" | "menu";
+/** e2e seam, alongside `PWRSNAP_E2E_SETTINGS_READ_DELAY_MS`. The Cancel
+ *  button only exists while a download is mid-flight, and at the dev pace
+ *  that window is a couple of seconds — comfortable by hand, a race on a
+ *  loaded CI runner. The spec widens it rather than asserting something
+ *  weaker. Only ever read on a fake check. */
+function devFakeUpdateStepMs(): number {
+  const raw = Number(process.env.PWRSNAP_E2E_UPDATE_STEP_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEV_FAKE_UPDATE_DEFAULT_STEP_MS;
+}
+
+type AppUpdateCheckTrigger = "startup" | "periodic" | "manual" | "menu" | "selection" | "discovery";
 
 /** A downgrade back to the selected slot is only ever OFFERED when the user
  *  asked — the Settings "Check for Updates" button or the app menu item.
  *  Background checks stay silent about it: someone who deliberately installed
  *  a newer build and left their channel alone should not be nagged to go
- *  back on every hourly poll. Switching channels in Settings does not itself
- *  fire a check, so the button is the deliberate step either way. */
+ *  back on every hourly poll. Selecting a track checks for forward updates;
+ *  the Check button remains the deliberate step for a downgrade. */
 function isUserInitiatedTrigger(trigger: AppUpdateCheckTrigger): boolean {
   return trigger === "manual" || trigger === "menu";
 }
@@ -106,13 +191,40 @@ let resolveSelection: SelectionResolver = () => ({
   train: "stable"
 });
 let initialized = false;
+let observedSelection: UpdateSelectionKey | undefined;
 let updateStatus: AppUpdateStatus = { status: "idle" };
-let periodicUpdateCheckTimer: ReturnType<typeof setInterval> | undefined;
+let periodicUpdateCheckTimer: ReturnType<typeof setTimeout> | undefined;
+let updaterGeneration = 0;
 let updateCheckInFlight: Promise<AppUpdateCheckResult> | undefined;
 let updateCheckSelectionInFlight: UpdateSelectionKey | undefined;
-let heldDownloadedUpdate:
-  | { selection: UpdateSelectionKey; version: string; downgrade?: true }
-  | undefined;
+type HeldDownload = { selection: UpdateSelectionKey; version: string; downgrade?: true };
+let heldDownloadedUpdate: HeldDownload | undefined;
+/**
+ * A newer release is downloading over an update that was already downloaded.
+ *
+ * Without this, a downloaded update short-circuited every later check, so a
+ * user who left the app open across two releases had to restart into the
+ * older one only to be offered the newer one straight away. Now a forward
+ * update keeps reading the feed and replaces itself.
+ *
+ * What the replaced update is still good for differs by platform, and that is
+ * the whole reason this is tracked:
+ *
+ * - macOS: Squirrel.Mac keeps the older build staged until the newer one is
+ *   staged in its place, and electron-updater's `squirrelDownloadedUpdate`
+ *   never resets — so `quitAndInstall` installs the OLDER build right up until
+ *   Squirrel's own `update-downloaded` fires. `heldDownloadedUpdate` stays on
+ *   the older build until then (see `pendingSquirrelStage`), and a failed
+ *   download puts its Restart offer back.
+ * - Windows: the new download empties electron-updater's pending cache dir,
+ *   which deletes the older installer while its `_file` still points at it.
+ *   The older offer is dropped when the download starts, and install-on-quit
+ *   is held off until the newer installer exists.
+ */
+let supersedingDownload: HeldDownload | undefined;
+/** macOS only: electron-updater has the newer build on disk and has asked
+ *  Squirrel.Mac to stage it, but Squirrel has not confirmed. */
+let pendingSquirrelStage: (HeldDownload & { dispose: () => void }) | undefined;
 let heldInstallFailed:
   | Extract<AppUpdateStatus, { status: "install-failed" }>
   | undefined;
@@ -130,19 +242,75 @@ const pendingDowngradeVersions = new Set<string>();
  *  answer for the window in which `update-available` fires, and seeds the
  *  set with the version the event actually reported. */
 let downgradeCheckInFlight = false;
+/**
+ * The download the user can still stop.
+ *
+ * Held rather than derived because `cancel` has to reach electron-updater's
+ * own cancellation token, and because the rejection that token produces is
+ * indistinguishable from a network failure unless we remember that we were
+ * the ones who asked.
+ *
+ * Registered as soon as a download is OFFERED — not when the bytes start
+ * moving. The live update card offers Cancel from `available` onwards, so
+ * anything later leaves a window in which the button is on screen and does
+ * nothing: the click marks the card `canceling`, finds no download here, and
+ * the update installs anyway. `cancel` is therefore a mutable slot, filled in
+ * once electron-updater hands over its token.
+ */
+type ActiveDownload = {
+  version: string;
+  selection?: UpdateSelectionKey;
+  downgrade?: true;
+  cancel: () => void;
+  /** Set by `cancelAppUpdateDownload`, read wherever the download can stop. */
+  canceled: boolean;
+};
+
+let activeDownload: ActiveDownload | undefined;
+// Completion events precede electron-updater clearing its internal download
+// promise. Keep this barrier even after an event clears the cancel target.
+let downloadSettlement: Promise<void> | undefined;
+let selectionCheckPending = false;
+/** How many user-initiated checks are in flight. See
+ *  `isUserUpdateCheckRunning`. A COUNT, not a flag: the menu item has no
+ *  disabled state, so two clicks give two `runMenuUpdateCheck` frames, and a
+ *  boolean would be cleared by whichever finished first while the other was
+ *  still holding the live card open. Only `runMenuUpdateCheck` moves it. */
+let userCheckDepth = 0;
+
+/** Take a cancel the user asked for before there was anything to ask. Called
+ *  wherever a download becomes stoppable, so a click that landed early is
+ *  honoured instead of dropped. */
+function applyPendingCancel(download: ActiveDownload): void {
+  if (!download.canceled) return;
+  try {
+    download.cancel();
+  } catch (err) {
+    log.warn("failed to apply a cancel requested before the download started", {
+      message: err instanceof Error ? err.message : String(err)
+    });
+  }
+}
+
+/** The `canceled` status for a download, carrying its switch-back flag so the
+ *  renderer words a stopped downgrade as a switch rather than an update. */
+function canceledStatusFor(
+  download: Pick<ActiveDownload, "version" | "downgrade">
+): Extract<AppUpdateStatus, { status: "canceled" }> {
+  return {
+    status: "canceled",
+    version: download.version,
+    ...(download.downgrade === true ? ({ downgrade: true } as const) : {})
+  };
+}
+
 let installAttemptStore: AppUpdateInstallAttemptStore | undefined;
 /** The one copy of the GitHub release list in main. `latest` is the
  *  `/releases/latest` body kept beside the pages so a 304 on that endpoint
  *  still yields the tag the pager terminates on. `etags` is keyed by request
  *  URL. */
-type ReleaseCacheEntry = {
-  etags: Record<string, string>;
-  fetchedAt: number;
-  latest: GitHubRelease | undefined;
-  releases: GitHubRelease[];
-};
 let releaseCache: ReleaseCacheEntry | undefined;
-let releaseFetchInFlight: Promise<GitHubRelease[]> | undefined;
+let releaseFetchInFlight: Promise<{ releases: GitHubRelease[]; revalidated: boolean }> | undefined;
 /** Epoch ms at which GitHub said the anonymous quota refills. While set and
  *  unreached, no further request is issued. */
 let rateLimitResetAt: number | undefined;
@@ -156,25 +324,39 @@ const retryDownloadWaiters = new Set<{
   timer: ReturnType<typeof setTimeout>;
 }>();
 
-type GitHubRelease = {
-  assets?: GitHubReleaseAsset[];
-  draft?: boolean;
-  html_url?: string;
-  name?: string;
-  prerelease?: boolean;
-  published_at?: string;
-  tag_name?: string;
-};
+let releaseState: UpdateReleaseState | undefined;
+let releaseStateStore: ReturnType<typeof createUpdateReleaseStateStore> | undefined;
+let releaseStateLoad: Promise<UpdateReleaseState> | undefined;
 
-type GitHubReleaseAsset = {
-  name?: string;
-  state?: string;
-};
+async function loadReleaseState(): Promise<UpdateReleaseState> {
+  if (!releaseStateLoad) {
+    releaseStateLoad = (async () => {
+      const store = createUpdateReleaseStateStore(app.getPath("userData"));
+      const state = await store.read();
+      // Save firstSeenAt before a short-lived process exits. A write failure
+      // fails closed: no request may run without a durable attempt record.
+      await store.write(state);
+      releaseStateStore = store;
+      releaseState = state;
+      releaseCache = state.cache ?? undefined;
+      rateLimitResetAt = state.rateLimitResetAt ?? undefined;
+      return state;
+    })();
+  }
+  return releaseStateLoad;
+}
+
+async function saveReleaseState(): Promise<void> {
+  if (!releaseState || !releaseStateStore) throw new Error("Update release state not loaded");
+  releaseState.cache = releaseCache ?? null;
+  releaseState.rateLimitResetAt = rateLimitResetAt ?? null;
+  await releaseStateStore.write(releaseState);
+}
 
 /** Inject the function the updater calls to read the current train/track.
  *  Kept as a callback rather than importing the settings store
  *  directly so this module stays testable + free of the singleton
- *  graph. Called by `initAutoUpdater` from main bootstrap. */
+ *  graph. Installed synchronously by `initAppUpdater` before its first check. */
 export function setUpdateSelectionResolver(fn: SelectionResolver): void {
   resolveSelection = fn;
 }
@@ -208,7 +390,30 @@ function notifyRetryDownloadWaiters(nextStatus: AppUpdateStatus): void {
     if (nextStatus.status === "downloaded" && nextStatus.version === waiter.expectedVersion) {
       clearTimeout(waiter.timer);
       retryDownloadWaiters.delete(waiter);
-      waiter.resolve({ status: "downloaded", version: nextStatus.version });
+      waiter.resolve({
+        status: "downloaded",
+        version: nextStatus.version,
+        ...(nextStatus.downgrade === true ? ({ downgrade: true } as const) : {})
+      });
+    } else if (
+      nextStatus.status === "canceled" &&
+      nextStatus.version === waiter.expectedVersion
+    ) {
+      // A stopped download is an outcome like any other: the waiter is what
+      // holds the live card open, and leaving it armed would keep a progress
+      // card on screen for bytes that stopped moving when the user said so.
+      //
+      // Matched on version for the same reason `downloaded` is: a late abort
+      // of some OTHER version (a downgrade the user stopped earlier) must not
+      // answer this waiter, or the live card comes down mid-download and the
+      // notice names a release nobody was fetching.
+      clearTimeout(waiter.timer);
+      retryDownloadWaiters.delete(waiter);
+      waiter.resolve({
+        status: "canceled",
+        version: nextStatus.version,
+        ...(nextStatus.downgrade === true ? ({ downgrade: true } as const) : {})
+      });
     } else if (nextStatus.status === "error") {
       clearTimeout(waiter.timer);
       retryDownloadWaiters.delete(waiter);
@@ -221,9 +426,24 @@ function notifyRetryDownloadWaiters(nextStatus: AppUpdateStatus): void {
   }
 }
 
-function waitForRetryDownload(expectedVersion: string): Promise<AppUpdateCheckResult> {
-  if (updateStatus.status === "downloaded" && updateStatus.version === expectedVersion) {
-    return Promise.resolve({ status: "downloaded", version: expectedVersion });
+/** Park until the download of `expectedVersion` settles — downloaded, error,
+ *  canceled, or a check that decided there was nothing after all. Shared by
+ *  the failed-install retry path and by `runMenuUpdateCheck`, which must not
+ *  report an outcome while the bytes the user is watching are still moving. */
+function waitForDownloadOutcome(expectedVersion: string): Promise<AppUpdateCheckResult> {
+  // Already settled before the caller got here — a fast cancel can beat the
+  // check's own resolution by a microtask, and parking on that would hold the
+  // live card open for the full five-minute timeout before reporting a
+  // failure that never happened.
+  if (
+    (updateStatus.status === "downloaded" || updateStatus.status === "canceled") &&
+    updateStatus.version === expectedVersion
+  ) {
+    return Promise.resolve({
+      status: updateStatus.status,
+      version: expectedVersion,
+      ...(updateStatus.downgrade === true ? ({ downgrade: true } as const) : {})
+    });
   }
   return new Promise((resolve) => {
     const waiter = {
@@ -336,7 +556,17 @@ function reconcilePendingInstallAttemptOnBoot(): boolean {
 
   const currentVersion = currentAppVersion();
   const shipIt = readShipItDiagnostics();
-  if (currentVersion === attempt.expectedVersion) {
+  // Moving PAST the recorded version is not a failure either. When a newer
+  // release replaces a downloaded one on macOS, Squirrel.Mac may finish
+  // staging it after the Restart offer was taken (a staging timeout, or a
+  // click in the staging window), and the install then lands on the newer
+  // build. Calling that a failed install would offer a "retry" that moves
+  // the user back down to the version they skipped.
+  const landedPastExpected =
+    currentVersion !== attempt.fromVersion &&
+    parseSemver(currentVersion) !== undefined &&
+    compareSemver(currentVersion, attempt.expectedVersion) > 0;
+  if (currentVersion === attempt.expectedVersion || landedPastExpected) {
     log.info("app update install attempt completed", {
       attempt,
       currentVersion,
@@ -462,6 +692,22 @@ function productionUpdatesEnabled(): boolean {
   return process.env.NODE_ENV === "production";
 }
 
+/** The e2e harness launches with `NODE_ENV=production` (so the renderer runs
+ *  the shipped bundle), which would otherwise put a spec on the real
+ *  electron-updater path — and `initAppUpdater` is skipped there, so nothing
+ *  would ever move. This opt-in knob puts the fake back, per launch, the same
+ *  way the other fault-injection env vars work. Gated on `PWRSNAP_E2E` so it
+ *  can never be reached from a packaged build. */
+function devFakeUpdateForced(): boolean {
+  return process.env.PWRSNAP_E2E === "1" && process.env.PWRSNAP_E2E_UPDATE_FAKE === "1";
+}
+
+/** Whether a check should walk the fake status machine rather than reach
+ *  electron-updater. Real auto-update runs in packaged builds only. */
+function devFakeUpdateCheckEnabled(): boolean {
+  return !productionUpdatesEnabled() || devFakeUpdateForced();
+}
+
 function developmentUpdateCheckResult(): AppUpdateCheckResult {
   return {
     status: "skipped",
@@ -479,6 +725,7 @@ function preserveActionableUpdateStatus(nextStatus: AppUpdateStatus): boolean {
   return (
     nextStatus.status === "checking" ||
     nextStatus.status === "no-update" ||
+    nextStatus.status === "canceled" ||
     nextStatus.status === "error"
   );
 }
@@ -538,7 +785,17 @@ function syncAutoInstallOnAppQuit(updateSelection: UpdateSelectionKey): void {
   // and the user only ever asked to see what was available. Hold it for the
   // explicit Restart in the banner rather than applying it on the next quit
   // — dismissing that banner hides the notice, it does not decline the move.
-  autoUpdater().autoInstallOnAppQuit =
+  const updater = optionalAutoUpdater();
+  if (updater === undefined) return;
+  // Windows: the replaced installer is already gone from the pending cache,
+  // but electron-updater still points at it. Quitting now must not try to run
+  // it. macOS keeps this on — MacUpdater reads it when the newer download
+  // lands, and it is what makes Squirrel stage that build at all.
+  if (supersedingDownload !== undefined && process.platform !== "darwin") {
+    updater.autoInstallOnAppQuit = false;
+    return;
+  }
+  updater.autoInstallOnAppQuit =
     (matching !== undefined && matching.downgrade !== true) ||
     heldDownloadedUpdate === undefined;
 }
@@ -548,6 +805,10 @@ export function reconcileAppUpdateSelection(
 ): void {
   const eligible = downloadedOrFailedMatchesSelection(updateSelection);
   syncAutoInstallOnAppQuit(updateSelection);
+  // The status is reporting the newer download. Every status READ reconciles,
+  // so without this a Settings mount would put the older Restart offer back
+  // over the progress the user is watching.
+  if (supersedingDownload !== undefined) return;
   if (eligible) {
     if (
       updateStatus.status !== eligible.status ||
@@ -558,7 +819,7 @@ export function reconcileAppUpdateSelection(
     return;
   }
   if (updateStatus.status === "downloaded" || updateStatus.status === "install-failed") {
-    const currentVersion = autoUpdater().currentVersion?.version ?? currentAppVersion();
+    const currentVersion = optionalAutoUpdater()?.currentVersion?.version ?? currentAppVersion();
     log.info("hiding downloaded update from the unselected train", {
       currentVersion,
       heldSelection: heldDownloadedUpdate?.selection,
@@ -570,6 +831,128 @@ export function reconcileAppUpdateSelection(
   }
 }
 
+/** Settings broadcasts include unrelated writes; only a changed track checks the feed. */
+export function handleAppUpdateSelectionChanged(): void {
+  const selection = currentUpdateSelection();
+  const key = updateSelectionKey(selection);
+  const changed = observedSelection !== undefined && observedSelection !== key;
+  observedSelection = key;
+  reconcileAppUpdateSelection(key);
+  if (changed && initialized && productionUpdatesEnabled() && !releaseReadsDisabled()) {
+    selectionCheckPending = true;
+    flushPendingSelectionCheck();
+  }
+}
+
+function flushPendingSelectionCheck(): void {
+  if (
+    !selectionCheckPending || updateCheckInFlight || activeDownload || downloadSettlement ||
+    pendingSquirrelStage
+  ) return;
+  selectionCheckPending = false;
+  // Coalesce rapid track changes; a captured intermediate selection must not
+  // start another transfer after the user has already moved on.
+  void checkForAppUpdatesNow("selection", currentUpdateSelection());
+}
+
+/** Opening Settings may discover an update between hourly checks. Reuse that
+ * feed without retrying a canceled download or disturbing an actionable offer. */
+function downloadDiscoveredRelease(selected: ReturnType<typeof selectAppUpdateReleases>): void {
+  if (!initialized || !productionUpdatesEnabled() || releaseReadsDisabled() ||
+      activeDownload || downloadSettlement || pendingSquirrelStage || updateCheckInFlight ||
+      updateStatus.status === "canceled" || updateStatus.status === "install-failed") return;
+  const selection = currentUpdateSelection();
+  const held = downloadedUpdateMatchesSelection(updateSelectionKey(selection));
+  // A held switch-back is only ever replaced by a check the user asks for.
+  if (held?.downgrade === true) return;
+  const release = releaseForSelection(selected, selection);
+  const version = release?.tag_name?.replace(/^v/i, "");
+  const installed = optionalAutoUpdater()?.currentVersion?.version ?? currentAppVersion();
+  if (version && parseSemver(installed) && compareSemver(version, installed) > 0 &&
+      (held === undefined || compareSemver(version, held.version) > 0)) {
+    void checkForAppUpdatesNow("discovery", selection);
+  }
+}
+
+/** Start downloading a newer release over `replaced`. */
+function beginSupersede(replaced: HeldDownload): void {
+  supersedingDownload = replaced;
+  syncAutoInstallOnAppQuit(replaced.selection);
+}
+
+/** The newer release is installable: it becomes the Restart offer. */
+function promoteSupersede(next: HeldDownload): void {
+  heldDownloadedUpdate = next;
+  supersedingDownload = undefined;
+  reconcileAppUpdateSelection();
+}
+
+/** The newer release did not arrive — the check found nothing, the download
+ *  failed or was canceled, or Squirrel.Mac never staged it. On macOS the older
+ *  staged update is still installable and its Restart offer comes back. */
+function abandonSupersede(reason: string): void {
+  if (supersedingDownload === undefined) return;
+  const replaced = supersedingDownload;
+  supersedingDownload = undefined;
+  log.info("newer update did not replace the downloaded one", {
+    reason,
+    replacedVersion: replaced.version,
+    stillInstallable: heldDownloadedUpdate !== undefined
+  });
+  reconcileAppUpdateSelection();
+}
+
+/**
+ * macOS: offer the newer build only once Squirrel.Mac has staged it.
+ *
+ * electron-updater emits `update-downloaded` as soon as the zip is on disk,
+ * BEFORE Squirrel has fetched it from the loopback proxy, and its
+ * `squirrelDownloadedUpdate` flag is still true from the build being replaced.
+ * A Restart clicked in that gap would install the OLDER build while the UI
+ * named the newer one. Squirrel's own `update-downloaded` is the signal that
+ * `quitAndInstall` now means the newer build.
+ */
+function awaitSquirrelStage(next: HeldDownload): void {
+  const native = optionalNativeUpdater();
+  if (native === undefined) {
+    log.warn("cannot observe Squirrel.Mac staging; offering the newer update now", {
+      version: next.version
+    });
+    promoteSupersede(next);
+    return;
+  }
+  pendingSquirrelStage?.dispose();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const dispose = (): void => {
+    if (timer !== undefined) clearTimeout(timer);
+    native.removeListener("update-downloaded", onStaged);
+    native.removeListener("error", onFailed);
+    if (pendingSquirrelStage === stage) pendingSquirrelStage = undefined;
+  };
+  const settle = (staged: boolean, reason: string): void => {
+    if (pendingSquirrelStage !== stage) return;
+    dispose();
+    if (staged) {
+      log.info("Squirrel.Mac staged the newer update", { version: next.version });
+      promoteSupersede(next);
+    } else {
+      abandonSupersede(reason);
+    }
+    flushPendingSelectionCheck();
+  };
+  const onStaged = (): void => settle(true, "staged");
+  const onFailed = (): void => settle(false, "Squirrel.Mac failed to stage the newer update");
+  const stage = { ...next, dispose };
+  pendingSquirrelStage = stage;
+  native.once("update-downloaded", onStaged);
+  native.once("error", onFailed);
+  timer = setTimeout(
+    () => settle(false, "timed out waiting for Squirrel.Mac to stage the newer update"),
+    SQUIRREL_STAGE_TIMEOUT_MS
+  );
+  timer.unref?.();
+}
+
 function recordPendingDownloadSelection(
   version: string | undefined,
   updateSelection: UpdateSelectionKey | undefined
@@ -578,41 +961,165 @@ function recordPendingDownloadSelection(
   pendingDownloadSelectionsByVersion.set(version, updateSelection);
 }
 
+/** What `autoUpdater.checkForUpdates()` hands back, narrowed to the fields
+ *  that make a download stoppable and name it. Typed structurally so the
+ *  shape survives an electron-updater bump that widens the result. */
+type UpdateCheckDownloadHandle = {
+  cancellationToken?: { cancel: () => void };
+  downloadPromise?: Promise<unknown> | null;
+  updateInfo?: { version?: string };
+};
+
+/**
+ * Hand the just-started download its cancellation token, and watch it settle.
+ *
+ * Unlike PwrGit's updater, `checkForAppUpdatesNow` does NOT await the
+ * download — it answers `available` and lets `autoDownload` run on. So the
+ * rejection this attaches is also the only thing observing `downloadPromise`
+ * at all: without it, every failed or cancelled download is an unhandled
+ * rejection.
+ */
+function adoptDownloadCancellation(
+  download: ActiveDownload,
+  result: UpdateCheckDownloadHandle | null | undefined
+): void {
+  const promise = result?.downloadPromise;
+  if (!promise) {
+    // Nothing started, so there is nothing to stop. Leaving the registration
+    // behind would let a later Cancel click claim it stopped a download that
+    // never existed.
+    if (activeDownload === download) activeDownload = undefined;
+    abandonSupersede("no download started");
+    return;
+  }
+  if (supersedingDownload !== undefined && process.platform !== "darwin") {
+    // Starting this download empties electron-updater's pending cache dir,
+    // and the replaced installer with it. Do not offer what is gone.
+    heldDownloadedUpdate = undefined;
+  }
+  // The registration was seeded from the release TAG; the event stream uses
+  // the version electron-updater read out of the channel file. Those are
+  // normally the same and this file already documents that they can drift —
+  // so adopt the one the download will actually report itself as.
+  download.version = result?.updateInfo?.version ?? download.version;
+  const token = result?.cancellationToken;
+  download.cancel = () => token?.cancel();
+  // A cancel that arrived while the token did not yet exist: honour it now
+  // rather than letting the download it asked to stop run to completion.
+  applyPendingCancel(download);
+  const release = (): void => {
+    if (activeDownload === download) activeDownload = undefined;
+  };
+  const settlement = promise.then(release, (err: unknown) => {
+    release();
+    abandonSupersede(download.canceled ? "download canceled" : "download failed");
+    // A cancel rejects this promise exactly like a failed request would, and
+    // electron-updater deliberately does NOT dispatch its `error` event for
+    // one (it emits `update-cancelled` instead). Only our own flag separates
+    // "the user stopped it" from "the download broke", and dressing the first
+    // as a failure would put a danger banner in front of someone who got
+    // exactly what they asked for.
+    if (download.canceled) {
+      // `update-cancelled` normally beats this rejection and has already
+      // settled the status; re-setting it would broadcast and relay the same
+      // event to every window a second time. This arm is the fallback for a
+      // build where that handler was never registered (`initAppUpdater` is
+      // skipped outside production and under the e2e harness).
+      if (
+        updateStatus.status !== "canceled" ||
+        updateStatus.version !== download.version
+      ) {
+        setUpdateStatusUnlessActionable(canceledStatusFor(download));
+      }
+      log.info("update download canceled", { version: download.version });
+      return;
+    }
+    // A genuine failure already reached the `error` handler through
+    // electron-updater's own dispatch; this arm only keeps the rejection from
+    // going unhandled.
+    log.warn("update download failed", {
+      message: err instanceof Error ? err.message : String(err),
+      version: download.version
+    });
+  });
+  downloadSettlement = settlement;
+  void settlement.then(() => {
+    if (downloadSettlement !== settlement) return;
+    downloadSettlement = undefined;
+    flushPendingSelectionCheck();
+  });
+}
+
 export async function checkForAppUpdatesNow(
   trigger: AppUpdateCheckTrigger = "manual",
   selection: UpdateSelection = currentUpdateSelection()
 ): Promise<AppUpdateCheckResult> {
-  if (!productionUpdatesEnabled()) {
+  if (devFakeUpdateCheckEnabled()) {
     return simulateDevUpdateCheck(trigger);
   }
 
   const requestedSelection = updateSelectionKey(selection);
-  if (updateCheckInFlight && updateCheckSelectionInFlight === requestedSelection) {
-    log.info("joining in-flight update check", {
+  return waitForUpdateCheckSlot(
+    requestedSelection,
+    () => updateCheckInFlight ? {
+      selection: updateCheckSelectionInFlight,
+      promise: updateCheckInFlight
+    } : undefined,
+    (check) => log.info("waiting for in-flight update check before switching selection", {
       trigger,
+      inFlightSelection: check.selection,
       updateChannel: selection.channel,
       updateTrain: selection.train
-    });
-    return updateCheckInFlight;
-  }
-  if (updateCheckInFlight) {
-    log.info("waiting for in-flight update check before switching selection", {
-      trigger,
-      inFlightSelection: updateCheckSelectionInFlight,
-      updateChannel: selection.channel,
-      updateTrain: selection.train
-    });
-    await updateCheckInFlight.catch(() => undefined);
-    return checkForAppUpdatesNow(trigger, selection);
-  }
+    }),
+    () => startAppUpdateCheck(trigger, selection, requestedSelection)
+  ).then((result) => {
+    // A click can join the startup check while it is loading the persisted
+    // deadline. A deferred automatic result is not an explicit check.
+    if ((isUserInitiatedTrigger(trigger) || trigger === "selection") &&
+        result.status === "skipped" && result.reason === "automatic update check deferred") {
+      return checkForAppUpdatesNow(trigger, selection);
+    }
+    return result;
+  }).catch((err: unknown): AppUpdateCheckResult => {
+    const result = {
+      status: "error",
+      message: err instanceof Error ? err.message : String(err)
+    } as const;
+    log.error("stopped unsafe update check wait", { trigger, selection, message: result.message });
+    setUpdateStatusUnlessActionable(result);
+    return result;
+  });
+}
 
+function startAppUpdateCheck(
+  trigger: AppUpdateCheckTrigger,
+  selection: UpdateSelection,
+  requestedSelection: UpdateSelectionKey
+): Promise<AppUpdateCheckResult> {
   updateCheckSelectionInFlight = requestedSelection;
-  updateCheckInFlight = (async (): Promise<AppUpdateCheckResult> => {
+  // Publish the promise before running any check logic. The downloaded-update
+  // fast path (or a synchronous error) can reach finally without an await;
+  // an immediately invoked async function would clear the slot before the
+  // assignment, then leave its settled promise installed forever.
+  updateCheckInFlight = Promise.resolve().then(async (): Promise<AppUpdateCheckResult> => {
     try {
       const updateSelection = requestedSelection;
       reconcileAppUpdateSelection(updateSelection);
+      if (pendingSquirrelStage?.selection === updateSelection) {
+        // Downloaded, and Squirrel.Mac is staging it: the outcome is on its way.
+        return {
+          status: "available",
+          version: pendingSquirrelStage.version,
+          ...(pendingSquirrelStage.downgrade === true ? ({ downgrade: true } as const) : {})
+        };
+      }
+      // A downloaded update no longer ends the check. A newer release on the
+      // same track replaces it, so the Restart offer is for the newest build
+      // rather than one the user restarts into only to be offered another.
+      // A held switch-back is the exception: that move was asked for, and it
+      // is not quietly replaced with a different one.
       const downloadedResult = downloadedUpdateMatchesSelection(updateSelection);
-      if (downloadedResult) {
+      if (downloadedResult?.downgrade === true) {
         log.info("skipping app update check; update already downloaded", {
           trigger,
           updateChannel: selection.channel,
@@ -624,8 +1131,17 @@ export async function checkForAppUpdatesNow(
       log.info("checking for app updates", {
         trigger,
         updateChannel: selection.channel,
-        updateTrain: selection.train
+        updateTrain: selection.train,
+        ...(downloadedResult ? { downloadedVersion: downloadedResult.version } : {})
       });
+      if ((trigger === "startup" || trigger === "periodic") && !releaseReadsDisabled()) {
+        const state = await loadReleaseState();
+        if (Date.now() < automaticReleaseCheckAt(state) && (trigger === "startup" || !releaseCache)) {
+          // Still `skipped` with a download held: a click that joined this
+          // check re-runs on that answer, and must read the feed for itself.
+          return { status: "skipped", reason: "automatic update check deferred" };
+        }
+      }
       configureAutoUpdaterChannel(selection);
       const smoke = windowsUpdateSmokeConfig();
       if (smoke !== undefined) {
@@ -659,10 +1175,9 @@ export async function checkForAppUpdatesNow(
       }
       const release = await readAppUpdateReleaseForSelection(
         selection,
-        // A user-initiated check should not answer from a 15-minute-old
-        // cache. Revalidation rides the stored etag, so the usual answer is
-        // a 304, which GitHub does not charge against the rate limit.
-        isUserInitiatedTrigger(trigger) ? 0 : undefined
+        // Explicit checks/track changes revalidate immediately. ETags save
+        // transfer bytes; anonymous 304 responses still consume API quota.
+        isUserInitiatedTrigger(trigger) || trigger === "selection" ? 0 : undefined
       );
       const currentVersion = autoUpdater().currentVersion?.version ?? "unknown";
       if (!release?.tag_name) {
@@ -673,9 +1188,30 @@ export async function checkForAppUpdatesNow(
           updateChannel: selection.channel,
           updateTrain: selection.train
         });
-        return result;
+        return downloadedResult ?? result;
       }
       const selectedVersion = release.tag_name.replace(/^v/i, "");
+      if (downloadedResult) {
+        // `compareSemver` sorts an unparseable version below everything. An
+        // unreadable tag keeps the update we already have, and so does an
+        // unreadable held version — or every check would download again.
+        if (
+          parseSemver(downloadedResult.version) === undefined ||
+          compareSemver(selectedVersion, downloadedResult.version) <= 0
+        ) {
+          log.info("keeping downloaded update; selected release is not newer", {
+            downloadedVersion: downloadedResult.version,
+            selectedRelease: release.tag_name,
+            trigger
+          });
+          return downloadedResult;
+        }
+        log.info("replacing downloaded update with a newer release", {
+          downloadedVersion: downloadedResult.version,
+          selectedRelease: release.tag_name,
+          trigger
+        });
+      }
       const selectedVersusCurrent = compareSemver(selectedVersion, currentVersion);
       // `compareSemver` sorts an unparseable tag below every valid version,
       // which would otherwise read as "the selected slot is behind us" and
@@ -723,12 +1259,42 @@ export async function checkForAppUpdatesNow(
         });
       }
       configureAutoUpdaterFeedForRelease(release);
-      const result = await autoUpdater().checkForUpdates();
+      // Registered BEFORE the call, not after it: `checkForUpdates` emits
+      // `update-available` — the status that puts Cancel on screen — from
+      // inside itself, and with `autoDownload` on it has already started
+      // fetching by the time it resolves.
+      const download: ActiveDownload = {
+        version: selectedVersion,
+        selection: updateSelection,
+        cancel: () => {},
+        canceled: false,
+        ...(isDowngrade ? ({ downgrade: true } as const) : {})
+      };
+      if (downloadedResult) {
+        beginSupersede({
+          selection: updateSelection,
+          version: downloadedResult.version
+        });
+      }
+      activeDownload = download;
+      let result;
+      try {
+        result = await autoUpdater().checkForUpdates();
+      } catch (err) {
+        // The check itself blew up, so no download was ever offered — drop
+        // the registration rather than leaving a Cancel target behind.
+        if (activeDownload === download) activeDownload = undefined;
+        abandonSupersede("update check failed");
+        throw err;
+      }
+      adoptDownloadCancellation(download, result);
       if (result?.updateInfo?.version !== currentVersion) {
         recordPendingDownloadSelection(result?.updateInfo?.version, updateSelection);
       }
       const matchingDownloadedResult = downloadedUpdateMatchesSelection(updateSelection);
-      if (matchingDownloadedResult) {
+      // While a newer release is replacing it, the held update is the one
+      // being replaced on macOS, not this check's outcome.
+      if (matchingDownloadedResult && supersedingDownload === undefined) {
         return matchingDownloadedResult;
       }
       if (!result || !result.updateInfo) {
@@ -755,13 +1321,15 @@ export async function checkForAppUpdatesNow(
         message: errResult.message,
         trigger
       });
-      return errResult;
+      // A failed look for something newer does not undo the download we have.
+      return downloadedUpdateMatchesSelection(requestedSelection) ?? errResult;
     } finally {
       downgradeCheckInFlight = false;
       updateCheckSelectionInFlight = undefined;
       updateCheckInFlight = undefined;
+      flushPendingSelectionCheck();
     }
-  })();
+  });
 
   return updateCheckInFlight;
 }
@@ -779,7 +1347,7 @@ function delay(ms: number): Promise<void> {
  *  unsigned and has no release feed, so `initAppUpdater` skips the
  *  whole electron-updater wiring outside production. That means the
  *  update toast can't otherwise be seen without cutting a release. So
- *  a *user-initiated* check (Help → Check for Updates, or the Updates
+ *  a *user-initiated* check (the Check for Updates… menu item, or the Updates
  *  settings page) instead walks the status machine to a fake
  *  `downloaded@420.0.0`, broadcasting each transition so the entire
  *  flow — checking → available → downloading → downloaded → toast —
@@ -803,12 +1371,44 @@ async function simulateDevUpdateCheck(
   const version = DEV_FAKE_UPDATE_VERSION;
   log.info("simulating dev update check", { trigger, version });
   updateCheckInFlight = (async (): Promise<AppUpdateCheckResult> => {
+    const stepMs = devFakeUpdateStepMs();
     setUpdateStatus({ status: "checking" });
-    await delay(300);
-    setUpdateStatus({ status: "available", version });
-    await delay(300);
-    setUpdateStatus({ status: "downloading", version, percent: 60 });
-    await delay(300);
+    await delay(stepMs);
+    // The fake has no request to abort, so its cancel is the flag alone — but
+    // it must be registered at the same point, and read at the same cadence,
+    // a real download's is, or the Cancel button is only ever exercised
+    // against production code nobody can run in `pnpm dev`. Registered before
+    // `available`, which is the status that puts the button on screen.
+    const download: ActiveDownload = { version, cancel: () => {}, canceled: false };
+    activeDownload = download;
+    const canceled = canceledStatusFor(download);
+    try {
+      setUpdateStatus({ status: "available", version });
+      await delay(stepMs);
+      for (const percent of DEV_FAKE_UPDATE_PERCENT_STEPS) {
+        if (download.canceled) {
+          setUpdateStatusUnlessActionable(canceled);
+          return canceled;
+        }
+        setUpdateStatus({
+          status: "downloading",
+          version,
+          percent,
+          transferred: Math.round((DEV_FAKE_UPDATE_TOTAL_BYTES * percent) / 100),
+          total: DEV_FAKE_UPDATE_TOTAL_BYTES
+        });
+        await delay(stepMs);
+      }
+      // Once more after the loop: a cancel during the last step would
+      // otherwise be dropped, and the preview would offer a Restart for an
+      // update the user had just declined.
+      if (download.canceled) {
+        setUpdateStatusUnlessActionable(canceled);
+        return canceled;
+      }
+    } finally {
+      if (activeDownload === download) activeDownload = undefined;
+    }
     heldDownloadedUpdate = {
       selection: currentUpdateSelectionKey(),
       version
@@ -823,12 +1423,30 @@ async function simulateDevUpdateCheck(
   }
 }
 
-function startPeriodicUpdateChecks(): void {
-  if (periodicUpdateCheckTimer) return;
-  periodicUpdateCheckTimer = setInterval(() => {
-    void checkForAppUpdatesNow("periodic");
-  }, APP_UPDATE_CHECK_INTERVAL_MS);
-  periodicUpdateCheckTimer.unref?.();
+function startPeriodicUpdateChecks(minimumDelay = 1_000): void {
+  if (windowsUpdateSmokeConfig() !== undefined) return;
+  const generation = updaterGeneration;
+  void (async () => {
+    let delay = APP_UPDATE_CHECK_INTERVAL_MS;
+    try {
+      const state = await loadReleaseState();
+      delay = Math.max(minimumDelay, automaticReleaseCheckAt(state) - Date.now());
+    } catch (error) {
+      log.warn("unable to schedule persisted update check", { message: String(error) });
+    }
+    if (!initialized || generation !== updaterGeneration || periodicUpdateCheckTimer) return;
+    periodicUpdateCheckTimer = setTimeout(() => {
+      periodicUpdateCheckTimer = undefined;
+      void checkForAppUpdatesNow("periodic").finally(() => {
+        // An already-downloaded update can finish without a release read;
+        // do not turn its unchanged past deadline into a one-second loop.
+        if (initialized && generation === updaterGeneration) {
+          startPeriodicUpdateChecks(APP_UPDATE_CHECK_INTERVAL_MS);
+        }
+      });
+    }, Math.min(delay, 2_147_483_647));
+    periodicUpdateCheckTimer.unref?.();
+  })();
 }
 
 function releaseInfoFromGitHubRelease(
@@ -960,6 +1578,26 @@ function isBetaTrainRelease(
   });
 }
 
+// A Stable candidate — a `-prerelease.N` / `-rc.N` maintenance candidate, or
+// a suffix-free final still staged as a GitHub prerelease — that outranks
+// Stable Latest. Stable · Prerelease already offers it, so Beta · Prerelease,
+// the most adventurous slot, must too or it trails the conservative one.
+// Precedence still decides, so a newer alpha or beta wins over it.
+function isStableCandidateAheadOfLatest(
+  release: GitHubRelease,
+  stableLatest: GitHubRelease | undefined
+): boolean {
+  if (release.prerelease !== true) return false;
+  const parsed = parseSemver(release.tag_name);
+  if (!parsed) return false;
+  const id = firstPrereleaseId(release.tag_name);
+  const isCandidate = parsed.pre.length === 0 || id === "prerelease" || id === "rc";
+  return (
+    isCandidate &&
+    (stableLatest === undefined || compareSemver(release.tag_name, stableLatest.tag_name) > 0)
+  );
+}
+
 function isBetaLatestRelease(
   release: GitHubRelease,
   stableLatest: GitHubRelease | undefined,
@@ -983,19 +1621,26 @@ export type SelectedUpdateReleases = {
 // Resolve slots by semver identifier and GitHub Latest, not publish order:
 //   - stable latest      → highest GitHub non-prerelease (the 1.0 / normie feed)
 //   - stable prerelease  → max(stable latest, 1.0 `-prerelease` / legacy `-beta`)
-//   - beta latest        → highest `-beta` whose core is ahead of Stable Latest
-//   - beta prerelease    → max(beta latest, highest `-alpha` on a newer core)
-// Empty Beta slots stay empty. The Settings Beta control remains selectable
-// so an operator can follow the next `main` tag after a Stable promotion.
+//   - beta latest        → highest newer-core `-beta`, falling back to stable final
+//   - beta prerelease    → highest newer-core alpha/beta, or Stable candidate
+//                          (`-prerelease` / `-rc` / staged final) above stable
+//                          latest, falling back to stable final
+// Stable promotion must keep Beta followers on an upgrade path without changing
+// their saved selection; the next main-train release takes precedence again.
 export function selectChannelReleases(releases: GitHubRelease[]): SelectedUpdateReleases {
   const publicReleases = releases.filter((release) => release.draft !== true);
   const byPrecedenceDesc = [...publicReleases].sort((a, b) =>
     compareSemver(b.tag_name, a.tag_name)
   );
   const stableLatest = byPrecedenceDesc.find((release) => release.prerelease !== true);
+  // Historical GitHub non-prereleases can have beta tags. Only a final
+  // version is a stable fallback, never those legacy prerelease builds.
+  const stableFinal = parseSemver(stableLatest?.tag_name)?.pre.length === 0
+    ? stableLatest
+    : undefined;
   const betaLatest = byPrecedenceDesc.find((release) =>
     isBetaLatestRelease(release, stableLatest, publicReleases)
-  );
+  ) ?? stableFinal;
   const stablePrerelease = byPrecedenceDesc.find((release) => {
     if (release === stableLatest) return true;
     if (release.prerelease !== true) return false;
@@ -1003,8 +1648,9 @@ export function selectChannelReleases(releases: GitHubRelease[]): SelectedUpdate
     return !isBetaLatestRelease(release, stableLatest, publicReleases);
   });
   const betaPrerelease = byPrecedenceDesc.find((release) =>
-    isBetaTrainRelease(release, stableLatest, publicReleases)
-  );
+    isBetaTrainRelease(release, stableLatest, publicReleases) ||
+    isStableCandidateAheadOfLatest(release, stableLatest)
+  ) ?? stableFinal;
   return {
     latest: stableLatest,
     prerelease: stablePrerelease,
@@ -1021,7 +1667,7 @@ function hasUploadedReleaseAsset(
 ): boolean {
   return (
     release.assets?.some((asset) => {
-      if (!asset.name || asset.state === "deleted") return false;
+      if (!asset.name || (asset.state !== undefined && asset.state !== "uploaded")) return false;
       return predicate(asset.name);
     }) ?? false
   );
@@ -1043,7 +1689,9 @@ function hasPlatformUpdateAssets(release: GitHubRelease): boolean {
     release,
     (name) => name === MAC_UPDATE_CHANNEL_FILE
   );
-  const hasZip = hasUploadedReleaseAsset(release, (name) => name.endsWith(".zip"));
+  // Universal is the compatibility fallback for Intel and historical clients.
+  // An ARM64-only or unrelated ZIP must not make a release eligible.
+  const hasZip = hasUploadedReleaseAsset(release, (name) => name.endsWith("-universal-mac.zip"));
   return hasChannelFile && hasZip;
 }
 
@@ -1067,9 +1715,8 @@ function githubReleaseHeaders(etag?: string): HeadersInit {
     Accept: "application/vnd.github+json",
     "User-Agent": "PwrSnap",
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    // A conditional request that answers 304 is not charged against the
-    // GitHub rate limit, so revalidating a cached list stays free while
-    // nothing new has shipped.
+    // Anonymous conditional requests still cost quota. ETags reduce transfer
+    // bytes; the persisted schedule is what bounds automatic requests.
     ...(etag ? { "If-None-Match": etag } : {})
   };
 }
@@ -1092,16 +1739,28 @@ function rateLimitedError(resetAt: number): Error {
 function releaseRequestError(response: Response): Error {
   const status = response.status;
   const rateLimited =
-    (status === 403 || status === 429) &&
-    readResponseHeader(response, "x-ratelimit-remaining") === "0";
+    status === 403 || status === 429;
   if (!rateLimited) {
     return new Error(`GitHub releases request failed with ${status}`);
   }
   const resetSeconds = Number(readResponseHeader(response, "x-ratelimit-reset"));
-  rateLimitResetAt =
-    Number.isFinite(resetSeconds) && resetSeconds > 0
-      ? resetSeconds * 1_000
-      : Date.now() + RATE_LIMIT_FALLBACK_BACKOFF_MS;
+  const retryAfter = readResponseHeader(response, "retry-after");
+  const retrySeconds = retryAfter === undefined ? NaN : Number(retryAfter);
+  const retryDate = retryAfter === undefined ? NaN : Date.parse(retryAfter);
+  const retryAt = Number.isFinite(retrySeconds)
+    ? Date.now() + Math.max(0, retrySeconds) * 1_000
+    : retryDate;
+  const serverRetryAt = Math.max(
+    Number.isFinite(resetSeconds) && resetSeconds > 0 ? resetSeconds * 1_000 : 0,
+    Number.isFinite(retryAt) ? retryAt : 0
+  );
+  rateLimitResetAt = Math.max(
+    rateLimitResetAt ?? 0,
+    serverRetryAt > Date.now() ? serverRetryAt : Date.now() + Math.min(
+      RATE_LIMIT_FALLBACK_BACKOFF_MS * 2 ** Math.min(5, (releaseState?.failures ?? 1) - 1),
+      6 * APP_UPDATE_CHECK_INTERVAL_MS
+    )
+  );
   log.warn("GitHub release rate limit reached", {
     resetAt: new Date(rateLimitResetAt).toISOString(),
     status
@@ -1115,24 +1774,63 @@ type GitHubJsonResult =
 
 async function fetchGitHubJson(
   url: string,
-  signal?: AbortSignal,
   etag?: string
 ): Promise<GitHubJsonResult> {
-  const response = await fetch(url, {
-    headers: githubReleaseHeaders(etag),
-    ...(signal ? { signal } : {})
-  });
-  if (response.status === 304) {
-    return { notModified: true };
+  // Requests are sequential so rate limiting can stop the next endpoint.
+  // Each gets its own budget, including body consumption: a stalled optional
+  // /latest lookup must not hand the release-list fallback an aborted signal.
+  const controller = new AbortController();
+  const startedAt = Date.now();
+  let phase: "headers" | "body" = "headers";
+  let status: number | undefined;
+  const timeout = setTimeout(() => controller.abort(), RELEASE_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      headers: githubReleaseHeaders(etag),
+      signal: controller.signal
+    });
+    status = response.status;
+    if (response.status === 304) {
+      return { notModified: true };
+    }
+    if (!response.ok) {
+      throw releaseRequestError(response);
+    }
+    phase = "body";
+    return {
+      etag: readResponseHeader(response, "etag"),
+      notModified: false,
+      payload: await response.json()
+    };
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    const cause = error.cause instanceof Error ? error.cause : undefined;
+    const timedOut = controller.signal.aborted;
+    // Log here: /latest is optional, so its caller intentionally swallows
+    // failures. Keep its endpoint and underlying transport cause observable.
+    log.warn("GitHub release request failed", {
+      url,
+      phase,
+      status,
+      elapsedMs: Date.now() - startedAt,
+      timeoutMs: RELEASE_FETCH_TIMEOUT_MS,
+      timedOut,
+      errorName: error.name,
+      message: error.message,
+      cause: cause?.message,
+      code: cause && "code" in cause ? cause.code : "code" in error ? error.code : undefined
+    });
+    if (timedOut) {
+      throw new Error(
+        `Checking for updates timed out after ${RELEASE_FETCH_TIMEOUT_MS / 1_000} seconds. ` +
+        "Check your connection and try again.",
+        { cause: err }
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
   }
-  if (!response.ok) {
-    throw releaseRequestError(response);
-  }
-  return {
-    etag: readResponseHeader(response, "etag"),
-    notModified: false,
-    payload: await response.json()
-  };
 }
 
 function asGitHubRelease(value: unknown): GitHubRelease | undefined {
@@ -1160,11 +1858,10 @@ type LatestReleaseResult =
 // page. We also page until that Latest tag appears so Stable Prerelease
 // and Beta slots still see everything newer than it.
 async function fetchLatestGitHubRelease(
-  signal?: AbortSignal,
   etag?: string
 ): Promise<LatestReleaseResult | undefined> {
   try {
-    const result = await fetchGitHubJson(GITHUB_LATEST_RELEASE_URL, signal, etag);
+    const result = await fetchGitHubJson(GITHUB_LATEST_RELEASE_URL, etag);
     return result.notModified
       ? result
       : { etag: result.etag, notModified: false, release: asGitHubRelease(result.payload) };
@@ -1186,10 +1883,13 @@ type ReleaseListFetch =
       releases: GitHubRelease[];
     };
 
-async function fetchGitHubReleases(signal?: AbortSignal): Promise<ReleaseListFetch> {
+async function fetchGitHubReleases(): Promise<ReleaseListFetch> {
   const cachedEtags = releaseCache?.etags ?? {};
   const etags: Record<string, string> = { ...cachedEtags };
-  const latestPromise = fetchLatestGitHubRelease(signal, cachedEtags[GITHUB_LATEST_RELEASE_URL]);
+  const latest = await fetchLatestGitHubRelease(cachedEtags[GITHUB_LATEST_RELEASE_URL]);
+  if (rateLimitResetAt !== undefined && Date.now() < rateLimitResetAt) {
+    throw rateLimitedError(rateLimitResetAt);
+  }
   const collected: GitHubRelease[] = [];
   const seen = new Set<string>();
   const add = (release: GitHubRelease | undefined): void => {
@@ -1204,11 +1904,10 @@ async function fetchGitHubReleases(signal?: AbortSignal): Promise<ReleaseListFet
     // Only page 1 is revalidated conditionally. Pages past it are only ever
     // requested when the newest page moved, so a conditional request there
     // would answer 200 anyway.
-    const pagePromise = fetchGitHubJson(url, signal, page === 1 ? cachedEtags[url] : undefined);
+    const pagePromise = fetchGitHubJson(url, page === 1 ? cachedEtags[url] : undefined);
     let pageResult: GitHubJsonResult;
     if (page === 1) {
-      const [latest, firstPage] = await Promise.all([latestPromise, pagePromise]);
-      pageResult = firstPage;
+      pageResult = await pagePromise;
       if (latest !== undefined && !latest.notModified) {
         latestRelease = latest.release;
         if (latest.etag !== undefined) etags[GITHUB_LATEST_RELEASE_URL] = latest.etag;
@@ -1248,30 +1947,24 @@ async function fetchGitHubReleases(signal?: AbortSignal): Promise<ReleaseListFet
 }
 
 async function refreshGitHubReleases(): Promise<GitHubRelease[]> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), RELEASE_FETCH_TIMEOUT_MS);
-  try {
-    const result = await fetchGitHubReleases(controller.signal);
-    if (result.notModified) {
-      const cached = releaseCache;
-      if (cached) {
-        releaseCache = { ...cached, fetchedAt: Date.now() };
-        rateLimitResetAt = undefined;
-        return cached.releases;
-      }
-      return [];
+  const result = await fetchGitHubReleases();
+  if (result.notModified) {
+    const cached = releaseCache;
+    if (cached) {
+      releaseCache = { ...cached, fetchedAt: Date.now() };
+      rateLimitResetAt = undefined;
+      return cached.releases;
     }
-    releaseCache = {
-      etags: result.etags,
-      fetchedAt: Date.now(),
-      latest: result.latest,
-      releases: result.releases
-    };
-    rateLimitResetAt = undefined;
-    return result.releases;
-  } finally {
-    clearTimeout(timeout);
+    return [];
   }
+  releaseCache = {
+    etags: result.etags,
+    fetchedAt: Date.now(),
+    latest: result.latest,
+    releases: result.releases
+  };
+  rateLimitResetAt = undefined;
+  return result.releases;
 }
 
 /** E2E launches set `NODE_ENV=production` so the app boots its production
@@ -1289,8 +1982,8 @@ function releaseReadsDisabled(): boolean {
 
 /**
  * Single owner of the GitHub release list. Every caller in main goes through
- * this cache, and the renderer only ever reads it over the command bus, so
- * opening Settings costs no network request.
+ * this cache over the command bus. Settings may refresh an expired list,
+ * but consumes the same persisted hourly budget as automatic checks.
  */
 async function readGitHubReleases(
   maxAgeMs = APP_UPDATE_RELEASE_CACHE_TTL_MS
@@ -1298,24 +1991,46 @@ async function readGitHubReleases(
   if (releaseReadsDisabled()) {
     return [];
   }
-  const now = Date.now();
-  if (releaseCache && now - releaseCache.fetchedAt < maxAgeMs) {
-    return releaseCache.releases;
-  }
-  if (rateLimitResetAt !== undefined && now < rateLimitResetAt) {
-    // Spending a request GitHub will only reject deepens the hole. Serve the
-    // last good list when we have one.
-    if (releaseCache) {
-      return releaseCache.releases;
-    }
-    throw rateLimitedError(rateLimitResetAt);
-  }
   if (!releaseFetchInFlight) {
-    releaseFetchInFlight = refreshGitHubReleases().finally(() => {
+    releaseFetchInFlight = (async () => {
+      const state = await loadReleaseState();
+      const now = Date.now();
+      const explicit = maxAgeMs === 0;
+      if (rateLimitResetAt !== undefined && now < rateLimitResetAt) {
+        if (!explicit && releaseCache) return { releases: releaseCache.releases, revalidated: false };
+        throw rateLimitedError(rateLimitResetAt);
+      }
+      if (!explicit && (
+        now < automaticReleaseCheckAt(state) ||
+        (releaseCache && now - releaseCache.fetchedAt < maxAgeMs)
+      )) return { releases: releaseCache?.releases ?? [], revalidated: false };
+
+      // Commit admission BEFORE opening a socket. Even a crash, timeout, or
+      // unsuccessful response consumes this profile's automatic hourly slot.
+      state.lastAttemptAt = now;
+      state.failures += 1;
+      state.retryAt = now + Math.min(
+        RATE_LIMIT_FALLBACK_BACKOFF_MS * 2 ** Math.min(5, state.failures - 1),
+        6 * APP_UPDATE_CHECK_INTERVAL_MS
+      );
+      await saveReleaseState();
+      try {
+        const releases = await refreshGitHubReleases();
+        state.failures = 0;
+        state.retryAt = null;
+        return { releases, revalidated: true };
+      } finally {
+        await saveReleaseState();
+      }
+    })().finally(() => {
       releaseFetchInFlight = undefined;
     });
   }
-  return await releaseFetchInFlight;
+  const result = await releaseFetchInFlight;
+  // A button click racing the initial passive disk read must still perform
+  // its explicit check. Join real requests, not a deferred/cache-only read.
+  if (maxAgeMs === 0 && !result.revalidated) return readGitHubReleases(0);
+  return result.releases;
 }
 
 async function readAppUpdateReleaseForSelection(
@@ -1330,6 +2045,7 @@ export async function readAppUpdateReleaseVersions(): Promise<AppUpdateReleaseVe
   try {
     const releases = await readGitHubReleases();
     const selected = selectAppUpdateReleases(releases);
+    downloadDiscoveredRelease(selected);
     return {
       fetchedAt: releaseCache?.fetchedAt ?? Date.now(),
       stable: {
@@ -1364,6 +2080,95 @@ export async function readAppUpdateReleaseVersions(): Promise<AppUpdateReleaseVe
 export function readAppUpdateStatus(): AppUpdateStatus {
   reconcileAppUpdateSelection();
   return updateStatus;
+}
+
+/** Broadcast on the user-initiated channel. See `EVENT_CHANNELS
+ *  .appUpdateCheckResult`: this fires for the Check for Updates… menu item and
+ *  nothing else, which is what keeps the live progress card silent for the
+ *  hourly background checks that move the same statuses. */
+function emitUpdateCheckResult(result: AppUpdateCheckResult): void {
+  broadcastRendererEventToLocalWindows(EVENT_CHANNELS.appUpdateCheckResult, result);
+  relayRendererEventToPeer(EVENT_CHANNELS.appUpdateCheckResult, result);
+}
+
+/**
+ * the Check for Updates… menu item.
+ *
+ * Wraps `checkForAppUpdatesNow("menu")` with the one thing the status channel
+ * cannot say: somebody is waiting for this answer. `checking` goes out first
+ * so the live card is on screen for the whole release read, and the outcome
+ * goes out last.
+ *
+ * `available` is NOT an outcome here. This app's check settles the moment
+ * electron-updater accepts the release, and `autoDownload` is on — so at
+ * `available` the download the user is watching has only just started. Report
+ * it as finished and the card comes down with the whole download still to
+ * run, which is the defect this channel exists to fix.
+ */
+export async function runMenuUpdateCheck(): Promise<AppUpdateCheckResult> {
+  userCheckDepth += 1;
+  emitUpdateCheckResult({ status: "checking" });
+  try {
+    let result: AppUpdateCheckResult;
+    try {
+      result = await checkForAppUpdatesNow("menu");
+    } catch (err) {
+      result = {
+        status: "error",
+        message: err instanceof Error ? err.message : String(err)
+      };
+    }
+    const settled =
+      result.status === "available" ? await waitForDownloadOutcome(result.version) : result;
+    emitUpdateCheckResult(settled);
+    return settled;
+  } finally {
+    userCheckDepth = Math.max(0, userCheckDepth - 1);
+  }
+}
+
+/**
+ * Whether a check the user asked for is still running.
+ *
+ * The `checking` tick above is edge-triggered and never replayed, so a window
+ * that subscribes a moment late misses the entire check — and React flushes
+ * passive effects AFTER paint, which makes that gap reachable even for a
+ * window that was already on screen when the menu item was picked. This is
+ * the mount-time snapshot, the same shape of answer `readAppUpdateStatus`
+ * gives a renderer that mounts mid-download.
+ */
+export function isUserUpdateCheckRunning(): boolean {
+  return userCheckDepth > 0;
+}
+
+/**
+ * Stop the download the live update card is reporting.
+ *
+ * `canceled: false` is the ordinary race, not a fault: the download finished
+ * (or never started) while the click was in flight. The caller has a check
+ * result coming either way, so there is nothing for it to do about that.
+ */
+export function cancelAppUpdateDownload(): AppUpdateCancelResult {
+  const download = activeDownload;
+  if (!download || download.canceled) return { canceled: false };
+  download.canceled = true;
+  // Switching away and back must not queue a restart of the very transfer
+  // the user is now canceling. A different selected track remains pending.
+  if (download.selection === currentUpdateSelectionKey()) selectionCheckPending = false;
+  log.info("canceling update download", { version: download.version });
+  // The flag is set first and unconditionally: `cancel` may still be the empty
+  // slot an offered-but-not-yet-started download carries, and it may throw
+  // (the token is electron-updater's). Either way the download's own
+  // rejection must still read as a cancel rather than as a network failure.
+  applyPendingCancel(download);
+  return { canceled: true };
+}
+
+let installWithQuitFlush = async (install: () => void): Promise<void> => install();
+
+/** Bootstrap supplies the same bounded diagnostics flush used by normal quit. */
+export function setAppUpdateInstallHandler(handler: typeof installWithQuitFlush): void {
+  installWithQuitFlush = handler;
 }
 
 type DownloadedUpdateInstallMode = "user" | "windows-update-smoke";
@@ -1402,7 +2207,7 @@ async function installDownloadedAppUpdateForMode(
       message: `Windows updater smoke refuses to install ${version}; expected ${smoke.targetVersion}.`
     };
   }
-  if (!productionUpdatesEnabled()) {
+  if (devFakeUpdateCheckEnabled()) {
     // The only way to reach `downloaded` outside production is the
     // dev/QA fake (see `simulateDevUpdateCheck`): there's no real
     // payload and the dev binary is unsigned, so don't bounce the app
@@ -1425,7 +2230,7 @@ async function installDownloadedAppUpdateForMode(
       const retryResult = await checkForAppUpdatesNow("manual", retrySelection);
       const refreshedResult =
         retryResult.status === "available"
-          ? await waitForRetryDownload(retryResult.version)
+          ? await waitForDownloadOutcome(retryResult.version)
           : retryResult;
       if (refreshedResult.status !== "downloaded") {
         return {
@@ -1450,19 +2255,18 @@ async function installDownloadedAppUpdateForMode(
           "Windows updater smoke could not persist its install-attempt marker; refusing to restart."
       };
     }
-    if (mode === "windows-update-smoke") {
-      // PwrSnap ships assisted NSIS (`oneClick: false`). The default
-      // quitAndInstall() call displays that installer and waits for user input,
-      // which a credential-free hosted smoke runner cannot provide. Keep the
-      // user-facing path interactive, but make this marker-gated headless path
-      // silent. The outer harness owns the target relaunch so it can preserve
-      // the exact isolated environment; NSIS uses ExecShellAsUser for its
-      // force-run path, which does not reliably retain caller-only variables
-      // such as PWRSNAP_USER_DATA on hosted Windows runners.
-      autoUpdater().quitAndInstall(true, false);
-    } else {
-      autoUpdater().quitAndInstall();
-    }
+    await installWithQuitFlush(() => {
+      if (mode === "windows-update-smoke") {
+        // The harness owns relaunch so the target retains its isolated state.
+        autoUpdater().quitAndInstall(true, false);
+      } else if (process.platform === "win32") {
+        // NSIS defaults to its visible wizard. Install silently and
+        // have the installer relaunch the updated app when it finishes.
+        autoUpdater().quitAndInstall(true, true);
+      } else {
+        autoUpdater().quitAndInstall();
+      }
+    });
     return { status: "restarting" };
   } catch (err) {
     return {
@@ -1480,8 +2284,12 @@ export async function installDownloadedWindowsUpdateSmoke(): Promise<AppUpdateIn
   return await installDownloadedAppUpdateForMode("windows-update-smoke");
 }
 
-export function initAppUpdater(): void {
-  if (initialized) return;
+export function initAppUpdater(selectionResolver: SelectionResolver): void {
+  if (initialized || (releaseReadsDisabled() && windowsUpdateSmokeConfig() === undefined)) return;
+  // Bootstrap must provide the live settings reader before any channel
+  // configuration or automatic check; asynchronous hotkey wiring is too late.
+  setUpdateSelectionResolver(selectionResolver);
+  observedSelection = currentUpdateSelectionKey();
   initialized = true;
 
   // Skip in development. The dev binary isn't signed and Squirrel.Mac
@@ -1535,17 +2343,46 @@ export function initAppUpdater(): void {
       updateStatus.status === "available" || updateStatus.status === "downloading"
         ? updateStatus
         : undefined;
-    const version = inProgress?.version ?? "unknown";
+    // `update-available`'s version first: it is what the event stream itself
+    // reported. The registration is only a fallback for a progress tick that
+    // arrives before the status has moved.
+    const version = inProgress?.version ?? activeDownload?.version ?? "unknown";
+    const downgrade = inProgress?.downgrade === true || activeDownload?.downgrade === true;
+    // The bytes come along for the meter's label: a percent alone cannot tell
+    // a 4 MB delta apart from a 200 MB full download, and on a slow link that
+    // difference is the whole question of whether waiting is worth it.
     setUpdateStatus({
       status: "downloading",
       version,
       percent: Math.round(progress.percent),
-      ...(inProgress?.downgrade === true ? ({ downgrade: true } as const) : {})
+      transferred: progress.transferred,
+      total: progress.total,
+      bytesPerSecond: progress.bytesPerSecond,
+      ...(downgrade ? ({ downgrade: true } as const) : {})
     });
+  });
+  // electron-updater reports its own aborts here and, deliberately, not
+  // through `error`. Settling on `canceled` rather than back on `available`
+  // keeps Settings from promising a download that is no longer running.
+  autoUpdater().on("update-cancelled", (info) => {
+    const version = info?.version ?? activeDownload?.version ?? "unknown";
+    log.info("update-cancelled", { version });
+    const downgrade =
+      (info?.version !== undefined && pendingDowngradeVersions.has(info.version)) ||
+      activeDownload?.downgrade === true;
+    if (info?.version) {
+      pendingDownloadSelectionsByVersion.delete(info.version);
+      pendingDowngradeVersions.delete(info.version);
+    }
+    activeDownload = undefined;
+    setUpdateStatusUnlessActionable(
+      canceledStatusFor({ version, ...(downgrade ? ({ downgrade: true } as const) : {}) })
+    );
   });
   autoUpdater().on("update-downloaded", (info) => {
     log.info("update-downloaded", { version: info.version });
     if (!acceptWindowsUpdateSmokeEventVersion("update-downloaded", info.version)) return;
+    activeDownload = undefined;
     const selection = info.version
       ? (pendingDownloadSelectionsByVersion.get(info.version) ?? currentUpdateSelectionKey())
       : undefined;
@@ -1555,12 +2392,19 @@ export function initAppUpdater(): void {
       pendingDowngradeVersions.delete(info.version);
     }
     if (info.version && selection) {
-      heldDownloadedUpdate = {
+      const next: HeldDownload = {
         selection,
         version: info.version,
         ...(isDowngrade ? ({ downgrade: true } as const) : {})
       };
+      if (supersedingDownload !== undefined && process.platform === "darwin") {
+        awaitSquirrelStage(next);
+        return;
+      }
+      promoteSupersede(next);
+      return;
     }
+    supersedingDownload = undefined;
     reconcileAppUpdateSelection();
   });
   autoUpdater().on("error", (err: Error) => {
@@ -1568,20 +2412,29 @@ export function initAppUpdater(): void {
     setUpdateStatusUnlessActionable({ status: "error", message: err.message });
   });
 
-  if (windowsUpdateSmokeConfig() === undefined) {
-    startPeriodicUpdateChecks();
-  }
   if (!pendingInstallFailed) {
-    void checkForAppUpdatesNow("startup");
+    void checkForAppUpdatesNow("startup").finally(() => startPeriodicUpdateChecks());
+  } else {
+    startPeriodicUpdateChecks();
   }
 }
 
 export function disposeAutoUpdater(): void {
+  updaterGeneration += 1;
   if (periodicUpdateCheckTimer) {
-    clearInterval(periodicUpdateCheckTimer);
+    clearTimeout(periodicUpdateCheckTimer);
     periodicUpdateCheckTimer = undefined;
   }
   initialized = false;
+  observedSelection = undefined;
+  selectionCheckPending = false;
+  downloadSettlement = undefined;
+  warnedAboutUnavailableAutoUpdater = false;
+  userCheckDepth = 0;
+  activeDownload = undefined;
+  pendingSquirrelStage?.dispose();
+  pendingSquirrelStage = undefined;
+  supersedingDownload = undefined;
   heldDownloadedUpdate = undefined;
   heldInstallFailed = undefined;
   pendingDownloadSelectionsByVersion.clear();
@@ -1591,6 +2444,9 @@ export function disposeAutoUpdater(): void {
     clearTimeout(waiter.timer);
   }
   retryDownloadWaiters.clear();
+  releaseState = undefined;
+  releaseStateStore = undefined;
+  releaseStateLoad = undefined;
   releaseCache = undefined;
   releaseFetchInFlight = undefined;
   rateLimitResetAt = undefined;

@@ -87,6 +87,7 @@ vi.mock("../../events", () => ({
 }));
 
 vi.mock("../../float-over", () => ({
+  releaseFloatOverDock: () => undefined,
   setFloatOverState: () => undefined
 }));
 
@@ -112,8 +113,7 @@ vi.mock("../../persistence/captures-repo", () => ({
 }));
 
 vi.mock("../../persistence/source-store", () => ({
-  ensureEffectiveSrcPath: async () => "/src/cap_1.png",
-  putCaptureSource: async () => ({})
+  ensureEffectiveSrcPath: async () => "/src/cap_1.png"
 }));
 
 vi.mock("../../persistence/bundle-store", () => ({

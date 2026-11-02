@@ -1,7 +1,13 @@
 import { useEffect, useState, type ReactElement } from "react";
-import type { AppDocument, AppDocumentKind } from "@pwrsnap/shared";
+import {
+  APP_DOCUMENT_TITLES,
+  type AppDocument,
+  type AppDocumentKind
+} from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
+import { WindowControls } from "../shared/WindowControls";
+import { paintsOwnCaptionButtons, rendererPlatform } from "../../lib/window-chrome";
 
 type Props = {
   kind: AppDocumentKind | null;
@@ -32,14 +38,13 @@ export function AppDocumentWindow({ kind }: Props): ReactElement {
     };
   }, [kind]);
 
-  const title =
-    kind === "third-party-licenses" ? "Third-party Licenses" : "Changelog";
+  const title = APP_DOCUMENT_TITLES[kind ?? "changelog"];
 
   return (
     <div className="ps-doc">
       <header className="ps-doc__titlebar">
         <div className="ps-doc__brand">
-          <PwrSnapMark size={18} />
+          <PwrSnapMark size={20} decorative />
           <PwrSnapWordmark />
         </div>
         <div className="ps-doc__crumb">
@@ -47,6 +52,9 @@ export function AppDocumentWindow({ kind }: Props): ReactElement {
           <span aria-hidden="true">/</span>
           <b>{document?.title ?? title}</b>
         </div>
+        {/* Linux: a frameless window gets neither traffic lights nor a
+            `titleBarOverlay` — nobody draws min/max/close but us. */}
+        {paintsOwnCaptionButtons(rendererPlatform()) ? <WindowControls /> : null}
       </header>
       <main className="ps-doc__main">
         {error !== null ? (

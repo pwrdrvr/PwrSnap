@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type {
   CaptureEnrichment,
   CapturesLocation,
@@ -10,7 +10,6 @@ import type {
 } from "@pwrsnap/shared";
 import {
   normalizeTagLabel,
-  desktopFileManagerName,
   capturesFolderDisplayPath,
   resolveExportLadder,
   rungForPreset
@@ -24,9 +23,11 @@ import {
   type CopyPreset
 } from "../shared/CopyButton";
 import { CodexStatusPill } from "../shared/CodexStatusPill";
+import { enrichmentRunClock } from "../shared/EnrichmentRunClock";
 import { AiConsentDialog } from "../shared/AiConsentDialog";
 import { useFieldEditor } from "../shared/useFieldEditor";
 import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
+import { SourceChip } from "../shared/SourceChip";
 import { AppUpdateRow } from "../update/AppUpdateRow";
 import type { PresetMetricMap } from "../shared/usePresetRenderMetrics";
 import {
@@ -35,9 +36,12 @@ import {
 } from "../shared/VideoExportPresetsPanel";
 import { VideoTimeline } from "../shared/VideoTimeline";
 import { useVideoTimelineAssets } from "../shared/useVideoTimelineAssets";
-import { useVideoTrimRange } from "../shared/useVideoTrimRange";
+import { useVideoTrimRange, type UseVideoTrimRange } from "../shared/useVideoTrimRange";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import { FoIcon } from "./FoIcons";
+import { fitTagChips } from "./fitTagRow";
+import { DOCK_TUCK_COUNTDOWN_MS } from "./float-over-dock-model";
+import { ageTickMs, capturedAtMs, formatCaptureAgo, useNow } from "./float-over-age";
 
 const RES_PRESETS = [
   { id: "low", label: "Low" },
@@ -108,6 +112,14 @@ function tagsWithMutation(tags: readonly string[], mutation: TagMutation | null)
   return [...tags, mutation.label];
 }
 
+/** Placeholder chips while the enrichment run is in flight. Static on
+ *  purpose — they hold the row's shape, and a shimmer would repaint for the
+ *  whole run. */
+const TAG_GHOST_WIDTHS = [58, 76, 48] as const;
+/** Mirrors `.fo__tags { gap }` and `.fo__tag-input { min-width }`. */
+const TAG_ROW_GAP_PX = 4;
+const TAG_INPUT_MIN_WIDTH_PX = 60;
+
 function FoTags({
   tags,
   onAdd,
@@ -117,7 +129,8 @@ function FoTags({
   onRejectSuggest,
   pendingMutation,
   failure,
-  onRetry
+  onRetry,
+  aiPending = false
 }: {
   tags: string[];
   onAdd: (t: string) => void;
@@ -128,20 +141,64 @@ function FoTags({
   pendingMutation: TagMutation | null;
   failure: TagMutationFailure | null;
   onRetry: () => void;
+  /** The enrichment run is queued or running — hold the row with ghosts. */
+  aiPending?: boolean;
 }) {
   const [draft, setDraft] = useState("");
   const busy = pendingMutation !== null;
+  const shownSuggestions = suggestions.filter((s) => !tags.includes(s.label)).slice(0, 2);
+  const chipCount = tags.length + shownSuggestions.length;
+  // The row is TAG_ROW_LINES tall whatever lands in it (see fitTagRow.ts).
+  // Chips past that collapse into "+N"; expanding is the user's click, so
+  // the growth it causes is theirs, not a shift under them.
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [fitCount, setFitCount] = useState(Number.POSITIVE_INFINITY);
+  const chipKey = [...tags, "\0", ...shownSuggestions.map((s) => s.label)].join("\u0001");
+  useLayoutEffect(() => {
+    const row = rowRef.current;
+    if (row === null || expanded) return undefined;
+    const measure = (): void => {
+      const chips = Array.from(row.querySelectorAll<HTMLElement>(":scope > [data-tag-chip]"));
+      const more = row.querySelector<HTMLElement>(":scope > .fo__tag-more");
+      const next = fitTagChips(
+        chips.map((chip) => chip.offsetWidth),
+        {
+          rowWidth: row.clientWidth,
+          gap: TAG_ROW_GAP_PX,
+          moreWidth: more?.offsetWidth ?? 0,
+          inputMinWidth: TAG_INPUT_MIN_WIDTH_PX
+        }
+      );
+      setFitCount((prev) => (prev === next ? prev : next));
+    };
+    measure();
+    // Chip widths move when Geist swaps in; the row's width does not.
+    const observer = new ResizeObserver(measure);
+    observer.observe(row);
+    for (const chip of Array.from(row.querySelectorAll(":scope > [data-tag-chip]"))) {
+      observer.observe(chip);
+    }
+    return () => observer.disconnect();
+  }, [chipKey, expanded]);
+  const visibleCount = expanded ? chipCount : Math.min(fitCount, chipCount);
+  const hiddenCount = chipCount - visibleCount;
+  // Overflowed chips stay mounted — out of flow and invisible — so their
+  // widths can still be measured when the row changes.
+  const overflowClass = (index: number): string => (index >= visibleCount ? " is-overflow" : "");
+  const showGhosts = aiPending && chipCount === 0;
   return (
-    <div className="fo__tags" aria-busy={busy}>
-      {tags.map((t) => (
+    <div className="fo__tags" aria-busy={busy} ref={rowRef}>
+      {tags.map((t, index) => (
         <span
           key={t}
+          data-tag-chip=""
           className={`fo__tag${
             pendingMutation?.action === "add" &&
             normalizeTagLabel(t) === pendingMutation.normalizedLabel
               ? " is-pending"
               : ""
-          }`}
+          }${overflowClass(index)}`}
         >
           {t}
           <button
@@ -155,37 +212,63 @@ function FoTags({
           </button>
         </span>
       ))}
-      {suggestions
-        .filter((s) => !tags.includes(s.label))
-        .slice(0, 2)
-        .map((s) => (
-          <span key={s.id} className="fo__tag is-suggest">
-            <button
-              type="button"
-              className="fo__tag-suggest-label"
-              onClick={() => onAcceptSuggest(s)}
-              title={`Use ${s.label}`}
-              disabled={busy}
-            >
-              + {s.label}
-            </button>
-            <button
-              type="button"
-              className="fo__tag-x"
-              onClick={() => onRejectSuggest(s)}
-              aria-label={`reject ${s.label}`}
-              disabled={busy}
-            >
-              ×
-            </button>
-          </span>
-        ))}
+      {shownSuggestions.map((s, index) => (
+        <span
+          key={s.id}
+          data-tag-chip=""
+          className={`fo__tag is-suggest${overflowClass(tags.length + index)}`}
+        >
+          <button
+            type="button"
+            className="fo__tag-suggest-label"
+            onClick={() => onAcceptSuggest(s)}
+            title={`Use ${s.label}`}
+            disabled={busy}
+          >
+            + {s.label}
+          </button>
+          <button
+            type="button"
+            className="fo__tag-x"
+            onClick={() => onRejectSuggest(s)}
+            aria-label={`reject ${s.label}`}
+            disabled={busy}
+          >
+            ×
+          </button>
+        </span>
+      ))}
+      <button
+        type="button"
+        className={`fo__tag fo__tag-more${hiddenCount > 0 ? "" : " is-overflow"}`}
+        onClick={() => setExpanded(true)}
+        aria-label={`Show ${hiddenCount} more ${hiddenCount === 1 ? "tag" : "tags"}`}
+        aria-hidden={hiddenCount > 0 ? undefined : true}
+        tabIndex={hiddenCount > 0 ? undefined : -1}
+      >
+        +{Math.max(hiddenCount, 1)}
+      </button>
+      {showGhosts
+        ? TAG_GHOST_WIDTHS.map((width) => (
+            <span
+              key={width}
+              className="fo__tag-ghost"
+              style={{ width }}
+              aria-hidden
+            />
+          ))
+        : null}
       <input
         className="fo__tag-input"
         placeholder={tags.length ? "" : "tag…"}
         value={draft}
         maxLength={64}
         onChange={(e) => setDraft(e.target.value)}
+        // Typing a tag into a collapsed row would add it out of sight, and
+        // Backspace would remove one the user cannot see.
+        onFocus={() => {
+          if (hiddenCount > 0) setExpanded(true);
+        }}
         disabled={busy}
         onKeyDown={(e) => {
           if (e.key === "Enter" && draft.trim()) {
@@ -245,9 +328,16 @@ export type FloatOverAsset =
     }
   | {
       kind: "video";
-      /** Source URL the `<video>` element loads. Typically
-       *  `pwrsnap-capture://r/<id>` — the Range-aware custom
-       *  protocol handler streams the requested byte range. */
+      /**
+       * The capture's own URL (`pwrsnap-capture://r/<id>` — the Range-aware
+       * protocol handler streams the requested byte range).
+       *
+       * NOT what the preview player loads, and must not be wired to one:
+       * a recording whose audible track is not the one a player takes needs
+       * a prepared rendition, or it plays silence. `HoverAutoplayVideo`
+       * resolves that from `captureId` + the flags below. Kept because the
+       * toast's generic `src` prop is shared with the image variant.
+       */
       src: string;
       /** Video capture id. Threads into the 6-card export grid
        *  (`VideoExportPresetsPanel`) which owns its own hooks for
@@ -258,6 +348,15 @@ export type FloatOverAsset =
        *  AND drives the short-clip warning banner (clips under 1.5s
        *  are usually an accidental Stop press right after Start). */
       durationSec: number;
+      /** What the recorder actually persisted, not merely what the user
+       * requested before capture. Drives the post-recording confirmation. */
+      hasSystemAudio?: boolean;
+      hasMicrophoneAudio?: boolean;
+      /** What the take asked for. The pair `requested && !has` is the
+       * one the receipt exists to surface: a source the user turned on
+       * that produced nothing. */
+      requestedSystemAudio?: boolean;
+      requestedMicrophone?: boolean;
       /** Source pixel size — sizes the mini-trim filmstrip cells. */
       widthPx: number;
       heightPx: number;
@@ -271,6 +370,15 @@ export type FloatOverAsset =
       onDiscard?: () => void;
     };
 
+/** "3m 23s ago", ticking. Its own component so the clock re-renders
+ *  this span, not the whole toast. */
+function CaptureAge({ capturedAt }: { capturedAt: string | undefined }): React.ReactElement {
+  const at = capturedAt === undefined ? null : capturedAtMs(capturedAt);
+  const initial = Date.now();
+  const now = useNow(at === null ? null : ageTickMs(at, initial));
+  return <span>{at === null ? "just now" : formatCaptureAgo(at, now)}</span>;
+}
+
 export function FloatOver({
   variant = "standard",
   asset,
@@ -281,6 +389,7 @@ export function FloatOver({
   srcH = 1800,
   srcBytes = 2.4 * 1024 * 1024,
   srcDpr = 2,
+  capturedAt,
   exportStrategy = "legacy",
   capturesLocation = "documents",
   capturesRootOverridden = false,
@@ -288,7 +397,12 @@ export function FloatOver({
   copyPulses,
   videoCopyShortcut,
   onDismiss,
+  onTimeout,
+  dockable = false,
+  sidebarVisible = true,
+  externalHover = false,
   onEdit,
+  onReveal,
   onCopy,
   onCopyPath,
   onDragFile,
@@ -304,8 +418,10 @@ export function FloatOver({
   aiSafetyDisabled = false,
   enrichmentProviderLabel,
   enrichmentModelLabel,
+  enrichmentFallbackFromLabel,
   autoAcceptSuggestions = false,
   onEnableAi,
+  onCancelEnrichment,
   onConfigureAi,
   onSetAutoAccept,
   onAcceptTitle,
@@ -333,6 +449,9 @@ export function FloatOver({
    *  preview "Retina" badge and the DPI-aware export ladder. Defaults to
    *  2 to match the legacy hardcoded "2× retina" badge. */
   srcDpr?: number;
+  /** The capture's `captured_at`. The header counts its age from this;
+   *  without one it says "just now", as the design mocks do. */
+  capturedAt?: string | undefined;
   /** Active export-preset strategy. `legacy` (default) keeps the cards
    *  visually identical for normal users; the DPI-aware strategies add
    *  the Retina/scale tags + rescale the dim estimates. */
@@ -344,8 +463,40 @@ export function FloatOver({
   copyMetrics?: PresetMetricMap | undefined;
   copyPulses?: Readonly<Record<CopyPreset, number>> | undefined;
   videoCopyShortcut?: VideoCopyShortcutRequest | null | undefined;
+  /** The user closed the toast: the X, the footer's Dismiss. */
   onDismiss?: () => void;
+  /**
+   * The countdown ran out (or the user pressed Tuck). `inFlight` says the
+   * model had not answered yet, which is the host's cue to tuck the snap
+   * to the screen-edge dock rather than close it. Without it the
+   * countdown closes the toast through `onDismiss`, as it always did.
+   */
+  onTimeout?: (outcome: { inFlight: boolean }) => void;
+  /**
+   * The host can tuck this toast to the screen-edge dock. When it can and
+   * enrichment will run, the countdown no longer waits for the model: it
+   * runs `DOCK_TUCK_COUNTDOWN_MS` and ends in a tuck if the model is still
+   * reading. False where PwrSnap cannot place windows (native Wayland) —
+   * the toast then holds the corner until the model answers.
+   */
+  dockable?: boolean;
+  /**
+   * Settings → Recent captures. Off hides the Tuck button, which would
+   * send the snap to a dock nobody can see. Nothing else here follows it:
+   * the countdown and its timeout are the same either way.
+   */
+  sidebarVisible?: boolean;
+  /** The pointer is over part of the float-over window that is not this
+   *  toast (the rail beside it), or its menu is open. Pauses the
+   *  countdown exactly as hovering the toast does. */
+  externalHover?: boolean;
   onEdit?: () => void;
+  /** Fired from the folder button on the image preview's hover row.
+   *  Parent dispatches `library:openInLibrary` so the toast's capture
+   *  is showing in the Library when attention transfers there. Without
+   *  this prop wired (which was the original bug), the button rendered
+   *  fully enabled and did nothing at all on click. */
+  onReveal?: () => void;
   /** Fired when the user clicks Low / Med / High in the toast. The
    *  parent dispatches `clipboard:copy` with the preset; this
    *  component just animates the "copied" badge. Without this prop
@@ -354,7 +505,7 @@ export function FloatOver({
   onCopy?: (preset: "low" | "med" | "high") => void;
   /** Fired when the user clicks the FILE chip under a preset. Parent
    *  dispatches `clipboard:copy-path` so the rendered cache file's
-   *  POSIX path lands on the clipboard as text. */
+   *  platform-native absolute path lands on the clipboard as text. */
   onCopyPath?: (preset: "low" | "med" | "high") => void;
   /** Fired from a drag-start gesture to hand a real PNG file to the OS. */
   onDragFile?: () => void;
@@ -375,12 +526,16 @@ export function FloatOver({
   enrichmentProviderLabel?: string | undefined;
   /** Optional model id shown in parens in the status pill. */
   enrichmentModelLabel?: string | undefined;
+  /** The primary backend's label when the caption fallback answered this
+   *  run because the primary could not be reached. */
+  enrichmentFallbackFromLabel?: string | undefined;
   /** Mirrors `settings.ai.autoAcceptSuggestions`. When true, the
    *  toast renders the checkbox in the "checked" state and trusts
    *  main to promote `suggested_*` → `accepted_*` on its own at the
    *  moment the enrichment completes. */
   autoAcceptSuggestions?: boolean;
   onEnableAi?: () => void;
+  onCancelEnrichment?: (runId: string) => void;
   onConfigureAi?: () => void;
   /** Persist a flip of the auto-accept toggle. Wired to a
    *  `settings:write` dispatch in the host so the change survives
@@ -481,6 +636,14 @@ export function FloatOver({
   // The preview `<video>`, handed to the trim strip so dragging an
   // in/out handle parks the preview on that frame.
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
+  // One local selection owns the preview, duration badge, timeline and
+  // exports, including drag frames before the debounced persist lands.
+  const videoTrim = useVideoTrimRange({
+    captureId: asset?.kind === "video" ? asset.captureId : null,
+    durationSec: asset?.kind === "video" ? asset.durationSec : 0,
+    persistedRange: asset?.kind === "video" ? asset.defaultRange : null,
+    persist: "range"
+  });
   // Stable ref to `onDismiss` so the countdown effect can call the
   // latest callback without re-subscribing on every parent re-render.
   // Without this, an enrichment-arrived re-render (which creates a
@@ -619,7 +782,7 @@ export function FloatOver({
     const timer = setTimeout(() => setAwaitingAiTimedOut(true), 3000);
     return () => clearTimeout(timer);
   }, [aiNeedsConsent, aiStatus]);
-  const awaitingAi = !aiNeedsConsent && aiStatus === null && !awaitingAiTimedOut;
+  const awaitingAi = !aiNeedsConsent && providerAvailable && aiStatus === null && !awaitingAiTimedOut;
 
   const hasUserDescription =
     description.trim().length > 0 && descriptionOrigin === "manual";
@@ -629,9 +792,20 @@ export function FloatOver({
   // editing — once the pointer leaves the toast the auto-close timer must
   // resume. A prior one-shot `aiAccepted` flag lived here and was never
   // reset, which pinned the toast on screen forever after a single Save.
+  // Enrichment is going to run and the host can tuck: the countdown runs
+  // while the model reads, and a snap still being read when it ends goes
+  // to the dock. Otherwise the toast holds the corner until the model
+  // answers, as it always did.
+  const tuckMode = dockable && !aiNeedsConsent && providerAvailable;
+  const inFlight = thinking || awaitingAi;
+  const inFlightRef = useRef(inFlight);
+  inFlightRef.current = inFlight;
+  const onTimeoutRef = useRef(onTimeout);
+  onTimeoutRef.current = onTimeout;
+  const autoMs = tuckMode ? DOCK_TUCK_COUNTDOWN_MS : cfg.autoMs;
   const isPaused =
-    thinking ||
-    awaitingAi ||
+    (!tuckMode && inFlight) ||
+    externalHover ||
     hovering ||
     nativeDragging ||
     trimDragging ||
@@ -673,8 +847,37 @@ export function FloatOver({
     replaceVisibleTags(tagsWithMutation(acceptedTags, pendingTagMutationRef.current));
   }, [acceptedTags.join("\0"), replaceVisibleTags]);
 
+  // The model answered while the toast is up: give the answer a full
+  // countdown to be read, instead of whatever was left of the tuck one.
+  const wasInFlightRef = useRef(inFlight);
   useEffect(() => {
-    if (!startCountdown || !cfg.autoMs) return;
+    const was = wasInFlightRef.current;
+    wasInFlightRef.current = inFlight;
+    if (!tuckMode || !was || inFlight) return;
+    elapsedAtPause.current = 0;
+    startedAt.current = Date.now();
+    setProgress(1);
+  }, [inFlight, tuckMode]);
+
+  // Countdown over, or the Tuck button: play the exit, then hand the
+  // host the outcome. Reads refs so a re-render mid-exit cannot swap in
+  // a stale answer.
+  const finishCountdown = (): void => {
+    // Once. The countdown keeps ticking through the exit animation, so a
+    // Tuck or X pressed near the end would otherwise close twice.
+    if (exitTimerRef.current !== null) return;
+    setExiting(true);
+    exitTimerRef.current = setTimeout(() => {
+      const timeout = onTimeoutRef.current;
+      if (timeout !== undefined) timeout({ inFlight: inFlightRef.current });
+      else onDismissRef.current?.();
+    }, 220);
+  };
+  const finishCountdownRef = useRef(finishCountdown);
+  finishCountdownRef.current = finishCountdown;
+
+  useEffect(() => {
+    if (!startCountdown || !autoMs) return;
     if (isPaused) {
       elapsedAtPause.current += Date.now() - startedAt.current;
       startedAt.current = Date.now();
@@ -683,15 +886,14 @@ export function FloatOver({
     }
     const tick = () => {
       const elapsed = elapsedAtPause.current + (Date.now() - startedAt.current);
-      const p = Math.max(0, 1 - elapsed / cfg.autoMs);
+      const p = Math.max(0, 1 - elapsed / autoMs);
       setProgress(p);
       if (p <= 0) {
-        setExiting(true);
-        // Use the ref so we always call the latest onDismiss without
-        // requiring the effect to re-subscribe on every parent
-        // re-render (which would reset `startedAt.current` mid-tick
-        // and stall the countdown — bug vii).
-        exitTimerRef.current = setTimeout(() => onDismissRef.current?.(), 220);
+        // Through a ref so we always reach the latest callbacks without
+        // requiring the effect to re-subscribe on every parent re-render
+        // (which would reset `startedAt.current` mid-tick and stall the
+        // countdown — bug vii).
+        finishCountdownRef.current();
         return;
       }
       rafRef.current = requestAnimationFrame(tick);
@@ -706,7 +908,7 @@ export function FloatOver({
     // every parent re-render (e.g., enrichment IPC arrival),
     // resetting startedAt.current and freezing the countdown.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPaused, startCountdown, cfg.autoMs]);
+  }, [isPaused, startCountdown, autoMs]);
 
   useEffect(() => {
     const finishNativeDrag = (event?: MouseEvent | DragEvent): void => {
@@ -778,6 +980,7 @@ export function FloatOver({
   }, []);
 
   const dismissNow = () => {
+    if (exitTimerRef.current !== null) return;
     setExiting(true);
     exitTimerRef.current = setTimeout(() => onDismiss?.(), 220);
   };
@@ -805,7 +1008,7 @@ export function FloatOver({
       onMouseEnter={() => setHovering(true)}
       onMouseLeave={() => setHovering(false)}
     >
-      {startCountdown && cfg.autoMs ? (
+      {startCountdown && autoMs ? (
         <div className="fo__progress">
           <div className="fo__progress-fill" style={{ transform: `scaleX(${progress})` }} />
         </div>
@@ -821,372 +1024,471 @@ export function FloatOver({
           <div className="fo__hdr-title">
             {asset?.kind === "video" ? "Recording saved" : "Snap captured"}
           </div>
-          <div className="fo__hdr-sub">
-            {dimText(srcW, srcH)}
-            {asset?.kind === "video" ? ` · ${fmtDurationLabel(asset.durationSec)}` : " · just now"}
-          </div>
+          {/* Video drops the sub-line: its dims and duration are both
+              printed on the preview's corner overlays, and the video toast
+              is the one that runs out of height (FLOAT_OVER_HEIGHT_MAX). */}
+          {asset?.kind === "video" ? null : (
+            <div className="fo__hdr-sub">
+              {dimText(srcW, srcH)} · <CaptureAge capturedAt={capturedAt} />
+            </div>
+          )}
         </div>
         <div className="fo__hdr-actions">
           {/* Auto-dismiss pauses on hover / typing — no need for a
               separate Pin affordance. The footer Edit button is the
               primary editor entry; an extra pencil here would be
               redundant. */}
-          <button className="fo__icon-btn" title="Dismiss" onClick={dismissNow}>
+          {tuckMode && sidebarVisible && inFlight && onTimeout !== undefined ? (
+            <button
+              className="fo__icon-btn"
+              type="button"
+              data-tip="Tuck to the screen edge"
+              data-tip-detail="Until the model answers"
+              aria-label="Tuck to the screen edge"
+              onClick={finishCountdown}
+            >
+              <FoIcon name="tuck" size={12} />
+            </button>
+          ) : null}
+          <button
+            className="fo__icon-btn"
+            type="button"
+            aria-label="Dismiss"
+            data-tip="Dismiss"
+            onClick={dismissNow}
+          >
             <FoIcon name="x" size={12} />
           </button>
         </div>
       </div>
 
-      {/* Renders nothing unless a downloaded update (or a failed
-          install) is waiting. Under the header rather than beside the
-          footer buttons so it never competes with Edit, this toast's
-          own primary action. Its dismissal is renderer-scoped, so it
-          survives this component's per-capture remount — see
-          AppUpdateRow.tsx. */}
-      <AppUpdateRow variant="float-over" />
-
-      <div className="fo__preview">
+      {/* Everything between the header and the footer scrolls when the
+          toast hits its ceiling (`--fo-max-h`, published by
+          FloatOverHost). The header and footer stay pinned, because
+          the alternative — which is what shipped — is that the window
+          clips whatever ran past the ceiling, and the footer is last:
+          Discard, Dismiss and Edit simply could not be clicked. The
+          ceiling is ~12px above the video toast's natural height as of
+          PR #638. Enrichment no longer moves that height (the tag row
+          holds two lines and the Codex pill one), but an update row, a
+          short-clip warning or an expanded "+N" tag row each cross it
+          on their own. */}
+      <div className="fo__body">
+        {/* Renders nothing unless a downloaded update (or a failed
+            install) is waiting. Under the header rather than beside the
+            footer buttons so it never competes with Edit, this toast's
+            own primary action. Its dismissal is renderer-scoped, so it
+            survives this component's per-capture remount — see
+            AppUpdateRow.tsx. */}
+        {/* The receipt. Prose said "screen + microphone"; it could not say
+            "microphone, and it recorded nothing", which is the outcome the
+            whole pre-flight design exists to prevent. Same chips the
+            selector and the recording HUD show, third density. The prose
+            form survives as the accessible name so a screen reader still
+            gets one sentence instead of three controls. */}
         {asset?.kind === "video" ? (
-          // Video preview — hover-autoplay on top of native
-          // controls. Same component the tray uses for its
-          // "last recording" preview, so the surfaces behave
-          // consistently.
-          <HoverAutoplayVideo src={asset.src} videoRef={previewVideoRef} />
-        ) : (
-          <img
-            src={visibleSrc}
-            alt="capture preview"
-            draggable
-            onDragStart={dragFile}
-            onLoad={() => {
-              if (visibleSrc === src) setSourceLoaded(true);
-            }}
-          />
-        )}
-        <div className="fo__preview-dim">
-          <FoIcon name="ruler" size={10} style={{ color: "var(--accent)" }} />
-          <b>{dimText(srcW, srcH)}</b>
-        </div>
-        <div className="fo__preview-size">
-          {asset?.kind === "video"
-            ? fmtDurationLabel(asset.durationSec)
-            : dprBadgeLabel(srcDpr, window.pwrsnapApi?.platform)}
-        </div>
-
-        {asset?.kind !== "video" && (
-          <div className="fo__preview-actions">
-            <div className="fo__preview-actions-l">
-              <button
-                className="fo__hover-btn"
-                title="Drag PNG file"
-                draggable={onDragFile !== undefined}
-                onDragStart={dragFile}
-                disabled={onDragFile === undefined}
-              >
-                <FoIcon name="hand" size={11} /> Drag
-              </button>
-            </div>
-            <div className="fo__preview-actions-r">
-              <button
-                className="fo__hover-btn"
-                title="Open in editor"
-                onClick={() => onEdit?.()}
-                disabled={onEdit === undefined}
-              >
-                <FoIcon name="pen-line" size={11} /> Edit
-              </button>
-              <button className="fo__hover-btn" title="Reveal in library">
-                <FoIcon name="folder-open" size={11} />
-              </button>
-            </div>
+          <div
+            className="fo__sources"
+            data-testid="fo-sources"
+            role="group"
+            aria-label={`Captured: ${recordingSourcesLabel(asset)}`}
+          >
+            {recordingSourceReceipts(asset).map((receipt) => (
+              <SourceChip
+                key={receipt.source}
+                source={receipt.source}
+                state={receipt.state}
+                density="static"
+                meterTone="recorded"
+                {...(receipt.why !== undefined
+                  ? { why: RECEIPT_SILENT_MARK, detail: receipt.why }
+                  : {})}
+                testId={`fo-source-${receipt.source}`}
+              />
+            ))}
           </div>
-        )}
-      </div>
+        ) : null}
 
-      {/* Short-clip warning — clips under 1.5s are usually an
-          accidental Stop right after the countdown ended. Surfaces a
-          gentle "you sure?" with a one-tap Discard so users can blow
-          the take away without hunting through the Library. Only
-          renders for the video asset; image captures don't have a
-          notion of "too short". */}
-      {asset?.kind === "video" && asset.durationSec < 1.5 && asset.onDiscard !== undefined && (
+        <AppUpdateRow variant="float-over" />
+
         <div
-          data-fo-warning="short-clip"
-          style={{
-            margin: "8px 12px 0",
-            padding: "8px 10px",
-            border: "1px solid rgba(255, 138, 31, 0.5)",
-            background: "rgba(255, 138, 31, 0.08)",
-            borderRadius: 6,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 10,
-            font: "500 11px/1.4 var(--font-sans)",
-            color: "var(--text-primary)"
-          }}
+          className={asset?.kind === "video" ? "fo__preview fo__preview--video" : "fo__preview"}
         >
-          <span>
-            Very short ({fmtDurationLabel(asset.durationSec)}). Stop pressed too soon?
-          </span>
-          <button
-            type="button"
-            onClick={() => asset.onDiscard?.()}
+          {asset?.kind === "video" ? (
+            // The live trim owns both the playback window and the
+            // preview's elapsed clock, before persistence completes.
+            <HoverAutoplayVideo
+              captureId={asset.captureId}
+              // The descriptor's flags are optional on the type; a video
+              // asset always carries all four (FloatOverHost fills them from
+              // the record), and a missing one only costs a round trip that
+              // resolves to the capture URL.
+              video={{
+                hasSystemAudio: asset.hasSystemAudio === true,
+                hasMicrophoneAudio: asset.hasMicrophoneAudio === true,
+                requestedSystemAudio: asset.requestedSystemAudio,
+                requestedMicrophone: asset.requestedMicrophone
+              }}
+              videoRef={previewVideoRef}
+              range={videoTrim.range}
+            />
+          ) : (
+            <img
+              src={visibleSrc}
+              alt="capture preview"
+              draggable
+              onDragStart={dragFile}
+              onLoad={() => {
+                if (visibleSrc === src) setSourceLoaded(true);
+              }}
+            />
+          )}
+          <div className="fo__preview-dim">
+            <FoIcon name="ruler" size={10} style={{ color: "var(--accent)" }} />
+            <b>{dimText(srcW, srcH)}</b>
+          </div>
+          <div className="fo__preview-size">
+            {asset?.kind === "video"
+              ? fmtDurationLabel(videoTrim.range.end - videoTrim.range.start)
+              : dprBadgeLabel(srcDpr, window.pwrsnapApi?.platform)}
+          </div>
+
+          {asset?.kind !== "video" && (
+            <div className="fo__preview-actions">
+              <div className="fo__preview-actions-l">
+                <button
+                  className="fo__hover-btn"
+                  title="Drag PNG file"
+                  draggable={onDragFile !== undefined}
+                  onDragStart={dragFile}
+                  disabled={onDragFile === undefined}
+                >
+                  <FoIcon name="hand" size={11} /> Drag
+                </button>
+              </div>
+              <div className="fo__preview-actions-r">
+                <button
+                  className="fo__hover-btn"
+                  title="Open in editor"
+                  onClick={() => onEdit?.()}
+                  disabled={onEdit === undefined}
+                >
+                  <FoIcon name="pen-line" size={11} /> Edit
+                </button>
+                <button
+                  className="fo__hover-btn"
+                  type="button"
+                  data-tip="Reveal in library"
+                  onClick={() => onReveal?.()}
+                  disabled={onReveal === undefined}
+                >
+                  <FoIcon name="folder-open" size={11} />
+                  <span className="sr-only">Reveal in library</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Short-clip warning — clips under 1.5s are usually an
+            accidental Stop right after the countdown ended. Surfaces a
+            gentle "you sure?" with a one-tap Discard so users can blow
+            the take away without hunting through the Library. Only
+            renders for the video asset; image captures don't have a
+            notion of "too short". */}
+        {asset?.kind === "video" && asset.durationSec < 1.5 && asset.onDiscard !== undefined && (
+          <div
+            data-fo-warning="short-clip"
             style={{
-              padding: "4px 10px",
-              borderRadius: 4,
-              border: "1px solid rgba(239, 68, 68, 0.6)",
-              background: "transparent",
-              color: "#ef4444",
-              font: "600 11px/1 var(--font-sans)",
-              cursor: "pointer",
-              whiteSpace: "nowrap"
+              margin: "8px 12px 0",
+              padding: "8px 10px",
+              border: "1px solid rgba(255, 138, 31, 0.5)",
+              background: "rgba(255, 138, 31, 0.08)",
+              borderRadius: 6,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+              font: "500 11px/1.4 var(--font-sans)",
+              color: "var(--text-primary)"
             }}
           >
-            Discard
-          </button>
-        </div>
-      )}
+            <span>
+              Very short ({fmtDurationLabel(asset.durationSec)}). Stop pressed too soon?
+            </span>
+            <button
+              type="button"
+              onClick={() => asset.onDiscard?.()}
+              style={{
+                padding: "4px 10px",
+                borderRadius: 4,
+                border: "1px solid rgba(239, 68, 68, 0.6)",
+                background: "transparent",
+                color: "#ef4444",
+                font: "600 11px/1 var(--font-sans)",
+                cursor: "pointer",
+                whiteSpace: "nowrap"
+              }}
+            >
+              Discard
+            </button>
+          </div>
+        )}
 
-      {asset?.kind === "video" ? (
-        // Video export grid — sits in the same slot as the image
-        // Low / Med / High copy buttons. Full 6-card chrome (GIF
-        // L/M/H + MP4 L/M/H) matching the library DetailRail and
-        // the tray popover; each card supports click-to-copy +
-        // FILE-chip copy-path + FILE-chip drag-out via
-        // `clipboard:copyVideoFile` / `copyVideoPath` /
-        // `startVideoDrag`. The panel owns its own hooks (the
-        // toast just hands it a captureId).
-        //
-        // Wrapper is a plain block (NOT `.fo__copy` which imposes
-        // a 3-col grid) — the panel renders two
-        // `.psl__copy-row-group` children that each impose their
-        // own 3-col grid via `.psl__copy-row`. CSS ships from
-        // library.css which app.css loads for every stage. The
-        // 12px padding mirrors `.fo__copy`'s `padding: 10px 12px
-        // 4px` so the grid sits at the same horizontal inset as
-        // the image copy row.
-        <div className="fo__export-grid">
-          <FloatOverVideoExport
-            asset={asset}
-            copyShortcut={videoCopyShortcut}
-            onTrimDraggingChange={setTrimDragging}
-            previewVideoRef={previewVideoRef}
-            shortcutPlatform={shortcutPlatform}
-          />
-        </div>
-      ) : (
-        <div className="fo__copy">
-          {(() => {
-            // Resolve the export ladder once. In legacy mode the cards are
-            // unchanged; with DPI-aware export on, each rung supplies the
-            // Retina/scale tag + a correct pre-render dim estimate.
-            const ladder =
-              exportStrategy === "legacy"
-                ? null
-                : resolveExportLadder(
-                    { widthPx: srcW, heightPx: srcH, devicePixelRatio: srcDpr },
-                    exportStrategy
-                  );
-            return RES_PRESETS.map((p) => {
-              const rung = ladder === null ? undefined : rungForPreset(ladder, p.id);
-              const unavailable = rung !== undefined && !rung.available;
-              const estimate = unavailable
-                ? { dim: "—", bytes: "—", exact: true }
-                : rung === undefined
-                  ? presetMetrics(p.id, srcW, srcH, srcBytes)
-                  : estimateMetricForRung(rung, srcW, srcBytes);
-              const m = unavailable ? estimate : (copyMetrics?.[p.id] ?? estimate);
-              return (
-                <CopyButton
-                  key={p.id}
-                  preset={p.id}
-                  label={rung?.actual === true ? "Actual" : p.label}
-                  dim={m.dim}
-                  bytes={m.bytes}
-                  tag={
-                    rung === undefined || unavailable
-                      ? undefined
-                      : rungTag(rung, window.pwrsnapApi?.platform)
-                  }
-                  disabled={unavailable}
-                  onCopy={(preset) => onCopy?.(preset)}
-                  {...(onCopyPath !== undefined ? { onCopyPath } : {})}
-                  {...(onDragPreset !== undefined ? { onDrag: onDragPreset } : {})}
-                  copyPulse={copyPulses?.[p.id] ?? 0}
-                />
-              );
-            });
-          })()}
-        </div>
-      )}
+        {asset?.kind === "video" ? (
+          // Video export grid — sits in the same slot as the image
+          // Low / Med / High copy buttons. Full 6-card chrome (GIF
+          // L/M/H + MP4 L/M/H) matching the library DetailRail and
+          // the tray popover; each card supports click-to-copy +
+          // FILE-chip copy-path + FILE-chip drag-out via
+          // `clipboard:copyVideoFile` / `copyVideoPath` /
+          // `startVideoDrag`. The panel owns its own hooks (the
+          // toast just hands it a captureId).
+          //
+          // Wrapper is a plain block (NOT `.fo__copy` which imposes
+          // a 3-col grid) — the panel renders two
+          // `.psl__copy-row-group` children that each impose their
+          // own 3-col grid via `.psl__copy-row`. CSS ships from
+          // library.css which app.css loads for every stage. The
+          // 12px padding mirrors `.fo__copy`'s `padding: 10px 12px
+          // 4px` so the grid sits at the same horizontal inset as
+          // the image copy row.
+          <div className="fo__export-grid">
+            <FloatOverVideoExport
+              asset={asset}
+              trim={videoTrim}
+              copyShortcut={videoCopyShortcut}
+              onTrimDraggingChange={setTrimDragging}
+              previewVideoRef={previewVideoRef}
+              shortcutPlatform={shortcutPlatform}
+            />
+          </div>
+        ) : (
+          <div className="fo__copy">
+            {(() => {
+              // Resolve the export ladder once. In legacy mode the cards are
+              // unchanged; with DPI-aware export on, each rung supplies the
+              // Retina/scale tag + a correct pre-render dim estimate.
+              const ladder =
+                exportStrategy === "legacy"
+                  ? null
+                  : resolveExportLadder(
+                      { widthPx: srcW, heightPx: srcH, devicePixelRatio: srcDpr },
+                      exportStrategy
+                    );
+              return RES_PRESETS.map((p) => {
+                const rung = ladder === null ? undefined : rungForPreset(ladder, p.id);
+                const unavailable = rung !== undefined && !rung.available;
+                const estimate = unavailable
+                  ? { dim: "—", bytes: "—", exact: true }
+                  : rung === undefined
+                    ? presetMetrics(p.id, srcW, srcH, srcBytes)
+                    : estimateMetricForRung(rung, srcW, srcBytes);
+                const m = unavailable ? estimate : (copyMetrics?.[p.id] ?? estimate);
+                return (
+                  <CopyButton
+                    key={p.id}
+                    preset={p.id}
+                    label={rung?.actual === true ? "Actual" : p.label}
+                    dim={m.dim}
+                    bytes={m.bytes}
+                    tag={
+                      rung === undefined || unavailable
+                        ? undefined
+                        : rungTag(rung, window.pwrsnapApi?.platform)
+                    }
+                    disabled={unavailable}
+                    onCopy={(preset) => onCopy?.(preset)}
+                    {...(onCopyPath !== undefined ? { onCopyPath } : {})}
+                    {...(onDragPreset !== undefined ? { onDrag: onDragPreset } : {})}
+                    copyPulse={copyPulses?.[p.id] ?? 0}
+                  />
+                );
+              });
+            })()}
+          </div>
+        )}
 
-      {cfg.showAnnotate && (
-        <div className="fo__annotate">
-          <input
-            className={`fo__title${titleOrigin === "suggested" ? " is-suggested" : ""}`}
-            type="text"
-            placeholder="Title — short headline"
-            value={title}
-            maxLength={120}
-            onChange={(e) => setTitle(e.target.value)}
-            onBlur={() => {
-              const trimmed = title.trim();
-              if (
-                trimmed.length > 0 &&
-                trimmed !== acceptedTitle &&
-                titleOrigin === "manual"
-              ) {
-                onAcceptTitle?.(trimmed);
-              }
-            }}
-          />
-          <textarea
-            className={`fo__desc${descriptionOrigin === "suggested" ? " is-suggested" : ""}`}
-            placeholder="Description — a sentence or two of context"
-            value={description}
-            maxLength={2000}
-            onChange={(e) => setDescription(e.target.value)}
-            onBlur={() => {
-              const trimmed = description.trim();
-              if (
-                trimmed.length > 0 &&
-                trimmed !== acceptedDescription &&
-                descriptionOrigin === "manual"
-              ) {
-                onAcceptDescription?.(trimmed);
-              }
-            }}
-            rows={2}
-          />
-          <FoTags
-            tags={tags}
-            onAdd={(t) => {
-              runTagMutation("add", t);
-              // Bumping the user-interaction counter — not just
-              // tags.length — is what keeps the countdown paused on
-              // user-added tags WITHOUT being tricked into a permanent
-              // pause when Codex's auto-accept lands acceptedTags via
-              // the enrichment broadcast. See bug vii.
-              userTagInteractionsRef.current += 1;
-              setUserTagInteractions(userTagInteractionsRef.current);
-            }}
-            onRemove={(t) => {
-              runTagMutation("remove", t);
-              userTagInteractionsRef.current += 1;
-              setUserTagInteractions(userTagInteractionsRef.current);
-            }}
-            suggestions={aiSuggestions}
-            onAcceptSuggest={(suggestion) => {
-              replaceVisibleTags([...tags, suggestion.label]);
-              userTagInteractionsRef.current += 1;
-              setUserTagInteractions(userTagInteractionsRef.current);
-              onAcceptTag?.(suggestion.id);
-            }}
-            onRejectSuggest={(suggestion) => {
-              onRejectTag?.(suggestion.id);
-            }}
-            pendingMutation={pendingTagMutation}
-            failure={tagMutationFailure}
-            onRetry={() => {
-              if (tagMutationFailure !== null) {
-                runTagMutation(tagMutationFailure.action, tagMutationFailure.label);
-              }
-            }}
-          />
-        </div>
-      )}
+        {cfg.showAnnotate && (
+          <div className="fo__annotate">
+            <input
+              className={`fo__title${titleOrigin === "suggested" ? " is-suggested" : ""}`}
+              type="text"
+              placeholder="Title — short headline"
+              value={title}
+              maxLength={120}
+              onChange={(e) => setTitle(e.target.value)}
+              onBlur={() => {
+                const trimmed = title.trim();
+                if (
+                  trimmed.length > 0 &&
+                  trimmed !== acceptedTitle &&
+                  titleOrigin === "manual"
+                ) {
+                  onAcceptTitle?.(trimmed);
+                }
+              }}
+            />
+            <textarea
+              className={`fo__desc${descriptionOrigin === "suggested" ? " is-suggested" : ""}`}
+              placeholder="Description — a sentence or two of context"
+              value={description}
+              maxLength={2000}
+              onChange={(e) => setDescription(e.target.value)}
+              onBlur={() => {
+                const trimmed = description.trim();
+                if (
+                  trimmed.length > 0 &&
+                  trimmed !== acceptedDescription &&
+                  descriptionOrigin === "manual"
+                ) {
+                  onAcceptDescription?.(trimmed);
+                }
+              }}
+              rows={2}
+            />
+            <FoTags
+              tags={tags}
+              onAdd={(t) => {
+                runTagMutation("add", t);
+                // Bumping the user-interaction counter — not just
+                // tags.length — is what keeps the countdown paused on
+                // user-added tags WITHOUT being tricked into a permanent
+                // pause when Codex's auto-accept lands acceptedTags via
+                // the enrichment broadcast. See bug vii.
+                userTagInteractionsRef.current += 1;
+                setUserTagInteractions(userTagInteractionsRef.current);
+              }}
+              onRemove={(t) => {
+                runTagMutation("remove", t);
+                userTagInteractionsRef.current += 1;
+                setUserTagInteractions(userTagInteractionsRef.current);
+              }}
+              suggestions={aiSuggestions}
+              onAcceptSuggest={(suggestion) => {
+                replaceVisibleTags([...tags, suggestion.label]);
+                userTagInteractionsRef.current += 1;
+                setUserTagInteractions(userTagInteractionsRef.current);
+                onAcceptTag?.(suggestion.id);
+              }}
+              onRejectSuggest={(suggestion) => {
+                onRejectTag?.(suggestion.id);
+              }}
+              pendingMutation={pendingTagMutation}
+              failure={tagMutationFailure}
+              aiPending={thinking}
+              onRetry={() => {
+                if (tagMutationFailure !== null) {
+                  runTagMutation(tagMutationFailure.action, tagMutationFailure.label);
+                }
+              }}
+            />
+          </div>
+        )}
 
-      {cfg.showAi && (
-        <div className="fo__ai-row">
-          <CodexStatusPill
-            status={aiStatus}
-            draftAvailable={
-              suggestedTitle.trim().length > 0 || suggestedDescription.trim().length > 0
-            }
-            accepted={allDraftsAccepted}
-            needsConsent={aiNeedsConsent}
-            safetyDisabled={aiSafetyDisabled}
-            error={enrichment?.error}
-            {...(enrichmentProviderLabel !== undefined
-              ? { providerLabel: enrichmentProviderLabel }
-              : {})}
-            {...(enrichmentModelLabel !== undefined
-              ? { modelLabel: enrichmentModelLabel }
-              : {})}
-            action={
-              !thinking && !aiFailed ? (
-                suggestedTitle.length === 0 && suggestedDescription.length === 0 && !providerAvailable ? (
-                  <button className="fo__ai-accept" onClick={() => onConfigureAi?.()}>
-                    Configure AI
+        {cfg.showAi && (
+          <div className="fo__ai-row">
+            <CodexStatusPill
+              status={aiStatus}
+              draftAvailable={
+                suggestedTitle.trim().length > 0 || suggestedDescription.trim().length > 0
+              }
+              accepted={allDraftsAccepted}
+              needsConsent={aiNeedsConsent}
+              safetyDisabled={aiSafetyDisabled}
+              error={enrichment?.error}
+              clock={enrichmentRunClock(enrichment)}
+              {...(enrichmentProviderLabel !== undefined
+                ? { providerLabel: enrichmentProviderLabel }
+                : {})}
+              {...(enrichmentModelLabel !== undefined
+                ? { modelLabel: enrichmentModelLabel }
+                : {})}
+              {...(enrichmentFallbackFromLabel !== undefined
+                ? { fallbackFrom: enrichmentFallbackFromLabel }
+                : {})}
+              action={
+                thinking && enrichment?.latestRunId && onCancelEnrichment ? (
+                  <button className="fo__ai-accept is-quiet" title="Cancel enrichment"
+                    onClick={() => onCancelEnrichment(enrichment.latestRunId!)}>
+                    Cancel
                   </button>
-                ) : suggestedTitle.length === 0 && suggestedDescription.length === 0 && aiNeedsConsent ? (
-                  <button
-                    className="fo__ai-accept"
-                    onClick={() => {
-                      if (aiConsentAccepted) {
-                        onEnableAi?.();
-                        return;
-                      }
-                      setAiConsentDialogOpen(true);
-                    }}
-                  >
-                    {aiSafetyDisabled ? "Re-enable" : "Enable"}
-                  </button>
-                ) : hasUnacceptedDrafts ? (
-                  <button
-                    className="fo__ai-accept"
-                    disabled={pendingTagMutation !== null}
-                    onClick={() => {
-                      if (suggestedTitle.length > 0) {
-                        commitTitle(suggestedTitle, "accepted");
-                        onAcceptTitle?.(suggestedTitle);
-                      }
-                      if (suggestedDescription.length > 0) {
-                        commitDescription(suggestedDescription, "accepted");
-                        onAcceptDescription?.(suggestedDescription);
-                      }
-                      replaceVisibleTags(
-                        Array.from(
-                          new Set([
-                            ...tags,
-                            ...aiSuggestions.slice(0, 2).map((tag) => tag.label)
-                          ])
-                        )
-                      );
-                      for (const suggestion of aiSuggestions.slice(0, 2)) {
-                        onAcceptTag?.(suggestion.id);
-                      }
-                    }}
-                  >
-                    {isSuggestedDescriptionPreview || titleOrigin === "suggested" ? "Save" : "Use"}
-                  </button>
+                ) : !thinking && !aiFailed ? (
+                  suggestedTitle.length === 0 && suggestedDescription.length === 0 && !providerAvailable ? (
+                    <button className="fo__ai-accept" onClick={() => onConfigureAi?.()}>
+                      Configure AI
+                    </button>
+                  ) : suggestedTitle.length === 0 && suggestedDescription.length === 0 && aiNeedsConsent ? (
+                    <button
+                      className="fo__ai-accept"
+                      onClick={() => {
+                        if (aiConsentAccepted) {
+                          onEnableAi?.();
+                          return;
+                        }
+                        setAiConsentDialogOpen(true);
+                      }}
+                    >
+                      {aiSafetyDisabled ? "Re-enable" : "Enable"}
+                    </button>
+                  ) : hasUnacceptedDrafts ? (
+                    <button
+                      className="fo__ai-accept"
+                      disabled={pendingTagMutation !== null}
+                      onClick={() => {
+                        if (suggestedTitle.length > 0) {
+                          commitTitle(suggestedTitle, "accepted");
+                          onAcceptTitle?.(suggestedTitle);
+                        }
+                        if (suggestedDescription.length > 0) {
+                          commitDescription(suggestedDescription, "accepted");
+                          onAcceptDescription?.(suggestedDescription);
+                        }
+                        replaceVisibleTags(
+                          Array.from(
+                            new Set([
+                              ...tags,
+                              ...aiSuggestions.slice(0, 2).map((tag) => tag.label)
+                            ])
+                          )
+                        );
+                        for (const suggestion of aiSuggestions.slice(0, 2)) {
+                          onAcceptTag?.(suggestion.id);
+                        }
+                      }}
+                    >
+                      {isSuggestedDescriptionPreview || titleOrigin === "suggested" ? "Save" : "Use"}
+                    </button>
+                  ) : null
                 ) : null
-              ) : null
-            }
-          />
-          {!aiNeedsConsent && onSetAutoAccept !== undefined ? (
-            <label className="fo__auto-accept" title="Apply AI enrichment automatically when ready">
-              <input
-                type="checkbox"
-                checked={autoAcceptSuggestions}
-                onChange={(event) => onSetAutoAccept(event.target.checked)}
-              />
-              <span>Auto-apply AI enrichment</span>
-            </label>
-          ) : null}
-        </div>
-      )}
+              }
+            />
+            {!aiNeedsConsent && onSetAutoAccept !== undefined ? (
+              <label className="fo__auto-accept" data-tip="Apply AI enrichment automatically when ready">
+                {/* Visible text is short so the checkbox fits on the Codex
+                    pill's row; the full name stays on the control. */}
+                <input
+                  type="checkbox"
+                  aria-label="Auto-apply AI enrichment"
+                  checked={autoAcceptSuggestions}
+                  onChange={(event) => onSetAutoAccept(event.target.checked)}
+                />
+                <span>Auto-apply</span>
+              </label>
+            ) : null}
+          </div>
+        )}
 
-      {aiConsentDialogOpen ? (
-        <AiConsentDialog
-          onCancel={() => setAiConsentDialogOpen(false)}
-          onAccept={() => {
-            setAiConsentDialogOpen(false);
-            onEnableAi?.();
-          }}
-        />
-      ) : null}
+        {aiConsentDialogOpen ? (
+          <AiConsentDialog
+            onCancel={() => setAiConsentDialogOpen(false)}
+            onAccept={() => {
+              setAiConsentDialogOpen(false);
+              onEnableAi?.();
+            }}
+          />
+        ) : null}
+      </div>
 
       {cfg.showFooter && (
         <div className="fo__foot">
@@ -1269,47 +1571,81 @@ export function FloatOver({
   );
 }
 
-export function FoDesktopFrame({
-  children,
-  sampleSrc
-}: {
-  children?: React.ReactNode;
-  sampleSrc: string;
-}) {
-  return (
-    <div className="fo-frame">
-      <div className="fo-desktop">
-        <div className="fo-menubar">
-          <div className="fo-menubar__l">
-            <span className="fo-menubar__active">
-              {desktopFileManagerName(window.pwrsnapApi?.platform)}
-            </span>
-            <span>File</span>
-            <span>Edit</span>
-            <span>View</span>
-            <span>Go</span>
-          </div>
-          <div className="fo-menubar__r">
-            <span className="fo-menubar__pwr">
-              <span className="fo-menubar__pwr-dot" />
-              <PwrSnapMark size={11} />
-              <span style={{ color: "var(--accent-bright)", fontSize: 10, fontWeight: 600 }}>
-                PwrSnap
-              </span>
-            </span>
-            <span>WiFi</span>
-            <span>Tue 10:43 PM</span>
-          </div>
-        </div>
+/**
+ * Turn the four persisted booleans into the chips the receipt shows.
+ *
+ * Screen is unconditional — every recording has it, and stating it is
+ * what makes "screen only" legible as a complete answer rather than a
+ * row that failed to render.
+ *
+ * An audio source appears only when it is part of the story: it landed
+ * (`live`), or it was asked for and did not (`silent`). A source nobody
+ * requested is simply absent — listing three greyed chips after every
+ * capture would train the user to stop reading the row.
+ */
+export function recordingSourceReceipts(
+  asset: Pick<
+    Extract<FloatOverAsset, { kind: "video" }>,
+    "hasSystemAudio" | "hasMicrophoneAudio" | "requestedSystemAudio" | "requestedMicrophone"
+  >
+): ReadonlyArray<{
+  source: "screen" | "microphone" | "systemAudio";
+  state: "live" | "silent";
+  why?: string;
+}> {
+  const receipts: Array<{
+    source: "screen" | "microphone" | "systemAudio";
+    state: "live" | "silent";
+    why?: string;
+  }> = [{ source: "screen", state: "live" }];
+  if (asset.hasMicrophoneAudio === true) {
+    receipts.push({ source: "microphone", state: "live" });
+  } else if (asset.requestedMicrophone === true) {
+    receipts.push({ source: "microphone", state: "silent", why: "no audio captured" });
+  }
+  if (asset.hasSystemAudio === true) {
+    receipts.push({ source: "systemAudio", state: "live" });
+  } else if (asset.requestedSystemAudio === true) {
+    receipts.push({ source: "systemAudio", state: "silent", why: "no audio captured" });
+  }
+  return receipts;
+}
 
-        <div className="fo-window" style={{ left: 60, top: 70, right: 200, bottom: 130 }}>
-          <img src={sampleSrc} alt="" />
-        </div>
+/**
+ * What a silent receipt chip prints where its meter would be. One word,
+ * chosen for its width: "none" at the chip's 11px is the meter plus its gap,
+ * so every combination of live and silent sources is the same 355px and
+ * fits the toast's 366px row on one line. The full reason (`receipt.why`)
+ * still reaches the row's accessible name and the chip's tooltip.
+ */
+const RECEIPT_SILENT_MARK = "none";
 
-        {children}
-      </div>
-    </div>
-  );
+const RECEIPT_SOURCE_NAMES: Record<"screen" | "microphone" | "systemAudio", string> = {
+  screen: "screen",
+  microphone: "microphone",
+  systemAudio: "system audio"
+};
+
+/**
+ * The accessible name for the receipt row — derived from the SAME receipts
+ * the chips render, never re-read from the flags.
+ *
+ * Reading only `has*Audio` here made the accessible name contradict the
+ * chips on the same element: a take with the microphone armed but silent
+ * drew a `silent` mic chip saying "no audio captured" while announcing
+ * "Captured: screen only", i.e. that no microphone was involved at all.
+ * The two also enumerated sources in different orders, so the name did not
+ * match the visual reading order either.
+ */
+export function recordingSourcesLabel(
+  asset: Parameters<typeof recordingSourceReceipts>[0]
+): string {
+  const receipts = recordingSourceReceipts(asset);
+  const parts = receipts.map((receipt) => {
+    const name = RECEIPT_SOURCE_NAMES[receipt.source];
+    return receipt.state === "silent" ? `${name} (${receipt.why ?? "nothing captured"})` : name;
+  });
+  return parts.length === 1 ? "screen only" : parts.join(" + ");
 }
 
 /**
@@ -1332,12 +1668,14 @@ export function FoDesktopFrame({
  */
 function FloatOverVideoExport({
   asset,
+  trim,
   copyShortcut,
   onTrimDraggingChange,
   previewVideoRef,
   shortcutPlatform
 }: {
   asset: Extract<FloatOverAsset, { kind: "video" }>;
+  trim: UseVideoTrimRange;
   copyShortcut?: VideoCopyShortcutRequest | null | undefined;
   onTrimDraggingChange: (dragging: boolean) => void;
   previewVideoRef: React.RefObject<HTMLVideoElement | null>;
@@ -1355,11 +1693,6 @@ function FloatOverVideoExport({
     },
     [previewVideoRef]
   );
-  const trim = useVideoTrimRange({
-    captureId: asset.captureId,
-    durationSec: asset.durationSec,
-    persistedRange: asset.defaultRange
-  });
   const assets = useVideoTimelineAssets({
     captureId: asset.captureId,
     stripWidthPx: stripWidth,
@@ -1386,6 +1719,10 @@ function FloatOverVideoExport({
       </div>
       <VideoExportPresetsPanel
         captureId={asset.captureId}
+        audioTracks={{
+          microphone: asset.hasMicrophoneAudio === true,
+          systemAudio: asset.hasSystemAudio === true
+        }}
         range={trim.range}
         copyShortcut={copyShortcut}
         shortcutPlatform={shortcutPlatform}

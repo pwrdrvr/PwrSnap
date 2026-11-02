@@ -18,6 +18,7 @@ import {
   parseByteRanges,
   runBoundedProcess,
   runWindowsUpdateSmoke,
+  selectSmokeProcessEvidence,
   validateAuthenticodeEvidence,
   validateLatestYml,
   validateRuntimeEvidence,
@@ -29,6 +30,28 @@ import {
 const baselineVersion = "1.1.0-update-smoke.123456.2.1";
 const targetVersion = "1.1.0-update-smoke.123456.2.2";
 const sourceVersion = "1.1.0-alpha.4";
+
+test("installer evidence includes pending NSIS and system children without unrelated processes or arguments", () => {
+  const createdAt = "2026-11-02T12:00:00.000Z";
+  const process = (pid, parentPid, executablePath, overrides = {}) => ({
+    pid, parentPid, executablePath, createdAt,
+    name: "fallback.exe", commandLine: "must not be recorded", ...overrides
+  });
+  const evidence = selectSmokeProcessEvidence([
+    process(22, 11, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"),
+    process(11, 10, "D:\\smoke\\local-appdata\\pending\\target-setup.exe"),
+    process(33, 22, "C:\\Windows\\System32\\cmd.exe"),
+    process(44, 0, "D:\\smoke-other\\unrelated.exe"),
+    process(55, 11, "C:\\Windows\\System32\\old-process.exe", {
+      createdAt: "2026-11-02T11:59:00.000Z"
+    }),
+    process(66, 0, "E:\\smoke\\unrelated.exe")
+  ], "d:\\SMOKE");
+  expect(evidence.map(({ pid }) => pid)).toEqual([22, 11, 33]);
+  expect(evidence.map(({ executableUnderWorkRoot }) => executableUnderWorkRoot)).toEqual([false, true, false]);
+  expect(evidence.map(({ name }) => name)).toEqual(["powershell.exe", "target-setup.exe", "cmd.exe"]);
+  expect(JSON.stringify(evidence)).not.toMatch(/commandLine|must not be recorded|unrelated|old-process/);
+});
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");

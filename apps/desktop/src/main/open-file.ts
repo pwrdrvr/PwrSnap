@@ -311,5 +311,12 @@ function notifyUser(title: string, body: string): void {
     log.info("notification", { title, body });
     return;
   }
-  new Notification({ title, body }).show();
+  const notification = new Notification({ title, body });
+  // Since Electron 42 macOS shows notifications through UNNotification, which
+  // needs a code-signed app: an unsigned dev build emits `failed` and shows
+  // nothing. Log it, or a failed import there leaves no trace at all.
+  notification.on("failed", (_event, error) => {
+    log.warn("notification failed to show", { title, body, error });
+  });
+  notification.show();
 }

@@ -11,7 +11,8 @@ enum PasteboardWriterError: Error, CustomStringConvertible {
   var description: String {
     switch self {
     case .usage:
-      return "usage: pasteboard-writer --png <path> --file-url <path> [--meta <json>]"
+      return "usage: pasteboard-writer --png <path> --file-url <path> [--meta <json>]\n"
+        + "       pasteboard-writer --list-types"
     case .unreadablePng(let path):
       return "could not read PNG data at \(path)"
     case .missingFileUrlPath(let path):
@@ -116,8 +117,27 @@ func run() throws {
   _ = pasteboard.pasteboardItems?.flatMap { item in item.types }
 }
 
+// `--list-types` prints the general pasteboard's type names as a JSON array
+// and reads nothing else: no `data(forType:)`, no `string(forType:)`, no
+// `readObjects`, no `NSImage(pasteboard:)`. A flavor from another device
+// (Universal Clipboard) or a remote-desktop client is promised data, and
+// macOS fetches it only when an app asks for its bytes. Asking for `types`
+// fetched nothing in any case measured, while Electron 44's
+// `clipboard.read()` fetches `public.url` and `public.url-name` just to list
+// types. The File → New → Paste from Clipboard hint uses this mode for that
+// reason (clipboard/pasteboard-types.ts).
+func listTypes() throws {
+  let types = (NSPasteboard.general.types ?? []).map { $0.rawValue }
+  FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: types))
+}
+
 do {
-  try run()
+  if CommandLine.arguments.dropFirst().first == "--list-types" {
+    guard CommandLine.arguments.count == 2 else { throw PasteboardWriterError.usage }
+    try listTypes()
+  } else {
+    try run()
+  }
 } catch {
   fputs("\(error)\n", stderr)
   exit(1)

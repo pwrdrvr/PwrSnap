@@ -26,6 +26,9 @@
 // poison image fails its own item without corrupting the rest of the
 // batch.
 
+// ⚠️ Keep this first: a worker thread has its own module loader, so the
+// steer that index.ts installs does not reach it. See sharp-wasm-steer.ts.
+import "../sharp-wasm-steer";
 import { parentPort } from "node:worker_threads";
 import { buildCompositeThumbnailInProcess } from "../image/composite-thumbnail";
 

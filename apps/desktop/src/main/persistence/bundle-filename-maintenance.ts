@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 
-import type { FilenameTimestampZone } from "@pwrsnap/shared";
+import type { BundleManifestV2, FilenameTimestampZone } from "@pwrsnap/shared";
 
 import { getMainLogger } from "../log";
 import {
@@ -13,7 +13,12 @@ import {
 import { buildCaptureBundleFilenameStem, bundleStemFromPath } from "./bundle-filename";
 import { readBundleFilenameTimestampZone } from "./bundle-filename-settings";
 import { getDb } from "./db";
-import { readBundleManifest, runExclusiveBundleFileOperation } from "./bundle-store";
+import {
+  readBundleManifest,
+  runExclusiveBundleFileOperation,
+  scheduleRepack
+} from "./bundle-store";
+import { repairCaptureLineageFromManifest } from "./capture-lineage";
 import { updateCaptureBundlePath } from "./captures-repo";
 import { inspectRenameDestination, renameWithCaseSupport } from "./platform-path";
 
@@ -43,7 +48,14 @@ export type BundleFilenameMaintenanceResult = {
    *  problem reported via captures-access-health, not a per-row error,
    *  and must not burn the boot error budget. */
   permissionDenied: number;
+  /** Rows whose lost duplicate lineage was filled from their manifest. */
+  lineageRepaired: number;
+  /** Rows whose lineage disagrees with their manifest (the row was kept). */
+  lineageConflicts: number;
 };
+
+/** Called with each bundle manifest the pass reads anyway. */
+type ManifestInspector = (captureId: string, manifest: BundleManifestV2) => void;
 
 export async function renameBundleToEffectiveFilename(
   captureId: string
@@ -76,14 +88,36 @@ export async function runBundleFilenameMaintenanceOnBoot(): Promise<BundleFilena
     repaired: 0,
     skipped: 0,
     failed: 0,
-    permissionDenied: 0
+    permissionDenied: 0,
+    lineageRepaired: 0,
+    lineageConflicts: 0
   };
 
   const timestampZone = await readBundleFilenameTimestampZone();
+  // Duplicate lineage rides along: this pass already opens every live
+  // bundle's manifest, one at a time, so restoring `family_id` /
+  // `duplicated_from` from it costs no extra read of a TCC-gated root.
+  const repairLineage: ManifestInspector = (captureId, manifest) => {
+    try {
+      const outcome = repairCaptureLineageFromManifest(captureId, manifest);
+      if (outcome.status === "repaired") {
+        result.lineageRepaired += 1;
+        if (outcome.rootedId !== null) scheduleRepack(outcome.rootedId);
+      } else if (outcome.status === "conflict") {
+        result.lineageConflicts += 1;
+      }
+    } catch (error) {
+      // A lineage write must never cost the row its rename.
+      log.warn("capture lineage repair failed", {
+        captureId,
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+  };
 
   for (const row of rows) {
     try {
-      const outcome = await renameBundleRow(row, timestampZone);
+      const outcome = await renameBundleRow(row, timestampZone, repairLineage);
       result[outcome] += 1;
     } catch (error) {
       // macOS TCC denial (EPERM on a file we own). PER-FILE, not
@@ -160,24 +194,28 @@ function getFilenameRow(captureId: string): FilenameRow | null {
 
 async function renameBundleRow(
   row: FilenameRow,
-  timestampZone?: FilenameTimestampZone
+  timestampZone?: FilenameTimestampZone,
+  inspectManifest?: ManifestInspector
 ): Promise<"renamed" | "repaired" | "skipped"> {
   const zone = timestampZone ?? (await readBundleFilenameTimestampZone());
   return runExclusiveBundleFileOperation(row.id, async () => {
     const currentRow = getFilenameRow(row.id);
     if (currentRow === null) return "skipped";
-    return renameBundleRowLocked(currentRow, zone);
+    return renameBundleRowLocked(currentRow, zone, inspectManifest);
   });
 }
 
 async function renameBundleRowLocked(
   row: FilenameRow,
-  timestampZone: FilenameTimestampZone
+  timestampZone: FilenameTimestampZone,
+  inspectManifest?: ManifestInspector
 ): Promise<"renamed" | "repaired" | "skipped"> {
   if (row.bundle_path === null) return "skipped";
 
-  const currentPath = await resolveCurrentBundlePath(row);
-  if (currentPath === null) return "skipped";
+  const current = await resolveCurrentBundlePath(row);
+  if (current === null) return "skipped";
+  const currentPath = current.path;
+  inspectManifest?.(row.id, current.manifest);
 
   const desiredStem = buildCaptureBundleFilenameStem({
     capturedAt: row.captured_at,
@@ -208,20 +246,22 @@ async function renameBundleRowLocked(
   return "renamed";
 }
 
-async function resolveCurrentBundlePath(row: FilenameRow): Promise<string | null> {
+async function resolveCurrentBundlePath(
+  row: FilenameRow
+): Promise<{ path: string; manifest: BundleManifestV2 } | null> {
   if (row.bundle_path === null) return null;
   if (existsSync(row.bundle_path)) {
-    await assertBundleBelongsToCapture(row.bundle_path, row.id);
-    return row.bundle_path;
+    const manifest = await assertBundleBelongsToCapture(row.bundle_path, row.id);
+    return { path: row.bundle_path, manifest };
   }
 
   const repaired = await findBundleByManifestCaptureId(dirname(row.bundle_path), row.id);
   if (repaired !== null) {
-    updateCaptureBundlePath(row.id, repaired);
+    updateCaptureBundlePath(row.id, repaired.path);
     log.info("bundle path repaired from manifest scan", {
       captureId: row.id,
       oldPath: row.bundle_path,
-      repairedPath: repaired
+      repairedPath: repaired.path
     });
     return repaired;
   }
@@ -252,7 +292,10 @@ async function resolveAvailableTargetPath(
   throw new Error(`no available bundle filename for ${captureId}`);
 }
 
-async function findBundleByManifestCaptureId(dir: string, captureId: string): Promise<string | null> {
+async function findBundleByManifestCaptureId(
+  dir: string,
+  captureId: string
+): Promise<{ path: string; manifest: BundleManifestV2 } | null> {
   let names: string[];
   try {
     names = await readdir(dir);
@@ -262,21 +305,28 @@ async function findBundleByManifestCaptureId(dir: string, captureId: string): Pr
   for (const name of names) {
     if (extname(name).toLowerCase() !== ".pwrsnap") continue;
     const candidate = join(dir, name);
-    if ((await bundlePathCaptureId(candidate)) === captureId) return candidate;
+    const manifest = await bundlePathManifest(candidate);
+    if (manifest?.capture_id === captureId) return { path: candidate, manifest };
   }
   return null;
 }
 
 async function bundlePathCaptureId(bundlePath: string): Promise<string | null> {
+  return (await bundlePathManifest(bundlePath))?.capture_id ?? null;
+}
+
+async function bundlePathManifest(bundlePath: string): Promise<BundleManifestV2 | null> {
   try {
-    const manifest = await readBundleManifest(bundlePath);
-    return manifest.capture_id;
+    return await readBundleManifest(bundlePath);
   } catch {
     return null;
   }
 }
 
-async function assertBundleBelongsToCapture(bundlePath: string, captureId: string): Promise<void> {
+async function assertBundleBelongsToCapture(
+  bundlePath: string,
+  captureId: string
+): Promise<BundleManifestV2> {
   const stat = await lstat(bundlePath);
   if (!stat.isFile()) {
     throw new Error(`bundle path is not a regular file: ${bundlePath}`);
@@ -285,6 +335,7 @@ async function assertBundleBelongsToCapture(bundlePath: string, captureId: strin
   if (manifest.capture_id !== captureId) {
     throw new Error(`bundle manifest capture_id mismatch at ${bundlePath}`);
   }
+  return manifest;
 }
 
 export function expectedBundleStemForCapture(

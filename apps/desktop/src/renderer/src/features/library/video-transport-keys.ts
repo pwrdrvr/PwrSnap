@@ -9,7 +9,13 @@
 //   ← / →        step one frame (1/fps; 1/30 s fallback)
 //   ⇧← / ⇧→      step one second
 //   I / O        set trim in / out at the playhead
+//   S            split at the playhead
+//   X            cut the part under the playhead (or keep a cut again)
 //   Home / End   seek to start / end
+//
+// ⌘Z / ⇧⌘Z are NOT here: undo goes through the window's edit-menu
+// bridge (`lib/editMenuBridge.ts`), which the stage registers with, so
+// the menu item, the accelerator and the key all reach one stack.
 //
 // ←/→ deliberately shadow the Library's prev/next-capture navigation
 // while the viewer has focus — the stage stops propagation so the
@@ -31,6 +37,8 @@ export type TransportIntent =
   | { type: "seekBy"; seconds: number }
   | { type: "setIn" }
   | { type: "setOut" }
+  | { type: "split" }
+  | { type: "toggleCut" }
   | { type: "seekStart" }
   | { type: "seekEnd" };
 
@@ -89,6 +97,10 @@ export function transportIntentForKey(event: KeyLike): TransportIntent | null {
       return { type: "setIn" };
     case "o":
       return { type: "setOut" };
+    case "s":
+      return { type: "split" };
+    case "x":
+      return { type: "toggleCut" };
     default:
       return null;
   }
@@ -115,7 +127,8 @@ export function videoTransportKeyHints(platform: ShortcutPlatform) {
     play: "Play / pause (space) · J shuttle back · K pause · L shuttle forward",
     step: `← / → step one frame · ${shift}← / ${shift}→ step one second · Home / End`,
     trim: "I set in · O set out at the playhead",
-    loop: "Loop playback inside the trim range",
+    split: "Split at the playhead (S) · X cuts the part under the playhead",
+    loop: "Loop the edit · off plays it once",
     mute: "Mute / unmute",
     fullscreen: "Fullscreen"
   } as const;

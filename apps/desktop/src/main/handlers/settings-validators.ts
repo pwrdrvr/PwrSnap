@@ -14,7 +14,10 @@
 // treatment, revisit.
 
 import {
+  AI_ENRICHMENT_RATE_LIMIT_BOUNDS,
+  isAiEnrichmentRateLimit,
   isOverlayOutlineMode,
+  isStrokePatternStyle,
   AI_REASONING_EFFORTS,
   AI_SURFACE_IDS,
   BUILT_IN_ACP_AGENT_IDS,
@@ -26,11 +29,15 @@ import {
   isColorToken,
   isEditorSidebarPanel,
   isGridCopyPaletteAnchor,
+  isEditToolbarDock,
   isLibrarySidebarTab,
   isQuickCaptureAction,
+  isSelectorHudStyle,
   isRedactionStyle,
   isSettingsPage,
+  isSettingsSub,
   GRID_COPY_PALETTE_ANCHORS,
+  EDIT_TOOLBAR_DOCKS,
   GRID_ZOOM_MAX,
   GRID_ZOOM_MIN,
   isHotCpuProfileStartDelayMs,
@@ -41,7 +48,9 @@ import {
   canonicalAcceleratorForPlatform,
   shortcutPlatformDisplayName,
   shortcutPlatformFromString,
-  REDACTION_STYLES
+  RecordingDevicePreferenceSchema,
+  REDACTION_STYLES,
+  TOOL_BAG_SIZE
 } from "@pwrsnap/shared";
 import type {
   DesktopSettingsSecretName,
@@ -68,10 +77,26 @@ export type ValidationResult<T> =
 
 // ---- settings:open ----
 
+/**
+ * An unknown `page` is an error (nothing sensible to open). An unknown
+ * `sub` is NOT: it is dropped and the page's hub opens, reported through
+ * `droppedSub` so the handler can log it. A deep link that names a screen
+ * which has since been renamed, or a provider this build does not know,
+ * must still get the operator into Settings — refusing would turn a stale
+ * link into a button that does nothing. A `sub` without a `page` has no
+ * page to belong to, so it is dropped the same way.
+ */
 export function validateSettingsOpen(
-  req: { page?: SettingsPage | undefined }
-): ValidationResult<{ page: SettingsPage | undefined }> {
-  if (req.page === undefined) return { ok: true, value: { page: undefined } };
+  req: { page?: SettingsPage | undefined; sub?: string | undefined }
+): ValidationResult<{
+  page: SettingsPage | undefined;
+  sub: string | undefined;
+  droppedSub: boolean;
+}> {
+  const hasSub = req.sub !== undefined;
+  if (req.page === undefined) {
+    return { ok: true, value: { page: undefined, sub: undefined, droppedSub: hasSub } };
+  }
   if (!isSettingsPage(req.page)) {
     return {
       ok: false,
@@ -81,7 +106,11 @@ export function validateSettingsOpen(
       )
     };
   }
-  return { ok: true, value: { page: req.page } };
+  const sub = isSettingsSub(req.page, req.sub) ? req.sub : undefined;
+  return {
+    ok: true,
+    value: { page: req.page, sub, droppedSub: hasSub && sub === undefined }
+  };
 }
 
 // ---- settings:write ----
@@ -199,6 +228,12 @@ export function validateSettingsWrite(
       };
     }
     const ai = p.ai as Record<string, unknown>;
+    // Main-owned: the customModels:* verbs keep a connection and the
+    // credential it holds in step. A raw patch could repoint an endpoint
+    // without clearing the key bound to the old one.
+    if (ai.customModels !== undefined || ai.customConnections !== undefined) {
+      return { ok: false, error: validationError("custom_models_main_owned", "Use Settings → AI Providers to change Direct API connections.") };
+    }
     if (!isUndefined(ai.enabled) && !isBoolean(ai.enabled)) {
       return {
         ok: false,
@@ -229,6 +264,19 @@ export function validateSettingsWrite(
         )
       };
     }
+    if (
+      !isUndefined(ai.enrichmentRateLimit) &&
+      ai.enrichmentRateLimit !== null &&
+      !isAiEnrichmentRateLimit(ai.enrichmentRateLimit)
+    ) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_ai_enrichmentRateLimit",
+          `settings:write: ai.enrichmentRateLimit must be null or { burst: ${AI_ENRICHMENT_RATE_LIMIT_BOUNDS.burst.min}–${AI_ENRICHMENT_RATE_LIMIT_BOUNDS.burst.max}, perMinute: ${AI_ENRICHMENT_RATE_LIMIT_BOUNDS.perMinute.min}–${AI_ENRICHMENT_RATE_LIMIT_BOUNDS.perMinute.max} } whole numbers`
+        )
+      };
+    }
     if (!isUndefined(ai.autoAcceptSuggestions) && !isBoolean(ai.autoAcceptSuggestions)) {
       return {
         ok: false,
@@ -245,6 +293,12 @@ export function validateSettingsWrite(
     if (!isUndefined(ai.defaults)) {
       const defaultsErr = validateAiDefaultsPatch(ai.defaults);
       if (defaultsErr) return { ok: false, error: defaultsErr };
+    }
+    // null turns the caption fallback off; an object is a surface-default
+    // patch under the same rules as `ai.defaults.enrichment`.
+    if (!isUndefined(ai.enrichmentFallback) && ai.enrichmentFallback !== null) {
+      const fallbackErr = validateAiSurfaceDefault("enrichmentFallback", ai.enrichmentFallback);
+      if (fallbackErr) return { ok: false, error: fallbackErr };
     }
     if (!isUndefined(ai.acp)) {
       const acpErr = validateAcpPatch(ai.acp, platform);
@@ -557,8 +611,12 @@ export function validateSettingsWrite(
     for (const key of [
       "includeSystemAudio",
       "includeMicrophone",
+      "mp4IncludeMicrophone",
+      "mp4IncludeSystemAudio",
       "videoCaptureCursor",
       "imageCaptureCursor",
+      "showRegionFrame",
+      "showRecentCaptureSidebar",
       "screenCapturePrompted"
     ] as const) {
       const v = recording[key];
@@ -584,6 +642,31 @@ export function validateSettingsWrite(
           'settings:write: recording.quickCaptureAction must be "ask", "snap", or "record"'
         )
       };
+    }
+    if (!isUndefined(recording.selectorHud) && !isSelectorHudStyle(recording.selectorHud)) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_recording_selectorHud",
+          'settings:write: recording.selectorHud must be "shutter" or "clapperboard"'
+        )
+      };
+    }
+    // A device choice is `null` (system default) or one full
+    // preference. A half-filled one would save a device the chips can
+    // neither open by id nor find by name.
+    for (const key of ["microphoneDevice", "cameraDevice"] as const) {
+      const v = recording[key];
+      if (isUndefined(v) || v === null) continue;
+      if (!RecordingDevicePreferenceSchema.safeParse(v).success) {
+        return {
+          ok: false,
+          error: validationError(
+            `invalid_recording_${key}`,
+            `settings:write: recording.${key} must be null or { deviceId, label }`
+          )
+        };
+      }
     }
     if (
       !isUndefined(recording.lastRoutedPermissionFingerprint) &&
@@ -679,7 +762,7 @@ function validateExperimentalPatch(raw: unknown): PwrSnapError | null {
 
 /** Validate the library section of a settings patch. Exposes two
  *  nested objects — `detailRail` and `gridCopyPalette` — plus the flat
- *  `confirmBeforeTrash` / `gridZoom` leaves. Symmetric with
+ *  `confirmBeforeTrash` / `gridZoom` / `editToolbarDock` leaves. Symmetric with
  *  `validateEditorPatch`. */
 function validateLibraryPatch(raw: unknown): PwrSnapError | null {
   if (!isObject(raw)) {
@@ -740,6 +823,29 @@ function validateLibraryPatch(raw: unknown): PwrSnapError | null {
         `settings:write: library.gridZoom must be a number in [${GRID_ZOOM_MIN}, ${GRID_ZOOM_MAX}]`
       );
     }
+  }
+  if (raw.duplicateWithEdits !== undefined) {
+    if (!isObject(raw.duplicateWithEdits)) {
+      return validationError(
+        "invalid_library_duplicateWithEdits",
+        "settings:write: library.duplicateWithEdits must be an object"
+      );
+    }
+    for (const kind of ["image", "video"] as const) {
+      const value = raw.duplicateWithEdits[kind];
+      if (!isUndefined(value) && !isBoolean(value)) {
+        return validationError(
+          `invalid_library_duplicateWithEdits_${kind}`,
+          `settings:write: library.duplicateWithEdits.${kind} must be a boolean`
+        );
+      }
+    }
+  }
+  if (!isUndefined(raw.editToolbarDock) && !isEditToolbarDock(raw.editToolbarDock)) {
+    return validationError(
+      "invalid_library_editToolbarDock",
+      `settings:write: library.editToolbarDock must be one of ${EDIT_TOOLBAR_DOCKS.join("/")}`
+    );
   }
   return null;
 }
@@ -814,7 +920,7 @@ function validateChatPatch(raw: unknown): PwrSnapError | null {
     if (hit !== null) {
       return validationError(
         "secret_shape_in_userGuidance",
-        `settings:write: ai.chat.userGuidance contains what looks like a real ${hit}. Don't paste real secrets here — see Settings → AI → Chat for guidance on the shape-only pattern format.`
+        `settings:write: ai.chat.userGuidance contains what looks like a real ${hit}. Don't paste real secrets here — see Settings → AI Features → Guidance for the shape-only pattern format.`
       );
     }
   }
@@ -922,13 +1028,6 @@ function validateChatPatch(raw: unknown): PwrSnapError | null {
 // Unknown surface keys are rejected so a buggy/forged renderer can't
 // stash arbitrary blobs under `ai.defaults`.
 
-/** Shape check for a Codex provider/model token. Same alphabet as
- *  `isCodexCaptionModel` but tolerant of the empty-string clear
- *  sentinel (checked separately by the caller). */
-function isAiTokenShape(value: string): boolean {
-  return value.length > 0 && value.length <= 120 && /^[A-Za-z0-9._:/-]+$/.test(value);
-}
-
 /** Shape check for a per-surface `model` id. UNLIKE Codex tokens, an ACP
  *  agent's model id is an OPAQUE, agent-advertised string we persist verbatim
  *  and only feed back to its `session/set_model` — never a path/shell/Codex
@@ -944,6 +1043,16 @@ function isAiModelTokenShape(value: string): boolean {
   return value.length > 0 && value.length <= 200 && /^[A-Za-z0-9._:/()[\]-]+$/.test(value);
 }
 
+/** Where a surface-default-shaped block lives, for error text. */
+function aiSurfaceSettingPath(surface: string): string {
+  return surface === "enrichmentFallback" ? "ai.enrichmentFallback" : `ai.defaults.${surface}`;
+}
+
+/** The error-code stem for the same block, so code and message name one path. */
+function aiSurfaceErrorCode(surface: string): string {
+  return surface === "enrichmentFallback" ? "invalid_ai_enrichmentFallback" : `invalid_ai_defaults_${surface}`;
+}
+
 /** Validate a surface's `provider` backend selector (every surface now —
  *  Library / Sizzle chat AND enrichment). Accepts "" / "codex" /
  *  "acp:<known-id>"; rejects unknown `acp:` ids and any other free-text token
@@ -952,26 +1061,26 @@ function validateChatSurfaceProvider(
   surface: string,
   value: string
 ): PwrSnapError | null {
-  if (value === "" || value === "codex") return null;
+  if (value === "" || value === "codex" || /^custom:[0-9a-f-]{36}$/i.test(value)) return null;
   if (value.startsWith("acp:")) {
     const id = value.slice("acp:".length);
     if (isBuiltInAcpAgentId(id)) return null;
     return validationError(
-      `invalid_ai_defaults_${surface}_provider`,
-      `settings:write: ai.defaults.${surface}.provider has unknown ACP agent ${JSON.stringify(id)} (allowed: ${BUILT_IN_ACP_AGENT_IDS.join("/")})`
+      `${aiSurfaceErrorCode(surface)}_provider`,
+      `settings:write: ${aiSurfaceSettingPath(surface)}.provider has unknown ACP agent ${JSON.stringify(id)} (allowed: ${BUILT_IN_ACP_AGENT_IDS.join("/")})`
     );
   }
   return validationError(
-    `invalid_ai_defaults_${surface}_provider`,
-    `settings:write: ai.defaults.${surface}.provider must be "", "codex", or "acp:<${BUILT_IN_ACP_AGENT_IDS.join("|")}>" (got ${JSON.stringify(value)})`
+    `${aiSurfaceErrorCode(surface)}_provider`,
+    `settings:write: ${aiSurfaceSettingPath(surface)}.provider must be "", "codex", or "acp:<${BUILT_IN_ACP_AGENT_IDS.join("|")}>" (got ${JSON.stringify(value)})`
   );
 }
 
 function validateAiSurfaceDefault(surface: string, raw: unknown): PwrSnapError | null {
   if (!isObject(raw)) {
     return validationError(
-      `invalid_ai_defaults_${surface}`,
-      `settings:write: ai.defaults.${surface} must be an object`
+      `${aiSurfaceErrorCode(surface)}`,
+      `settings:write: ${aiSurfaceSettingPath(surface)} must be an object`
     );
   }
   // `provider` is a BACKEND selector for EVERY surface now — chat surfaces
@@ -981,8 +1090,8 @@ function validateAiSurfaceDefault(surface: string, raw: unknown): PwrSnapError |
   if (!isUndefined(raw.provider)) {
     if (!isString(raw.provider)) {
       return validationError(
-        `invalid_ai_defaults_${surface}_provider`,
-        `settings:write: ai.defaults.${surface}.provider must be a string`
+        `${aiSurfaceErrorCode(surface)}_provider`,
+        `settings:write: ${aiSurfaceSettingPath(surface)}.provider must be a string`
       );
     }
     const provErr = validateChatSurfaceProvider(surface, raw.provider);
@@ -993,18 +1102,19 @@ function validateAiSurfaceDefault(surface: string, raw: unknown): PwrSnapError |
     if (isUndefined(v)) continue;
     if (!isString(v)) {
       return validationError(
-        `invalid_ai_defaults_${surface}_${key}`,
-        `settings:write: ai.defaults.${surface}.${key} must be a string`
+        `${aiSurfaceErrorCode(surface)}_${key}`,
+        `settings:write: ${aiSurfaceSettingPath(surface)}.${key} must be a string`
       );
     }
     // Empty string clears the field (→ Codex / agent default); always allowed.
     // The model id is an opaque, possibly-ACP token (e.g. Qwen's
     // `qwen3.6-plus(openai)`), so use the tolerant model-token shape — NOT the
     // Codex-narrow alphabet, which would reject valid agent model ids.
-    if (v.length > 0 && !isAiModelTokenShape(v)) {
+    // oxlint-disable-next-line no-control-regex -- Intentionally reject or strip control characters.
+    if (v.length > 0 && !(typeof raw.provider === "string" && raw.provider.startsWith("custom:") && v.length <= 200 && /^[^\x00-\x1f\x7f]+$/.test(v)) && !isAiModelTokenShape(v)) {
       return validationError(
-        `invalid_ai_defaults_${surface}_${key}`,
-        `settings:write: ai.defaults.${surface}.${key} must be a non-empty model id under 200 chars with no control characters (got ${JSON.stringify(v)})`
+        `${aiSurfaceErrorCode(surface)}_${key}`,
+        `settings:write: ${aiSurfaceSettingPath(surface)}.${key} must be a non-empty model id under 200 chars with no control characters (got ${JSON.stringify(v)})`
       );
     }
   }
@@ -1016,8 +1126,8 @@ function validateAiSurfaceDefault(surface: string, raw: unknown): PwrSnapError |
     !isAiReasoningEffort(raw.reasoning)
   ) {
     return validationError(
-      `invalid_ai_defaults_${surface}_reasoning`,
-      `settings:write: ai.defaults.${surface}.reasoning must be "" or one of ${AI_REASONING_EFFORTS.join("/")}`
+      `${aiSurfaceErrorCode(surface)}_reasoning`,
+      `settings:write: ${aiSurfaceSettingPath(surface)}.reasoning must be "" or one of ${AI_REASONING_EFFORTS.join("/")}`
     );
   }
   return null;
@@ -1194,15 +1304,12 @@ function validateArrowStyle(raw: Record<string, unknown>): PwrSnapError | null {
   }
   if (!isUndefined(raw.endStyle)) {
     const v = raw.endStyle;
-    if (v !== "filled-triangle" && v !== "open-triangle" && v !== "line" && v !== "dot") {
-      return validationError("invalid_editor_arrow_endStyle", "settings:write: editor.toolStyles.arrow.endStyle must be one of filled-triangle/open-triangle/line/dot");
+    if (v !== "filled-triangle" && v !== "open-triangle" && v !== "line" && v !== "dot" && v !== "bar") {
+      return validationError("invalid_editor_arrow_endStyle", "settings:write: editor.toolStyles.arrow.endStyle must be one of filled-triangle/open-triangle/line/dot/bar");
     }
   }
-  if (!isUndefined(raw.stemStyle)) {
-    const v = raw.stemStyle;
-    if (v !== "solid" && v !== "dashed" && v !== "dotted") {
-      return validationError("invalid_editor_arrow_stemStyle", "settings:write: editor.toolStyles.arrow.stemStyle must be solid/dashed/dotted");
-    }
+  if (!isUndefined(raw.stemStyle) && !isStrokePatternStyle(raw.stemStyle)) {
+    return validationError("invalid_editor_arrow_stemStyle", "settings:write: editor.toolStyles.arrow.stemStyle must be solid/dashed/dotted");
   }
   if (!isUndefined(raw.doubleEnded) && !isBoolean(raw.doubleEnded)) {
     return validationError("invalid_editor_arrow_doubleEnded", "settings:write: editor.toolStyles.arrow.doubleEnded must be a boolean");
@@ -1265,6 +1372,9 @@ function validateShapeStyle(raw: Record<string, unknown>): PwrSnapError | null {
   if (!isUndefined(raw.skewDeg) && !isFiniteNumber(raw.skewDeg)) {
     return validationError("invalid_editor_shape_skewDeg", "settings:write: editor.toolStyles.shape.skewDeg must be a finite number");
   }
+  if (!isUndefined(raw.strokeStyle) && !isStrokePatternStyle(raw.strokeStyle)) {
+    return validationError("invalid_editor_shape_strokeStyle", "settings:write: editor.toolStyles.shape.strokeStyle must be solid/dashed/dotted");
+  }
   if (!isUndefined(raw.outline) && !isOverlayOutlineMode(raw.outline)) {
     return validationError("invalid_editor_shape_outline", "settings:write: editor.toolStyles.shape.outline must be auto/white/black/stripe/none");
   }
@@ -1321,6 +1431,74 @@ function validateHighlightStyle(raw: Record<string, unknown>): PwrSnapError | nu
   return null;
 }
 
+function validateDrawStyle(raw: Record<string, unknown>): PwrSnapError | null {
+  if (!isUndefined(raw.mode)) {
+    const v = raw.mode;
+    if (v !== "pen" && v !== "marker" && v !== "airbrush" && v !== "eraser") {
+      return validationError("invalid_editor_draw_mode", "settings:write: editor.toolStyles.draw.mode must be pen/marker/airbrush/eraser");
+    }
+  }
+  if (!isUndefined(raw.color) && !isToolColor(raw.color)) {
+    return validationError("invalid_editor_draw_color", "settings:write: editor.toolStyles.draw.color must be a color token or string");
+  }
+  if (!isUndefined(raw.thickness) && !isToolSizePreset(raw.thickness)) {
+    return validationError("invalid_editor_draw_thickness", "settings:write: editor.toolStyles.draw.thickness must be auto/small/medium/large/x-large or a finite number");
+  }
+  return null;
+}
+
+/** A Draw slot holds pen / marker / airbrush. The eraser has no style worth
+ *  saving and the toolbar never offers to save it, so a slot naming it is
+ *  a bad write, not something to store and coerce later. */
+function validateDrawSlotStyle(raw: Record<string, unknown>): PwrSnapError | null {
+  if (raw.mode === "eraser") {
+    return validationError("invalid_editor_toolBag_draw_mode", "settings:write: a Draw slot cannot hold the eraser");
+  }
+  return validateDrawStyle(raw);
+}
+
+const TOOL_BAG_SLOT_VALIDATORS = {
+  arrow: validateArrowStyle,
+  text: validateTextStyle,
+  shape: validateShapeStyle,
+  blur: validateBlurStyle,
+  highlight: validateHighlightStyle,
+  draw: validateDrawSlotStyle
+} as const;
+
+/** The bag is written whole, so the patch must be the whole bag: exactly
+ *  TOOL_BAG_SIZE slots, each empty (`null`) or a known tool with a style
+ *  block that passes that tool's validator. Main re-parses the accepted
+ *  value against the factory styles, so a slot missing a field is filled
+ *  in rather than stored partial. */
+function validateToolBag(raw: unknown): PwrSnapError | null {
+  if (!isObject(raw) || !Array.isArray(raw.slots)) {
+    return validationError("invalid_editor_toolBag", "settings:write: editor.toolBag must be { slots: [...] }");
+  }
+  if (raw.slots.length !== TOOL_BAG_SIZE) {
+    return validationError("invalid_editor_toolBag_size", `settings:write: editor.toolBag.slots must have exactly ${TOOL_BAG_SIZE} entries`);
+  }
+  for (const slot of raw.slots) {
+    if (slot === null) continue;
+    if (!isObject(slot)) {
+      return validationError("invalid_editor_toolBag_slot", "settings:write: editor.toolBag.slots entries must be null or an object");
+    }
+    const tool = slot.tool;
+    if (typeof tool !== "string" || !Object.hasOwn(TOOL_BAG_SLOT_VALIDATORS, tool)) {
+      return validationError("invalid_editor_toolBag_tool", "settings:write: editor.toolBag slot tool must be arrow/text/shape/blur/highlight/draw");
+    }
+    if (!isUndefined(slot.label) && (typeof slot.label !== "string" || slot.label.length > 40)) {
+      return validationError("invalid_editor_toolBag_label", "settings:write: editor.toolBag slot label must be a string of at most 40 characters");
+    }
+    if (!isObject(slot.style)) {
+      return validationError("invalid_editor_toolBag_style", "settings:write: editor.toolBag slot style must be an object");
+    }
+    const err = TOOL_BAG_SLOT_VALIDATORS[tool as keyof typeof TOOL_BAG_SLOT_VALIDATORS](slot.style);
+    if (err !== null) return err;
+  }
+  return null;
+}
+
 function validateEditorPatch(rawEditor: unknown): PwrSnapError | null {
   if (!isObject(rawEditor)) {
     return validationError("invalid_editor", "settings:write: editor must be an object");
@@ -1337,7 +1515,8 @@ function validateEditorPatch(rawEditor: unknown): PwrSnapError | null {
       ["text", validateTextStyle],
       ["shape", validateShapeStyle],
       ["blur", validateBlurStyle],
-      ["highlight", validateHighlightStyle]
+      ["highlight", validateHighlightStyle],
+      ["draw", validateDrawStyle]
     ] as const;
     for (const [key, validator] of perKind) {
       const block = ts[key];
@@ -1350,21 +1529,17 @@ function validateEditorPatch(rawEditor: unknown): PwrSnapError | null {
     }
   }
 
+  if (editor.toolBag !== undefined) {
+    const err = validateToolBag(editor.toolBag);
+    if (err !== null) return err;
+  }
+
   if (editor.coachmarks !== undefined) {
     if (!isObject(editor.coachmarks)) {
       return validationError("invalid_editor_coachmarks", "settings:write: editor.coachmarks must be an object");
     }
     if (!isUndefined(editor.coachmarks.stoplightSeen) && !isBoolean(editor.coachmarks.stoplightSeen)) {
       return validationError("invalid_editor_stoplightSeen", "settings:write: editor.coachmarks.stoplightSeen must be a boolean");
-    }
-  }
-
-  if (editor.matchingText !== undefined) {
-    if (!isObject(editor.matchingText)) {
-      return validationError("invalid_editor_matchingText", "settings:write: editor.matchingText must be an object");
-    }
-    if (!isUndefined(editor.matchingText.enabled) && !isBoolean(editor.matchingText.enabled)) {
-      return validationError("invalid_editor_matchingText_enabled", "settings:write: editor.matchingText.enabled must be a boolean");
     }
   }
 

@@ -29,8 +29,23 @@
   border-radius: 10px;
 }
 
+/* The stage is a Tab stop for the player's keys. Its focus signal was a
+   1px 45% accent halo; it draws the house ring now. */
 .psl__video-stage:focus-visible {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* Shown only on a recording that holds BOTH audio tracks, where the
+   waveform lane is drawn from the mixed extraction but the <video>
+   element plays the first track alone. Quiet on purpose: it is a
+   footnote about the preview, not a warning about the recording. */
+.psl__video-audio-note {
+  margin: 0;
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font: 500 11px/1.4 var(--font-sans);
+  text-align: center;
 }
 
 .psl__video-frame {
@@ -98,6 +113,54 @@
   color: var(--text-primary);
 }
 
+/* Volume: the mute button plus a slider that reveals on hover or focus.
+   `width` animates rather than `display`, so the row never reflows in a
+   jump and the control stays keyboard-reachable while collapsed. */
+.psl__vt-vol {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.psl__vt-vol-slider {
+  width: 0;
+  opacity: 0;
+  margin: 0;
+  padding: 0;
+  height: 28px;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+  transition: width var(--dur-fast, 120ms) var(--ease-out, ease-out),
+    opacity var(--dur-fast, 120ms) var(--ease-out, ease-out);
+}
+
+.psl__vt-vol:hover .psl__vt-vol-slider,
+.psl__vt-vol:focus-within .psl__vt-vol-slider {
+  width: 64px;
+  opacity: 1;
+}
+
+.psl__vt-vol-slider::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 999px;
+  background: var(--border-subtle);
+}
+
+.psl__vt-vol-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  margin-top: -3.5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.psl__vt-vol-slider:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
 .psl__vt-btn.is-on {
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
@@ -151,10 +214,15 @@
   -webkit-user-select: none;
 }
 
+/* Ticks are positioned with the same px↔sec math as the handles, and
+   that math is against the strip's CONTENT box (see the measure in
+   VideoTimeline.tsx). This lane has no border of its own, so the 1px
+   inline margin is the strip's border width — without it the ruler is
+   2px wider than, and 1px left of, the space it is describing. */
 .vtl__ticks {
   position: relative;
   height: 12px;
-  margin: 0;
+  margin: 0 1px;
 }
 
 .vtl__tick {
@@ -180,6 +248,19 @@
   font-style: normal;
   color: var(--text-muted);
   white-space: nowrap;
+}
+
+/* Holds the strip and the drag tooltip as siblings, so the tip escapes
+   `.vtl__strip`'s `overflow: hidden` — which exists to keep the
+   filmstrip and the handles inside the strip's border-radius, and which
+   was cutting the tip's trailing digits off at either end of a drag.
+   No border, no padding, no overflow of its own: its padding box is
+   exactly the strip's BORDER box, which is the 1px-per-side offset
+   `stripBorderLeft` puts back in VideoTimeline.tsx. */
+.vtl__strip-wrap {
+  position: relative;
+  width: 100%;
+  min-width: 0;
 }
 
 .vtl__strip {
@@ -236,6 +317,59 @@
   height: 100%;
 }
 
+/* Activity lane: how much of the frame changed. Bars rise with the
+   level (see VIDEO_ACTIVITY_THRESHOLDS); a hatched band marks a still
+   stretch long enough for `Cut idle`. Drawn as one SVG path per level
+   by VideoTimeline.tsx. */
+.vtl__act {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  border-top: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--bg-app) 70%, var(--bg-panel));
+}
+
+.vtl__act.is-loading {
+  background: repeating-linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--bg-app) 70%, var(--bg-panel)) 0 6px,
+    color-mix(in srgb, var(--text-muted) 10%, transparent) 6px 7px
+  );
+}
+
+.vtl__act-svg {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  display: block;
+  pointer-events: none;
+}
+
+.vtl__act-l1 {
+  fill: color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+.vtl__act-l2 {
+  fill: color-mix(in srgb, var(--accent) 82%, transparent);
+}
+
+.vtl__act-l3 {
+  fill: var(--accent);
+}
+
+.vtl__act-idle {
+  fill: url(#vtl-idle-hatch);
+}
+
+.vtl__act-hatch-bg {
+  fill: color-mix(in srgb, var(--text-muted) 12%, transparent);
+}
+
+.vtl__act-hatch-line {
+  stroke: color-mix(in srgb, var(--text-muted) 55%, transparent);
+  stroke-width: 1;
+}
+
 .vtl__wave {
   position: relative;
   width: 100%;
@@ -277,6 +411,97 @@
   left: 0;
 }
 
+/* An interior cut: the same dim as the trimmed ends, hatched so it
+   reads as "removed" rather than "outside the trim", and without the
+   slide transition (cuts appear and vanish, they don't travel). */
+.vtl__scrim.is-cut {
+  transition: none;
+  background:
+    repeating-linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--text-muted) 30%, transparent) 0 1px,
+      transparent 1px 7px
+    ),
+    color-mix(in srgb, var(--bg-app) 74%, transparent);
+}
+
+/* What `Cut idle` would remove, while its chip is hovered. */
+.vtl__idle-preview {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 2;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+/* A split: both sides kept, one boundary the user placed. A 10px hit
+   area around a 2px line; drag to move, double-click to remove. */
+.vtl__split {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  margin: 0 0 0 -5px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: ew-resize;
+  z-index: 3;
+}
+
+.vtl__split::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-app) 55%, transparent);
+}
+
+.vtl__split:hover::before,
+.vtl__split.is-active::before {
+  background: var(--accent-bright);
+}
+
+/* Inset: `.vtl__strip` clips on every side. */
+.vtl__split:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+/* Cut / Keep for the part under the pointer. */
+.vtl__piece-chip {
+  position: absolute;
+  top: 4px;
+  height: 18px;
+  padding: 0 8px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--bg-panel-elevated) 94%, transparent);
+  color: var(--text-primary);
+  font: 600 9px/1 var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  z-index: 5;
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--shadow-base) 40%, transparent);
+}
+
+.vtl__piece-chip:hover {
+  color: var(--accent-bright);
+  border-color: var(--accent-border);
+}
+
+.vtl__piece-chip.is-restore {
+  color: var(--accent-bright);
+}
+
 /* Handles: 8px accent brackets sitting just inside the range. */
 .vtl__handle {
   position: absolute;
@@ -312,19 +537,55 @@
   border-radius: 0 6px 6px 0;
 }
 
+/* The edges of an interior cut: narrower than the outer handles, and
+   squared on the side facing the cut so the pair reads as a gap. */
+.vtl__handle.is-edge {
+  width: 6px;
+  background: color-mix(in srgb, var(--accent) 80%, transparent);
+}
+
+.vtl__handle.is-edge::before {
+  left: 2px;
+}
+
+.vtl__handle.is-edge.is-in {
+  border-radius: 0 3px 3px 0;
+}
+
+.vtl__handle.is-edge.is-out {
+  border-radius: 3px 0 0 3px;
+}
+
 .vtl__handle:hover,
 .vtl__handle.is-active {
   background: var(--accent-bright);
 }
 
+/* Focus turns the bracket hollow. An outset ring cannot draw here:
+   `.vtl__strip` clips on every side. The inset `--accent-bright` ring
+   this replaces sat on an `--accent` fill, 1.33:1, so a focused handle
+   looked like an idle one. Hollow swaps the fill for the on-accent black
+   inside a 2px accent edge, 8.6:1 against the resting fill in dark. The
+   edge keeps the bracket's shape against the strip, and it is the same
+   2px either side of focus, so nothing shifts. */
 .vtl__handle:focus-visible {
-  outline: 2px solid var(--accent-bright);
-  outline-offset: -2px;
+  outline: none;
+  background: var(--button-text-on-accent);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.vtl__handle:focus-visible::before {
+  background: var(--accent);
 }
 
 .vtl.is-dragging .vtl__handle,
 .vtl.is-dragging .vtl__scrim {
   transition: none;
+}
+
+/* A handle's `left` transition would make an inner edge lag behind the
+   cut scrim it bounds (which has none) after every split / cut. */
+.vtl__handle.is-edge {
+  transition: background 120ms var(--ease-out, ease-out);
 }
 
 /* Playhead: 1px --text-primary line + small triangle cap on top.
@@ -410,6 +671,14 @@
   background: var(--border-subtle);
 }
 
+.vtl__hint {
+  font: 500 9px/1 var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+  white-space: nowrap;
+}
+
 .vtl__chip {
   height: 18px;
   padding: 0 8px;
@@ -425,6 +694,11 @@
 }
 
 .vtl__chip:hover:not(:disabled) {
+  color: var(--accent-bright);
+  border-color: var(--accent-border);
+}
+
+.vtl__chip.is-accent {
   color: var(--accent-bright);
   border-color: var(--accent-border);
 }

@@ -4,6 +4,7 @@ import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import type { Settings } from "@pwrsnap/shared";
 import { DeveloperPage } from "../DeveloperPage";
 import type { UseSettingsValue } from "../../useSettings";
+import { defaultEditorToolBag } from "@pwrsnap/shared";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -16,6 +17,7 @@ const baseSettings: Settings = {
     enabled: false,
     consentAcceptedAt: null,
     budgetSafetyDisabledAt: null,
+    enrichmentRateLimit: null,
     autoAcceptSuggestions: false,
     chat: {
       userGuidance: "",
@@ -34,7 +36,8 @@ const baseSettings: Settings = {
     allScreens: "",
     timed: "",
     videoCapture: "CommandOrControl+Alt+C",
-    reshowFloatOver: "CommandOrControl+Alt+Shift+F"
+    reshowFloatOver: "CommandOrControl+Alt+Shift+F",
+    openLibrary: ""
   },
   general: {
     developerMode: false,
@@ -52,9 +55,16 @@ const baseSettings: Settings = {
   storage: { filenameTimestampZone: "local", capturesLocation: "documents" },
   recording: {
     quickCaptureAction: "ask",
+    selectorHud: "shutter",
     includeSystemAudio: false,
     includeMicrophone: false,
+    mp4IncludeMicrophone: true,
+    mp4IncludeSystemAudio: true,
     videoCaptureCursor: true,
+    showRegionFrame: true,
+    showRecentCaptureSidebar: true,
+    microphoneDevice: null,
+    cameraDevice: null,
     imageCaptureCursor: true,
     lastRoutedPermissionFingerprint: "",
     screenCapturePrompted: false
@@ -70,19 +80,20 @@ const baseSettings: Settings = {
         outline: "auto"
       },
       text: { color: "accent", fontSize: "auto", weight: "regular", outline: "auto" },
-      shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15, outline: "auto" },
+      shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15, strokeStyle: "solid", outline: "auto" },
       blur: { mode: "gaussian", radius: { mode: "auto" } },
-      highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
+      highlight: { color: "yellow", opacity: 0.3, blend: "multiply" },
+      draw: { mode: "pen", color: "accent", thickness: "auto" }
     },
+    toolBag: defaultEditorToolBag(),
     coachmarks: { stoplightSeen: false },
-    matchingText: { enabled: true },
     sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
   },
   library: {
     detailRail: { pinned: true, lastSelectedTab: "info" },
     gridCopyPalette: { anchor: "follow" },
     confirmBeforeTrash: true,
-    gridZoom: 180
+    gridZoom: 180, duplicateWithEdits: { image: true, video: true }, editToolbarDock: "float"
   },
   localAgents: { enabled: false, grants: [], roles: [], audit: [] }
 };

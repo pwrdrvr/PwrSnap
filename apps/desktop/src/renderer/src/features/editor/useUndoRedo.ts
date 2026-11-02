@@ -135,7 +135,13 @@ export type EditOp =
       currentIdRef: { current: string };
       previousPatch: OverlayPatch;
       nextPatch: OverlayPatch;
-    };
+    }
+  /** One eraser pass: the strokes it cut (`removed`, restored on undo)
+   *  and the rows that replaced them — each the same stroke with its
+   *  surviving pieces as segments (`added`, deleted on undo). One
+   *  entry, so ⌘Z puts back everything a single drag of the eraser took,
+   *  however many strokes it crossed. */
+  | { kind: "replace"; removed: CreateDeleteItem[]; added: CreateDeleteItem[] };
 
 const MAX_DEPTH = 100;
 
@@ -235,6 +241,12 @@ export type UseUndoRedoResult = {
     currentIdRef: { current: string };
     previousPatch: OverlayPatch;
     nextPatch: OverlayPatch;
+  }) => void;
+  /** Record layers swapped for others in one step (the eraser). Both
+   *  lists carry STORED-space nodes, as every other recorded node. */
+  recordReplace: (entry: {
+    removed: CreateDeleteItem[];
+    added: CreateDeleteItem[];
   }) => void;
   /** Open a coalescing bracket. Every recordCreate/recordDelete made
    *  between this call and `endInteraction(token)` collapses into one
@@ -581,6 +593,12 @@ export function useUndoRedo(opts: {
     [push]
   );
 
+  const recordReplace = useCallback(
+    (entry: { removed: CreateDeleteItem[]; added: CreateDeleteItem[] }) =>
+      push({ kind: "replace", removed: entry.removed, added: entry.added }),
+    [push]
+  );
+
   const beginInteraction = useCallback(
     (opKind: string, layerId: string): InteractionToken => {
       // Fresh object identity per call so an interaction can't be
@@ -771,6 +789,24 @@ export function useUndoRedo(opts: {
         }
         return;
       }
+      if (op.kind === "replace") {
+        // Put the other side back before taking this side away, so a
+        // replay that fails halfway leaves a duplicate rather than a
+        // hole. Upserts keep each node's own z_index.
+        const restore = direction === "undo" ? op.removed : op.added;
+        const take = direction === "undo" ? op.added : op.removed;
+        for (const item of restore) {
+          if (item.node !== null) {
+            // eslint-disable-next-line no-await-in-loop
+            await dispatchEdit({ kind: "upsert", node: item.node });
+          }
+        }
+        for (const item of take) {
+          // eslint-disable-next-line no-await-in-loop
+          await dispatchEdit({ kind: "delete", id: item.row.id });
+        }
+        return;
+      }
       // Exhaustiveness check — any new EditOp kind without a branch
       // here surfaces at compile time.
       const _exhaustive: never = op;
@@ -854,6 +890,7 @@ export function useUndoRedo(opts: {
       recordCrop,
       recordGeometry,
       recordStyle,
+      recordReplace,
       beginInteraction,
       endInteraction,
       undo,
@@ -867,6 +904,7 @@ export function useUndoRedo(opts: {
       recordCrop,
       recordGeometry,
       recordStyle,
+      recordReplace,
       beginInteraction,
       endInteraction,
       undo,

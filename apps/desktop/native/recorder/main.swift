@@ -29,6 +29,7 @@
 // AVFoundation and predate ScreenCaptureKit).
 
 import AVFoundation
+import CoreAudio
 import CoreMedia
 import Foundation
 import ScreenCaptureKit
@@ -41,6 +42,10 @@ struct StartRequest: Decodable {
     let outputPath: String
     let systemAudio: Bool
     let microphone: Bool
+    /// The input the selector showed, by its Chromium name. Nil records
+    /// the system default. A name that matches no attached input fails the
+    /// start with `microphone_unavailable` rather than falling back.
+    let microphoneDevice: String?
     /// Whether the recording bakes in the mouse cursor. Optional for
     /// back-compat with older callers — `nil` defaults to `true`, which
     /// is the behavior before this field existed (cursor always shown).
@@ -59,6 +64,14 @@ struct StartRequest: Decodable {
     /// the daemon-side filter surface unnecessarily. Each PID is
     /// matched against `SCRunningApplication.processID`.
     let excludePids: [Int]?
+    /// Camera preview is excluded by window identity, never by the Electron
+    /// main PID (which would also remove the user's Library window).
+    let cameraPreview: CameraPreviewIdentity?
+}
+
+struct CameraPreviewIdentity: Decodable {
+    let title: String
+    let ownerPid: Int
 }
 
 struct RectPayload: Decodable {
@@ -145,6 +158,10 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private var videoSamplesAppended: Int = 0
     private var audioSamplesReceived: Int = 0
     private var audioSamplesAppended: Int = 0
+    /// Whether any appended system-audio buffer rose above the silence
+    /// floor. See `peakAmplitude` — an append count cannot tell a live tap
+    /// from one recording a room where nothing is playing.
+    private var audioHeardSound: Bool = false
     /// SCStream's `.microphone` output (macOS 14+). Unused by today's
     /// recorder — mic capture runs through AVCaptureSession — but
     /// counted so a stray sample shows up in the stop() diag totals
@@ -275,7 +292,11 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             ]
             let ai = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
             ai.expectsMediaDataInRealTime = true
-            if writer.canAdd(ai) { writer.add(ai) }
+            guard writer.canAdd(ai) else {
+                emitError("audio_input_failed", "The recorder could not add system audio to the output file.")
+                return
+            }
+            writer.add(ai)
             audioInput = ai
         }
 
@@ -291,9 +312,13 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             ]
             let mi = AVAssetWriterInput(mediaType: .audio, outputSettings: micSettings)
             mi.expectsMediaDataInRealTime = true
-            if writer.canAdd(mi) { writer.add(mi) }
+            guard writer.canAdd(mi) else {
+                emitError("microphone_unavailable", "The recorder could not add microphone audio to the output file.")
+                return
+            }
+            writer.add(mi)
             micInput = mi
-            await setUpMicrophoneCapture(into: mi, writer: writer)
+            guard setUpMicrophoneCapture(into: mi, writer: writer, named: req.microphoneDevice) else { return }
         }
 
         // Sleep until the requested wall-clock capture time. The TS
@@ -358,7 +383,12 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         let started = await openStream(
             display: display,
             applications: freshDisplays.applications,
+            windows: freshDisplays.windows,
             excludePids: excludePids,
+            previewWindows: freshDisplays.windows.filter {
+                guard let preview = req.cameraPreview else { return false }
+                return $0.title == preview.title && Int($0.owningApplication?.processID ?? 0) == preview.ownerPid
+            },
             cfg: cfg
         )
         diag("openStream attempt 1 returned \(started)")
@@ -387,7 +417,13 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         let retried = await openStream(
             display: display,
             applications: freshDisplays.applications,
+            windows: freshDisplays.windows,
             excludePids: [],
+            // Preserve the window exclusion even on the app-filter fallback.
+            previewWindows: freshDisplays.windows.filter {
+                guard let preview = req.cameraPreview else { return false }
+                return $0.title == preview.title && Int($0.owningApplication?.processID ?? 0) == preview.ownerPid
+            },
             cfg: cfg
         )
         diag("openStream attempt 2 returned \(retried)")
@@ -431,7 +467,9 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private func openStream(
         display: SCDisplay,
         applications: [SCRunningApplication],
+        windows: [SCWindow],
         excludePids: Set<Int>,
+        previewWindows: [SCWindow],
         cfg: SCStreamConfiguration
     ) async -> Bool {
         diag("openStream entered displayId=\(display.displayID) excludePids=\(excludePids.sorted())")
@@ -443,11 +481,17 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
         let excludedApps = applications.filter { excludePids.contains(Int($0.processID)) }
         diag("filter built: \(excludedApps.count) app(s) excluded")
-        let filter = SCContentFilter(
-            display: display,
-            excludingApplications: excludedApps,
-            exceptingWindows: []
-        )
+        let filter: SCContentFilter
+        if previewWindows.isEmpty {
+            filter = SCContentFilter(display: display, excludingApplications: excludedApps, exceptingWindows: [])
+        } else {
+            // A window exclusion preserves desktop/dock pixels and removes only
+            // the preview plus the windows belonging to already-excluded HUD PIDs.
+            let previewIds = Set(previewWindows.map { $0.windowID })
+            filter = SCContentFilter(display: display, excludingWindows: windows.filter {
+                previewIds.contains($0.windowID) || excludePids.contains(Int($0.owningApplication?.processID ?? 0))
+            })
+        }
         diag("creating SCStream")
         let s = SCStream(filter: filter, configuration: cfg, delegate: self)
         diag("SCStream created, adding outputs")
@@ -496,6 +540,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
         diag("settle window clean, transitioning to active")
         streamPhase = "active"
+        emit(["event": "cameraPreview", "excluded": !previewWindows.isEmpty])
         return true
     }
 
@@ -503,24 +548,136 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         return err.domain == "com.apple.ScreenCaptureKit.SCStreamErrorDomain" && err.code == -3805
     }
 
+    private func microphoneDevice(named name: String?) -> AVCaptureDevice? {
+        guard let name else { return AVCaptureDevice.default(for: .audio) }
+        let types: [AVCaptureDevice.DeviceType]
+        if #available(macOS 14.0, *) {
+            types = [.microphone, .external]
+        } else {
+            types = [.builtInMicrophone, .externalUnknown]
+        }
+        let devices = AVCaptureDevice.DiscoverySession(
+            deviceTypes: types, mediaType: .audio, position: .unspecified
+        ).devices
+        let candidates = devices.map(microphoneCandidate(for:))
+        guard let index = indexOfMicrophone(named: name, among: candidates) else {
+            diag("microphone \"\(name)\" not among \(candidates.map { "\($0.name) [source \($0.sourceName ?? "-")\($0.bluetooth ? ", bluetooth" : "")]" })")
+            return nil
+        }
+        return devices[index]
+    }
+
+    /// The CoreAudio facts the name match needs for one AVFoundation input:
+    /// its input data source's name and whether it is Bluetooth. Either can
+    /// be missing; the match then falls back to the device name alone.
+    private func microphoneCandidate(for device: AVCaptureDevice) -> MicrophoneCandidate {
+        guard let id = coreAudioDevice(uid: device.uniqueID) else {
+            return MicrophoneCandidate(name: device.localizedName)
+        }
+        var transport: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let haveTransport = AudioObjectGetPropertyData(id, &address, 0, nil, &size, &transport) == noErr
+        let bluetooth = haveTransport &&
+            (transport == kAudioDeviceTransportTypeBluetooth || transport == kAudioDeviceTransportTypeBluetoothLE)
+        return MicrophoneCandidate(name: device.localizedName, sourceName: inputSourceName(id), bluetooth: bluetooth)
+    }
+
+    private func coreAudioDevice(uid: String) -> AudioObjectID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var qualifier = uid as CFString
+        var device = AudioObjectID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        let status = withUnsafeMutablePointer(to: &qualifier) { pointer in
+            AudioObjectGetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject), &address,
+                UInt32(MemoryLayout<CFString>.size), pointer, &size, &device
+            )
+        }
+        return status == noErr && device != kAudioObjectUnknown ? device : nil
+    }
+
+    private func inputSourceName(_ device: AudioObjectID) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDataSource,
+            mScope: kAudioDevicePropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var source: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &source) == noErr else { return nil }
+        var name: Unmanaged<CFString>?
+        let status: OSStatus = withUnsafeMutablePointer(to: &source) { sourcePointer in
+            withUnsafeMutablePointer(to: &name) { namePointer in
+                var translation = AudioValueTranslation(
+                    mInputData: sourcePointer,
+                    mInputDataSize: UInt32(MemoryLayout<UInt32>.size),
+                    mOutputData: namePointer,
+                    mOutputDataSize: UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+                )
+                var translationSize = UInt32(MemoryLayout<AudioValueTranslation>.size)
+                address.mSelector = kAudioDevicePropertyDataSourceNameForIDCFString
+                return AudioObjectGetPropertyData(device, &address, 0, nil, &translationSize, &translation)
+            }
+        }
+        guard status == noErr, let value = name?.takeRetainedValue() as String?, !value.isEmpty else { return nil }
+        return value
+    }
+
     private func setUpMicrophoneCapture(
         into input: AVAssetWriterInput,
-        writer: AVAssetWriter
-    ) async {
+        writer: AVAssetWriter,
+        named requested: String?
+    ) -> Bool {
         let session = AVCaptureSession()
         session.sessionPreset = .high
-        guard let device = AVCaptureDevice.default(for: .audio),
-              let micInputDevice = try? AVCaptureDeviceInput(device: device) else {
-            return
+        guard let device = microphoneDevice(named: requested) else {
+            if let requested {
+                emitError("microphone_unavailable", "The microphone \"\(requested)\" is not connected. Choose another in the capture selector.")
+            } else {
+                emitError("microphone_unavailable", "No default microphone is connected. Choose an input in macOS Sound settings.")
+            }
+            return false
         }
-        if session.canAddInput(micInputDevice) { session.addInput(micInputDevice) }
+        let micInputDevice: AVCaptureDeviceInput
+        do {
+            micInputDevice = try AVCaptureDeviceInput(device: device)
+        } catch {
+            emitError("microphone_unavailable", "Could not open the default microphone: \(error)")
+            return false
+        }
+        guard session.canAddInput(micInputDevice) else {
+            emitError("microphone_unavailable", "The default microphone could not be connected to the capture session.")
+            return false
+        }
+        session.addInput(micInputDevice)
+        // Which input the take records from, in the main log. The chip named
+        // one; this line is the only evidence of which one actually opened.
+        diag("microphone: \"\(device.localizedName)\" (requested \(requested.map { "\"\($0)\"" } ?? "system default"))")
         let micOutput = AVCaptureAudioDataOutput()
-        if session.canAddOutput(micOutput) { session.addOutput(micOutput) }
+        guard session.canAddOutput(micOutput) else {
+            emitError("microphone_unavailable", "The microphone capture session could not deliver audio samples.")
+            return false
+        }
+        session.addOutput(micOutput)
         let forwarder = MicForwarder(input: input, writer: writer)
         micForwarder = forwarder
         micOutput.setSampleBufferDelegate(forwarder, queue: writeQueue)
         session.startRunning()
+        guard session.isRunning else {
+            emitError("microphone_unavailable", "The default microphone did not start. Check microphone access and the selected input device.")
+            return false
+        }
         micSession = session
+        return true
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer buf: CMSampleBuffer, of type: SCStreamOutputType) {
@@ -584,6 +741,12 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             // arriving first is fine — audio PTS is on the same
             // host-clock timebase as video PTS in SCStream.)
             startedAtCMTime = CMSampleBufferGetPresentationTimeStamp(buf)
+            // CoreMedia host time and Node/libuv uptime can differ by all time
+            // spent asleep. Convert the actual first-sample PTS through UTC,
+            // sampled here rather than when stdout reaches the main process.
+            let hostNow = CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock()))
+            let utcTimeMs = (Date().timeIntervalSince1970 + CMTimeGetSeconds(startedAtCMTime) - hostNow) * 1000
+            emit(["event": "timeline", "utcTimeMs": utcTimeMs])
             let ok = writer.startWriting()
             diag("first sample: type=\(type) startWriting()->\(ok) writer.status=\(writer.status.rawValue) error=\(writer.error?.localizedDescription ?? "nil")")
             writer.startSession(atSourceTime: startedAtCMTime)
@@ -606,7 +769,15 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             }
         case .audio:
             if let ai = audioInput, ai.isReadyForMoreMediaData {
-                if ai.append(buf) { audioSamplesAppended += 1 }
+                if ai.append(buf) {
+                    audioSamplesAppended += 1
+                    // Stop measuring once this source has proven itself —
+                    // the scan is per-buffer and there is nothing left to
+                    // learn after the first sound.
+                    if !audioHeardSound && peakAmplitude(of: buf, stopAt: audioSilenceFloor) >= audioSilenceFloor {
+                        audioHeardSound = true
+                    }
+                }
             }
         case .microphone:
             // Mic samples from SCStream (macOS 14+) are deliberately
@@ -638,6 +809,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         writeQueue.sync { }
         let microphoneSamplesReceived = micForwarder?.samplesReceived ?? 0
         let microphoneSamplesAppended = micForwarder?.samplesAppended ?? 0
+        let microphoneHeardSound = micForwarder?.heardSound ?? false
         diag("microphone samples=\(microphoneSamplesReceived)/\(microphoneSamplesAppended)")
 
         videoInput?.markAsFinished()
@@ -663,8 +835,12 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             "containerFormat": "mp4",
             // Track flags describe what is actually in the finalized
             // file, not what the user requested at start time.
-            "hasSystemAudio": audioSamplesAppended > 0,
-            "hasMicrophoneAudio": microphoneSamplesAppended > 0,
+            // "produced AUDIBLE audio", not "delivered buffers". A source
+            // that was armed but silent reports false here and true in
+            // `requested*`, which is what lets the app say "you asked for
+            // system audio and got none" instead of claiming it captured.
+            "hasSystemAudio": audioHeardSound,
+            "hasMicrophoneAudio": microphoneHeardSound,
             "outputPath": outputURL?.path ?? ""
         ])
     }
@@ -682,29 +858,6 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             return
         }
         emitError("stream_stopped", "\(error)")
-    }
-}
-
-@available(macOS 13.0, *)
-final class MicForwarder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
-    let input: AVAssetWriterInput
-    let writer: AVAssetWriter
-    private(set) var samplesReceived: Int = 0
-    private(set) var samplesAppended: Int = 0
-    init(input: AVAssetWriterInput, writer: AVAssetWriter) {
-        self.input = input
-        self.writer = writer
-    }
-    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        samplesReceived += 1
-        // The microphone session starts during the countdown, before
-        // the first screen/system-audio sample starts AVAssetWriter.
-        // Drop that pre-roll instead of appending into an idle writer.
-        if writer.status == .writing &&
-           input.isReadyForMoreMediaData &&
-           input.append(sampleBuffer) {
-            samplesAppended += 1
-        }
     }
 }
 

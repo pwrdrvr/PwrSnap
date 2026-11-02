@@ -35,6 +35,8 @@ import {
   BundleLayerNode,
   CanvasRect,
   MAX_HIGHLIGHT_OPACITY,
+  VIDEO_ACTIVITY_GUIDANCE,
+  VIDEO_EDIT_MODEL_GUIDANCE,
   type CaptureRecord,
   type CommandName,
   type Req
@@ -44,10 +46,11 @@ import {
   ArrowStemStyle,
   BlurStyle,
   HighlightBlendModeSchema,
-  Overlay,
   OverlayThickness,
-  ShapeKind
+  ShapeKind,
+  ShapeStrokeStyle
 } from "@pwrsnap/shared/overlay";
+import { duplicateAndAwaitCommit } from "../capture/await-duplicate";
 import { bus } from "../command-bus";
 import { currentChatToolCommandContext } from "./chat-tool-command-context";
 import { defineTool, type ToolDispatchResult, type ToolSpec } from "./define-tool";
@@ -375,7 +378,9 @@ const listLayerCapabilities = defineTool({
         yellow: "warning",
         blue: "neutral context"
       },
-      vision: "call render_composite to see the current canvas"
+      vision: "call render_composite to see the current canvas",
+      video_tools:
+        "For VIDEO captures the draw/effect tools do not apply. inspect_video returns the edit and an on-screen activity summary (still stretches included); edit_video keeps, cuts, cuts the still stretches, or resets. Times are source seconds."
     }
   })
 });
@@ -404,6 +409,7 @@ const overlayThickness = OverlayThickness;
 const arrowEndStyle = ArrowEndStyle;
 const arrowStemStyle = ArrowStemStyle;
 const shapeKind = ShapeKind;
+const shapeStrokeStyle = ShapeStrokeStyle;
 const blurStyle = BlurStyle;
 const highlightBlendMode = HighlightBlendModeSchema;
 const normPoint = z.object({ x: z.number().finite(), y: z.number().finite() });
@@ -497,7 +503,7 @@ const drawArrow = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_arrow",
   description:
-    "Draw an arrow. `from`/`to` are NORMALIZED points — (0,0)=top-left, (1,1)=bottom-right. Endpoints MAY sit slightly outside [0,1] for an arrow coming in from off-canvas. `color` is #rrggbb (omit = auto). `thickness` is auto|small|medium|large|x-large or a normalized numeric stroke fraction; use this for heavier/thicker arrows, NOT multiple overlapping arrows. Optional `label` rides at the tail. `end_style` filled-triangle|open-triangle|line|dot, `stem_style` solid|dashed|dotted. Stoplight: red=problem, green=fix, yellow=warning, blue=context.",
+    "Draw an arrow. `from`/`to` are NORMALIZED points — (0,0)=top-left, (1,1)=bottom-right. Endpoints MAY sit slightly outside [0,1] for an arrow coming in from off-canvas. `color` is #rrggbb (omit = auto). `thickness` is auto|small|medium|large|x-large or a normalized numeric stroke fraction; use this for heavier/thicker arrows, NOT multiple overlapping arrows. Optional `label` rides at the tail. `end_style` filled-triangle|open-triangle|line|dot|bar (bar + double_ended = a measured range), `stem_style` solid|dashed|dotted. Stoplight: red=problem, green=fix, yellow=warning, blue=context.",
   annotations: { destructiveHint: false },
   argsSchema: z.object({
     capture_id: z.string(),
@@ -590,7 +596,8 @@ const drawHighlight = defineTool({
 
 // Shapes (rect / square / circle / oval / parallelogram) are all the v2
 // `ShapeOverlay`: a normalized bounding `rect` + a `shape` discriminator,
-// plus color / filled / rotation (and skewDeg for parallelogram). One
+// plus color / filled / rotation / stroke style (and skewDeg for
+// parallelogram). One
 // tool per shape — the agent picks a named tool and only sees that
 // shape's flat settings — but they all funnel through `upsertShape`.
 
@@ -607,6 +614,7 @@ async function upsertShape(
     filled?: boolean | undefined;
     rotation?: number | undefined;
     skewDeg?: number | undefined;
+    strokeStyle?: z.infer<typeof shapeStrokeStyle> | undefined;
   },
   name: string
 ): Promise<ToolDispatchResult> {
@@ -619,6 +627,7 @@ async function upsertShape(
       color: args.color ?? "auto",
       ...(args.thickness !== undefined ? { thickness: args.thickness } : {}),
       ...(args.filled !== undefined ? { filled: args.filled } : {}),
+      ...(args.strokeStyle !== undefined ? { strokeStyle: args.strokeStyle } : {}),
       ...(args.rotation !== undefined ? { rotation: args.rotation } : {}),
       ...(shape === "parallelogram" && args.skewDeg !== undefined
         ? { skewDeg: args.skewDeg }
@@ -635,54 +644,76 @@ const shapeArgsSchema = z.object({
   color: hexColor.optional(),
   thickness: overlayThickness.optional(),
   filled: z.boolean().optional(),
+  stroke_style: shapeStrokeStyle.optional(),
   rotation: z.number().finite().optional()
 });
+
+/** Snake-case tool args → `upsertShape`'s camel-case fields. */
+function shapeToolArgs(args: z.infer<typeof shapeArgsSchema>): Parameters<typeof upsertShape>[2] {
+  return {
+    rect: args.rect,
+    color: args.color,
+    thickness: args.thickness,
+    filled: args.filled,
+    rotation: args.rotation,
+    strokeStyle: args.stroke_style
+  };
+}
+
+/** Appended to every shape tool's description — same wording as the
+ *  arrow's `stem_style`, since the two share a value space. */
+const STROKE_STYLE_HINT =
+  " `stroke_style` solid|dashed|dotted outline (omit = solid; ignored when filled).";
 
 const drawRect = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_rect",
   description:
-    "Draw a rectangle. `rect` is NORMALIZED [0,1] {x,y,w,h} (x,y = top-left, w,h = size). `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid fill, false/omit = outline only. `rotation` radians clockwise around the rect center (omit = 0).",
+    "Draw a rectangle. `rect` is NORMALIZED [0,1] {x,y,w,h} (x,y = top-left, w,h = size). `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid fill, false/omit = outline only. `rotation` radians clockwise around the rect center (omit = 0)." + STROKE_STYLE_HINT,
   annotations: { destructiveHint: false },
   argsSchema: shapeArgsSchema,
-  dispatch: async (args) => upsertShape(args.capture_id, "rect", args, "AI rectangle")
+  dispatch: async (args) =>
+    upsertShape(args.capture_id, "rect", shapeToolArgs(args), "AI rectangle")
 });
 
 const drawSquare = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_square",
   description:
-    "Draw a square. Give a NORMALIZED bounding `rect` {x,y,w,h}; keep w and h equal for a true square. `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid, false/omit = outline. `rotation` radians (omit = 0).",
+    "Draw a square. Give a NORMALIZED bounding `rect` {x,y,w,h}; keep w and h equal for a true square. `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid, false/omit = outline. `rotation` radians (omit = 0)." + STROKE_STYLE_HINT,
   annotations: { destructiveHint: false },
   argsSchema: shapeArgsSchema,
-  dispatch: async (args) => upsertShape(args.capture_id, "square", args, "AI square")
+  dispatch: async (args) =>
+    upsertShape(args.capture_id, "square", shapeToolArgs(args), "AI square")
 });
 
 const drawCircle = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_circle",
   description:
-    "Draw a circle inscribed in a NORMALIZED bounding `rect` {x,y,w,h}; keep w and h equal so it's round (use draw_oval for a stretched ellipse). `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid, false/omit = outline.",
+    "Draw a circle inscribed in a NORMALIZED bounding `rect` {x,y,w,h}; keep w and h equal so it's round (use draw_oval for a stretched ellipse). `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid, false/omit = outline." + STROKE_STYLE_HINT,
   annotations: { destructiveHint: false },
   argsSchema: shapeArgsSchema,
-  dispatch: async (args) => upsertShape(args.capture_id, "circle", args, "AI circle")
+  dispatch: async (args) =>
+    upsertShape(args.capture_id, "circle", shapeToolArgs(args), "AI circle")
 });
 
 const drawOval = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_oval",
   description:
-    "Draw an oval / ellipse inscribed in a NORMALIZED bounding `rect` {x,y,w,h} (free aspect). `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid, false/omit = outline. `rotation` radians (omit = 0).",
+    "Draw an oval / ellipse inscribed in a NORMALIZED bounding `rect` {x,y,w,h} (free aspect). `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid, false/omit = outline. `rotation` radians (omit = 0)." + STROKE_STYLE_HINT,
   annotations: { destructiveHint: false },
   argsSchema: shapeArgsSchema,
-  dispatch: async (args) => upsertShape(args.capture_id, "oval", args, "AI oval")
+  dispatch: async (args) =>
+    upsertShape(args.capture_id, "oval", shapeToolArgs(args), "AI oval")
 });
 
 const drawParallelogram = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_parallelogram",
   description:
-    "Draw a parallelogram in a NORMALIZED bounding `rect` {x,y,w,h}. `skew_deg` = horizontal skew in degrees, positive shifts the top edge right (omit = 15). `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid, false/omit = outline. `rotation` radians (omit = 0).",
+    "Draw a parallelogram in a NORMALIZED bounding `rect` {x,y,w,h}. `skew_deg` = horizontal skew in degrees, positive shifts the top edge right (omit = 15). `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid, false/omit = outline. `rotation` radians (omit = 0)." + STROKE_STYLE_HINT,
   annotations: { destructiveHint: false },
   argsSchema: z.object({
     capture_id: z.string(),
@@ -690,6 +721,7 @@ const drawParallelogram = defineTool({
     color: hexColor.optional(),
     thickness: overlayThickness.optional(),
     filled: z.boolean().optional(),
+    stroke_style: shapeStrokeStyle.optional(),
     rotation: z.number().finite().optional(),
     skew_deg: z.number().finite().optional()
   }),
@@ -703,7 +735,8 @@ const drawParallelogram = defineTool({
         thickness: args.thickness,
         filled: args.filled,
         rotation: args.rotation,
-        skewDeg: args.skew_deg
+        skewDeg: args.skew_deg,
+        strokeStyle: args.stroke_style
       },
       "AI parallelogram"
     )
@@ -830,6 +863,7 @@ const updateLayerArgsSchema = z.object({
   double_ended: z.boolean().optional(),
   shape: shapeKind.optional(),
   filled: z.boolean().optional(),
+  stroke_style: shapeStrokeStyle.optional(),
   rotation: z.number().finite().optional(),
   skew_deg: z.number().finite().optional(),
   blend: highlightBlendMode.optional(),
@@ -873,6 +907,7 @@ async function applyAgentLayerPatch(
     "body",
     "shape",
     "filled",
+    "stroke_style",
     "blend",
     "opacity",
     "size",
@@ -893,6 +928,7 @@ async function applyAgentLayerPatch(
     "double_ended",
     "shape",
     "filled",
+    "stroke_style",
     "blend",
     "opacity",
     "skew_deg",
@@ -929,6 +965,7 @@ async function applyAgentLayerPatch(
     "double_ended",
     "shape",
     "filled",
+    "stroke_style",
     "size",
     "weight",
     "skew_deg",
@@ -970,6 +1007,7 @@ async function applyAgentLayerPatch(
         if (args.thickness !== undefined) shape.thickness = args.thickness;
         if (args.shape !== undefined) shape.shape = args.shape;
         if (args.filled !== undefined) shape.filled = args.filled;
+        if (args.stroke_style !== undefined) shape.strokeStyle = args.stroke_style;
         if (args.rotation !== undefined) shape.rotation = args.rotation;
         if (args.skew_deg !== undefined) shape.skewDeg = args.skew_deg;
         break;
@@ -1007,6 +1045,7 @@ async function applyAgentLayerPatch(
       "double_ended",
       "shape",
       "filled",
+      "stroke_style",
       "opacity",
       "size",
       "weight",
@@ -1054,7 +1093,7 @@ const updateLayerTool = defineTool({
   namespace: "pwrsnap_library",
   name: "update_layer",
   description:
-    "Edit one existing layer in place by id. Use list_layers first, then change only the requested fields. This preserves the layer id/z-order and is the right tool for 'make that arrow heavier/thicker' (`thickness`: auto|small|medium|large|x-large), color/blend/rotation changes, moving endpoints/rects, text edits, and blur mode/radius. `mode` is gaussian|pixelate|redact; changing an existing redaction to gaussian/pixelate is refused. Do NOT delete and redraw just to change style.",
+    "Edit one existing layer in place by id. Use list_layers first, then change only the requested fields. This preserves the layer id/z-order and is the right tool for 'make that arrow heavier/thicker' (`thickness`: auto|small|medium|large|x-large), 'make that box dashed' (`stroke_style` on a shape, `stem_style` on an arrow: solid|dashed|dotted), color/blend/rotation changes, moving endpoints/rects, text edits, and blur mode/radius. `mode` is gaussian|pixelate|redact; changing an existing redaction to gaussian/pixelate is refused. Do NOT delete and redraw just to change style.",
   annotations: { idempotentHint: true },
   argsSchema: updateLayerArgsSchema,
   dispatch: async (args) => {
@@ -1112,8 +1151,133 @@ const removeTag = defineTool({
     runVerb("library:removeTag", { captureId: args.capture_id, label: args.label })
 });
 
+// The chat's half of `pwrsnap_capture_duplicate`, so "make a blurred copy
+// of this" works from here the way it does over MCP: duplicate, then edit
+// the copy's id with the tools above. `with_edits` is required for the same
+// reason as there — the Library's remembered choice belongs to the user's
+// own menu, not to whatever the model infers from a sentence.
+const duplicateCapture = defineTool({
+  namespace: "pwrsnap_library",
+  name: "duplicate_capture",
+  description:
+    "Make an independent copy of a capture (new capture id, same duplicate family). The original is never changed. " +
+    "with_edits=true carries the current edit (image: crop + annotations; video: trim + cuts); false copies only the unedited capture. " +
+    "Title, description and tags are copied with the title numbered (\"… copy 2\"). Returns the copy's capture_id — pass it to the draw/blur/redact/crop/video tools to edit the copy, and open_in_library to show it.",
+  annotations: { idempotentHint: false },
+  argsSchema: z.object({ capture_id: z.string(), with_edits: z.boolean() }),
+  dispatch: async (args) => {
+    // Waits out a background video copy: the next tool call edits the copy.
+    const result = await duplicateAndAwaitCommit(
+      { captureId: args.capture_id, withEdits: args.with_edits },
+      currentChatToolCommandContext()
+    );
+    if (!result.ok) {
+      return {
+        ok: false,
+        error: `${result.error.kind}/${result.error.code}: ${result.error.message}`
+      };
+    }
+    const { record } = result.value;
+    return {
+      ok: true,
+      data: {
+        ...summarizeCapture(record),
+        family_id: record.family_id ?? null,
+        duplicated_from: record.duplicated_from ?? args.capture_id,
+        with_edits: args.with_edits
+      }
+    };
+  }
+});
+
+// ---- video tools -------------------------------------------------------
+//
+// The chat's half of video editing; the MCP surface has the same pair
+// (`pwrsnap_video_inspect` / `pwrsnap_video_edit`). Both sides dispatch
+// the same bus verbs, so a cut made here, over MCP, or on the timeline
+// is normalized, validated and broadcast identically — and the Library
+// puts it on its undo stack whichever way it arrived.
+
+const videoSpan = z.object({
+  start: z.number().min(0).describe("seconds, source timeline"),
+  end: z.number().min(0).describe("seconds, source timeline; > start")
+});
+
+const inspectVideo = defineTool({
+  namespace: "pwrsnap_library",
+  name: "inspect_video",
+  description:
+    "For a VIDEO capture: duration, the current edit (kept spans, cuts, exported length) and an on-screen activity summary " +
+    "(run-length encoded activity levels + the still stretches), so you can decide what to cut without watching it. " +
+    VIDEO_EDIT_MODEL_GUIDANCE +
+    " " +
+    VIDEO_ACTIVITY_GUIDANCE,
+  annotations: { readOnlyHint: true },
+  argsSchema: z.object({
+    capture_id: z.string(),
+    min_still_sec: z.number().min(0.2).max(3600).optional(),
+    treat_minor_as_still: z.boolean().optional(),
+    include_track: z.boolean().optional()
+  }),
+  dispatch: async (args) =>
+    runVerb("video:inspect", {
+      captureId: args.capture_id,
+      ...(args.min_still_sec !== undefined ? { minStillSec: args.min_still_sec } : {}),
+      ...(args.treat_minor_as_still !== undefined
+        ? { treatMinorAsStill: args.treat_minor_as_still }
+        : {}),
+      ...(args.include_track !== undefined ? { includeTrack: args.include_track } : {})
+    })
+});
+
+const editVideo = defineTool({
+  namespace: "pwrsnap_library",
+  name: "edit_video",
+  description:
+    "Change which parts of a VIDEO capture export. Set exactly ONE of: " +
+    "keep — replace the edit with exactly these kept spans; " +
+    "cut — remove spans from the current edit (adds to existing cuts); " +
+    "cut_still — cut every stretch where nothing on screen changes and nobody is talking for at least min_still_sec (default 3), keeping padding_sec (default 0.5) beside each change; " +
+    "reset=true — restore the whole clip. Returns the resulting edit (kept spans, cuts, keptDurationSec). " +
+    VIDEO_EDIT_MODEL_GUIDANCE,
+  annotations: { idempotentHint: false },
+  argsSchema: z.object({
+    capture_id: z.string(),
+    keep: z.array(videoSpan).min(1).max(200).optional(),
+    cut: z.array(videoSpan).min(1).max(200).optional(),
+    cut_still: z
+      .object({
+        min_still_sec: z.number().min(0.5).max(3600).optional(),
+        padding_sec: z.number().min(0).max(10).optional(),
+        treat_minor_as_still: z.boolean().optional()
+      })
+      .optional(),
+    reset: z.boolean().optional()
+  }),
+  dispatch: async (args) => {
+    const still = args.cut_still;
+    return runVerb("video:edit", {
+      captureId: args.capture_id,
+      ...(args.keep !== undefined ? { keep: args.keep } : {}),
+      ...(args.cut !== undefined ? { cut: args.cut } : {}),
+      ...(still !== undefined
+        ? {
+            cutStill: {
+              ...(still.min_still_sec !== undefined ? { minStillSec: still.min_still_sec } : {}),
+              ...(still.padding_sec !== undefined ? { paddingSec: still.padding_sec } : {}),
+              ...(still.treat_minor_as_still !== undefined
+                ? { treatMinorAsStill: still.treat_minor_as_still }
+                : {})
+            }
+          }
+        : {}),
+      ...(args.reset !== undefined ? { reset: args.reset } : {})
+    });
+  }
+});
+
 /**
- * The live catalog — 23 tools. Read / introspect / navigate first, then
+ * The live catalog — 29 tools. Read / introspect / navigate first, then
  * the per-primitive edit tools (one per draw shape + the two effects).
  * Future phases add cross-capture batch, paste-image, and capture/
  * recording verbs.
@@ -1146,5 +1310,9 @@ export const LIBRARY_TOOL_ALLOWLIST: ToolSpec<unknown>[] = [
   reorderLayer,
   reorderLayers,
   addTag,
-  removeTag
+  removeTag,
+  duplicateCapture,
+  // video
+  inspectVideo,
+  editVideo
 ] as ToolSpec<unknown>[];

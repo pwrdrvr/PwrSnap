@@ -1,3 +1,5 @@
+import { DirectChatBackend } from "./direct-api/chat-backend";
+import { getCustomModelService } from "../handlers/custom-model-handlers";
 // Builds a kit `ChatThreadController` for one PwrSnap chat surface (Library or
 // Sizzle), wiring it to:
 //   • a pooled Codex backend view (the kit's `AgentBackend` surface),
@@ -17,7 +19,6 @@ import type {
 } from "@pwrdrvr/agent-client";
 import type { AgentBackend, NormalizedApprovalDecision } from "@pwrdrvr/agent-core";
 import {
-  AcpAgentClient,
   strategyByBackendId,
   type AcpMcpServerConfig,
   type DiscoveredAcpAgent,
@@ -184,6 +185,8 @@ export function chatControllerSignature(
     profile: codex.profile ?? null,
     surface: settings.ai.defaults[surface] ?? null,
     acpAgents: settings.ai.acp.agents ?? null,
+    customConnections: settings.ai.customConnections ?? [],
+    customModels: settings.ai.customModels ?? [],
     acpEnabled: settings.ai.acp.enabledAgentIds ?? null
   });
 }
@@ -332,10 +335,16 @@ async function resolveChatBackend(
   if (provider === undefined || provider === "" || provider === "codex") {
     return codex();
   }
+  if (provider.startsWith("custom:")) {
+    const service = getCustomModelService();
+    const model = await service.selected(provider, config.model);
+    const store = new ChatThreadStore({ chatsDir: config.chatsDir });
+    return { client: new DirectChatBackend(model, service, (id) => store.readJournal(id)), shared: false, isAcp: false };
+  }
   if (!provider.startsWith("acp:")) {
     throw new Error(
       `Configured chat provider "${provider}" is not supported. ` +
-        "Choose Codex or a supported ACP provider in Settings → AI."
+        "Choose Codex or a supported ACP provider in Settings → AI Features."
     );
   }
 
@@ -343,7 +352,7 @@ async function resolveChatBackend(
   if (strategy === undefined) {
     throw new Error(
       `Configured chat provider "${provider}" is not supported. ` +
-        "Choose Codex or a supported ACP provider in Settings → AI."
+        "Choose Codex or a supported ACP provider in Settings → AI Features."
     );
   }
   const strategyId = strategy.id;
@@ -357,7 +366,8 @@ async function resolveChatBackend(
   if (discoveryOptions === null) {
     throw new Error(
       `Configured chat provider "${provider}" is unavailable because ` +
-        `${strategy.displayName} is disabled. Enable it in Settings → AI or choose another provider.`
+        `${strategy.displayName} is disabled. Enable it in Settings → AI Providers, or choose ` +
+        "another provider in Settings → AI Features."
     );
   }
 
@@ -398,14 +408,15 @@ async function resolveChatBackend(
     throw new Error(
       `Configured chat provider "${provider}" is unavailable because ` +
         `${strategy.displayName} discovery failed: ${message}. ` +
-        "Check its configuration in Settings → AI or choose another provider."
+        "Check it in Settings → AI Providers, or choose another provider in Settings → AI Features."
     );
   }
   if (agent === null) {
     throw new Error(
       `Configured chat provider "${provider}" is unavailable because ` +
         `${strategy.displayName} is not installed or could not be found. ` +
-        "Install or configure it in Settings → AI, or choose another provider."
+        "Install or configure it in Settings → AI Providers, or choose another provider in " +
+        "Settings → AI Features."
     );
   }
   const makeAcp = deps.makeAcpClient ?? defaultMakeAcpClient;
@@ -433,6 +444,10 @@ export async function buildChatSurface(
   config: ChatSurfaceConfig,
   deps: ChatBackendDeps = {}
 ): Promise<ChatSurface> {
+  if (config.provider?.startsWith("custom:")) {
+    const selected = await getCustomModelService().selected(config.provider, config.model);
+    config = { ...config, model: selected.modelId };
+  }
   const store = new ChatThreadStore({ chatsDir: config.chatsDir });
   const adapter = new ThreadStoreAdapter({
     store,

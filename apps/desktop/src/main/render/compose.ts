@@ -20,7 +20,9 @@ import sharp, { type OverlayOptions } from "sharp";
 import type { ArrowEndStyle, OverlayRow } from "@pwrsnap/shared";
 import {
   annotationBasisPx,
+  arrowBarEndpoints,
   computeArrowGeometry,
+  computeShapeStrokeDash,
   computeStemDashArray,
   computeTextGlyphSize,
   outlineHaloColor,
@@ -41,9 +43,13 @@ import {
   readShapeFilled,
   readShapeKind,
   readShapeSkewDeg,
+  readShapeStrokeStyle,
   readTextOverlayOutline,
   readTextWeight,
-  shapeAutoStrokeWidthPx
+  shapeAutoStrokeWidthPx,
+  shapeStripeDash,
+  strokeGeometries,
+  strokeSvgElements
 } from "@pwrsnap/shared";
 
 // Main process can't read CSS vars, so the overlay-render default
@@ -295,6 +301,7 @@ function stemEndpointPx(
       return pxOf(geom.baseCenter, imageWidthPx, imageHeightPx);
     case "line":
     case "dot":
+    case "bar":
       return pxOf(geom.to, imageWidthPx, imageHeightPx);
   }
 }
@@ -364,6 +371,15 @@ function arrowHeadHaloSvg(
       return `${base}
     <circle cx="${toPx.x}" cy="${toPx.y}" r="${r + outlineWidth}" fill="none" stroke="black" stroke-width="${outlineWidth * 2}" stroke-dasharray="${stripeDash}" />`;
     }
+    case "bar": {
+      const bar = arrowBarEndpoints(geom);
+      const l = pxOf(bar.left, imageWidthPx, imageHeightPx);
+      const r = pxOf(bar.right, imageWidthPx, imageHeightPx);
+      const base = `<line x1="${l.x}" y1="${l.y}" x2="${r.x}" y2="${r.y}" stroke="${haloColor}" stroke-width="${haloWidthPx}" stroke-linecap="round" />`;
+      if (stripeDash === null) return base;
+      return `${base}
+    <line x1="${l.x}" y1="${l.y}" x2="${r.x}" y2="${r.y}" stroke="black" stroke-width="${haloWidthPx}" stroke-linecap="round" stroke-dasharray="${stripeDash}" />`;
+    }
   }
 }
 
@@ -392,6 +408,12 @@ function arrowHeadSvg(
     case "dot": {
       const r = strokeWidthPx * 1.5;
       return `<circle cx="${toPx.x}" cy="${toPx.y}" r="${r}" fill="${fillColor}" />`;
+    }
+    case "bar": {
+      const bar = arrowBarEndpoints(geom);
+      const l = pxOf(bar.left, imageWidthPx, imageHeightPx);
+      const r = pxOf(bar.right, imageWidthPx, imageHeightPx);
+      return `<line x1="${l.x}" y1="${l.y}" x2="${r.x}" y2="${r.y}" stroke="${fillColor}" stroke-width="${strokeWidthPx}" stroke-linecap="round" />`;
     }
   }
 }
@@ -460,10 +482,13 @@ function shapeSvg(
   function strokedPrimitive(
     stroke: string,
     strokeWidth: number,
-    dasharray: string | null = null
+    dasharray: string | null = null,
+    dashoffset = 0
   ): string {
     // Empty for solid strokes so legacy rows emit byte-identical SVG.
-    const dashAttr = dasharray === null ? "" : ` stroke-dasharray="${dasharray}"`;
+    const dashAttr =
+      (dasharray === null ? "" : ` stroke-dasharray="${dasharray}"`) +
+      (dashoffset === 0 ? "" : ` stroke-dashoffset="${dashoffset}"`);
     switch (shape) {
       case "circle":
       case "oval":
@@ -543,29 +568,91 @@ function shapeSvg(
 </svg>`;
   }
 
+  // Outline stroke pattern (dashed / dotted) — the same helper pair
+  // ShapeGlyph reads: every corner sits in the middle of a dash, each
+  // edge fitted on its own. The halo carries the SAME pattern (a solid
+  // halo under a dashed stroke would show white ghost dashes through
+  // the gaps), and a patterned outline strokes with round caps — a
+  // dotted dash is only a dot through its cap. Solid (every legacy row)
+  // emits neither attribute.
+  const strokeStyle = readShapeStrokeStyle(data);
+  const strokeDash = computeShapeStrokeDash(
+    strokeStyle,
+    shape,
+    wPx,
+    hPx,
+    readShapeSkewDeg(data),
+    strokeWidthPx
+  );
+  const strokeGroupAttrs =
+    strokeDash === null
+      ? ` stroke-linejoin="round"`
+      : ` stroke-linejoin="round" stroke-linecap="round"`;
+
   if (resolvedOutline.kind === "none") {
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
-  <g stroke-linejoin="round"${groupTransform}>
-    ${strokedPrimitive(fillColor, strokeWidthPx)}
+  <g${strokeGroupAttrs}${groupTransform}>
+    ${strokedPrimitive(fillColor, strokeWidthPx, strokeDash?.dasharray, strokeDash?.dashoffset)}
   </g>
 </svg>`;
   }
 
-  const stripeDash =
-    resolvedOutline.kind === "stripe"
-      ? outlineStripeDashArray(haloStrokeWidthPx)
-      : null;
+  // Stripe: on a solid outline, the plain halo-width cadence; on a
+  // patterned one, stripe WITHIN the painted dashes so no black lands
+  // in a gap (see `shapeStripeDash`).
+  const stripe =
+    resolvedOutline.kind !== "stripe"
+      ? null
+      : strokeDash !== null && strokeStyle !== "solid"
+        ? shapeStripeDash(strokeDash, strokeStyle)
+        : { dasharray: outlineStripeDashArray(haloStrokeWidthPx), dashoffset: 0 };
   const stripeHalo =
-    stripeDash === null
+    stripe === null
       ? ""
-      : `${strokedPrimitive("black", haloStrokeWidthPx, stripeDash)}
+      : `${strokedPrimitive("black", haloStrokeWidthPx, stripe.dasharray, stripe.dashoffset)}
     `;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
-  <g stroke-linejoin="round"${groupTransform}>
-    ${strokedPrimitive(haloColor, haloStrokeWidthPx)}
-    ${stripeHalo}${strokedPrimitive(fillColor, strokeWidthPx)}
+  <g${strokeGroupAttrs}${groupTransform}>
+    ${strokedPrimitive(haloColor, haloStrokeWidthPx, strokeDash?.dasharray, strokeDash?.dashoffset)}
+    ${stripeHalo}${strokedPrimitive(fillColor, strokeWidthPx, strokeDash?.dasharray, strokeDash?.dashoffset)}
   </g>
 </svg>`;
+}
+
+/* ----------------------------- Stroke --------------------------- */
+
+/** Freehand Draw stroke (pen / marker / airbrush).
+ *
+ *  The geometry comes from the shared `strokeGeometries`, in CANVAS pixels
+ *  — the same call, on the same numbers, that the editor's StrokeGlyph
+ *  makes. A scaled bake wraps it in `scale(renderScale)` instead of
+ *  re-deriving it at render resolution, so the export is the preview's
+ *  exact geometry (path text, widths, airbrush bands) at a larger size.
+ *
+ *  @param basisPx  `annotationBasisPx(sourceW, sourceH) × renderScale`,
+ *                  the convention every other `*SvgForV2` follows. It is
+ *                  divided back down here because the geometry is built
+ *                  at scale 1. */
+function strokeSvg(
+  data: Extract<OverlayRow["data"], { kind: "stroke" }>,
+  renderWidthPx: number,
+  renderHeightPx: number,
+  basisPx?: number,
+  renderScale = 1
+): string {
+  const scale = renderScale > 0 && Number.isFinite(renderScale) ? renderScale : 1;
+  const canvasW = renderWidthPx / scale;
+  const canvasH = renderHeightPx / scale;
+  const basis = (basisPx ?? annotationBasisPx(canvasW, canvasH) * scale) / scale;
+  const paint = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
+  // One geometry per segment, each painted on its own (see
+  // `strokeGeometries`) — the same list the editor's StrokeGlyph paints.
+  const body = strokeGeometries(data, canvasW, canvasH, basis)
+    .map((geometry) => strokeSvgElements(geometry, paint))
+    .join("");
+  const open = scale === 1 ? "" : `<g transform="scale(${scale})">`;
+  const close = scale === 1 ? "" : "</g>";
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${renderWidthPx}" height="${renderHeightPx}" viewBox="0 0 ${renderWidthPx} ${renderHeightPx}">${open}${body}${close}</svg>`;
 }
 
 /* --------------------------- Highlight -------------------------- */
@@ -749,6 +836,7 @@ export const rasterizeSvgForV2 = rasterize;
 export const arrowSvgForV2 = arrowSvg;
 export const shapeSvgForV2 = shapeSvg;
 export const highlightSvgForV2 = highlightSvg;
+export const strokeSvgForV2 = strokeSvg;
 /** Maps a highlight overlay row to the sharp composite `blend` option
  *  string. Used by the v2 vector compositor to keep the bake's blend
  *  behavior identical to the retired v1 path's. */

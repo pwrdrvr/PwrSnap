@@ -73,7 +73,7 @@
 }
 
 .psl-layers__row:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: -1px;
 }
 
@@ -220,7 +220,7 @@
 }
 
 .psl-layers__expand:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 
@@ -244,6 +244,15 @@
 .psl-layers__row:hover .psl-layers__actions,
 .psl-layers__row.is-selected .psl-layers__actions,
 .psl-layers__row.is-hidden .psl-layers__actions {
+  opacity: 1;
+}
+
+/* And for the keyboard. The buttons are Tab stops at opacity 0 on an
+   unselected row, and opacity fades an element's outline with it, so
+   Tab onto one showed nothing at all. Revealed from the row's own focus
+   too, so the actions are in view before Tab reaches them. */
+.psl-layers__row:focus-visible .psl-layers__actions,
+.psl-layers__actions:has(:focus-visible) {
   opacity: 1;
 }
 
@@ -272,7 +281,7 @@
 }
 
 .psl-layers__btn:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 

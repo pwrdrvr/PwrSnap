@@ -1,0 +1,105 @@
+import { z } from "zod";
+
+/** Coordinates are fractions of the source (crop) or output canvas (placement). */
+export const AvatarStyleSchema = z
+  .object({
+    visible: z.boolean(),
+    background: z.enum(["remove", "original"]),
+    x: z.number().finite().min(0).max(1),
+    y: z.number().finite().min(0).max(1),
+    width: z.number().finite().min(0.05).max(1),
+    mirror: z.boolean(),
+    /** Outline of a presenter that keeps its background. Ignored by a
+     *  cut-out. Absent reads as `rect`. */
+    shape: z.enum(["rect", "rounded", "circle"]).optional(),
+    /** How hard a cut-out trims its edge: 0 keeps the model's soft
+     *  confidence as-is, 1 cuts close. Absent reads as
+     *  `PRESENTER_DEFAULT_EDGE`. Ignored when the background is kept. */
+    edge: z.number().finite().min(0).max(1).optional(),
+    /** Additional camera delay; positive values show earlier camera frames. */
+    syncOffsetSec: z.number().finite().min(-10).max(10).optional(),
+    crop: z
+      .object({
+        x: z.number().finite().min(0).max(0.95),
+        y: z.number().finite().min(0).max(0.95),
+        width: z.number().finite().min(0.05).max(1),
+        height: z.number().finite().min(0.05).max(1),
+      })
+      .strict()
+      .refine((c) => c.x + c.width <= 1.000001 && c.y + c.height <= 1.000001),
+  })
+  .strict();
+
+export type AvatarStyle = z.infer<typeof AvatarStyleSchema>;
+
+/** A stretch of the recording, in SOURCE seconds, that shows its own
+ *  presenter instead of the recording's. See `presenter-spans.ts`. */
+export const PresenterSpanSchema = z
+  .object({
+    start: z.number().finite().min(0),
+    end: z.number().finite().min(0),
+    avatar: AvatarStyleSchema,
+  })
+  .strict()
+  .refine((span) => span.end > span.start);
+export type PresenterSpan = z.infer<typeof PresenterSpanSchema>;
+
+/** Bounds what one write can make the export's filter graph carry. */
+export const PRESENTER_SPANS_MAX = 50;
+export const PresenterSpansSchema = z.array(PresenterSpanSchema).max(PRESENTER_SPANS_MAX);
+/** `defaultPresenterStyle` for a 16:9 camera on a 16:9 canvas. Renderers
+ *  that know the real geometry call `resolvePresenterStyle` instead. */
+export const DEFAULT_AVATAR_STYLE: AvatarStyle = {
+  visible: true,
+  background: "remove",
+  x: 0.735,
+  y: 0.68,
+  width: 0.24,
+  mirror: false,
+  crop: { x: 0.2, y: 0, width: 0.6, height: 0.8 },
+};
+
+export const RecordingCameraSchema = z
+  .object({
+    deviceId: z.string().min(1).max(512),
+  })
+  .strict();
+export type RecordingCamera = z.infer<typeof RecordingCameraSchema>;
+
+/** The source and manifest live in <capture-id>.camera beside the screen file. */
+export const CameraTrackMetadataSchema = z
+  .object({
+    version: z.literal(1),
+    durationSec: z.number().finite().positive().max(86400),
+    width: z.number().int().min(2).max(8192),
+    height: z.number().int().min(2).max(8192),
+    offsetSec: z.number().finite().min(-86400).max(86400),
+    /** Older recordings with incompatible clock epochs use end-aligned timing. */
+    timing: z.literal("estimated").optional(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/),
+    mimeType: z.enum(["video/mp4", "video/webm"]),
+  })
+  .strict();
+export type CameraTrackMetadata = z.infer<typeof CameraTrackMetadataSchema>;
+
+/** Repair the old macOS clock-domain bug on read, without rewriting the source
+ * or its manifest. Only impossible, widely separated timelines qualify; normal
+ * preroll and partially overlapping tracks keep their measured offset. */
+export function recoverCameraTiming(
+  camera: CameraTrackMetadata | null,
+  screenDurationSec: number,
+): CameraTrackMetadata | null {
+  if (!camera || (camera.offsetSec < screenDurationSec + 60 &&
+    camera.offsetSec + camera.durationSec > -60)) return camera;
+  return { ...camera, offsetSec: screenDurationSec - camera.durationSec, timing: "estimated" };
+}
+
+export function cameraTimeAt(
+  screenTime: number,
+  camera: CameraTrackMetadata,
+): number | null {
+  const time = screenTime - camera.offsetSec;
+  return Number.isFinite(time) && time >= 0 && time < camera.durationSec
+    ? time
+    : null;
+}

@@ -4,14 +4,18 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 import {
+  asarLookupPath,
   findForbiddenAsarEntries,
   findForeignSharpAsarPackages,
+  findForeignBetterSqlite3Prebuilds,
   findForeignUnpackedNative,
   findMissingPackagedResources,
   findMissingSharpAsarRuntime,
   findMissingUnpackedNative,
+  findPackagedHtmlIssues,
   sharpEsmRuntimePaths,
   verifyAsarListing,
+  verifyPackagedHtml,
   verifyPackagedResources,
   verifySharpAsarRuntime,
   verifyUnpackedNative,
@@ -56,8 +60,14 @@ const allUnpackedNativeFixtures = [
   "app.asar.unpacked/node_modules/@img/sharp-darwin-arm64/lib/sharp-darwin-arm64.node",
   "app.asar.unpacked/node_modules/@img/sharp-darwin-x64/lib/sharp-darwin-x64.node",
   "app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-arm64/lib/libvips-cpp.8.17.3.dylib",
-  "app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-x64/lib/libvips-cpp.8.17.3.dylib"
+  "app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-x64/lib/libvips-cpp.8.17.3.dylib",
+  "app.asar.unpacked/node_modules/better-sqlite3/prebuilds/darwin-arm64.node",
+  "app.asar.unpacked/node_modules/better-sqlite3/prebuilds/darwin-x64.node"
 ];
+
+// The Intel half of the universal app: arch-named sharp packages, and
+// better-sqlite3's darwin-x64 prebuild.
+const isX64Fixture = (path) => /-x64(?:\/|\.node$)/.test(path);
 
 function writeUnpackedNativeFixtures(resources, fixtures = allUnpackedNativeFixtures) {
   for (const relative of fixtures) {
@@ -77,7 +87,7 @@ function windowsUnpackedRuntimeFixtures(arch) {
     `${packageRoot}/lib/libvips-42.dll`,
     `${packageRoot}/lib/libvips-cpp-8.18.3.dll`,
     "app.asar.unpacked/node_modules/@img/colour/index.cjs",
-    "app.asar.unpacked/node_modules/better-sqlite3/electron-native/better_sqlite3.node"
+    `app.asar.unpacked/node_modules/better-sqlite3/prebuilds/win32-${arch}.node`
   ];
 }
 
@@ -159,6 +169,7 @@ describe("verify-asar-contents", () => {
     const { appPath, resources } = fakeApp();
     writeResource(resources, "THIRD_PARTY_LICENSES");
     writeResource(resources, "CHANGELOG.md");
+    writeResource(resources, "LICENSE");
     writeResource(resources, "PwrSnapFFmpeg");
 
     expect(findMissingPackagedResources(appPath)).toEqual([]);
@@ -168,6 +179,7 @@ describe("verify-asar-contents", () => {
   test("fails packaged resource verification when third-party notices are missing", () => {
     const { appPath, resources } = fakeApp();
     writeResource(resources, "CHANGELOG.md");
+    writeResource(resources, "LICENSE");
     writeResource(resources, "PwrSnapFFmpeg");
 
     expect(findMissingPackagedResources(appPath)).toEqual(["THIRD_PARTY_LICENSES"]);
@@ -179,6 +191,7 @@ describe("verify-asar-contents", () => {
   test("fails packaged resource verification when changelog is missing", () => {
     const { appPath, resources } = fakeApp();
     writeResource(resources, "THIRD_PARTY_LICENSES");
+    writeResource(resources, "LICENSE");
     writeResource(resources, "PwrSnapFFmpeg");
 
     expect(findMissingPackagedResources(appPath)).toEqual(["CHANGELOG.md"]);
@@ -187,9 +200,27 @@ describe("verify-asar-contents", () => {
     );
   });
 
+  test("fails packaged resource verification when the license is missing", () => {
+    const { appPath, resources } = fakeApp();
+    writeResource(resources, "THIRD_PARTY_LICENSES");
+    writeResource(resources, "CHANGELOG.md");
+    writeResource(resources, "PwrSnapFFmpeg");
+
+    expect(findMissingPackagedResources(appPath)).toEqual(["LICENSE"]);
+    expect(() => verifyPackagedResources(appPath)).toThrow(
+      /missing packaged resource\(s\): LICENSE/,
+    );
+  });
+
   test("verifies Windows resources and native runtime sidecars", () => {
     const { appPath, resources } = fakeWindowsApp();
-    for (const name of ["THIRD_PARTY_LICENSES", "CHANGELOG.md", "PwrSnapWindowList.exe"]) {
+    for (const name of [
+      "THIRD_PARTY_LICENSES",
+      "CHANGELOG.md",
+      "LICENSE",
+      "PwrSnapWindowList.exe",
+      "PwrSnapScreenSnapshot.exe"
+    ]) {
       writeResource(resources, name);
     }
     writeUnpackedNativeFixtures(resources, windowsUnpackedRuntimeFixtures("x64"));
@@ -242,6 +273,24 @@ describe("verify-asar-contents", () => {
     );
     expect(() => verifyUnpackedNative(appPath, "win32", "x64")).toThrow(
       /foreign Sharp native slice\(s\).*@img\/sharp-darwin-arm64.*@img\/sharp-win32-arm64/s
+    );
+  });
+
+  test("rejects another platform's better-sqlite3 prebuild left in the payload", () => {
+    const { appPath, resources } = fakeWindowsApp();
+    writeUnpackedNativeFixtures(resources, [
+      ...windowsUnpackedRuntimeFixtures("x64"),
+      "app.asar.unpacked/node_modules/better-sqlite3/prebuilds/win32-arm64.node",
+      "app.asar.unpacked/node_modules/better-sqlite3/prebuilds/linux-x64.node"
+    ]);
+
+    expect(findMissingUnpackedNative(appPath, "win32", "x64")).toEqual([]);
+    expect(findForeignBetterSqlite3Prebuilds(appPath, "win32", "x64")).toEqual([
+      "linux-x64.node",
+      "win32-arm64.node"
+    ]);
+    expect(() => verifyUnpackedNative(appPath, "win32", "x64")).toThrow(
+      /foreign better-sqlite3 prebuild\(s\): linux-x64\.node, win32-arm64\.node/
     );
   });
 
@@ -328,7 +377,13 @@ describe("verify-asar-contents", () => {
 
   test("requires the bundled Windows FFmpeg resource for release verification", () => {
     const { appPath, resources } = fakeWindowsApp();
-    for (const name of ["THIRD_PARTY_LICENSES", "CHANGELOG.md", "PwrSnapWindowList.exe"]) {
+    for (const name of [
+      "THIRD_PARTY_LICENSES",
+      "CHANGELOG.md",
+      "LICENSE",
+      "PwrSnapWindowList.exe",
+      "PwrSnapScreenSnapshot.exe"
+    ]) {
       writeResource(resources, name);
     }
     const previous = process.env.PWRSNAP_REQUIRE_FFMPEG;
@@ -406,5 +461,245 @@ describe("verify-asar-contents", () => {
     expect(() => verifyUnpackedNative(appPath)).toThrow(
       /@img\/sharp-libvips-darwin-x64 dylib.*no entry matching/s
     );
+  });
+});
+
+
+describe("Apple Silicon unpacked runtime", () => {
+  test("requires ARM64 bindings and rejects Intel payloads without weakening universal checks", () => {
+    const { appPath, resources } = fakeApp();
+    writeUnpackedNativeFixtures(resources, allUnpackedNativeFixtures.filter((path) => !isX64Fixture(path)));
+    expect(findMissingUnpackedNative(appPath, "darwin", "arm64")).toEqual([]);
+    expect(findForeignUnpackedNative(appPath, "darwin", "arm64")).toEqual([]);
+    expect(findForeignBetterSqlite3Prebuilds(appPath, "darwin", "arm64")).toEqual([]);
+    expect(findMissingUnpackedNative(appPath, "darwin", "universal")).toHaveLength(3);
+    writeUnpackedNativeFixtures(resources);
+    expect(findForeignUnpackedNative(appPath, "darwin", "arm64")).toEqual(["sharp-darwin-x64", "sharp-libvips-darwin-x64"]);
+    expect(findForeignBetterSqlite3Prebuilds(appPath, "darwin", "arm64")).toEqual(["darwin-x64.node"]);
+    expect(() => verifyUnpackedNative(appPath, "darwin", "arm64")).toThrow(
+      /foreign Sharp.*foreign better-sqlite3 prebuild\(s\): darwin-x64\.node/s
+    );
+    expect(findForeignSharpAsarPackages(["/node_modules/@img/sharp-darwin-x64/package.json"], "darwin", "arm64")).toEqual(["sharp-darwin-x64"]);
+  });
+});
+
+const darwinSlices = [
+  "sharp-darwin-arm64",
+  "sharp-darwin-x64",
+  "sharp-libvips-darwin-arm64",
+  "sharp-libvips-darwin-x64"
+];
+
+function universalSharpAsarListing() {
+  return [
+    ...sharpEsmRuntimePaths.map((runtimePath) => `/node_modules/sharp/${runtimePath}`),
+    "/node_modules/sharp/package.json",
+    "/node_modules/sharp/LICENSE",
+    "/node_modules/@img/colour/package.json",
+    "/node_modules/@img/colour/index.cjs",
+    "/node_modules/@img/colour/color.cjs",
+    ...darwinSlices.map((name) => `/node_modules/@img/${name}/package.json`)
+  ];
+}
+
+// The Linux-only wasm build: .pnpmfile.cjs gates it to os: linux, and
+// THIRD_PARTY_LICENSES does not disclose its LGPL libvips.
+const wasmAsarEntries = [
+  "/node_modules/@img/sharp-wasm32/package.json",
+  "/node_modules/@img/sharp-wasm32/lib/sharp-wasm32.node.wasm"
+];
+
+describe("universal macOS Sharp runtime", () => {
+  test("passes a clean universal app that carries both Darwin slices", () => {
+    const { appPath, resources } = fakeApp();
+    writeUnpackedNativeFixtures(resources);
+    const listing = universalSharpAsarListing();
+
+    expect(findForeignSharpAsarPackages(listing, "darwin", "universal")).toEqual([]);
+    expect(findForeignUnpackedNative(appPath, "darwin", "universal")).toEqual([]);
+    expect(() => verifySharpAsarRuntime(listing, "darwin", "universal")).not.toThrow();
+    expect(() => verifyUnpackedNative(appPath, "darwin", "universal")).not.toThrow();
+    // A bare call checks the universal app, which is what runCli assumes.
+    expect(() => verifySharpAsarRuntime(listing, "darwin")).not.toThrow();
+    expect(() => verifyUnpackedNative(appPath)).not.toThrow();
+  });
+
+  test("refuses @img/sharp-wasm32 in the universal ASAR listing", () => {
+    const listing = [...universalSharpAsarListing(), ...wasmAsarEntries];
+
+    expect(findForeignSharpAsarPackages(listing, "darwin", "universal")).toEqual([
+      "sharp-wasm32"
+    ]);
+    expect(() => verifySharpAsarRuntime(listing, "darwin", "universal")).toThrow(
+      /foreign Sharp native slice\(s\): @img\/sharp-wasm32/
+    );
+    expect(() => verifySharpAsarRuntime(listing, "darwin")).toThrow(/@img\/sharp-wasm32/);
+  });
+
+  test("refuses @img/sharp-wasm32 nested under another package in the listing", () => {
+    const listing = [
+      ...universalSharpAsarListing(),
+      "/node_modules/sharp/node_modules/@img/sharp-wasm32/package.json"
+    ];
+    expect(findForeignSharpAsarPackages(listing, "darwin", "universal")).toEqual([
+      "sharp-wasm32"
+    ]);
+  });
+
+  test("refuses @img/sharp-wasm32 in the universal unpacked payload, at any depth", () => {
+    const { appPath, resources } = fakeApp();
+    writeUnpackedNativeFixtures(resources, [
+      ...allUnpackedNativeFixtures,
+      "app.asar.unpacked/node_modules/@img/sharp-wasm32/lib/sharp-wasm32.node.wasm"
+    ]);
+    expect(findForeignUnpackedNative(appPath, "darwin", "universal")).toEqual([
+      "sharp-wasm32"
+    ]);
+    expect(() => verifyUnpackedNative(appPath, "darwin", "universal")).toThrow(
+      /foreign Sharp native slice\(s\): @img\/sharp-wasm32.*Linux-only/s
+    );
+
+    const nested = fakeApp();
+    writeUnpackedNativeFixtures(nested.resources, [
+      ...allUnpackedNativeFixtures,
+      "app.asar.unpacked/node_modules/sharp/node_modules/@img/sharp-wasm32/lib/sharp-wasm32.node.wasm"
+    ]);
+    expect(findForeignUnpackedNative(nested.appPath, "darwin", "universal")).toEqual([
+      "sharp-wasm32"
+    ]);
+  });
+
+  test("refuses non-Darwin native slices in the universal app", () => {
+    const listing = [
+      ...universalSharpAsarListing(),
+      "/node_modules/@img/sharp-win32-x64/package.json",
+      "/node_modules/@img/sharp-linux-arm64/package.json"
+    ];
+    expect(findForeignSharpAsarPackages(listing, "darwin", "universal")).toEqual([
+      "sharp-linux-arm64",
+      "sharp-win32-x64"
+    ]);
+  });
+
+  test("refuses @img/sharp-wasm32 on every shipped target", () => {
+    for (const [platform, arch, base] of [
+      ["darwin", "universal", universalSharpAsarListing()],
+      ["darwin", "arm64", universalSharpAsarListing().filter((entry) => !entry.includes("-x64/"))],
+      ["win32", "x64", windowsSharpAsarListing("x64")],
+      ["win32", "arm64", windowsSharpAsarListing("arm64")]
+    ]) {
+      expect(findForeignSharpAsarPackages(base, platform, arch)).toEqual([]);
+      expect(findForeignSharpAsarPackages([...base, ...wasmAsarEntries], platform, arch)).toEqual([
+        "sharp-wasm32"
+      ]);
+    }
+  });
+
+  test("fails closed for a target nobody mapped", () => {
+    const listing = universalSharpAsarListing();
+    expect(() => findForeignSharpAsarPackages(listing, "linux", "x64")).toThrow(
+      /unsupported Sharp package target: linux\/x64/
+    );
+    expect(() => findForeignSharpAsarPackages(listing, "darwin", "ia32")).toThrow(
+      /unsupported Sharp package target: darwin\/ia32/
+    );
+  });
+});
+
+describe("packaged renderer HTML", () => {
+  const cleanReader = (entry) => {
+    if (entry === "/out/renderer/index.html") {
+      return '<!doctype html><html><head><script type="module" crossorigin src="./assets/index.js"></script></head></html>';
+    }
+    throw new Error(`unexpected read of ${entry}`);
+  };
+
+  test("passes a clean bundle", () => {
+    const listing = ["/out/renderer/index.html", "/out/main/index.js"];
+    expect(findPackagedHtmlIssues(listing, cleanReader)).toEqual({
+      remoteScripts: [],
+      unreadable: [],
+      scanned: 1
+    });
+    expect(() => verifyPackagedHtml(listing, cleanReader)).not.toThrow();
+  });
+
+  test("fails a bundle carrying the React DevTools bridge", () => {
+    const reader = () =>
+      '<!doctype html><html><head><script src="http://localhost:8097"></script></head></html>';
+    expect(() => verifyPackagedHtml(["/out/renderer/index.html"], reader)).toThrow(
+      /1 packaged HTML file\(s\) load a remote script/
+    );
+    // The remediation has to name the variable, or an operator reading CI has
+    // no way to connect the failure to the build they made.
+    expect(() => verifyPackagedHtml(["/out/renderer/index.html"], reader)).toThrow(
+      /PWRSNAP_REACT_DEVTOOLS/
+    );
+  });
+
+  test("fails closed when an HTML entry cannot be read", () => {
+    // The whole job of this gate is to stop something shipping, so "could not
+    // look" has to be as loud as "looked and found it".
+    const reader = () => {
+      throw new Error("Expected to find file at: /out/renderer/index.html but found a directory or link");
+    };
+    expect(() => verifyPackagedHtml(["/out/renderer/index.html"], reader)).toThrow(
+      /could not be read/
+    );
+  });
+
+  test("ignores dependency HTML the app never loads", () => {
+    // An unscoped scan would read a vendored playground page and fail the
+    // release with a message about a flag that has nothing to do with it.
+    const listing = ["/node_modules/some-dep/demo/playground.html"];
+    const reader = () => {
+      throw new Error("should not be read");
+    };
+    expect(findPackagedHtmlIssues(listing, reader)).toEqual({
+      remoteScripts: [],
+      unreadable: [],
+      scanned: 0
+    });
+  });
+
+  test("fails closed when the scan matched no app HTML at all", () => {
+    // A gate that inspects zero files and prints OK is indistinguishable from
+    // one that inspected the renderer and cleared it. If electron-builder ever
+    // stops putting the renderer HTML under /out/, the remote-script check
+    // must fail loudly rather than pass vacuously for every later release.
+    const reader = () => {
+      throw new Error("should not be read");
+    };
+    expect(() => verifyPackagedHtml(["/out/main/index.js"], reader)).toThrow(
+      /no packaged renderer HTML to inspect/
+    );
+    expect(() => verifyPackagedHtml([], reader)).toThrow(
+      /expected at least one \/out\/\*\*\/\*\.html entry/
+    );
+  });
+
+  test("rebuilds the platform lookup path @electron/asar resolves", () => {
+    // asar resolves a node by splitting on path.sep, so a forward-slash path
+    // finds nothing on Windows and EVERY html entry reports as unreadable —
+    // a release that fails for the wrong reason. The separator is a parameter
+    // so the Windows branch is testable from a POSIX host.
+    expect(asarLookupPath("/out/renderer/index.html", "/")).toBe(
+      "out/renderer/index.html"
+    );
+    expect(asarLookupPath("/out/renderer/index.html", "\\")).toBe(
+      "out\\renderer\\index.html"
+    );
+  });
+
+  test("normalizes a Windows-built listing before matching", () => {
+    // `listPackage` joins with `path.sep`, so a Windows run yields
+    // backslashes and `isRendererHtmlEntry`'s `^/out/` would miss the file.
+    const reader = () => '<script src="http://localhost:8097"></script>';
+    const { remoteScripts } = findPackagedHtmlIssues(
+      ["\\out\\renderer\\index.html"],
+      reader
+    );
+    expect(remoteScripts).toHaveLength(1);
+    expect(remoteScripts[0].entry).toBe("/out/renderer/index.html");
   });
 });

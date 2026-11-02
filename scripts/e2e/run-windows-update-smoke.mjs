@@ -21,7 +21,8 @@ import {
   join,
   relative,
   resolve,
-  sep
+  sep,
+  win32
 } from "node:path";
 import { once } from "node:events";
 import { pathToFileURL } from "node:url";
@@ -388,7 +389,7 @@ export function validateLatestYml(
     "latest.yml must not contain an absolute URL."
   );
   invariant(
-    !text.includes("\\") && !/(?:^|[\/])\.\.(?:[\/]|$)/m.test(text),
+    !text.includes("\\") && !/(?:^|[/])\.\.(?:[/]|$)/m.test(text),
     "latest.yml must not contain path traversal or Windows path separators."
   );
 
@@ -1529,6 +1530,68 @@ ConvertTo-Json -InputObject @($matches) -Compress
   });
 }
 
+/** Keep only run-owned executables and their live descendants; omit argv/env. */
+export function selectSmokeProcessEvidence(processes, rootPath) {
+  invariant(Array.isArray(processes), "process snapshot must be an array.");
+  const selected = new Set();
+  const owned = new Set();
+  const root = win32.resolve(rootPath).toLowerCase();
+  for (const process of processes) {
+    assertPositiveSafeInteger(process.pid, "process snapshot pid");
+    invariant(Number.isInteger(process.parentPid) && process.parentPid >= 0,
+      "process snapshot parentPid must be nonnegative.");
+    invariant(Number.isFinite(Date.parse(process.createdAt)), "process creation time is invalid.");
+    if (!process.executablePath) continue;
+    const difference = win32.relative(root, win32.resolve(process.executablePath).toLowerCase());
+    if (difference === "" ||
+        (difference !== ".." && !difference.startsWith("..\\") && !win32.isAbsolute(difference))) {
+      selected.add(process.pid);
+      owned.add(process.pid);
+    }
+  }
+  const byPid = new Map(processes.map((process) => [process.pid, process]));
+  let changed;
+  do {
+    changed = false;
+    for (const process of processes) {
+      const parent = byPid.get(process.parentPid);
+      // Windows reuses PIDs: an older process cannot be a live parent's child.
+      if (!selected.has(process.pid) && selected.has(process.parentPid) && parent &&
+          Date.parse(process.createdAt) >= Date.parse(parent.createdAt)) {
+        selected.add(process.pid);
+        changed = true;
+      }
+    }
+  } while (changed);
+  return processes.filter((process) => selected.has(process.pid)).map((process) => ({
+    pid: process.pid,
+    parentPid: process.parentPid,
+    name: win32.basename(process.executablePath || process.name),
+    createdAt: process.createdAt,
+    executableUnderWorkRoot: owned.has(process.pid)
+  }));
+}
+
+async function collectSmokeProcessEvidence(rootPath, environment) {
+  const processes = await invokePowerShellJson({
+    script: `${POWERSHELL_UTF8_PREFIX}
+$processes = @(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -gt 0 -and $null -ne $_.CreationDate } | ForEach-Object {
+  [ordered]@{
+    pid = [int]$_.ProcessId
+    parentPid = [int]$_.ParentProcessId
+    name = [string]$_.Name
+    executablePath = [string]$_.ExecutablePath
+    createdAt = $_.CreationDate.ToUniversalTime().ToString('o')
+  }
+})
+ConvertTo-Json -InputObject $processes -Compress
+`,
+    environment: sanitizedWindowsBaseEnvironment(environment),
+    timeoutMs: PROCESS_QUERY_TIMEOUT_MS
+  });
+  return selectSmokeProcessEvidence(processes, rootPath);
+}
+
 async function cleanupInstalledProcessTrees(installDirectory, environment) {
   const killed = [];
   for (let pass = 0; pass < 3; pass += 1) {
@@ -1982,6 +2045,7 @@ export async function runWindowsUpdateSmoke({
   );
   let server;
   let environment;
+  let workDirectory;
   let installDirectory;
   let installedExecutable;
   let localAppDataDirectory;
@@ -2013,7 +2077,7 @@ export async function runWindowsUpdateSmoke({
       targetVersion: manifest.target.version
     });
 
-    const workDirectory = await mkdtemp(
+    workDirectory = await mkdtemp(
       join(resolve(baseEnvironment.RUNNER_TEMP || tmpdir()), "pwrsnap-update-smoke-")
     );
     const userDataDirectory = join(diagnosticsDirectory, "user-data");
@@ -2240,14 +2304,19 @@ export async function runWindowsUpdateSmoke({
       reason: "install environment was not initialized"
     };
     let processesAfterCleanup = processesBeforeCleanup;
-    if (installDirectory && environment) {
+    let installerProcesses = processesBeforeCleanup;
+    if (workDirectory && environment) {
+      installerProcesses = await bestEffort(
+        "installer process tree before cleanup",
+        () => collectSmokeProcessEvidence(workDirectory, environment)
+      );
       processesBeforeCleanup = await bestEffort(
         "process inventory before cleanup",
-        () => enumerateProcessesBelowRoot(installDirectory, environment)
+        () => enumerateProcessesBelowRoot(workDirectory, environment)
       );
       try {
         cleanupEvidence = await cleanupInstalledProcessTrees(
-          installDirectory,
+          workDirectory,
           environment
         );
         await events.record("cleanup:complete", {
@@ -2263,7 +2332,7 @@ export async function runWindowsUpdateSmoke({
       }
       processesAfterCleanup = await bestEffort(
         "process inventory after cleanup",
-        () => enumerateProcessesBelowRoot(installDirectory, environment)
+        () => enumerateProcessesBelowRoot(workDirectory, environment)
       );
     }
     if (server) {
@@ -2291,6 +2360,8 @@ export async function runWindowsUpdateSmoke({
     await writeDiagnostic("process-inventory.json", async () => ({
       schemaVersion: 1,
       installDirectory: installDirectory ?? null,
+      processRootDirectory: workDirectory ?? null,
+      installerProcesses,
       beforeCleanup: processesBeforeCleanup,
       killed: cleanupEvidence,
       afterCleanup: processesAfterCleanup

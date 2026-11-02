@@ -37,7 +37,6 @@ const COMMITTED = {
   ok: true as const,
   rect: { x: 10, y: 20, w: 400, h: 300 },
   displayId: 1,
-  screenSnapshotPath: "/tmp/snapshot.png",
   screenSnapshotId: "snapshot-1",
   previousAppPid: 4242
 };
@@ -144,7 +143,10 @@ vi.mock("../../capture/window-list", () => ({
 }));
 
 vi.mock("../../events", () => ({ broadcastCapturesChanged: () => undefined }));
-vi.mock("../../float-over", () => ({ setFloatOverState: () => undefined }));
+vi.mock("../../float-over", () => ({
+  releaseFloatOverDock: () => undefined,
+  setFloatOverState: () => undefined
+}));
 vi.mock("../../tray", () => ({
   hideTrayPopoverIfVisible: () => undefined,
   setTrayCountdown: () => undefined
@@ -162,8 +164,7 @@ vi.mock("../../persistence/captures-repo", () => ({
   insertCapture: () => ({})
 }));
 vi.mock("../../persistence/source-store", () => ({
-  ensureEffectiveSrcPath: async () => "",
-  putCaptureSource: async () => ({})
+  ensureEffectiveSrcPath: async () => ""
 }));
 vi.mock("../../persistence/bundle-store", () => ({
   persistCaptureFromTempV2: async () => ({})

@@ -13,6 +13,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { PasteboardTimeoutError } from "../pasteboard-timeout";
 
 // named-image-pasteboard imports electron's `app` at module scope; the
 // test seam + VITEST guard mean it's never called here, but the import
@@ -145,4 +146,33 @@ describe.skipIf(process.platform !== "darwin")("writeNamedPngToPasteboard", () =
 
     expect(result).toBe(false);
   });
+
+  test("kills a stalled writer and refuses synchronous fallback", async () => {
+    const pidPath = join(workDir, "writer.pid");
+    const scriptPath = join(workDir, "stalled-writer.sh");
+    await writeFile(scriptPath, '#!/bin/sh\ntrap "" TERM\nprintf "%s" "$$" > "$FAKE_PBW_ARGS"\nexec sleep 60\n');
+    await chmod(scriptPath, 0o755);
+    process.env.FAKE_PBW_ARGS = pidPath;
+    __setNamedImagePasteboardHelperForTests(scriptPath);
+
+    // Independent cleanup also bounds this test on the pre-fix implementation.
+    const recover = async (): Promise<void> => {
+      const pid = Number(await readFile(pidPath, "utf8").catch(() => "0"));
+      if (pid > 0) {
+        try { process.kill(pid, "SIGKILL"); } catch { /* already exited */ }
+      }
+    };
+    const watchdog = setTimeout(() => { void recover(); }, 12_000);
+    try {
+      await expect(writeNamedPngToPasteboard({
+        pngPath: "/tmp/fixture.png",
+        fileUrlPath: "/tmp/fixture-alias.png"
+      })).rejects.toBeInstanceOf(PasteboardTimeoutError);
+      const pid = Number(await readFile(pidPath, "utf8"));
+      expect(() => process.kill(pid, 0)).toThrow();
+    } finally {
+      clearTimeout(watchdog);
+      await recover();
+    }
+  }, 16_000);
 });

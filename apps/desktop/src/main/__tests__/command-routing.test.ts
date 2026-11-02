@@ -15,6 +15,14 @@ describe("commandOwner", () => {
     expect(commandOwner("clipboard:copy")).toBe("agent");
     expect(commandOwner("permissions:request")).toBe("agent");
     expect(commandOwner("app:update:check")).toBe("agent");
+    // The Cancel button lives in the Library window; the download it stops
+    // lives in the agent, which is where `activeDownload` is held.
+    expect(commandOwner("app:update:cancel")).toBe("agent");
+    // Check for Updates… is clicked in whichever process installed the
+    // menu — the LIBRARY under the split — and must still run in the agent,
+    // beside the updater and the `userCheckRunning` flag the snapshot reads.
+    expect(commandOwner("app:update:menuCheck")).toBe("agent");
+    expect(commandOwner("app:update:userCheckRunning")).toBe("agent");
     // video:* registers in recording-handlers next to the recorder —
     // the library grid's video chips forward to the agent.
     expect(commandOwner("video:prepareDrag")).toBe("agent");
@@ -39,6 +47,17 @@ describe("commandOwner", () => {
     expect(commandOwner("storage:checkCapturesAccess")).toBe("agent");
     expect(commandOwner("storage:moveCapturesToDocuments")).toBe("agent");
     expect(commandOwner("storage:snapshot")).toBe("library");
+  });
+
+  test("derived-cache cleanup follows the WRITERS, not the storage prefix", () => {
+    // `<cacheRoot>` is written by video:* in the agent. A cleanup dispatched
+    // library-side could not abort or drain an in-flight remux, so the whole
+    // operation is forwarded to the agent and awaited there.
+    expect(commandOwner("storage:runCacheCleanup")).toBe("agent");
+    expect(peerOwnsCommand("library", "storage:runCacheCleanup")).toBe(true);
+    expect(peerOwnsCommand("agent", "storage:runCacheCleanup")).toBe(false);
+    // Same process as the writer it has to sequence against.
+    expect(commandOwner("storage:runCacheCleanup")).toBe(commandOwner("video:playback"));
   });
 
   test("chat surfaces route to the library despite the codex: prefix", () => {

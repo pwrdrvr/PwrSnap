@@ -1,3 +1,13 @@
+import {
+  CameraTrackMetadataSchema,
+  AvatarStyleSchema,
+  normalizePresenterSpans,
+  PresenterSpansSchema,
+  recoverCameraTiming,
+  type AvatarStyle,
+  type CameraTrackMetadata,
+  type PresenterSpan
+} from "@pwrsnap/shared";
 // Video-captures metadata read/write surface. Companion to
 // captures-repo.ts — every video metadata mutation goes through here.
 // The 1:1 FK to `captures.id` means we never INSERT a video_captures
@@ -14,17 +24,31 @@ import type {
   VideoPreset,
   VideoRange
 } from "@pwrsnap/shared";
+import {
+  normalizeVideoSegments,
+  VIDEO_SEGMENTS_MAX,
+  videoSegmentsOuterRange,
+  withVideoOuterRange
+} from "@pwrsnap/shared";
 import { getDb } from "./db";
 import { prepareCached } from "./prepare-cached";
 
 type VideoRow = {
+  camera_json?: string | null;
+  avatar_json?: string | null;
+  avatar_spans_json?: string | null;
   capture_id: string;
   duration_sec: number;
   container_format: "mp4" | "mov";
   has_system_audio: number;
+  requested_system_audio: number;
+  requested_microphone: number;
   has_microphone_audio: number;
   default_range_start_sec: number;
   default_range_end_sec: number;
+  /** JSON `VideoRange[]`, or NULL for one span equal to the default
+   *  range (migration 0034). */
+  segments_json?: string | null;
   preview_path: string | null;
   preview_status: "pending" | "ready" | "failed";
   subject_kind: "region" | "window" | "display";
@@ -37,16 +61,52 @@ type VideoRow = {
   created_at: string;
 };
 
+/** Parse the stored edit. Anything unreadable — a hand-edited row, a
+ *  future shape — degrades to the outer range, which is what the row
+ *  meant before it had cuts. Never throws: this runs on every Library
+ *  list page. */
+function segmentsFromRow(row: VideoRow): VideoRange[] {
+  const outer = { start: row.default_range_start_sec, end: row.default_range_end_sec };
+  const raw = row.segments_json;
+  if (raw === null || raw === undefined || raw.length === 0) return [outer];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [outer];
+    const ranges = parsed.filter(
+      (v): v is VideoRange =>
+        typeof v === "object" &&
+        v !== null &&
+        typeof (v as VideoRange).start === "number" &&
+        typeof (v as VideoRange).end === "number"
+    );
+    const normalized = normalizeVideoSegments(ranges, row.duration_sec);
+    return normalized.length > 0 ? normalized : [outer];
+  } catch {
+    return [outer];
+  }
+}
+
 function rowToMetadata(row: VideoRow): VideoCaptureMetadata {
   return {
     durationSec: row.duration_sec,
+    camera: recoverCameraTiming(parseCameraJson(row.camera_json), row.duration_sec),
+    avatar: parseAvatarJson(row.avatar_json),
+    ...presenterSpansField(row.avatar_spans_json, row.duration_sec),
     containerFormat: row.container_format,
     hasSystemAudio: row.has_system_audio === 1,
     hasMicrophoneAudio: row.has_microphone_audio === 1,
+    // `?? 0` rather than a bare compare: a row read through a
+    // connection opened with migrations:"verify" against a database
+    // one version behind has no such column, and `undefined === 1` in
+    // a boolean field would be a silent `false` either way — but being
+    // explicit keeps the intent greppable.
+    requestedSystemAudio: (row.requested_system_audio ?? 0) === 1,
+    requestedMicrophone: (row.requested_microphone ?? 0) === 1,
     defaultRange: {
       start: row.default_range_start_sec,
       end: row.default_range_end_sec
     },
+    segments: segmentsFromRow(row),
     previewPath: row.preview_path,
     previewStatus: row.preview_status
   };
@@ -58,6 +118,10 @@ export type InsertVideoMetadata = {
   containerFormat: "mp4" | "mov";
   hasSystemAudio: boolean;
   hasMicrophoneAudio: boolean;
+  /** What the take asked for. See VideoCaptureMetadata for why this is
+   *  stored separately from what actually landed. */
+  requestedSystemAudio: boolean;
+  requestedMicrophone: boolean;
   subject: RecordingSubject;
 };
 
@@ -79,6 +143,7 @@ export function insertVideoMetadata(input: InsertVideoMetadata): void {
     `INSERT INTO video_captures (
        capture_id, duration_sec, container_format,
        has_system_audio, has_microphone_audio,
+       requested_system_audio, requested_microphone,
        default_range_start_sec, default_range_end_sec,
        preview_path, preview_status,
        subject_kind,
@@ -89,6 +154,7 @@ export function insertVideoMetadata(input: InsertVideoMetadata): void {
      ) VALUES (
        @capture_id, @duration_sec, @container_format,
        @has_system_audio, @has_microphone_audio,
+       @requested_system_audio, @requested_microphone,
        0, @duration_sec,
        NULL, 'pending',
        @subject_kind,
@@ -104,6 +170,8 @@ export function insertVideoMetadata(input: InsertVideoMetadata): void {
     container_format: input.containerFormat,
     has_system_audio: input.hasSystemAudio ? 1 : 0,
     has_microphone_audio: input.hasMicrophoneAudio ? 1 : 0,
+    requested_system_audio: input.requestedSystemAudio ? 1 : 0,
+    requested_microphone: input.requestedMicrophone ? 1 : 0,
     subject_kind: subject.kind,
     subject_display_id: subject.kind === "region" || subject.kind === "window" || subject.kind === "display"
       ? subject.displayId
@@ -163,24 +231,59 @@ export function listVideoMetadata(
 }
 
 /**
- * Replace the persisted default range for a video. Validated and
- * clamped against the stored duration so a renderer bug can't
- * persist `end > duration` (the next mount would render a broken
- * scrubber). Returns the normalized range that actually got written.
+ * Move the OUTER range of a video's edit (the in/out handles) and clip
+ * any cuts to it — the meaning `video:setDefaultRange` has had since
+ * edits gained cuts. A caller that only knows about one range therefore
+ * trims the edit rather than silently discarding the user's cuts.
+ * Returns the stored edit, or `null` when the capture is not a video.
  */
 export function setDefaultRange(captureId: string, range: VideoRange): VideoRange | null {
+  const current = getVideoMetadata(captureId);
+  if (current === null) return null;
+  const outer = normalizeRange(range, current.durationSec);
+  const stored = setVideoSegments(
+    captureId,
+    withVideoOuterRange(current.segments, outer, current.durationSec)
+  );
+  return stored === null ? null : videoSegmentsOuterRange(stored);
+}
+
+/**
+ * Replace a video's edit. Normalized against the stored duration (a
+ * renderer bug or a tool call cannot persist a span past the end, an
+ * overlap, or a sliver), then written as the outer range plus — when
+ * there is more than one span — the span list. Returns the edit as
+ * stored, or `null` when the capture is not a video.
+ *
+ * Reject empty or overflowing edits before writing. The bus returns a
+ * validation error first; this guard also protects other internal callers.
+ */
+export function setVideoSegments(
+  captureId: string,
+  segments: readonly VideoRange[]
+): VideoRange[] | null {
   const db = getDb();
   const row = db
     .prepare("SELECT duration_sec FROM video_captures WHERE capture_id = ?")
     .get(captureId) as { duration_sec: number } | undefined;
   if (row === undefined) return null;
-  const normalized = normalizeRange(range, row.duration_sec);
+  const normalized = normalizeVideoSegments(segments, row.duration_sec);
+  if (normalized.length === 0 || normalized.length > VIDEO_SEGMENTS_MAX) {
+    throw new Error(`Video edit must keep 1–${VIDEO_SEGMENTS_MAX} spans`);
+  }
+  const outer = videoSegmentsOuterRange(normalized);
   db.prepare(
     `UPDATE video_captures
        SET default_range_start_sec = @start,
-           default_range_end_sec = @end
+           default_range_end_sec = @end,
+           segments_json = @segments
      WHERE capture_id = @captureId`
-  ).run({ captureId, start: normalized.start, end: normalized.end });
+  ).run({
+    captureId,
+    start: outer.start,
+    end: outer.end,
+    segments: normalized.length > 1 ? JSON.stringify(normalized) : null
+  });
   return normalized;
 }
 
@@ -223,6 +326,7 @@ type ExportCacheRow = {
   capture_id: string;
   range_start_sec: number;
   range_end_sec: number;
+  segments_key: string;
   format: "gif" | "mp4";
   preset: VideoPreset;
   include_system_audio: number;
@@ -234,7 +338,14 @@ type ExportCacheRow = {
 
 export type ExportCacheLookup = {
   captureId: string;
+  /** Outer range of the exported spans. */
   range: VideoRange;
+  /** '' (the default) for one contiguous span; `videoSpansKey(spans)`
+   *  for a cut export. */
+  segmentsKey?: string | undefined;
+  /** Seconds actually exported (the spans' total). Defaults to the
+   *  range's length, which is right for a single span. */
+  durationSec?: number | undefined;
   format: "gif" | "mp4";
   preset: VideoPreset;
   audio: VideoExportAudio;
@@ -261,6 +372,7 @@ export function lookupExport(req: ExportCacheLookup): VideoExportResult | null {
        WHERE capture_id = @captureId
          AND range_start_sec = @start
          AND range_end_sec = @end
+         AND segments_key = @segmentsKey
          AND format = @format
          AND preset = @preset
          AND include_system_audio = @system
@@ -270,6 +382,7 @@ export function lookupExport(req: ExportCacheLookup): VideoExportResult | null {
       captureId: req.captureId,
       start: req.range.start,
       end: req.range.end,
+      segmentsKey: req.segmentsKey ?? "",
       format: req.format,
       preset: req.preset,
       system: req.audio.includeSystemAudio ? 1 : 0,
@@ -279,7 +392,7 @@ export function lookupExport(req: ExportCacheLookup): VideoExportResult | null {
   return {
     path: row.path,
     byteSize: row.byte_size,
-    durationSec: row.range_end_sec - row.range_start_sec,
+    durationSec: req.durationSec ?? row.range_end_sec - row.range_start_sec,
     // Placeholder dims — the exporter overwrites these from the
     // preset spec + source dims before returning to the caller.
     // Storing dims on cache rows is a follow-up if anyone needs
@@ -293,6 +406,8 @@ export function lookupExport(req: ExportCacheLookup): VideoExportResult | null {
 export type RecordExportInsert = {
   captureId: string;
   range: VideoRange;
+  /** See `ExportCacheLookup.segmentsKey`. */
+  segmentsKey?: string | undefined;
   format: "gif" | "mp4";
   preset: VideoPreset;
   audio: VideoExportAudio;
@@ -310,16 +425,16 @@ export function recordExport(input: RecordExportInsert): void {
   const db = getDb();
   db.prepare(
     `INSERT INTO video_export_cache (
-       capture_id, range_start_sec, range_end_sec, format, preset,
+       capture_id, range_start_sec, range_end_sec, segments_key, format, preset,
        include_system_audio, include_microphone,
        path, byte_size, created_at
      ) VALUES (
-       @captureId, @start, @end, @format, @preset,
+       @captureId, @start, @end, @segmentsKey, @format, @preset,
        @system, @mic,
        @path, @size, datetime('now')
      )
      ON CONFLICT (
-       capture_id, range_start_sec, range_end_sec, format, preset,
+       capture_id, range_start_sec, range_end_sec, segments_key, format, preset,
        include_system_audio, include_microphone
      ) DO UPDATE SET
        path = excluded.path,
@@ -329,6 +444,7 @@ export function recordExport(input: RecordExportInsert): void {
     captureId: input.captureId,
     start: input.range.start,
     end: input.range.end,
+    segmentsKey: input.segmentsKey ?? "",
     format: input.format,
     preset: input.preset,
     system: input.audio.includeSystemAudio ? 1 : 0,
@@ -336,4 +452,37 @@ export function recordExport(input: RecordExportInsert): void {
     path: input.path,
     size: input.byteSize
   });
+}
+
+export function setVideoCamera(captureId: string, camera: CameraTrackMetadata): void {
+  getDb().prepare("UPDATE video_captures SET camera_json = ? WHERE capture_id = ?").run(JSON.stringify(camera), captureId);
+}
+export function setVideoAvatar(captureId: string, avatar: AvatarStyle): void {
+  getDb().prepare("UPDATE video_captures SET avatar_json = ? WHERE capture_id = ?").run(JSON.stringify(AvatarStyleSchema.parse(avatar)), captureId);
+}
+
+function parseCameraJson(raw?: string | null): CameraTrackMetadata | null {
+  try { return CameraTrackMetadataSchema.safeParse(JSON.parse(raw ?? "null")).data ?? null; } catch { return null; }
+}
+/** Replaces the recording's presenter spans; an empty list clears them. */
+export function setVideoAvatarSpans(captureId: string, spans: readonly PresenterSpan[], durationSec: number): PresenterSpan[] {
+  const normalized = normalizePresenterSpans(PresenterSpansSchema.parse(spans), durationSec);
+  getDb()
+    .prepare("UPDATE video_captures SET avatar_spans_json = ? WHERE capture_id = ?")
+    .run(normalized.length === 0 ? null : JSON.stringify(normalized), captureId);
+  return normalized;
+}
+
+function presenterSpansField(raw: string | null | undefined, durationSec: number): { avatarSpans?: PresenterSpan[] } {
+  try {
+    const parsed = PresenterSpansSchema.safeParse(JSON.parse(raw ?? "null")).data;
+    const spans = parsed === undefined ? [] : normalizePresenterSpans(parsed, durationSec);
+    return spans.length === 0 ? {} : { avatarSpans: spans };
+  } catch {
+    return {};
+  }
+}
+
+function parseAvatarJson(raw?: string | null): AvatarStyle | null {
+  try { return AvatarStyleSchema.safeParse(JSON.parse(raw ?? "null")).data ?? null; } catch { return null; }
 }

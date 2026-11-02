@@ -218,6 +218,12 @@
 .editor-canvas[data-tool][data-hover-hit="true"] {
   cursor: move;
 }
+/* Draw is the exception: it draws over layers instead of selecting
+   them (Editor.tsx onPointerDown), so a layer under the pointer must
+   not promise a move. Same specificity, later in source. */
+.editor-canvas[data-tool="draw"][data-hover-hit="true"] {
+  cursor: crosshair;
+}
 /* Pan takeover: Space-held detaches the canvas's own pointerdown and
    the wrap shows grab/grabbing (.is-pannable / .is-panning above) —
    the canvas must inherit that instead of fighting it with per-tool /
@@ -726,7 +732,10 @@
   /* Crosshair suggests redrawing when clicking outside the rect;
      the rect interior overrides via cursor: move. */
   cursor: crosshair;
-  /* Keep above the canvas image but below toolbars/menus. */
+  /* Above the canvas image. CropTool raises it inline to Z_INDEX_CHROME
+     so it also clears every annotation layer; this is only the floor.
+     The canvas is its own stacking context (its pan transform), so
+     neither value competes with toolbars or menus outside it. */
   z-index: 5;
   user-select: none;
 }
@@ -865,7 +874,7 @@
   border-color: var(--accent-strong);
 }
 .pse-crop-action.is-apply:focus-visible {
-  outline: 2px solid var(--accent-bright);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -880,8 +889,20 @@
   background: var(--bg-panel-hover);
 }
 .pse-crop-action.is-cancel:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
+}
+
+/* Both actions float over the capture itself, so their rings land on
+   whatever the screenshot has there: at the 480px window minimum the
+   fixture put a blue box under Cancel's bottom edge and Apply's ring
+   measured 2.85:1 against an olive panel. The halo gives the ring its
+   own background, as on the stage arrows. It also opens a dark gap
+   between Apply's accent fill and its accent ring. */
+.pse-crop-action:focus-visible {
+  box-shadow:
+    0 0 0 4px var(--bg-app),
+    var(--shadow-sm);
 }
 
 /* Shortcut chip inside each action button. Same vocabulary as
@@ -999,7 +1020,7 @@
   background: var(--bg-panel-hover);
 }
 .pse-chrome__act:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .pse-chrome__act.is-active {
@@ -1169,6 +1190,11 @@
   font-weight: 500;
 }
 
+.pse-info-window-title {
+  unicode-bidi: isolate;
+  overflow-wrap: anywhere;
+}
+
 .pse-info-kind {
   display: inline-block;
   padding: 1px 6px;
@@ -1245,34 +1271,6 @@
 }
 .editor-toolbar-tools button.is-active .pse-tool-caret {
   color: var(--text-secondary);
-}
-
-/* Matching-text affordance — "+ Add label" button popped near the
-   tail of a just-placed arrow. The button auto-hides via the hook's
-   8s timer + cancel sites; layout-wise it sits absolutely inside the
-   canvas overlay layer so the anchorPoint coordinate space matches
-   the canvas's display pixels. */
-.pse-affordance {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 28px;
-  padding: 0 12px;
-  background: var(--accent-soft);
-  border: 1px solid var(--accent);
-  border-radius: 14px;
-  color: var(--accent-bright);
-  font: 600 12px/1 var(--font-sans);
-  cursor: pointer;
-  z-index: 6;
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--shadow-base) 35%, transparent);
-}
-.pse-affordance:hover {
-  background: color-mix(in srgb, var(--accent) 20%, transparent);
-}
-.pse-affordance:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 /* Right-sidebar panel stubs — Help. Renders inside
@@ -1438,7 +1436,7 @@
 }
 
 .pse-v1v2-banner__retry:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -1593,4 +1591,28 @@
 
 .pse-mode-row.is-on .pse-mode-row-hint {
   color: color-mix(in srgb, var(--accent-bright) 70%, transparent);
+}
+
+/* The Draw mode tooltip's picture (draw-mode-preview.tsx): a scrap of
+   screenshot for the stroke to sit on, and the eraser's footprint. */
+.draw-tip__paper {
+  fill: color-mix(in srgb, var(--text-primary) 5%, var(--bg-app));
+}
+.draw-tip__text {
+  fill: var(--text-primary);
+  opacity: 0.12;
+}
+.draw-tip__text--head {
+  opacity: 0.22;
+}
+.draw-tip__trail {
+  fill: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  stroke: color-mix(in srgb, var(--text-primary) 30%, transparent);
+  stroke-dasharray: 3 3;
+}
+.draw-tip__ring {
+  fill: none;
+  stroke: var(--text-primary);
+  stroke-width: 1.3;
+  opacity: 0.85;
 }

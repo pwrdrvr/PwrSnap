@@ -12,6 +12,8 @@ export * from "./ai-enrichment-schemas";
 export * from "./result";
 export * from "./ipc";
 export * from "./arrow";
+export * from "./shape-stroke-dash";
+export * from "./freehand-stroke";
 export * from "./appearance-arg";
 export * from "./bundle-manifest-schema-v2";
 export * from "./crop-viewport";
@@ -32,3 +34,19 @@ export * from "./local-agent-policy";
 export * from "./desktop-platform";
 export * from "./shortcut-semantics";
 export * from "./capture-invocation";
+export * from "./recording-audio-tracks";
+export * from "./release-notes";
+export * from "./video-segments";
+export * from "./capture-duplicate";
+export * from "./video-activity";
+export * from "./float-over-sizing";
+export * from "./popover-sizing";
+export * from "./ai-enrichment-rate-limit";
+
+export * from "./custom-models";
+export * from "./codex-model-policy";
+
+export * from "./camera";
+export * from "./recording-devices";
+export * from "./presenter";
+export * from "./presenter-spans";

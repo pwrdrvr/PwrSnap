@@ -8,19 +8,23 @@ import type { AcpAgentDiscovery } from "@pwrsnap/shared";
 import type { Settings } from "@pwrsnap/shared";
 import {
   AcpAgentList,
+  buildAcpOverridePatch,
+  CodexCandidates,
+  SecretKeyControl
+} from "../AIProvidersPage";
+import {
   AiSurfaceDefaultControl,
   type AiSurfaceDefaultControlProps,
-  buildAcpProviderOptions,
-  buildAcpOverridePatch,
-  enabledAcpAgentIdsForModelProbes,
+  buildAcpProviderOptions
+} from "../AIFeaturesPage";
+import {
   formatCostMicros,
   formatLastSetAt,
   formatNextTokenAt,
   formatTokenCount,
-  formatUsageTokenBreakdown,
-  CodexCandidates,
-  SecretKeyControl
-} from "../AIProvidersPage";
+  formatUsageTokenBreakdown
+} from "../ai-format";
+import { enabledAcpAgentIdsForModelProbes } from "../../ai-provider-status";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -99,6 +103,42 @@ async function renderSurfaceControl(
 }
 
 describe("AiSurfaceDefaultControl — job routing", () => {
+  test("stores a custom provider without duplicating its model id", async () => {
+    const onChange = vi.fn();
+    const provider = "custom:12345678-1234-4234-8234-123456789001";
+    const el = await renderSurfaceControl({
+      surface: "enrichment", name: "Enrichment", sub: "", value: {},
+      models: [], modelsLoading: false,
+      acpProviderOptions: [{ value: provider, label: "Vendor model" }],
+      acpModelOptions: [{ id: "vendor/private-model", label: "Vendor model", isDefault: true }],
+      acpModelsLoading: false, onChange
+    });
+    const providerSelect = el.querySelector<HTMLSelectElement>('[aria-label="Enrichment provider"]')!;
+    await act(async () => {
+      providerSelect.value = provider;
+      providerSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(onChange).toHaveBeenCalledWith({ provider, model: "", reasoning: "" });
+  });
+
+  test("does not write a custom model id when its model picker is used", async () => {
+    const onChange = vi.fn();
+    const provider = "custom:12345678-1234-4234-8234-123456789001";
+    const el = await renderSurfaceControl({
+      surface: "enrichment", name: "Enrichment", sub: "", value: { provider },
+      models: [], modelsLoading: false,
+      acpProviderOptions: [{ value: provider, label: "Vendor model" }],
+      acpModelOptions: [{ id: "vendor/private-model", label: "Vendor model", isDefault: true }],
+      acpModelsLoading: false, onChange
+    });
+    const modelSelect = el.querySelector<HTMLSelectElement>('[aria-label="Enrichment model"]')!;
+    await act(async () => {
+      modelSelect.value = "vendor/private-model";
+      modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(onChange).toHaveBeenCalledWith({ provider, model: "", reasoning: "" });
+  });
+
   test("resets the model to Default when the provider changes (no stale cross-provider model)", async () => {
     const onChange = vi.fn();
     const el = await renderSurfaceControl({
@@ -1065,5 +1105,94 @@ describe("SecretKeyControl", () => {
     focusInput(input);
     typeIntoInput(input, "sk-new");
     expect(primaryButton.disabled).toBe(false);
+  });
+});
+
+describe("Codex upgrade help", () => {
+  const ADVISED = "/opt/homebrew/bin/codex";
+  async function renderAdvised(advisory: Record<string, unknown>) {
+    const calls: Array<{ name: string; req: unknown }> = [];
+    Object.defineProperty(window, "pwrsnapApi", {
+      configurable: true,
+      value: {
+        platform: "darwin",
+        dispatch: async (name: string, req: unknown) => {
+          calls.push({ name, req });
+          return { ok: true, value: undefined };
+        }
+      }
+    });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        createElement(CodexCandidates, {
+          snapshot: {
+            candidates: [
+              { path: "/Applications/Codex.app/Contents/Resources/codex", source: "application", version: "0.160.0", available: true },
+              { path: ADVISED, source: "path", version: "0.150.0", available: true }
+            ],
+            resolvedPath: ADVISED,
+            auth: null,
+            versionAdvisory: {
+              command: ADVISED, version: "0.150.0", minimumVersion: "0.159.2", installer: "homebrew",
+              upgradeCommand: "brew upgrade --cask codex", ...advisory
+            },
+            refreshedAt: "2026-10-01T00:00:00.000Z"
+          },
+          loading: false,
+          onPin: async () => undefined
+        })
+      );
+    });
+    return calls;
+  }
+
+  test("sits directly under the binary it is about, which is marked for update", async () => {
+    const calls = await renderAdvised({});
+    const rows = Array.from(container!.querySelectorAll(".pss__cand"));
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.querySelector(".pss__badge.is-warn")).toBeNull();
+    expect(rows[1]!.querySelector(".pss__badge.is-warn")?.textContent).toBe("Update");
+    expect(rows[1]!.querySelector(".pss__cand-outdated")?.textContent).toBe("v0.150.0");
+    const strip = rows[1]!.nextElementSibling;
+    expect(strip?.classList.contains("pss__codex-update")).toBe(true);
+    expect(strip?.classList.contains("is-blocking")).toBe(false);
+    expect(strip?.querySelector(".pss__codex-update-title")?.textContent).toBe(
+      "Update to 0.159.2 or newer for GPT-6.1-Sol"
+    );
+    expect(strip?.querySelector(".pss__pair-command")?.textContent).toBe("brew upgrade --cask codex");
+    expect(container!.querySelectorAll(".pss__codex-update")).toHaveLength(1);
+    const copy = strip!.querySelector<HTMLButtonElement>(".pss__key-btn")!;
+    expect(copy.getAttribute("aria-label")).toBe("Copy Codex update command");
+    await act(async () => copy.click());
+    expect(calls).toContainEqual({ name: "clipboard:copyText", req: { text: "brew upgrade --cask codex" } });
+    expect(copy.textContent).toBe("Copied");
+    expect(copy.getAttribute("aria-label")).toBe("Copied Codex update command");
+  });
+
+  test("a binary that cannot run gets the danger strip", async () => {
+    await renderAdvised({ blocking: true });
+    const strip = container!.querySelector(".pss__codex-update");
+    expect(strip?.classList.contains("is-blocking")).toBe(true);
+    expect(strip?.querySelector(".pss__codex-update-title")?.textContent).toBe(
+      "Codex 0.150.0 is too old to run. Update to 0.159.2 or newer."
+    );
+  });
+
+  test("an unknown installer offers the release index instead of a command", async () => {
+    const calls = await renderAdvised({ installer: "unknown", upgradeCommand: undefined });
+    const strip = container!.querySelector(".pss__codex-update")!;
+    expect(strip.querySelector(".pss__pair-command")).toBeNull();
+    expect(strip.querySelector(".pss__codex-update-sub")?.textContent).toBe(
+      "Update it the way you installed it, then restart PwrSnap."
+    );
+    const releases = strip.querySelector<HTMLButtonElement>(".pss__key-btn")!;
+    expect(releases.textContent).toBe("Codex releases");
+    await act(async () => releases.click());
+    expect(calls).toContainEqual({
+      name: "app:openExternal", req: { url: "https://github.com/openai/codex/releases" }
+    });
   });
 });

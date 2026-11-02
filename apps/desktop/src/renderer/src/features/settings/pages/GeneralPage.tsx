@@ -13,16 +13,46 @@
 // login-item registration on the main side (launch-at-login.ts) and
 // re-reads the live OS state via `app:launchAtLoginStatus` so the card
 // can surface a macOS/Windows "disabled it OS-side" divergence.
+//
+// The two CAPTURE cards own the `settings.recording.*` defaults for new
+// captures: cursor baking (images + video) and audio sources (video).
+//
+// The audio pair is a DEFAULT for new recordings, and this card is the
+// only place it can be changed — the fields were unreachable from every
+// renderer before it, which is why the pair needs a surface at all.
+//
+// That also means this page is NOT where a microphone grant has to be
+// obtained. `record-from-selection.ts` puts an Open System Permissions
+// button on the preflight failure dialog, so a recording started
+// without the grant recovers in place. So the toggle saves the
+// preference unconditionally and the blocked row below is a shortcut,
+// not a required errand.
+//
+// The copy here said ONLY "default for new recordings" while this card
+// was the sole consumer of the pair. The capture selector's source chips
+// now seed from these two fields and override them per take without
+// writing back, so each row carries that second sentence — the switches
+// are the DEFAULT, and a take that changes its mind does not change them.
+// Saying so is what stops a user from hunting here mid-capture for a
+// control that is already on screen.
 
-import { useEffect, useState, type ReactElement } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import {
   type AppearanceTheme,
   type LaunchAtLoginStatus,
-  type QuickCaptureAction
+  type QuickCaptureAction,
+  type SelectorHudStyle
 } from "@pwrsnap/shared";
 import { Card, Row, SegmentedControl, Switch, type SegmentOption } from "../components";
 import { dispatch } from "../../../lib/pwrsnap";
 import { useSettingsContext } from "../SettingsContext";
+import { setActivePage } from "../useActivePage";
+
+/** Shared by both audio rows off macOS. One constant, not two literals:
+ *  only one of the two is pinned by a test, so a copy edit to the other
+ *  would ship stale. */
+const AUDIO_UNSUPPORTED_SUB =
+  "Recording audio is macOS-only for now — PwrSnap records video only on this platform. The preference is saved for when the recorder here grows audio support.";
 
 const THEME_OPTIONS: readonly SegmentOption<AppearanceTheme>[] = [
   { id: "system", label: "System" },
@@ -36,6 +66,11 @@ const QUICK_CAPTURE_ACTION_OPTIONS: readonly SegmentOption<QuickCaptureAction>[]
   { id: "record", label: "Record" }
 ];
 
+const SELECTOR_HUD_OPTIONS: readonly SegmentOption<SelectorHudStyle>[] = [
+  { id: "shutter", label: "Shutter" },
+  { id: "clapperboard", label: "Clapperboard" }
+];
+
 export function GeneralPage(): ReactElement {
   const { settings, patch } = useSettingsContext();
   const ready = settings !== null;
@@ -43,9 +78,98 @@ export function GeneralPage(): ReactElement {
   const launchAtLogin = settings?.general.launchAtLogin ?? false;
   const videoCaptureCursor = settings?.recording.videoCaptureCursor ?? true;
   const imageCaptureCursor = settings?.recording.imageCaptureCursor ?? true;
+  const showRegionFrame = settings?.recording.showRegionFrame ?? true;
+  const showRecentCaptureSidebar = settings?.recording.showRecentCaptureSidebar ?? true;
   const quickCaptureAction: QuickCaptureAction =
     settings?.recording.quickCaptureAction ?? "ask";
+  const selectorHud: SelectorHudStyle = settings?.recording.selectorHud ?? "shutter";
+  // Audio defaults for new recordings. Both ship OFF — recording either
+  // source is privacy-relevant, so the user opts in explicitly.
+  const includeSystemAudio = settings?.recording.includeSystemAudio ?? false;
+  const includeMicrophone = settings?.recording.includeMicrophone ?? false;
   const platform = window.pwrsnapApi?.platform;
+  // Recording audio is macOS-only, so this is a POSITIVE test. Windows
+  // records through FFmpeg, which captures screen video only and logs a
+  // warning when either toggle is on (recording-service.ts); Linux has
+  // no recorder at all (resolveRecorderBinary returns null off darwin).
+  // `platform !== "win32"` would read Linux — and an absent preload
+  // bridge — as macOS and show them Mac-specific copy.
+  const audioSupported = platform === "darwin";
+
+  // Opting in here also ASKS, because asking from the switch the user
+  // just flipped is the cheapest possible moment: macOS reports
+  // `not-determined` until something calls askForMediaAccess, and the
+  // prompt is one click. But the answer does not gate the write — this
+  // is a stored preference, not an arming, and a recording that starts
+  // without the grant already recovers in place through the preflight
+  // dialog's own Open System Permissions button. Refusing to persist on
+  // a denial would leave the user unable to express the preference at
+  // all, and would make this page the owner of a grant recovery flow it
+  // is the worst-placed surface to run.
+  //
+  // The `audioSupported` guard below is load-bearing, not an
+  // optimization: off darwin `requestPermission` is unsupported and the
+  // handler returns `"unknown"` — never `"granted"` — so routing the
+  // non-macOS path through it would light the blocked row on every
+  // Windows and Linux opt-in.
+  const [micDenied, setMicDenied] = useState(false);
+  // Monotonic guard for the two async probes below. AGENTS.md
+  // §"Settings substrate": "Late resolutions are dropped." Without it,
+  // toggling ON and then OFF before the OS prompt is answered lets the
+  // ON probe's `denied` land afterwards and paint the blocked row under
+  // a switch that now reads off.
+  const micProbeSeq = useRef(0);
+  const onMicrophoneChange = (next: boolean): void => {
+    if (!ready) return;
+    // Bump on EVERY flip, including off — a toggle is exactly what makes
+    // an in-flight probe's answer stale, so the off path has to
+    // invalidate it too, not just decline to start one.
+    const seq = (micProbeSeq.current += 1);
+    if (!next) {
+      setMicDenied(false);
+      void patch({ recording: { includeMicrophone: false } });
+      return;
+    }
+    if (!audioSupported) {
+      // No recorder here can use the mic, so there is no grant to ask
+      // for — just remember the preference for when one can.
+      void patch({ recording: { includeMicrophone: true } });
+      return;
+    }
+    // Persist first so the seed lands even if the user walks away from
+    // the OS prompt; the grant probe only decides whether to offer the
+    // shortcut row below.
+    void patch({ recording: { includeMicrophone: true } });
+    void (async () => {
+      const result = await dispatch("permissions:request", {
+        permission: "microphone"
+      });
+      if (micProbeSeq.current !== seq) return;
+      setMicDenied(!(result.ok && result.value.status === "granted"));
+    })();
+  };
+
+  // The shortcut row's whole point is that the user can go settle the
+  // grant elsewhere — in System Permissions, or at capture time. So it
+  // has to notice when they have. `permissions:readiness` READS the
+  // status without prompting (unlike `permissions:request`), which is
+  // what makes it safe to run on every focus; same pattern
+  // SystemPermissionsPage uses to catch an out-of-window grant change.
+  // Without this the row keeps claiming access is denied after it has
+  // been granted, with no affordance that clears it.
+  useEffect(() => {
+    if (!micDenied) return;
+    const reprobe = (): void => {
+      const seq = (micProbeSeq.current += 1);
+      void (async () => {
+        const result = await dispatch("permissions:readiness", {});
+        if (micProbeSeq.current !== seq) return;
+        if (result.ok && result.value.microphone === "granted") setMicDenied(false);
+      })();
+    };
+    window.addEventListener("focus", reprobe);
+    return () => window.removeEventListener("focus", reprobe);
+  }, [micDenied]);
 
   // Live OS-side registration state, distinct from the saved toggle —
   // macOS/Windows let the user disable a registered login item OS-side
@@ -121,8 +245,8 @@ export function GeneralPage(): ReactElement {
 
       <Card eyebrow="CAPTURE" title="After you select">
         <Row
-          label="What ↵ does once you have a selection"
-          sub="Ask offers both — ↵ snaps, R records the same selection. Snap hides the Record action entirely. Record makes ↵ start a recording and moves Snap to S. The Video Capture hotkey always records, whichever you pick."
+          label="Which mode the selector starts in"
+          sub="Ask offers both and starts on Snap: ↵ snaps, or press R to switch to Record and then ↵. Snap hides the Record action entirely. Record starts on Record, and S switches back to Snap. The Video Capture hotkey always records, whichever you pick."
           tag="action"
         >
           <SegmentedControl<QuickCaptureAction>
@@ -131,6 +255,37 @@ export function GeneralPage(): ReactElement {
             onChange={(next) => {
               if (!ready) return;
               void patch({ recording: { quickCaptureAction: next } });
+            }}
+          />
+        </Row>
+        <Row
+          label="Selector controls"
+          sub="Shutter is a Snap | Record switch beside one round shutter, with each source as a round button that names its device. Clapperboard puts every source in a fixed slate under the bar. Both work the same way."
+          tag="hud"
+        >
+          <SegmentedControl<SelectorHudStyle>
+            options={SELECTOR_HUD_OPTIONS}
+            value={selectorHud}
+            onChange={(next) => {
+              if (!ready) return;
+              void patch({ recording: { selectorHud: next } });
+            }}
+          />
+        </Row>
+      </Card>
+
+      <Card eyebrow="CAPTURE" title="Recent captures">
+        <Row
+          label="Keep recent captures on the screen edge"
+          sub="When a capture's popup closes, the capture stays as a tab on the edge of the screen until you dismiss it. A tab shows what the AI did: ✓ done, ! failed. Turning this off hides the tabs. Your captures and AI are not affected."
+          tag="popup"
+        >
+          <Switch
+            on={showRecentCaptureSidebar}
+            label="Keep recent captures on the screen edge"
+            onChange={(next) => {
+              if (!ready) return;
+              void patch({ recording: { showRecentCaptureSidebar: next } });
             }}
           />
         </Row>
@@ -163,6 +318,76 @@ export function GeneralPage(): ReactElement {
             }}
           />
         </Row>
+      </Card>
+
+      <Card eyebrow="CAPTURE" title="Recording frame">
+        <Row
+          label="Outline the area being recorded"
+          sub="Draws a tangerine frame around the recorded region while a video capture runs. Never appears in the recording itself."
+          tag="video"
+        >
+          <Switch
+            on={showRegionFrame}
+            onChange={(next) => {
+              if (!ready) return;
+              void patch({ recording: { showRegionFrame: next } });
+            }}
+          />
+        </Row>
+      </Card>
+
+      <Card eyebrow="CAPTURE" title="Recording audio">
+        <Row
+          label="Include system audio"
+          sub={
+            audioSupported
+              ? "The default for new recordings — captures what your Mac is playing alongside the screen. Rides the Screen Recording grant you already gave PwrSnap, so there is no second permission to enable. Press A in the capture selector to change it for one recording without changing this default."
+              : AUDIO_UNSUPPORTED_SUB
+          }
+          tag="video"
+        >
+          <Switch
+            on={includeSystemAudio}
+            onChange={(next) => {
+              if (!ready) return;
+              void patch({ recording: { includeSystemAudio: next } });
+            }}
+          />
+        </Row>
+        <Row
+          label="Include your microphone"
+          sub={
+            audioSupported
+              ? "The default for new recordings — captures your voice alongside the screen, for narration and walkthroughs. macOS asks for access the first time you switch this on. Press M in the capture selector to change it for one recording without changing this default."
+              : AUDIO_UNSUPPORTED_SUB
+          }
+          tag="video"
+        >
+          <Switch
+            on={includeMicrophone}
+            onChange={onMicrophoneChange}
+          />
+        </Row>
+        {micDenied ? (
+          // The OS said no, or the user dismissed the prompt. The
+          // preference IS saved — this row is a shortcut for settling
+          // the grant now rather than meeting the preflight dialog on
+          // the next recording. It clears itself on the focus re-probe
+          // below, so it cannot outlive the denial it describes.
+          <Row
+            label="macOS hasn't granted microphone access"
+            sub="macOS won't prompt from here twice. Turn Microphone on for PwrSnap in System Settings → Privacy & Security; this row clears itself when you come back."
+            tag="optional"
+          >
+            <button
+              className="pss__top-btn"
+              type="button"
+              onClick={() => setActivePage("system-permissions")}
+            >
+              Open System Permissions
+            </button>
+          </Row>
+        ) : null}
       </Card>
 
       <Card eyebrow="STARTUP" title="Launch at login">

@@ -75,7 +75,7 @@
   background: var(--bg-panel-hover);
 }
 .ps-composer__chip-remove:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 
@@ -92,6 +92,14 @@
 }
 .ps-composer__row:focus-within {
   border-color: var(--accent-border);
+}
+/* The textarea is borderless, so the row is the field's box. That 42%
+   border tint measured 2.2:1, so the row also rings while the textarea
+   has focus. Keyed on the textarea, not `:focus-within`: the send button
+   sits in the same row and rings itself. */
+.ps-composer__row:has(.ps-composer__input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
 }
 
 .ps-composer__input {
@@ -149,7 +157,7 @@
   background: var(--bg-panel-elevated);
 }
 .ps-composer__send:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 .ps-composer__send:disabled {

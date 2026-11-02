@@ -21,6 +21,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 
 type WindowSpy = {
   setMinimumSize: ReturnType<typeof vi.fn>;
+  setIgnoreMouseEvents: ReturnType<typeof vi.fn>;
   setAlwaysOnTop: ReturnType<typeof vi.fn>;
   setVisibleOnAllWorkspaces: ReturnType<typeof vi.fn>;
   setMenuBarVisibility: ReturnType<typeof vi.fn>;
@@ -41,6 +42,7 @@ const constructed: WindowSpy[] = [];
 function makeWindowSpy(): WindowSpy {
   return {
     setMinimumSize: vi.fn(),
+    setIgnoreMouseEvents: vi.fn(),
     setAlwaysOnTop: vi.fn(),
     setVisibleOnAllWorkspaces: vi.fn(),
     setMenuBarVisibility: vi.fn(),
@@ -139,5 +141,48 @@ describe("createRecordingControllerWindow content protection", () => {
     if (loadOrder !== undefined) {
       expect(protectOrder).toBeLessThan(loadOrder);
     }
+  });
+});
+
+describe("createRecordingFrameWindow content protection", () => {
+  // The stake here is higher than for the HUD. The frame's macOS
+  // `straddle` posture deliberately paints INSIDE the recorded rect —
+  // the inset glow kiss and the corner ticks — and that is legal only
+  // because sharingType = .none keeps this window out of
+  // ScreenCaptureKit's stream. Drop this one call and every macOS
+  // region recording gets tangerine baked into the file, with nothing
+  // else failing. (On Windows/Linux the geometry is what protects the
+  // capture; this is defence in depth there.)
+  const BOUNDS = { x: 100, y: 100, width: 400, height: 300 };
+
+  test("calls setContentProtection(true) so the frame never reaches the file", async () => {
+    const { createRecordingFrameWindow } = await import("../window");
+    createRecordingFrameWindow(BOUNDS);
+
+    expect(constructed).toHaveLength(1);
+    const spy = constructed[0]!;
+    expect(spy.setContentProtection).toHaveBeenCalledTimes(1);
+    expect(spy.setContentProtection).toHaveBeenCalledWith(true);
+  });
+
+  test("setContentProtection is called BEFORE the renderer loads", async () => {
+    const { createRecordingFrameWindow } = await import("../window");
+    createRecordingFrameWindow(BOUNDS);
+
+    const spy = constructed[0]!;
+    const protectOrder = spy.setContentProtection.mock.invocationCallOrder[0]!;
+    const loadOrder =
+      spy.loadFile.mock.invocationCallOrder[0] ?? spy.loadURL.mock.invocationCallOrder[0];
+    if (loadOrder !== undefined) {
+      expect(protectOrder).toBeLessThan(loadOrder);
+    }
+  });
+
+  test("the frame can never eat a click on the content it sits over", async () => {
+    // Set once at construction and never flipped, unlike the HUD.
+    const { createRecordingFrameWindow } = await import("../window");
+    createRecordingFrameWindow(BOUNDS);
+
+    expect(constructed[0]!.setIgnoreMouseEvents).toHaveBeenCalledWith(true);
   });
 });

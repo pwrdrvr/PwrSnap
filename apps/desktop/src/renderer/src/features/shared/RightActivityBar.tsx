@@ -531,7 +531,7 @@ function ActivityButton<Id extends string>({
   onMouseLeave
 }: ActivityButtonProps<Id>): ReactElement {
   // The accent dot is a 6px circle with no text. Fold its meaning into
-  // the button's accessible name and its own tooltip so it reads as
+  // the button's accessible name and its tooltip so it reads as
   // "OCR — extracted text available" rather than "OCR" plus a mystery
   // dot. Falls back to a generic legend if a caller forgets `badgeLabel`.
   const badgeLabel =
@@ -560,7 +560,12 @@ function ActivityButton<Id extends string>({
       // skip the natural Tab traversal.
       tabIndex={active ? 0 : -1}
       id={`${testIdPrefix}-tab-${String(tab.id)}-button`}
-      title={tab.title ?? tab.label}
+      // The app's fast tooltip (lib/useFastTooltip), not `title`: the
+      // native one took seconds to name an icon that has no other label.
+      data-tip={tab.title ?? tab.label}
+      // A caller's own title already folds the legend in ("OCR — extracted
+      // text ready"); only the bare label needs the dot explained.
+      data-tip-detail={tab.title === undefined ? badgeLabel : undefined}
       aria-label={accessibleName}
       data-tab={tab.id}
       data-testid={`${testIdPrefix}-tab-${tab.id}`}
@@ -573,7 +578,7 @@ function ActivityButton<Id extends string>({
         // aria-hidden: the legend is already in the button's
         // accessible name above, so exposing the dot separately would
         // make a screen reader announce it twice.
-        <span className="rab__act-badge" title={badgeLabel} aria-hidden="true" />
+        <span className="rab__act-badge" aria-hidden="true" />
       ) : null}
     </button>
   );

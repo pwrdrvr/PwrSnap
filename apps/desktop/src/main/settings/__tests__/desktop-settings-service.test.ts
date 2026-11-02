@@ -175,6 +175,116 @@ describe("DesktopSettingsService.read", () => {
 });
 
 describe("DesktopSettingsService.write", () => {
+  test("custom selections persist only the provider so an older reader cannot send their model to Codex", async () => {
+    const svc = makeService();
+    const provider = "custom:12345678-1234-4234-8234-123456789001";
+    await svc.write({ ai: { defaults: { enrichment: { provider, model: "vendor/private-model" } } } });
+
+    const saved = JSON.parse(readFileSync(join(workDir, "settings.json"), "utf8"));
+    expect(saved.ai.defaults.enrichment).toEqual({ provider });
+    expect((await new DesktopSettingsService({ filePath: join(workDir, "settings.json") }).read()).ai.defaults.enrichment)
+      .toEqual({ provider });
+  });
+
+  test("clears a legacy custom model string on an unrelated settings write", async () => {
+    const filePath = join(workDir, "settings.json");
+    const raw = defaultSettings();
+    raw.ai.defaults.enrichment = {
+      provider: "custom:12345678-1234-4234-8234-123456789001",
+      model: "vendor/private-model"
+    };
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+    await new DesktopSettingsService({ filePath }).write({ general: { developerMode: true } });
+    expect(JSON.parse(readFileSync(filePath, "utf8")).ai.defaults.enrichment)
+      .toEqual({ provider: raw.ai.defaults.enrichment.provider });
+  });
+
+  test("preserves newer settings fields across a write by an older build", async () => {
+    const filePath = join(workDir, "settings.json");
+    const raw = defaultSettings() as Settings & { futureSetting?: { nested: string } };
+    raw.futureSetting = { nested: "keep" };
+    (raw.ai as Settings["ai"] & { futureAi?: { enabled: boolean } }).futureAi = { enabled: true };
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+
+    await new DesktopSettingsService({ filePath }).write({ general: { developerMode: true } });
+    const saved = JSON.parse(readFileSync(filePath, "utf8"));
+    expect(saved.futureSetting).toEqual({ nested: "keep" });
+    expect(saved.ai.futureAi).toEqual({ enabled: true });
+  });
+
+  test("preserves newer fields inside custom connections and models on an unrelated write", async () => {
+    const filePath = join(workDir, "settings.json");
+    const raw = defaultSettings();
+    raw.ai.customConnections = [{ id: "12345678-1234-4234-8234-123456789001", name: "Vendor",
+      baseUrl: "https://example.com/v1", protocol: "openai-chat", auth: { type: "none" },
+      futureConnectionOption: true } as unknown as NonNullable<Settings["ai"]["customConnections"]>[number]];
+    raw.ai.customModels = [{ id: "12345678-1234-4234-8234-123456789002",
+      connectionId: "12345678-1234-4234-8234-123456789001", displayName: "Future model",
+      modelId: "vendor/model", capabilities: { vision: true, streaming: true },
+      maxOutputTokens: 4096, futureModelOption: true } as unknown as NonNullable<Settings["ai"]["customModels"]>[number]];
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+
+    await new DesktopSettingsService({ filePath }).write({ general: { developerMode: true } });
+    const saved = JSON.parse(readFileSync(filePath, "utf8"));
+    expect(saved.ai.customConnections).toEqual(raw.ai.customConnections);
+    expect(saved.ai.customModels).toEqual(raw.ai.customModels);
+
+    // An explicit model-list replacement still takes effect.
+    await new DesktopSettingsService({ filePath }).write({ ai: { customModels: [] } });
+    expect(JSON.parse(readFileSync(filePath, "utf8")).ai.customModels).toEqual([]);
+  });
+
+  test("the enrichment rate limit round-trips, clears to null, and an unreadable one reads as the default", async () => {
+    const filePath = join(workDir, "settings.json");
+    const svc = new DesktopSettingsService({ filePath });
+    expect((await svc.read()).ai.enrichmentRateLimit).toBeNull();
+    await svc.write({ ai: { enrichmentRateLimit: { burst: 60, perMinute: 120 } } });
+    expect(JSON.parse(readFileSync(filePath, "utf8")).ai.enrichmentRateLimit).toEqual({ burst: 60, perMinute: 120 });
+    await svc.write({ ai: { enabled: true } });
+    expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentRateLimit).toEqual({
+      burst: 60,
+      perMinute: 120
+    });
+    await svc.write({ ai: { enrichmentRateLimit: null } });
+    expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentRateLimit).toBeNull();
+
+    const raw = defaultSettings() as unknown as { ai: Record<string, unknown> };
+    raw.ai.enrichmentRateLimit = { burst: 0, perMinute: 1e9 };
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+    expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentRateLimit).toBeNull();
+  });
+
+  test("the enrichment fallback is off by default, turns on from {}, merges, and turns off with null", async () => {
+    const filePath = join(workDir, "settings.json");
+    const svc = new DesktopSettingsService({ filePath });
+    expect((await svc.read()).ai.enrichmentFallback).toBeNull();
+    // Turning it on with no leaves is Codex on its managed default.
+    await svc.write({ ai: { enrichmentFallback: {} } });
+    expect(JSON.parse(readFileSync(filePath, "utf8")).ai.enrichmentFallback).toEqual({});
+    await svc.write({ ai: { enrichmentFallback: { reasoning: "low" } } });
+    await svc.write({ ai: { enrichmentFallback: { provider: "acp:kimi" } } });
+    expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentFallback).toEqual({
+      provider: "acp:kimi",
+      reasoning: "low"
+    });
+    // "" clears a leaf, as on a surface default.
+    await svc.write({ ai: { enrichmentFallback: { provider: "" } } });
+    expect((await svc.read()).ai.enrichmentFallback).toEqual({ reasoning: "low" });
+    await svc.write({ ai: { enabled: true } });
+    expect((await svc.read()).ai.enrichmentFallback).toEqual({ reasoning: "low" });
+    await svc.write({ ai: { enrichmentFallback: null } });
+    expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentFallback).toBeNull();
+
+    // A malformed value on disk reads as off, and junk leaves are dropped.
+    const raw = defaultSettings() as unknown as { ai: Record<string, unknown> };
+    raw.ai.enrichmentFallback = "codex";
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+    expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentFallback).toBeNull();
+    raw.ai.enrichmentFallback = { provider: "acp:not-an-agent", reasoning: 7 };
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+    expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentFallback).toEqual({});
+  });
+
   test("write + read round-trips", async () => {
     const svc = makeService();
     const merged = await svc.write({
@@ -450,7 +560,8 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
 
   test("v1 shape missing the newer hotkeys gets the defaults filled in", async () => {
     // Older PwrSnap installs wrote `hotkeys` without `videoCapture` /
-    // `fullScreen` / `allScreens` / `timed` / `reshowFloatOver`.
+    // `fullScreen` / `allScreens` / `timed` / `reshowFloatOver` /
+    // `openLibrary`.
     // parseV1 must fill the gaps so the in-memory shape always has
     // every field — even though the file on disk doesn't yet. The
     // next write upgrades the file in place.
@@ -477,6 +588,9 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(settings.hotkeys.timed).toBe("");
     // Re-show last Float-Over defaults to the three-modifier ⌘⌥⇧F chord.
     expect(settings.hotkeys.reshowFloatOver).toBe(HOST_HOTKEY_DEFAULTS.reshowFloatOver);
+    // Open Library is unbound by default — ⌘⇧L is taken by editors and
+    // by our own Sizzle window, so we never register it out of the box.
+    expect(settings.hotkeys.openLibrary).toBe("");
   });
 
   test("v1 shape missing `library.gridZoom` gets the default filled in; out-of-range clamps", async () => {
@@ -515,6 +629,59 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     );
     const low = await new DesktopSettingsService({ filePath: lowPath }).read();
     expect(low.library.gridZoom).toBe(GRID_ZOOM_MIN);
+  });
+
+  test("v1 shape missing the shape tool's `strokeStyle` gets solid filled in — tool style AND bag slots", async () => {
+    // strokeStyle landed after the tool bag shipped, so older files carry
+    // shape styles (and shape bag slots) without it. Additive: no
+    // schemaVersion bump, and sibling fields survive.
+    const legacyShape = {
+      color: "green",
+      thickness: "large",
+      filled: false,
+      shape: "oval",
+      skewDeg: 15,
+      outline: "black"
+    };
+    const path = join(workDir, "settings-no-stroke-style.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        schemaVersion: 1,
+        editor: {
+          toolStyles: { shape: legacyShape },
+          toolBag: { slots: [{ tool: "shape", style: legacyShape }] }
+        }
+      }),
+      "utf8"
+    );
+    const read = await new DesktopSettingsService({ filePath: path }).read();
+    expect(read.editor.toolStyles.shape).toEqual({ ...legacyShape, strokeStyle: "solid" });
+    expect(read.editor.toolBag.slots[0]).toEqual({
+      tool: "shape",
+      style: { ...legacyShape, strokeStyle: "solid" }
+    });
+
+    const junkPath = join(workDir, "settings-junk-stroke-style.json");
+    writeFileSync(
+      junkPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        editor: { toolStyles: { shape: { ...legacyShape, strokeStyle: "wavy" } } }
+      }),
+      "utf8"
+    );
+    const junk = await new DesktopSettingsService({ filePath: junkPath }).read();
+    expect(junk.editor.toolStyles.shape.strokeStyle).toBe("solid");
+  });
+
+  test("shape `strokeStyle` write + read round-trips", async () => {
+    const svc = makeService();
+    await svc.write({ editor: { toolStyles: { shape: { strokeStyle: "dotted" } } } });
+    const fresh = await makeService().read();
+    expect(fresh.editor.toolStyles.shape.strokeStyle).toBe("dotted");
+    // The rest of the shape style is untouched.
+    expect(fresh.editor.toolStyles.shape.shape).toBe(defaultSettings().editor.toolStyles.shape.shape);
   });
 
   test("v1 shape missing `library.gridCopyPalette` gets the follow/collapsed defaults; junk falls back", async () => {
@@ -566,6 +733,23 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(junk.library.gridCopyPalette).toEqual({
       anchor: "follow",
     });
+  });
+
+  test("library.editToolbarDock round-trips, and a missing or unknown value floats", async () => {
+    const read = async (name: string, library: unknown) => {
+      const filePath = join(workDir, name);
+      writeFileSync(filePath, JSON.stringify({ schemaVersion: 1, library }), "utf8");
+      return (await new DesktopSettingsService({ filePath }).read()).library;
+    };
+    expect((await read("dock-top.json", { editToolbarDock: "top" })).editToolbarDock).toBe("top");
+    // Files from before the field existed.
+    const missing = await read("dock-missing.json", { confirmBeforeTrash: false });
+    expect(missing.editToolbarDock).toBe("float");
+    expect(missing.confirmBeforeTrash).toBe(false);
+    // A value a newer build might write falls back instead of quarantining.
+    expect((await read("dock-junk.json", { editToolbarDock: "sideways" })).editToolbarDock).toBe(
+      "float"
+    );
   });
 
   test("v1 shape missing `general.launchAtLogin` gets the opt-in default (false) filled in", async () => {
@@ -757,6 +941,108 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(settings.recording.imageCaptureCursor).toBe(true);
     // Existing fields in the same block still parse.
     expect(settings.recording.includeSystemAudio).toBe(true);
+  });
+
+  test("v1 recording block missing the MP4 audio flags keeps every recorded track", async () => {
+    // `mp4Include*` are additive. An install that predates the MP4 audio
+    // toggle exported every recorded track; ON keeps that until the user
+    // switches a track off on an export grid.
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({ schemaVersion: 1, recording: { includeMicrophone: true } }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.recording.mp4IncludeMicrophone).toBe(true);
+    expect(settings.recording.mp4IncludeSystemAudio).toBe(true);
+  });
+
+  test("an MP4 audio track switched off stays off across a restart", async () => {
+    const filePath = join(workDir, "settings.json");
+    const svc = new DesktopSettingsService({ filePath });
+    await svc.write({ recording: { mp4IncludeMicrophone: false } });
+
+    const restarted = await new DesktopSettingsService({ filePath }).read();
+    expect(restarted.recording.mp4IncludeMicrophone).toBe(false);
+    expect(restarted.recording.mp4IncludeSystemAudio).toBe(true);
+    // Recording a microphone and exporting one are separate choices.
+    expect(restarted.recording.includeMicrophone).toBe(false);
+  });
+
+  test("the recent-capture sidebar defaults ON, including for files that predate it", async () => {
+    expect(defaultSettings().recording.showRecentCaptureSidebar).toBe(true);
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({ schemaVersion: 1, recording: { showRegionFrame: false } }),
+      "utf8"
+    );
+    const settings = await new DesktopSettingsService({ filePath }).read();
+    expect(settings.recording.showRecentCaptureSidebar).toBe(true);
+    expect(settings.recording.showRegionFrame).toBe(false);
+  });
+
+  test("a hidden recent-capture sidebar stays hidden across a restart", async () => {
+    const filePath = join(workDir, "settings.json");
+    await new DesktopSettingsService({ filePath }).write({
+      recording: { showRecentCaptureSidebar: false }
+    });
+
+    const restarted = await new DesktopSettingsService({ filePath }).read();
+    expect(restarted.recording.showRecentCaptureSidebar).toBe(false);
+    // Hiding the sidebar is not an AI choice.
+    expect(restarted.ai).toEqual(defaultSettings().ai);
+
+    await new DesktopSettingsService({ filePath }).write({
+      recording: { showRecentCaptureSidebar: true }
+    });
+    expect(
+      (await new DesktopSettingsService({ filePath }).read()).recording.showRecentCaptureSidebar
+    ).toBe(true);
+  });
+
+  test("device choices default to none, survive a restart, and clear back to null", async () => {
+    expect(defaultSettings().recording.microphoneDevice).toBeNull();
+    expect(defaultSettings().recording.cameraDevice).toBeNull();
+    const filePath = join(workDir, "settings.json");
+    // A file from before the pickers has no device fields at all.
+    writeFileSync(filePath, JSON.stringify({ schemaVersion: 1, recording: {} }), "utf8");
+    expect((await new DesktopSettingsService({ filePath }).read()).recording.microphoneDevice).toBeNull();
+
+    const mic = { deviceId: "chromium-id-granola", label: "Granola Interface (USB)" };
+    const camera = { deviceId: "chromium-id-bran", label: "Bran Flake Cam" };
+    await new DesktopSettingsService({ filePath }).write({
+      recording: { microphoneDevice: mic, cameraDevice: camera }
+    });
+    const restarted = await new DesktopSettingsService({ filePath }).read();
+    expect(restarted.recording.microphoneDevice).toEqual(mic);
+    expect(restarted.recording.cameraDevice).toEqual(camera);
+    // Picking a device names it; it never arms the source.
+    expect(restarted.recording.includeMicrophone).toBe(defaultSettings().recording.includeMicrophone);
+
+    await new DesktopSettingsService({ filePath }).write({ recording: { microphoneDevice: null } });
+    const cleared = await new DesktopSettingsService({ filePath }).read();
+    expect(cleared.recording.microphoneDevice).toBeNull();
+    expect(cleared.recording.cameraDevice).toEqual(camera);
+  });
+
+  test("a malformed device choice on disk reads as no choice, not a corrupt file", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        recording: { microphoneDevice: { label: "Muesli Mic" }, cameraDevice: "cam", showRegionFrame: false }
+      }),
+      "utf8"
+    );
+    const settings = await new DesktopSettingsService({ filePath }).read();
+    expect(settings.recording.microphoneDevice).toBeNull();
+    expect(settings.recording.cameraDevice).toBeNull();
+    // The rest of the block is untouched.
+    expect(settings.recording.showRegionFrame).toBe(false);
   });
 
   test("v1 recording block preserves an explicit cursor:false choice", async () => {
@@ -1509,6 +1795,18 @@ describe("mergeSettings", () => {
     expect(dragged.library.gridZoom).toBe(current.library.gridZoom);
   });
 
+  test("library.editToolbarDock defaults to float and a patch moves only it", () => {
+    const current = defaultSettings();
+    expect(current.library.editToolbarDock).toBe("float");
+    const docked = mergeSettings(current, { library: { editToolbarDock: "right" } });
+    expect(docked.library.editToolbarDock).toBe("right");
+    expect(docked.library.gridZoom).toBe(current.library.gridZoom);
+    // A patch that does not name it leaves the dock where it was.
+    expect(mergeSettings(docked, { library: { gridZoom: 280 } }).library.editToolbarDock).toBe(
+      "right"
+    );
+  });
+
   test("storage.filenameTimestampZone patch overwrites only the specified field", () => {
     const current = defaultSettings();
     expect(current.storage.filenameTimestampZone).toBe("local");
@@ -1923,5 +2221,66 @@ describe("DesktopSettingsService updates train/track", () => {
       train: "stable",
       selectionSource: "user"
     });
+  });
+});
+
+describe("DesktopSettingsService — the Draw tool family", () => {
+  test("a settings file from before Draw existed reads the factory Draw style", async () => {
+    const filePath = join(workDir, "settings.json");
+    const raw = defaultSettings();
+    delete (raw.editor.toolStyles as Partial<Settings["editor"]["toolStyles"]>).draw;
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+    const settings = await new DesktopSettingsService({ filePath }).read();
+    expect(settings.editor.toolStyles.draw).toEqual({
+      mode: "pen",
+      color: "accent",
+      thickness: "auto"
+    });
+  });
+
+  test("a Draw slot round-trips, and an eraser slot (a hand edit) reads as a pen of the same color", async () => {
+    const filePath = join(workDir, "settings.json");
+    const raw = defaultSettings();
+    raw.editor.toolBag.slots[8] = {
+      tool: "draw",
+      style: { mode: "marker", color: "yellow", thickness: "large" }
+    };
+    raw.editor.toolBag.slots[7] = {
+      tool: "draw",
+      style: { mode: "eraser", color: "green", thickness: "small" }
+    };
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+    const settings = await new DesktopSettingsService({ filePath }).read();
+    expect(settings.editor.toolBag.slots[8]).toEqual({
+      tool: "draw",
+      style: { mode: "marker", color: "yellow", thickness: "large" }
+    });
+    expect(settings.editor.toolBag.slots[7]).toEqual({
+      tool: "draw",
+      style: { mode: "pen", color: "green", thickness: "small" }
+    });
+  });
+
+  test("a slot naming a tool this build does not know reads as empty — what a pre-Draw build does with a Draw slot", async () => {
+    const filePath = join(workDir, "settings.json");
+    const raw = defaultSettings() as unknown as { editor: { toolBag: { slots: unknown[] } } };
+    raw.editor.toolBag.slots[8] = { tool: "lasso", style: { color: "red" } };
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+    const settings = await new DesktopSettingsService({ filePath }).read();
+    expect(settings.editor.toolBag.slots[8]).toBeNull();
+  });
+
+  test("an unrelated write keeps a bag slot this build cannot read; only a bag edit replaces it", async () => {
+    // This is the forward-compat half of the older-build note in
+    // docs/architecture.md: the raw slots array survives untouched
+    // until the bag itself is written.
+    const filePath = join(workDir, "settings.json");
+    const raw = defaultSettings() as unknown as { editor: { toolBag: { slots: unknown[] } } };
+    const future = { tool: "lasso", style: { color: "red" } };
+    raw.editor.toolBag.slots[8] = future;
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+    const svc = new DesktopSettingsService({ filePath });
+    await svc.write({ general: { developerMode: true } });
+    expect(JSON.parse(readFileSync(filePath, "utf8")).editor.toolBag.slots[8]).toEqual(future);
   });
 });

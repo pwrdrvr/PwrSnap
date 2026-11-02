@@ -414,6 +414,51 @@ describe("useSizzleProject persistence state", () => {
     expect(snapshot().active?.scenes).toEqual([localScene]);
   });
 
+  test("a video added as a clip carries no trim of its own — it follows the Library edit", async () => {
+    // The capture is trimmed to 2–8 s in the Library. Copying that onto
+    // the clip would freeze it: a later Library re-trim (or a longer
+    // recording's 60 s window check) would never reach the reel.
+    const seq: SizzleScene = {
+      id: "sc_seq",
+      kind: "sequence",
+      captureId: "cap_img",
+      scriptLine: "narration",
+      narration: "narration",
+      durationOverrideSec: null,
+      mediaTrim: null,
+      audioSource: "voiceover",
+      transition: "crossfade",
+      beats: [{ id: "bt_0", captureId: "cap_img", timing: { kind: "auto" }, mediaTrim: null, transition: "cut", videoFit: "smart-fit" }]
+    };
+    const video = {
+      id: "cap_v",
+      kind: "video",
+      video: { durationSec: 10, defaultRange: { start: 2, end: 8 }, segments: [{ start: 2, end: 8 }] }
+    };
+    const { dispatch } = installApi((name) => {
+      if (name === "sizzle:list") return { ok: true, value: { projects: [project({ scenes: [seq] })] } };
+      if (name === "library:list" || name === "library:listByIds") return { ok: true, value: { rows: [video] } };
+      if (name === "codex:enrichment") return { ok: true, value: null };
+      if (name === "sizzle:update") return { ok: true, value: project() };
+      return { ok: true, value: undefined };
+    });
+    await mountHook();
+
+    await act(async () => {
+      await snapshot().onAddSequenceBeat("sc_seq", "cap_v");
+    });
+    await act(async () => {
+      await snapshot().onAddScene("cap_v");
+    });
+    const scenes = snapshot().active!.scenes;
+    expect(scenes[0]!.beats!.map((b) => [b.captureId, b.mediaTrim])).toEqual([
+      ["cap_img", null],
+      ["cap_v", null]
+    ]);
+    expect(scenes[1]!.beats![0]!.mediaTrim).toBeNull();
+    expect(dispatch).toHaveBeenCalledWith("codex:enrichment", { captureId: "cap_v" });
+  });
+
   test("double create dispatches once and dedupes the committed broadcast echo", async () => {
     const fresh = project({ id: "sz_new", name: "Untitled Sizzle" });
     const created = deferred<unknown>();

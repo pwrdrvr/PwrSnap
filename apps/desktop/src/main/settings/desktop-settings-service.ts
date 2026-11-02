@@ -1,3 +1,4 @@
+import { parseCustomAi, RecordingDevicePreferenceSchema, type RecordingDevicePreference } from "@pwrsnap/shared";
 // Internal settings persistence adapter. DesktopSettingsStore is the sole
 // production owner. The first read hydrates an immutable snapshot from disk;
 // subsequent reads stay in memory for the process lifetime. Reads
@@ -7,7 +8,7 @@
 // one promise chain and replace the snapshot only after rename succeeds.
 
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import type {
   AcpAgentPreference,
   AcpSettings,
@@ -21,12 +22,14 @@ import type {
   BlurEffectMode,
   BlurRadiusSetting,
   BlurToolStyle,
+  DrawToolMode,
+  DrawToolStyle,
   ChatSettings,
   EditorCoachmarks,
-  EditorMatchingText,
   EditorSettings,
   EditorSidebarPanel,
   EditorSidebarSettings,
+  EditorToolBag,
   EditorToolStyles,
   FilenameTimestampZone,
   CapturesLocation,
@@ -48,6 +51,7 @@ import type {
   ShortcutPlatform,
   TextFontWeight,
   TextToolStyle,
+  ToolBagSlot,
   ToolColor,
   ToolSizePreset,
   QuickCaptureAction,
@@ -56,7 +60,9 @@ import type {
   UpdateTrain
 } from "@pwrsnap/shared";
 import {
+  isAiEnrichmentRateLimit,
   isOverlayOutlineMode,
+  isStrokePatternStyle,
   DEFAULT_AI_SURFACE_DEFAULTS,
   DEFAULT_CHAT_SETTINGS,
   DEFAULT_CODEX_CAPTION_MODEL,
@@ -71,6 +77,7 @@ import {
   GRID_ZOOM_MAX,
   GRID_ZOOM_MIN,
   MAX_HIGHLIGHT_OPACITY,
+  defaultEditorToolBag,
   defaultEditorToolStyles,
   isAiReasoningEffort,
   isAppearanceTheme,
@@ -81,10 +88,13 @@ import {
   isHotCpuProfileStartDelayMs,
   isHotCpuProfileTriggerMode,
   isGridCopyPaletteAnchor,
+  isEditToolbarDock,
   isLibrarySidebarTab,
   isLocalAgentCapability,
   isQuickCaptureAction,
   QUICK_CAPTURE_ACTION_DEFAULT,
+  SELECTOR_HUD_STYLE_DEFAULT,
+  isSelectorHudStyle,
   RECORDING_MEDIA_DEFAULTS,
   findRoleForCapabilities,
   defaultLocalAgentRoleConstraints,
@@ -98,7 +108,8 @@ import {
   UPDATE_CHANNEL_DEFAULT,
   UPDATE_SELECTION_SOURCE_DEFAULT,
   UPDATE_TRAIN_DEFAULT,
-  shortcutPlatformFromString
+  shortcutPlatformFromString,
+  TOOL_BAG_SIZE
 } from "@pwrsnap/shared";
 import { getMainLogger } from "../log";
 const LEGACY_ENRICHMENT_DEFAULT_MODEL = "gpt-5.4-mini";
@@ -169,6 +180,7 @@ export function defaultSettings(
       enabled: false,
       consentAcceptedAt: null,
       budgetSafetyDisabledAt: null,
+      enrichmentRateLimit: null,
       autoAcceptSuggestions: false,
       chat: { ...DEFAULT_CHAT_SETTINGS, sensitiveDataPatterns: [] },
       // Empty surface objects mean "follow the managed default". Runtime and
@@ -179,9 +191,14 @@ export function defaultSettings(
         sizzleChat: { ...DEFAULT_AI_SURFACE_DEFAULTS.sizzleChat },
         enrichment: { ...DEFAULT_AI_SURFACE_DEFAULTS.enrichment }
       },
+      // Off: an unreachable caption backend fails the run unless the user
+      // picked somewhere else to send it.
+      enrichmentFallback: null,
       // No ACP agents enabled on a fresh install. The user opts agents
       // into the enabled set from Settings → AI → ACP agents (additive,
       // no schemaVersion bump).
+      customConnections: [],
+      customModels: [],
       acp: { enabledAgentIds: [], agents: {} }
     },
     // Single source of truth shared with the renderer's "Reset to
@@ -246,16 +263,32 @@ export function defaultSettings(
       // step — ↵ still snaps. Users who never want the affordance pick
       // "snap"; users who mostly record pick "record".
       quickCaptureAction: QUICK_CAPTURE_ACTION_DEFAULT,
+      selectorHud: SELECTOR_HUD_STYLE_DEFAULT,
       // Audio OFF, video cursor ON — from shared, because the capture
       // path needs the same three values when its settings read fails
       // and must not import this module to get them. Rationale for each
       // lives on the constant.
       includeSystemAudio: RECORDING_MEDIA_DEFAULTS.includeSystemAudio,
       includeMicrophone: RECORDING_MEDIA_DEFAULTS.includeMicrophone,
+      // An MP4 keeps every track the take recorded until the user turns
+      // one off on an export grid. Recording audio is already opt-in, so
+      // a track that exists is one they asked for; the export toggle is
+      // the undo for the take where they forgot.
+      mp4IncludeMicrophone: true,
+      mp4IncludeSystemAudio: true,
       videoCaptureCursor: RECORDING_MEDIA_DEFAULTS.videoCaptureCursor,
       // Image cursor capture is settings-only (consumed by the still
       // pipeline, never by a recording), so it stays local.
       imageCaptureCursor: true,
+      // The region frame is ON: a recording with no on-screen boundary
+      // was the reported gap, and the overlay never reaches the file on
+      // any platform. Off is a taste preference, not a safety valve.
+      showRegionFrame: true,
+      showRecentCaptureSidebar: true,
+      // No device chosen: the system default microphone, and the first
+      // camera Chromium offers. The selector's chips write a choice.
+      microphoneDevice: null,
+      cameraDevice: null,
       lastRoutedPermissionFingerprint: "",
       // Fresh install has never triggered the macOS Screen Recording
       // prompt, so the System Permissions page + the capture gate show
@@ -301,7 +334,11 @@ function defaultLibrarySettings(): Settings["library"] {
     confirmBeforeTrash: true,
     // Matches the historical CSS `minmax(180px, 1fr)`. Pinch-to-zoom on
     // the grid steps this through GRID_ZOOM_LEVELS.
-    gridZoom: GRID_ZOOM_DEFAULT
+    gridZoom: GRID_ZOOM_DEFAULT,
+    // A copy keeps its source's edits unless the user says otherwise.
+    duplicateWithEdits: { image: true, video: true },
+    // The edit toolbar floats over the canvas until the user docks it.
+    editToolbarDock: "float"
   };
 }
 
@@ -316,16 +353,11 @@ function defaultEditorSettings(): EditorSettings {
     // while `settings:read` is in flight — a fresh install's persisted
     // defaults and the pre-settle in-memory defaults cannot drift.
     toolStyles: defaultEditorToolStyles(),
+    toolBag: defaultEditorToolBag(),
     coachmarks: {
       // Flips true the first time the user opens any tool style popover
       // and the 3s stoplight micro-coachmark auto-dismisses.
       stoplightSeen: false
-    },
-    matchingText: {
-      // "+ Add label" affordance appears after arrow placement by
-      // default. User can disable from Settings → Editor if it feels
-      // intrusive for their workflow.
-      enabled: true
     },
     sidebar: {
       // Default to collapsed (hover-pop only) so a first-time user
@@ -371,6 +403,11 @@ function pickStringOrNull(value: unknown, fallback: string | null): string | nul
   if (value === null) return null;
   if (typeof value === "string") return value;
   return fallback;
+}
+
+function pickDevicePreference(value: unknown): RecordingDevicePreference | null {
+  const parsed = RecordingDevicePreferenceSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
 }
 
 function pickMode(value: unknown): "auto" | "pinned" {
@@ -457,13 +494,21 @@ function pickToolSizePreset(value: unknown, fallback: ToolSizePreset | number): 
 }
 
 function pickArrowEndStyle(value: unknown, fallback: ArrowEndStyle): ArrowEndStyle {
-  if (value === "filled-triangle" || value === "open-triangle" || value === "line" || value === "dot") return value;
+  if (
+    value === "filled-triangle" ||
+    value === "open-triangle" ||
+    value === "line" ||
+    value === "dot" ||
+    value === "bar"
+  ) {
+    return value;
+  }
   return fallback;
 }
 
-function pickArrowStemStyle(value: unknown, fallback: ArrowStemStyle): ArrowStemStyle {
-  if (value === "solid" || value === "dashed" || value === "dotted") return value;
-  return fallback;
+/** Arrow stem and shape outline share one pattern value space. */
+function pickStrokePatternStyle(value: unknown, fallback: ArrowStemStyle): ArrowStemStyle {
+  return isStrokePatternStyle(value) ? value : fallback;
 }
 
 function pickTextFontWeight(value: unknown, fallback: TextFontWeight): TextFontWeight {
@@ -507,7 +552,7 @@ function parseArrowToolStyle(raw: unknown, defaults: ArrowToolStyle): ArrowToolS
     color: pickToolColor(raw.color, defaults.color),
     thickness: pickToolSizePreset(raw.thickness, defaults.thickness),
     endStyle: pickArrowEndStyle(raw.endStyle, defaults.endStyle),
-    stemStyle: pickArrowStemStyle(raw.stemStyle, defaults.stemStyle),
+    stemStyle: pickStrokePatternStyle(raw.stemStyle, defaults.stemStyle),
     doubleEnded: pickBoolean(raw.doubleEnded, defaults.doubleEnded),
     outline: pickOverlayOutlineMode(raw.outline, defaults.outline)
   };
@@ -554,6 +599,9 @@ function parseShapeToolStyle(raw: unknown, defaults: ShapeToolStyle): ShapeToolS
     filled: pickBoolean(raw.filled, defaults.filled),
     shape: pickShapeKind(raw.shape, defaults.shape),
     skewDeg: pickFiniteNumber(raw.skewDeg, defaults.skewDeg),
+    // Added after the tool bag shipped: older files carry no
+    // strokeStyle, so the default fills in.
+    strokeStyle: pickStrokePatternStyle(raw.strokeStyle, defaults.strokeStyle),
     outline: pickOverlayOutlineMode(raw.outline, defaults.outline)
   };
 }
@@ -579,6 +627,22 @@ function parseHighlightToolStyle(raw: unknown, defaults: HighlightToolStyle): Hi
   };
 }
 
+function pickDrawToolMode(value: unknown, fallback: DrawToolMode): DrawToolMode {
+  if (value === "pen" || value === "marker" || value === "airbrush" || value === "eraser") {
+    return value;
+  }
+  return fallback;
+}
+
+function parseDrawToolStyle(raw: unknown, defaults: DrawToolStyle): DrawToolStyle {
+  if (!isRecord(raw)) return defaults;
+  return {
+    mode: pickDrawToolMode(raw.mode, defaults.mode),
+    color: pickToolColor(raw.color, defaults.color),
+    thickness: pickToolSizePreset(raw.thickness, defaults.thickness)
+  };
+}
+
 function parseEditorToolStyles(raw: unknown, defaults: EditorToolStyles): EditorToolStyles {
   if (!isRecord(raw)) return defaults;
   // Legacy fallback: pre-Shape rename, the tool block was keyed
@@ -593,21 +657,72 @@ function parseEditorToolStyles(raw: unknown, defaults: EditorToolStyles): Editor
     text: parseTextToolStyle(raw.text, defaults.text),
     shape: parseShapeToolStyle(shapeRaw, defaults.shape),
     blur: parseBlurToolStyle(raw.blur, defaults.blur),
-    highlight: parseHighlightToolStyle(raw.highlight, defaults.highlight)
+    highlight: parseHighlightToolStyle(raw.highlight, defaults.highlight),
+    // Absent in every settings file written before the Draw family
+    // existed — those pick up the factory Draw style.
+    draw: parseDrawToolStyle(raw.draw, defaults.draw)
   };
+}
+
+/** Longest slot label the bag keeps. The toolbar shows it in a tooltip;
+ *  anything longer is a paste accident, not a name. */
+const TOOL_BAG_LABEL_MAX = 40;
+
+function parseToolBagSlot(raw: unknown): ToolBagSlot | null {
+  if (!isRecord(raw)) return null;
+  const factory = defaultEditorToolStyles();
+  const label =
+    typeof raw.label === "string" && raw.label.trim() !== ""
+      ? raw.label.trim().slice(0, TOOL_BAG_LABEL_MAX)
+      : undefined;
+  const withLabel = <T extends ToolBagSlot>(slot: T): T =>
+    label === undefined ? slot : { ...slot, label };
+  // Each slot's style runs through the same per-tool parser as
+  // `toolStyles`, against the FACTORY style for that tool — a slot
+  // missing a field (written by an older build) gets the default for
+  // it, never another slot's value.
+  switch (raw.tool) {
+    case "arrow":
+      return withLabel({ tool: "arrow", style: parseArrowToolStyle(raw.style, factory.arrow) });
+    case "text":
+      return withLabel({ tool: "text", style: parseTextToolStyle(raw.style, factory.text) });
+    case "shape":
+      return withLabel({ tool: "shape", style: parseShapeToolStyle(raw.style, factory.shape) });
+    case "blur":
+      return withLabel({ tool: "blur", style: parseBlurToolStyle(raw.style, factory.blur) });
+    case "highlight":
+      return withLabel({
+        tool: "highlight",
+        style: parseHighlightToolStyle(raw.style, factory.highlight)
+      });
+    case "draw": {
+      // A slot never holds the eraser (it has no style to save); one
+      // that says so — a hand edit — keeps its color and weight as a pen.
+      const style = parseDrawToolStyle(raw.style, factory.draw);
+      return withLabel({
+        tool: "draw",
+        style: style.mode === "eraser" ? { ...style, mode: "pen" } : style
+      });
+    }
+    // Unknown tool: the slot comes back empty. That is also what a build
+    // that predates a tool does with a slot holding it — see the
+    // older-build note in docs/architecture.md.
+    default:
+      return null;
+  }
+}
+
+function parseEditorToolBag(raw: unknown, defaults: EditorToolBag): EditorToolBag {
+  if (!isRecord(raw) || !Array.isArray(raw.slots)) return defaults;
+  const slots = raw.slots.slice(0, TOOL_BAG_SIZE).map(parseToolBagSlot);
+  while (slots.length < TOOL_BAG_SIZE) slots.push(null);
+  return { slots };
 }
 
 function parseEditorCoachmarks(raw: unknown, defaults: EditorCoachmarks): EditorCoachmarks {
   if (!isRecord(raw)) return defaults;
   return {
     stoplightSeen: pickBoolean(raw.stoplightSeen, defaults.stoplightSeen)
-  };
-}
-
-function parseEditorMatchingText(raw: unknown, defaults: EditorMatchingText): EditorMatchingText {
-  if (!isRecord(raw)) return defaults;
-  return {
-    enabled: pickBoolean(raw.enabled, defaults.enabled)
   };
 }
 
@@ -623,8 +738,8 @@ function parseEditorSettings(raw: unknown, defaults: EditorSettings): EditorSett
   if (!isRecord(raw)) return defaults;
   return {
     toolStyles: parseEditorToolStyles(raw.toolStyles, defaults.toolStyles),
+    toolBag: parseEditorToolBag(raw.toolBag, defaults.toolBag),
     coachmarks: parseEditorCoachmarks(raw.coachmarks, defaults.coachmarks),
-    matchingText: parseEditorMatchingText(raw.matchingText, defaults.matchingText),
     sidebar: parseEditorSidebar(raw.sidebar, defaults.sidebar)
   };
 }
@@ -762,7 +877,10 @@ function parseV1(
     reshowFloatOver: pickString(
       hotkeys.reshowFloatOver,
       defaults.hotkeys.reshowFloatOver
-    )
+    ),
+    // `openLibrary` landed after v1 shipped; older files won't have it.
+    // pickString fills in the current default ("" = unbound).
+    openLibrary: pickString(hotkeys.openLibrary, defaults.hotkeys.openLibrary)
   };
   const storedDefaultsMigrationIndex =
     storedDefaultsMigrationVersion === undefined
@@ -824,6 +942,11 @@ function parseV1(
         ai.budgetSafetyDisabledAt,
         defaults.ai.budgetSafetyDisabledAt
       ),
+      // An unreadable override falls back to the default rather than to
+      // some other limit the user never chose.
+      enrichmentRateLimit: isAiEnrichmentRateLimit(ai.enrichmentRateLimit)
+        ? { burst: ai.enrichmentRateLimit.burst, perMinute: ai.enrichmentRateLimit.perMinute }
+        : defaults.ai.enrichmentRateLimit,
       autoAcceptSuggestions: pickBoolean(
         ai.autoAcceptSuggestions,
         defaults.ai.autoAcceptSuggestions
@@ -842,10 +965,20 @@ function parseV1(
       // Explicit provider/model/effort choices are preserved.
       // No `schemaVersion` bump per the additive convention.
       defaults: aiSurfaceDefaults,
+      // Additive; absent or malformed → off. `{}` is a valid ON state (Codex
+      // on its managed default), so only a non-object reads as off.
+      enrichmentFallback: isRecord(ai.enrichmentFallback)
+        ? parseAiSurfaceDefault(ai.enrichmentFallback)
+        : null,
       // `ai.acp.*` is additive — older files won't have it. Falls through
       // to an empty enabled set; only recognized built-in agent ids
       // survive the parse so a stale/forged file can't enable an unknown
       // agent. No `schemaVersion` bump per the additive convention.
+      // Direct API connections + models are additive. Parsed per entry: a
+      // bad one is dropped instead of quarantining the whole file, and the
+      // first cut's flat one-entry-per-model shape is regrouped into
+      // connections (see parseCustomAi).
+      ...parseCustomAi(ai.customConnections, ai.customModels),
       acp: parseAcpSettings(ai.acp)
     },
     // Missing fields use the current platform defaults. The managed-default
@@ -937,14 +1070,45 @@ function parseV1(
         recording.quickCaptureAction,
         defaults.recording.quickCaptureAction
       ),
+      // Additive too: an older file takes the shutter.
+      selectorHud: isSelectorHudStyle(recording.selectorHud)
+        ? recording.selectorHud
+        : defaults.recording.selectorHud,
       includeSystemAudio: pickBoolean(recording.includeSystemAudio, defaults.recording.includeSystemAudio),
       includeMicrophone: pickBoolean(recording.includeMicrophone, defaults.recording.includeMicrophone),
+      // `mp4Include*` landed with the MP4 export audio toggle; older files
+      // won't have them. The ON default keeps what those installs already
+      // exported (every recorded track).
+      mp4IncludeMicrophone: pickBoolean(
+        recording.mp4IncludeMicrophone,
+        defaults.recording.mp4IncludeMicrophone
+      ),
+      mp4IncludeSystemAudio: pickBoolean(
+        recording.mp4IncludeSystemAudio,
+        defaults.recording.mp4IncludeSystemAudio
+      ),
       // `videoCaptureCursor` / `imageCaptureCursor` landed with the
       // cursor-capture-control feature; older files won't have them.
       // pickBoolean fills the ON default so existing installs keep the
       // pre-setting behavior (video bakes in the cursor).
       videoCaptureCursor: pickBoolean(recording.videoCaptureCursor, defaults.recording.videoCaptureCursor),
       imageCaptureCursor: pickBoolean(recording.imageCaptureCursor, defaults.recording.imageCaptureCursor),
+      // `showRegionFrame` landed with the recording-frame overlay; older
+      // files won't have it. pickBoolean fills the ON default, so an
+      // existing install gains the frame on first launch after the
+      // update rather than having to find the switch.
+      showRegionFrame: pickBoolean(recording.showRegionFrame, defaults.recording.showRegionFrame),
+      // `showRecentCaptureSidebar` landed after the dock; older files get
+      // the ON default, which is what they already had.
+      showRecentCaptureSidebar: pickBoolean(
+        recording.showRecentCaptureSidebar,
+        defaults.recording.showRecentCaptureSidebar
+      ),
+      // The device choices landed with the selector's device pickers;
+      // older files have none, and a malformed one reads as "no choice"
+      // rather than failing the whole file.
+      microphoneDevice: pickDevicePreference(recording.microphoneDevice),
+      cameraDevice: pickDevicePreference(recording.cameraDevice),
       lastRoutedPermissionFingerprint: pickString(
         recording.lastRoutedPermissionFingerprint,
         defaults.recording.lastRoutedPermissionFingerprint
@@ -1030,6 +1194,7 @@ function parseAiSurfaceDefault(raw: unknown): AiSurfaceDefault {
     // modelProvider token (e.g. "openai" on the old enrichment surface) is
     // dropped → Codex default. "" / "codex" also drop to the implicit default.
     const provider = rec.provider.trim();
+    if (/^custom:[0-9a-f-]{36}$/i.test(provider)) out.provider = provider;
     if (provider.startsWith("acp:") && isBuiltInAcpAgentId(provider.slice("acp:".length))) {
       out.provider = provider;
     }
@@ -1037,6 +1202,9 @@ function parseAiSurfaceDefault(raw: unknown): AiSurfaceDefault {
   if (typeof rec.model === "string" && rec.model.trim().length > 0) {
     out.model = rec.model.trim();
   }
+  // A custom provider's UUID is the model selection. Keeping a second model
+  // string lets an older build drop the provider but send that string to Codex.
+  if (out.provider?.startsWith("custom:")) delete out.model;
   if (isAiReasoningEffort(rec.reasoning)) {
     out.reasoning = rec.reasoning;
   }
@@ -1122,13 +1290,26 @@ function parseLibrarySettings(
     raw.gridCopyPalette,
     defaults.gridCopyPalette
   );
+  // duplicateWithEdits is additive and parsed per leaf, so one bad
+  // value keeps the other kind's choice.
+  const dupRaw = isRecord(raw.duplicateWithEdits) ? raw.duplicateWithEdits : {};
+  const duplicateWithEdits = {
+    image: pickBoolean(dupRaw.image, defaults.duplicateWithEdits.image),
+    video: pickBoolean(dupRaw.video, defaults.duplicateWithEdits.video)
+  };
+  // editToolbarDock is additive; an unknown value floats.
+  const editToolbarDock = isEditToolbarDock(raw.editToolbarDock)
+    ? raw.editToolbarDock
+    : defaults.editToolbarDock;
   const detailRaw = raw.detailRail;
   if (!isRecord(detailRaw)) {
     return {
       detailRail: defaults.detailRail,
       gridCopyPalette,
       confirmBeforeTrash,
-      gridZoom
+      gridZoom,
+      duplicateWithEdits,
+      editToolbarDock
     };
   }
   // Route the on-disk tab value through the shared type guard so the
@@ -1147,7 +1328,9 @@ function parseLibrarySettings(
     },
     gridCopyPalette,
     confirmBeforeTrash,
-    gridZoom
+    gridZoom,
+    duplicateWithEdits,
+    editToolbarDock
   };
 }
 
@@ -1506,6 +1689,9 @@ export class DesktopSettingsService {
    *  processes each hydrate once, while settings writes remain agent-owned
    *  and renderer/main listeners receive the existing change broadcast. */
   private snapshot: Settings | null = null;
+  /** Raw JSON keeps fields this build does not understand when a newer build
+   * wrote the file. They remain on disk through ordinary settings writes. */
+  private rawDocument: Record<string, unknown> | null = null;
 
   /** Coalesces concurrent cold readers so startup consumers (storage,
    *  hotkeys, tray, updater, AI) never race into duplicate disk parses. */
@@ -1605,6 +1791,7 @@ export class DesktopSettingsService {
       raw = await this.readTextFile(this.filePath);
     } catch (cause) {
       if (isNodeError(cause) && cause.code === "ENOENT") {
+        this.rawDocument = null;
         return this.replaceSnapshot(
           this.withInferredUpdates(defaultSettings(this.shortcutPlatform))
         );
@@ -1636,7 +1823,10 @@ export class DesktopSettingsService {
         this.currentAppVersion(),
         this.shortcutPlatform
       );
-      if (normalized !== null) return this.replaceSnapshot(normalized);
+      if (normalized !== null) {
+        this.rawDocument = isRecord(parsed) ? parsed : null;
+        return this.replaceSnapshot(normalized);
+      }
     }
 
     await this.quarantine("no_shape_matched");
@@ -1683,19 +1873,31 @@ export class DesktopSettingsService {
     patch: SettingsPatch,
     options: DesktopSettingsWriteOptions = {}
   ): Promise<Settings> {
+    return this.writeComputed(() => patch, options);
+  }
+
+  /** Derive a conditional patch inside the same queue as user writes. An
+   *  omitted patch leaves both disk and the immutable snapshot untouched. */
+  async writeComputed(
+    computePatch: (current: Settings) => SettingsPatch | undefined,
+    options: DesktopSettingsWriteOptions = {}
+  ): Promise<Settings> {
     const task = async (): Promise<Settings> => {
       const current = await this.read();
+      const patch = computePatch(current);
+      if (patch === undefined) return current;
       const merged = mergeSettings(current, patch);
       // A disk round-trip used to re-run shape normalization after every
       // write. Preserve that invariant without the I/O: additive defaults and
       // migrations must appear in the cached result exactly as they would
       // after a fresh process launch.
       const normalized = this.normalizeForSnapshot(merged);
+      const persisted = preserveUnknownSettingsFields(this.rawDocument, current, normalized, patch);
       const prepared = options.prepare === undefined
         ? undefined
         : await options.prepare(current, merged);
       try {
-        await this.atomicWriteJson(normalized);
+        await this.atomicWriteJson(persisted);
       } catch (cause) {
         if (prepared !== undefined) {
           try {
@@ -1715,6 +1917,7 @@ export class DesktopSettingsService {
       // The rename is the settings commit point. Publish the same canonical
       // shape immediately, then finalize the already-staged external state.
       this.replaceSnapshot(normalized);
+      this.rawDocument = persisted;
       prepared?.commit();
       return deepFreeze(merged);
     };
@@ -1812,6 +2015,45 @@ function isNodeError(value: unknown): value is NodeJS.ErrnoException {
   return value instanceof Error && typeof (value as NodeJS.ErrnoException).code === "string";
 }
 
+/** Retain keys from a newer settings shape that this build cannot parse.
+ * Known keys are governed by the normalized snapshot; explicit patch keys
+ * also count as known so clearing an optional value removes it from disk. */
+function preserveUnknownSettingsFields(
+  raw: Record<string, unknown> | null,
+  current: Settings,
+  next: Settings,
+  patch: SettingsPatch
+): Settings {
+  const merge = (oldValue: unknown, knownValue: unknown, newValue: unknown, changedValue: unknown): unknown => {
+    // An older parser may drop an entire array entry when a newer build adds
+    // a strict-schema field to it. Keep the raw array until this build edits
+    // that array explicitly; otherwise a harmless settings toggle erases it.
+    if (Array.isArray(newValue)) {
+      return changedValue === undefined && Array.isArray(oldValue) ? oldValue : newValue;
+    }
+    if (!isRecord(newValue)) return newValue;
+    const old = isRecord(oldValue) ? oldValue : {};
+    const known = isRecord(knownValue) ? knownValue : {};
+    const changed = isRecord(changedValue) ? changedValue : {};
+    const result: Record<string, unknown> = { ...old };
+    for (const key of new Set([...Object.keys(known), ...Object.keys(changed)])) {
+      if (!Object.hasOwn(newValue, key)) delete result[key];
+    }
+    for (const [key, value] of Object.entries(newValue)) {
+      result[key] = merge(old[key], known[key], value, changed[key]);
+    }
+    return result;
+  };
+  const persisted = merge(raw, current, next, patch) as Settings;
+  // The parser intentionally omits this legacy duplicate even on an
+  // unrelated write. It must not survive through the forward-field layer.
+  for (const surface of ["libraryChat", "sizzleChat", "enrichment"] as const) {
+    const value = persisted.ai.defaults[surface];
+    if (value.provider?.startsWith("custom:")) delete value.model;
+  }
+  return persisted;
+}
+
 export function mergeSettings(current: Settings, patch: SettingsPatch): Settings {
   return {
     schemaVersion: 1,
@@ -1846,6 +2088,8 @@ function mergeAi(current: Settings["ai"], patch: SettingsPatch["ai"]): Settings[
       patch.budgetSafetyDisabledAt !== undefined
         ? patch.budgetSafetyDisabledAt
         : current.budgetSafetyDisabledAt,
+    enrichmentRateLimit:
+      patch.enrichmentRateLimit !== undefined ? patch.enrichmentRateLimit : current.enrichmentRateLimit,
     autoAcceptSuggestions:
       patch.autoAcceptSuggestions !== undefined
         ? patch.autoAcceptSuggestions
@@ -1855,6 +2099,14 @@ function mergeAi(current: Settings["ai"], patch: SettingsPatch["ai"]): Settings[
     // a "leave alone" sentinel — substrate rule `undefined ≠ null ≠ ""`.
     chat: mergeChat(current.chat, patch.chat),
     defaults: mergeAiSurfaceDefaults(current.defaults, patch.defaults),
+    enrichmentFallback:
+      patch.enrichmentFallback === undefined
+        ? current.enrichmentFallback ?? null
+        : patch.enrichmentFallback === null
+          ? null
+          : mergeAiSurfaceDefault(current.enrichmentFallback ?? {}, patch.enrichmentFallback),
+    customConnections: patch.customConnections ?? current.customConnections ?? [],
+    customModels: patch.customModels ?? current.customModels ?? [],
     acp: mergeAcp(current.acp, patch.acp)
   };
 }
@@ -1958,6 +2210,7 @@ function mergeAiSurfaceDefault(
     if (patch.reasoning === "") delete out.reasoning;
     else out.reasoning = patch.reasoning;
   }
+  if (out.provider?.startsWith("custom:")) delete out.model;
   return out;
 }
 
@@ -2003,7 +2256,15 @@ function mergeLibrary(
     gridZoom:
       patch.gridZoom !== undefined
         ? clampGridZoom(patch.gridZoom)
-        : current.gridZoom
+        : current.gridZoom,
+    duplicateWithEdits: mergeSection(
+      current.duplicateWithEdits,
+      patch.duplicateWithEdits
+    ),
+    editToolbarDock:
+      patch.editToolbarDock !== undefined
+        ? patch.editToolbarDock
+        : current.editToolbarDock
   };
 }
 
@@ -2033,8 +2294,10 @@ function mergeEditor(
   if (patch === undefined) return current;
   return {
     toolStyles: mergeToolStyles(current.toolStyles, patch.toolStyles),
+    // Whole-bag replace: a reorder or clear is one atomic value.
+    toolBag:
+      patch.toolBag === undefined ? current.toolBag : parseEditorToolBag(patch.toolBag, current.toolBag),
     coachmarks: mergeSection(current.coachmarks, patch.coachmarks),
-    matchingText: mergeSection(current.matchingText, patch.matchingText),
     sidebar: mergeSection(current.sidebar, patch.sidebar)
   };
 }
@@ -2049,7 +2312,8 @@ function mergeToolStyles(
     text: mergeSection(current.text, patch.text),
     shape: mergeSection(current.shape, patch.shape),
     blur: mergeSection(current.blur, patch.blur),
-    highlight: mergeSection(current.highlight, patch.highlight)
+    highlight: mergeSection(current.highlight, patch.highlight),
+    draw: mergeSection(current.draw, patch.draw)
   };
 }
 

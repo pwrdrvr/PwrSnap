@@ -1,3 +1,4 @@
+import type { AvatarStyle, SizzleScene } from "@pwrsnap/shared";
 // The reel player: a stage for the WHOLE reel plus its transport, sitting
 // directly above the timeline that scrubs it.
 //
@@ -18,7 +19,13 @@
 // measured reason, as features/shared/playhead.ts.
 
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
-import type { CaptureRecord, SizzleSequenceBeat } from "@pwrsnap/shared";
+import {
+  sizzleMediaSpans,
+  sizzleUsesCaptureCuts,
+  videoEditPlaybackStep,
+  type CaptureRecord,
+  type SizzleSequenceBeat
+} from "@pwrsnap/shared";
 import type { PlayheadSource } from "../shared/playhead";
 import { formatTimecode } from "../shared/video-range";
 import { StageLayer } from "./StageLayer";
@@ -29,6 +36,7 @@ import type { ReelPlayback } from "./useReelPlayback";
 import type { TimelineModel } from "./timeline/timeline-model";
 
 export function ReelPlayer({
+  scenes,
   model,
   captureMap,
   beatById,
@@ -37,8 +45,10 @@ export function ReelPlayer({
   renderLabel,
   renderDisabled,
   renderTitle,
-  onRender
+  onRender,
+  onScenePresenter
 }: {
+  scenes?: SizzleScene[];
   model: TimelineModel;
   captureMap: Map<string, CaptureRecord>;
   /** Stored beats by id — a video clip's trim and fit policy live there,
@@ -51,6 +61,9 @@ export function ReelPlayer({
   renderDisabled: boolean;
   renderTitle: string | undefined;
   onRender: () => void;
+  /** Edit a scene's own presenter from the stage. Absent: the stage
+   *  only shows it. */
+  onScenePresenter?: ((sceneId: string, avatar: AvatarStyle | null) => void) | undefined;
 }): ReactElement {
   const clips = useMemo(() => flattenReelClips(model), [model]);
   const playing = playback.playing;
@@ -88,7 +101,8 @@ export function ReelPlayer({
   // home now, so a video clip would otherwise sit on one frozen frame.
   const activeCapture = active === undefined ? null : captureMap.get(active.clip.captureId) ?? null;
   const activeSceneBeat = active === undefined ? undefined : beatById.get(active.clip.beatId);
-  const videoState =
+  const activeSceneStartSec = active === undefined ? 0 : model.scenes[active.sceneIndex]?.startSec ?? 0;
+  const videoStateAt = (atSec: number) =>
     active !== undefined && activeCapture !== null && activeCapture.kind === "video" && activeSceneBeat !== undefined
       ? sequencePreviewVideoState({
           beat: {
@@ -104,9 +118,12 @@ export function ReelPlayer({
           capture: activeCapture,
           // Scene-local time: `sequencePreviewVideoState` works on the scene
           // axis the beat windows are expressed in.
-          timelineTimeSec: sec - (model.scenes[active.sceneIndex]?.startSec ?? 0)
+          timelineTimeSec: atSec - activeSceneStartSec
         })
       : null;
+  const videoState = videoStateAt(sec);
+  const videoStateAtRef = useRef(videoStateAt);
+  videoStateAtRef.current = videoStateAt;
   const shouldPlayVideo = playing && (videoState?.shouldPlay ?? true);
   const videoBeatId = videoState?.beatId ?? null;
   useEffect(() => {
@@ -131,10 +148,55 @@ export function ReelPlayer({
       // Metadata not ready; the next tick re-seeks.
     }
   }, [videoState?.beatId, videoState?.playbackRate, videoState?.sourceTimeSec, shouldPlayVideo]);
+  // A clip that skips Library cuts: the element plays straight through the
+  // source, so while it plays, move it over each cut as the head reaches
+  // it — the same rule the Library stage plays an edit by
+  // (`videoEditPlaybackStep`), with the reel head as the clock. Off the
+  // render path, like the head itself: a seek is a DOM write, not a state
+  // change.
+  const followCuts = shouldPlayVideo && videoState?.hasCuts === true;
+  useEffect(() => {
+    if (!followCuts) return;
+    return head.subscribe((atSec) => {
+      const el = videoRef.current;
+      const state = videoStateAtRef.current(atSec);
+      if (el === null || state === null || !state.shouldPlay) return;
+      const step = videoEditPlaybackStep(state.spans, el.currentTime, state.sourceTimeSec);
+      if (step.kind !== "seek") return;
+      try {
+        el.currentTime = step.sec;
+      } catch {
+        // Metadata not ready; the next tick re-seeks.
+      }
+    });
+  }, [followCuts, videoBeatId, head]);
+
+  // The presenter is edited on a still frame of one clip: paused, with no
+  // transition in flight. Playing, or moving to another clip, lets go.
+  const [presenterSelected, setPresenterSelected] = useState(false);
+  const activeBeat = active?.clip.beatId;
+  useEffect(() => {
+    setPresenterSelected(false);
+  }, [activeBeat, playing]);
+  const activeSceneId = active?.clip.sceneId;
+  const presenterEdit =
+    onScenePresenter !== undefined && activeSceneId !== undefined && !playing && frame.blend === null
+      ? {
+          selected: presenterSelected,
+          onSelect: setPresenterSelected,
+          onChange: (avatar: AvatarStyle | null) => onScenePresenter(activeSceneId, avatar)
+        }
+      : undefined;
 
   return (
     <section className="szl__reel" aria-label="Reel player" data-testid="sizzle-reel-player">
-      <div className="szl__reel-stage" data-testid="sizzle-reel-stage">
+      <div
+        className="szl__reel-stage"
+        data-testid="sizzle-reel-stage"
+        // A press anywhere else on the stage lets go of the presenter
+        // (the presenter's own box stops its press from reaching here).
+        onPointerDown={presenterSelected ? () => setPresenterSelected(false) : undefined}
+      >
         {active === undefined ? (
           <span className="szl__sequence-preview-empty">No clips yet</span>
         ) : (
@@ -142,6 +204,7 @@ export function ReelPlayer({
             <StageLayer
               key={`out:${active.clip.beatId}`}
               role="outgoing"
+              avatar={scenes?.find(scene => scene.id === active.clip.sceneId)?.avatar}
               captureId={active.clip.captureId}
               capture={captureMap.get(active.clip.captureId) ?? null}
               kenBurns={
@@ -164,11 +227,13 @@ export function ReelPlayer({
               videoRef={videoRef}
               dataBeat={active.clip.beatId}
               testId="sizzle-reel-outgoing"
+              presenterEdit={presenterEdit}
             />
             {frame.blend !== null && incoming !== undefined ? (
               <StageLayer
                 key={`in:${incoming.clip.beatId}`}
                 role="incoming"
+                avatar={scenes?.find(scene => scene.id === incoming.clip.sceneId)?.avatar}
                 captureId={incoming.clip.captureId}
                 capture={captureMap.get(incoming.clip.captureId) ?? null}
                 kenBurns={
@@ -178,7 +243,7 @@ export function ReelPlayer({
                 }
                 kenBurnsDurationSec={Math.max(0.05, incoming.endSec - incoming.startSec)}
                 kenBurnsElapsedSec={Math.max(0, sec - incoming.startSec)}
-                posterStartSec={posterStartSecFor(incoming, beatById)}
+                posterStartSec={posterStartSecFor(incoming, beatById, captureMap)}
                 blend={{
                   type: frame.blend.type,
                   durationSec: frame.blend.durationSec,
@@ -199,7 +264,7 @@ export function ReelPlayer({
           className="szl__reel-play"
           onClick={playback.toggle}
           disabled={model.totalSec <= 0}
-          title={playing ? "Pause" : "Play the whole reel"}
+          data-tip={playing ? "Pause" : "Play the whole reel"}
           aria-label={playing ? "Pause reel" : "Play reel"}
           data-testid="sizzle-reel-play"
         >
@@ -218,7 +283,7 @@ export function ReelPlayer({
           type="button"
           className={"szl__reel-mute" + (playback.muted ? " is-muted" : "")}
           onClick={playback.toggleMuted}
-          title={playback.muted ? "Unmute" : "Mute"}
+          data-tip={playback.muted ? "Unmute" : "Mute"}
           aria-label={playback.muted ? "Unmute reel" : "Mute reel"}
           aria-pressed={playback.muted}
           data-testid="sizzle-reel-mute"
@@ -233,7 +298,7 @@ export function ReelPlayer({
           step={0.05}
           value={playback.muted ? 0 : playback.volume}
           onChange={(event) => playback.setVolume(Number(event.target.value))}
-          title="Narration volume"
+          data-tip="Narration volume"
           aria-label="Narration volume"
           data-testid="sizzle-reel-volume"
         />
@@ -276,9 +341,25 @@ function PlayheadClock({ head }: { head: PlayheadSource }): ReactElement {
   return <b ref={ref}>{formatTimecode(head.get())}</b>;
 }
 
-/** Where an incoming video's still should sit: the frame the export cuts to. */
-function posterStartSecFor(clip: ReelClip, beatById: Map<string, SizzleSequenceBeat>): number {
-  return beatById.get(clip.clip.beatId)?.mediaTrim?.startSec ?? 0;
+/** Where an incoming video's still should sit: the frame the export cuts
+ *  to — the clip's first KEPT instant, which a Library cut can move past
+ *  the trim's own start. */
+function posterStartSecFor(
+  clip: ReelClip,
+  beatById: Map<string, SizzleSequenceBeat>,
+  captureMap: Map<string, CaptureRecord>
+): number {
+  const beat = beatById.get(clip.clip.beatId);
+  const video = captureMap.get(clip.clip.captureId)?.video ?? null;
+  const trim =
+    beat?.mediaTrim ??
+    (video === null ? null : { startSec: video.defaultRange.start, endSec: video.defaultRange.end });
+  if (beat === undefined || trim === null) return trim?.startSec ?? 0;
+  return sizzleMediaSpans({
+    trim,
+    segments: video?.segments,
+    useCaptureCuts: sizzleUsesCaptureCuts(beat)
+  })[0]!.start;
 }
 
 function sameFrameIdentity(a: ReelFrame, b: ReelFrame): boolean {

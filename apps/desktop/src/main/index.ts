@@ -2,20 +2,27 @@
 // starts the main-process CPU profiler before the rest of the bundle
 // evaluates. No-op otherwise. See startup-profiler.ts.
 import "./startup-profile-boot";
+// ⚠️ Keep this second, ahead of anything that imports sharp: in Electron on
+// Linux it steers sharp to its WebAssembly build before sharp loads. See
+// sharp-wasm-steer.ts.
+import { sharpWasmSteerDecision } from "./sharp-wasm-steer";
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 import {
   app,
+  BaseWindow,
   BrowserWindow,
-  clipboard,
   dialog,
   globalShortcut,
   Menu,
+  nativeImage,
   nativeTheme,
-  shell
+  shell,
+  webContents
 } from "electron";
 import {
   EVENT_CHANNELS,
+  hasObsoleteCodexDefaults,
   revealInFileManagerLabel,
   shortcutPlatformFromString
 } from "@pwrsnap/shared";
@@ -30,7 +37,6 @@ import {
   pickRegion,
   preWarmRegionSelector
 } from "./capture/region-selector";
-import { activateApp } from "./capture/window-list";
 import { startRecordingFromSelection } from "./recording/record-from-selection";
 import { guardScreenCapture } from "./capture/screen-permission-gate";
 import { ensureCapturesDirReady } from "./capture/capture-storage-gate";
@@ -38,25 +44,38 @@ import {
   createInteractiveCaptureTrigger,
   dispatchInteractiveCapture
 } from "./capture/capture-trigger";
+import {
+  INTERACTIVE_CAPTURE_HOTKEY_DEBOUNCE_MS,
+  createInteractiveCaptureHotkeyGate
+} from "./capture/interactive-capture-hotkey-gate";
 import { reconcileCapturesLocationOnBoot } from "./capture/capture-location-reconciliation";
 import { getAppIconPath } from "./app-icons/app-icon-cache";
 import {
   disposeFloatOver,
   getFloatOverWindowIdForE2E,
+  setFloatOverRecentSidebarVisible,
   setFloatOverState
 } from "./float-over";
 import { bus } from "./command-bus";
 import { markStartup, startupProfilingEnabled } from "./startup-profiler";
 import { installDevelopmentDockIcon } from "./development-dock-icon";
 import {
-  resolveAboutPanelBuildVersion,
-  resolveDevelopmentRuntimeIdentity
-} from "./runtime-identity";
+  buildApplicationMenuTemplate,
+  PASTE_FROM_CLIPBOARD_MENU_ID,
+  type ApplicationMenuActions,
+  type MenuSourceWindow,
+  type OpenWindowEntry
+} from "./application-menu";
+import { formatDiagnosticsInfo } from "./diagnostics-info";
+import { pickExportDestination } from "./export-destination-picker";
+import { isAllowedExternalUrl } from "./external-url-allowlist";
 import { installTerminalSignalShutdown } from "./terminal-signal-shutdown";
+import { installSystemShutdown } from "./system-shutdown";
 import { installTransientWindowTeardown } from "./transient-window-teardown";
 import {
   applyWindowsChromiumStartupFeaturePolicy
 } from "./windows-chromium-startup-policy";
+import { applyDarwinKeychainStartupPolicy } from "./darwin-keychain-startup-policy";
 // (showFloatOverForCapture is no longer called from the bootstrap;
 // the capture-handlers `capture:interactive` now drives the entire
 // float-over lifecycle. Kept as an export from float-over.ts for the
@@ -65,14 +84,15 @@ import { disposeFocusSink, installFocusSink } from "./focus-sink";
 import {
   registerAppCommonHandlers,
   registerAppUpdateHandlers,
-  registerAppWindowHandlers
+  registerAppWindowHandlers,
+  resolveAppVersion
 } from "./handlers/app-handlers";
 import {
-  clipboardHasPasteableImage,
   librarySourceWindowIds,
   registerCaptureHandlers,
   registerCaptureSaveAsHandler
 } from "./handlers/capture-handlers";
+import { pasteFromClipboardMenuEnabled } from "./clipboard/paste-menu-hint";
 import { registerCaptureVideoHandler } from "./handlers/capture-video-handler";
 import { registerAcpHandlers } from "./handlers/acp-handlers";
 import { getToolRpcServer } from "./ai/mcp/pwrsnap-tool-rpc-server";
@@ -80,6 +100,10 @@ import { closeAcpAgentPool } from "./ai/acp-agent-pool";
 import { closeCodexAgentPool } from "./ai/codex-agent-pool";
 import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerCodexHandlers } from "./handlers/codex-handlers";
+import {
+  productionRepairDeps,
+  registerEnrichmentRepairHandlers
+} from "./handlers/enrichment-repair-handlers";
 import { registerDiagnosticsHandlers } from "./handlers/diagnostics-handlers";
 import {
   registerLogsHandlers,
@@ -102,13 +126,28 @@ import {
   registerLibraryWindowHandlers
 } from "./handlers/library-handlers";
 import { registerRecordingHandlers } from "./handlers/recording-handlers";
+import { registerDerivedCacheCleanupOwner } from "./handlers/derived-cache-handlers";
 import {
   disposeRecordingController,
   installRecordingController
 } from "./recording/recording-controller";
+import {
+  disposeRecordingFrame,
+  installRecordingFrame
+} from "./recording/recording-frame";
 import { readRecordingReadiness } from "./recording/recording-permissions";
 import { getRecordingService } from "./recording/recording-service";
-import { getRecordingState, isRecordingActive } from "./recording/recording-state";
+import {
+  getRecordingState,
+  isRecordingActive,
+  subscribeToRecordingState
+} from "./recording/recording-state";
+import {
+  recordingBackendCapabilities,
+  videoHotkeyAction
+} from "./recording/recording-capabilities";
+import { installMediaPermissionPolicy } from "./media-permissions";
+import { installNavigationGuard } from "./navigation-guard";
 import { videoAssetDir } from "./recording/video-frames";
 import {
   getDesktopSettingsServices,
@@ -150,9 +189,9 @@ import {
   initAppUpdater,
   installDownloadedWindowsUpdateSmoke,
   readAppUpdateStatus,
-  reconcileAppUpdateSelection,
-  setUpdateSelectionResolver,
-  setWindowsUpdateSmokeConfig
+  setWindowsUpdateSmokeConfig,
+  handleAppUpdateSelectionChanged,
+  setAppUpdateInstallHandler
 } from "./auto-updater";
 import {
   isWindowsUpdateSmokeRequested,
@@ -209,12 +248,14 @@ import {
 } from "./persistence/db";
 import {
   getCaptureById,
-  insertCapture,
-  insertCapturesBatch,
   listCaptures,
   listExpiredTrash
 } from "./persistence/captures-repo";
-import { insertVideoMetadata } from "./persistence/video-repo";
+import { insertVideoMetadata, setVideoCamera } from "./persistence/video-repo";
+import {
+  seedCapturesForE2E,
+  type E2ESeedCaptureInput
+} from "./persistence/e2e-capture-seed";
 import { failOrphanedRunsOnBoot } from "./persistence/ai-runs-repo";
 import { migrateLegacyCaptureSources } from "./persistence/capture-source-maintenance";
 import { migrateLegacyRenderCache } from "./persistence/render-cache-maintenance";
@@ -236,6 +277,8 @@ import { resolveCacheFile } from "./render/coordinator";
 import { destroyTextBakePool } from "./render/text-html-bake";
 import { shutdownCompositeThumbnailWorker } from "./workers/composite-thumbnail-worker-client";
 import { clipboardEvents } from "./clipboard-events";
+import { readMacPasteboardPng } from "./clipboard/macos-pasteboard-png";
+import { clearClipboard, readClipboard, writeClipboardText } from "./clipboard/system-clipboard";
 import { CHROMIUM_DISK_CACHE_LIMIT_BYTES } from "./storage/accounting";
 import { installProtocolHandlers, registerSchemesAsPrivileged, type ProtocolResolver } from "./protocols";
 import {
@@ -252,14 +295,28 @@ import {
   findMainLibraryWindow,
   findSettingsWindow,
   installMainProcessHotCpuMonitor,
+  listOpenAppWindows,
   reclaimDockIconIfLibraryAlive,
   scheduleDockReclaim,
   refreshWindowsTitleBarOverlay,
+  hasActiveHotCpuProfilers,
+  stopHotCpuProfilers,
   syncHotCpuProfilersFromSettings
 } from "./window";
-import { installContentTraceHook } from "./diagnostics/content-trace-recorder";
+import {
+  installContentTraceHook,
+  isContentTraceArmed,
+  shutdownContentTrace
+} from "./diagnostics/content-trace-recorder";
+import { createDiagnosticsShutdown } from "./diagnostics/diagnostics-shutdown";
+import { retryQuitAfterDispatch } from "./quit-retry";
+import { installQuitStallRecovery } from "./quit-stall-recovery";
 import { installLaunchAtLoginSync, wasLaunchedAtLogin } from "./launch-at-login";
 import { wireAppMenuBridge } from "./app-menu-bridge";
+import {
+  trackWindowFrameState,
+  wireWindowControlsBridge
+} from "./window-controls-bridge";
 import {
   enableOpenFileForwardingToPrimary,
   forwardQueuedOpenFilesToPrimary,
@@ -270,16 +327,24 @@ import {
   wireOpenFileHandler
 } from "./open-file";
 import { reconcileAndSweepPwrsnapImportsOnBoot } from "./import/pwrsnap-import-service";
+import { recoverInterruptedVideoDuplicates } from "./capture/capture-duplicate";
 import { broadcastCapturesChanged } from "./events";
 
 const APP_NAME = "PwrSnap";
-const APP_COPYRIGHT = "Copyright © 2026 PwrDrvr LLC. All rights reserved.";
-const APP_WEBSITE = "https://pwrsnap.com";
-const APP_DOCS = "https://docs.pwrsnap.com";
-const APP_ISSUE_REPORTER = "https://github.com/pwrdrvr/PwrSnap/issues/new";
-const PASTE_FROM_CLIPBOARD_MENU_ID = "file-new-paste-from-clipboard";
-const EDIT_UNDO_MENU_ID = "edit-undo";
-const EDIT_REDO_MENU_ID = "edit-redo";
+
+/**
+ * The window a menu click acts on. The item's `click` gives us a
+ * `BaseWindow` (no `webContents`), so resolve it to the owning
+ * `BrowserWindow`; fall back to the focused window if needed.
+ */
+function resolveMenuTargetWindow(window: Electron.BaseWindow | undefined): BrowserWindow | null {
+  const candidate =
+    window !== undefined && !window.isDestroyed()
+      ? BrowserWindow.fromId(window.id)
+      : null;
+  const target = candidate ?? BrowserWindow.getFocusedWindow();
+  return target === null || target.isDestroyed() ? null : target;
+}
 
 /**
  * Route a native Edit ▸ Undo / Edit ▸ Redo activation to the focused
@@ -297,13 +362,27 @@ function sendEditCommand(
   channel: (typeof EVENT_CHANNELS)["editUndo" | "editRedo"],
   event?: Electron.KeyboardEvent
 ): void {
-  const candidate =
-    window !== undefined && !window.isDestroyed()
-      ? BrowserWindow.fromId(window.id)
-      : null;
-  const target = candidate ?? BrowserWindow.getFocusedWindow();
-  if (target === null || target.isDestroyed()) return;
+  const target = resolveMenuTargetWindow(window);
+  if (target === null) return;
   target.webContents.send(channel, {
+    viaAccelerator: event?.triggeredByAccelerator === true
+  });
+}
+
+/**
+ * File ▸ Duplicate Snap / Edit a Copy → the focused window. Only the
+ * Library subscribes; it acts on its selected snap. Same window resolution
+ * and accelerator flag as `sendEditCommand`, for the same reasons.
+ */
+function sendLibraryDuplicate(
+  window: Electron.BaseWindow | undefined,
+  mode: "duplicate" | "edit-copy",
+  event?: Electron.KeyboardEvent
+): void {
+  const target = resolveMenuTargetWindow(window);
+  if (target === null) return;
+  target.webContents.send(EVENT_CHANNELS.libraryDuplicate, {
+    mode,
     viaAccelerator: event?.triggeredByAccelerator === true
   });
 }
@@ -331,6 +410,7 @@ const shortcutPlatform = shortcutPlatformFromString(process.platform);
  */
 const isE2E = process.env.PWRSNAP_E2E === "1";
 let pasteFromClipboardMenuItem: Electron.MenuItem | null = null;
+let pasteFromClipboardRefreshSeq = 0;
 let localAgentMcpLifecycle: LocalAgentMcpLifecycle | null = null;
 let disposeLocalAgentMcpSettingsListener: (() => void) | null = null;
 let localAgentConsentBroker: LocalAgentConsentBroker | null = null;
@@ -407,251 +487,16 @@ let lastKnownDeveloperMode = false;
 function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode): void {
   // The agent process is menubar-only (Accessory policy — no app menu
   // to show); the menu belongs to the library process. Guarded here so
-  // every re-install site (developer-mode flips, hotkey wiring) inherits
-  // the rule without repeating it.
+  // every re-install site (developer-mode flips, hotkey wiring, the
+  // Window-menu list) inherits the rule without repeating it.
   if (getRuntimeProcessRole() === "agent") return;
   lastKnownDeveloperMode = developerMode;
-  const openSettings = (
-    sourceWindow?: { id: number; isDestroyed: () => boolean } | null
-  ): void => {
-    const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
-    if (sourceWindow !== undefined && sourceWindow !== null && !sourceWindow.isDestroyed()) {
-      options.sourceWindowId = sourceWindow.id;
-    }
-    void bus.dispatch("settings:open", {}, options);
-  };
-  const settingsItem: Electron.MenuItemConstructorOptions = {
-    label: "Settings…",
-    click: (_item, sourceWindow) => openSettings(sourceWindow)
-  };
-  // Stripped-down View menu — Reload / Force Reload / Toggle DevTools
-  // are gated behind `general.developerMode`. Hidden by default so
-  // end-users see the same trim native menu as any signed Mac app;
-  // power users + bug reporters flip Developer Mode on in Settings.
-  const viewSubmenu: Electron.MenuItemConstructorOptions[] = [
-    ...(developerMode
-      ? [
-          { role: "reload" as const },
-          { role: "forceReload" as const },
-          { role: "toggleDevTools" as const },
-          { type: "separator" as const }
-        ]
-      : []),
-    { role: "resetZoom" as const },
-    { role: "zoomIn" as const },
-    { role: "zoomOut" as const },
-    { type: "separator" as const },
-    { role: "togglefullscreen" as const }
-  ];
-  const template: Electron.MenuItemConstructorOptions[] = [
-    ...(isMac
-      ? [
-          {
-            role: "appMenu" as const,
-            submenu: [
-              { role: "about" as const },
-              { type: "separator" as const },
-              settingsItem,
-              { type: "separator" as const },
-              { role: "services" as const },
-              { type: "separator" as const },
-              { role: "hide" as const },
-              { role: "hideOthers" as const },
-              { role: "unhide" as const },
-              { type: "separator" as const },
-              { role: "quit" as const }
-            ]
-          }
-        ]
-      : []),
-    {
-      label: "File",
-      submenu: [
-        {
-          label: "New",
-          submenu: [
-            {
-              id: PASTE_FROM_CLIPBOARD_MENU_ID,
-              label: "Paste from Clipboard",
-              enabled: false,
-              click: () => {
-                void runPasteFromClipboard();
-              }
-            }
-          ]
-        },
-        { type: "separator" },
-        isMac ? { role: "close" as const } : { role: "quit" as const }
-      ]
-    },
-    {
-      // Custom Edit menu. We replace Electron's `role: "editMenu"` only
-      // for Undo/Redo: the built-in `role: "undo"` / `role: "redo"`
-      // drive the browser's native edit-undo (`webContents.undo()`),
-      // which can't reach the editor's renderer-side undo stack (crop,
-      // arrow, every canvas annotation). Our custom items send
-      // `editUndo` / `editRedo` to the focused window; the renderer's
-      // edit-menu bridge does native text undo when an editable field is
-      // focused and editor undo otherwise. Everything else mirrors what
-      // `role: "editMenu"` produces per-platform so cut/copy/paste/
-      // select-all (and the macOS Speech submenu) don't regress.
-      //
-      // Accelerators are `CmdOrCtrl+…` so the same template works on
-      // macOS, Windows, and Linux. The Windows/Linux Ctrl+Y redo
-      // convention is handled in the renderer bridge (a single menu item
-      // can register only one accelerator). See
-      // docs/solutions/2026-06-13-edit-menu-undo-redo-bridge.md.
-      label: "Edit",
-      submenu: [
-        {
-          id: EDIT_UNDO_MENU_ID,
-          label: "Undo",
-          accelerator: "CmdOrCtrl+Z",
-          click: (_item, window, event) => {
-            sendEditCommand(window, EVENT_CHANNELS.editUndo, event);
-          }
-        },
-        {
-          id: EDIT_REDO_MENU_ID,
-          label: "Redo",
-          accelerator: "CmdOrCtrl+Shift+Z",
-          click: (_item, window, event) => {
-            sendEditCommand(window, EVENT_CHANNELS.editRedo, event);
-          }
-        },
-        { type: "separator" as const },
-        { role: "cut" as const },
-        { role: "copy" as const },
-        { role: "paste" as const },
-        ...(isMac
-          ? [
-              { role: "pasteAndMatchStyle" as const },
-              { role: "delete" as const },
-              { role: "selectAll" as const },
-              { type: "separator" as const },
-              {
-                label: "Speech",
-                submenu: [
-                  { role: "startSpeaking" as const },
-                  { role: "stopSpeaking" as const }
-                ]
-              }
-            ]
-          : [
-              { role: "delete" as const },
-              { type: "separator" as const },
-              { role: "selectAll" as const }
-            ])
-      ]
-    },
-    { label: "View", submenu: viewSubmenu },
-    { role: "windowMenu" },
-    {
-      label: "Library",
-      submenu: [
-        {
-          label: "Export Library…",
-          click: () => {
-            void runExportLibrary();
-          }
-        },
-        { type: "separator" },
-        {
-          label: "Sizzle Reels…",
-          click: (_item, sourceWindow) => {
-            const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
-            if (sourceWindow !== undefined && sourceWindow !== null && !sourceWindow.isDestroyed()) {
-              options.sourceWindowId = sourceWindow.id;
-            }
-            void bus.dispatch("sizzle:open", {}, options);
-          }
-        }
-      ]
-    },
-    {
-      role: "help",
-      submenu: [
-        // macOS surfaces About + Settings in the app menu, so Help omits
-        // them there. Non-Mac has no app menu — mirror PwrAgent and
-        // surface About + Settings at the top of Help instead.
-        ...(isMac
-          ? []
-          : [
-              {
-                label: `About ${APP_NAME}`,
-                click: () => {
-                  app.showAboutPanel();
-                }
-              },
-              { type: "separator" as const },
-              settingsItem,
-              { type: "separator" as const }
-            ]),
-        {
-          label: "Check for Updates",
-          click: () => {
-            void checkForAppUpdatesNow("menu");
-          }
-        },
-        {
-          label: "Changelog",
-          click: (_item, sourceWindow) => {
-            const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
-            if (sourceWindow !== undefined && sourceWindow !== null && !sourceWindow.isDestroyed()) {
-              options.sourceWindowId = sourceWindow.id;
-            }
-            void bus.dispatch("app:openDocumentWindow", { kind: "changelog" }, options);
-          }
-        },
-        { type: "separator" },
-        {
-          label: "Documentation",
-          click: async () => {
-            await shell.openExternal(APP_DOCS);
-          }
-        },
-        {
-          label: "Report an Issue",
-          click: async () => {
-            await shell.openExternal(APP_ISSUE_REPORTER);
-          }
-        },
-        {
-          label: `${APP_NAME} Website`,
-          click: async () => {
-            await shell.openExternal(APP_WEBSITE);
-          }
-        },
-        { type: "separator" },
-        {
-          label: "Third-party Licenses",
-          click: (_item, sourceWindow) => {
-            const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
-            if (sourceWindow !== undefined && sourceWindow !== null && !sourceWindow.isDestroyed()) {
-              options.sourceWindowId = sourceWindow.id;
-            }
-            void bus.dispatch(
-              "app:openDocumentWindow",
-              { kind: "third-party-licenses" },
-              options
-            );
-          }
-        },
-        { type: "separator" },
-        {
-          label: "Logs",
-          click: (_item, sourceWindow) => {
-            const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
-            if (sourceWindow !== undefined && sourceWindow !== null && !sourceWindow.isDestroyed()) {
-              options.sourceWindowId = sourceWindow.id;
-            }
-            void bus.dispatch("logs:openWindow", {}, options);
-          }
-        }
-      ]
-    }
-  ];
-
+  const openWindows = isMac ? [] : openWindowMenuEntries();
+  installedWindowMenuSignature = JSON.stringify(openWindows);
+  const template = buildApplicationMenuTemplate(
+    { developerMode, openWindows, actions: applicationMenuActions },
+    process.platform
+  );
   const menu = Menu.buildFromTemplate(template);
   pasteFromClipboardMenuItem = menu.getMenuItemById(PASTE_FROM_CLIPBOARD_MENU_ID) ?? null;
   for (const item of menu.items) {
@@ -664,9 +509,214 @@ function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode)
   Menu.setApplicationMenu(menu);
 }
 
+/** Options for a bus command a menu item raises, placed beside the window
+ *  the click came from. */
+function menuDispatchOptions(
+  sourceWindow: MenuSourceWindow
+): Parameters<typeof bus.dispatch>[2] {
+  const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
+  if (sourceWindow !== undefined && !sourceWindow.isDestroyed()) {
+    options.sourceWindowId = sourceWindow.id;
+  }
+  return options;
+}
+
+/** The window list for the Window menu off macOS (macOS draws its own). */
+function openWindowMenuEntries(): OpenWindowEntry[] {
+  const focused = BrowserWindow.getFocusedWindow();
+  return listOpenAppWindows().map(({ window, label }) => ({
+    id: window.id,
+    label,
+    focused: window === focused
+  }));
+}
+
+let windowMenuRefreshQueued = false;
+/** The Window list the installed menu was built with, so a refresh can tell
+ *  whether anything it shows actually changed. */
+let installedWindowMenuSignature = "";
+
+/** Rebuild the menu on the next tick so the Window list tracks windows
+ *  opening, closing and taking focus. Coalesced: one window opening fires
+ *  several of these events at once. Skipped when the list is unchanged —
+ *  most events come from chrome that is never listed (tray popover,
+ *  float-over, selector, recording HUD), and a rebuild re-runs
+ *  `setApplicationMenu`, which re-sets the menu on every window. */
+function queueWindowMenuRefresh(): void {
+  if (windowMenuRefreshQueued) return;
+  windowMenuRefreshQueued = true;
+  setImmediate(() => {
+    windowMenuRefreshQueued = false;
+    if (JSON.stringify(openWindowMenuEntries()) === installedWindowMenuSignature) return;
+    installApplicationMenu();
+  });
+}
+
+/** Keep the Linux/Windows Window menu's list current. macOS lists windows
+ *  itself under `role: "windowMenu"`, so nothing is wired there. */
+function wireWindowMenuRefresh(): void {
+  if (isMac) return;
+  app.on("browser-window-focus", queueWindowMenuRefresh);
+  app.on("browser-window-created", (_event, window) => {
+    window.on("show", queueWindowMenuRefresh);
+    window.on("hide", queueWindowMenuRefresh);
+    window.on("closed", queueWindowMenuRefresh);
+  });
+}
+
+async function copyDiagnosticsInfo(): Promise<void> {
+  try {
+    await writeClipboardText(
+      formatDiagnosticsInfo({
+        version: resolveAppVersion(),
+        packaged: app.isPackaged,
+        platform: process.platform,
+        platformVersion: process.getSystemVersion(),
+        arch: process.arch,
+        electronVersion: process.versions.electron ?? "",
+        chromeVersion: process.versions.chrome ?? "",
+        nodeVersion: process.versions.node ?? ""
+      })
+    );
+  } catch (cause) {
+    getMainLogger("pwrsnap:menu").warn("copy diagnostics info failed", {
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+    return;
+  }
+  // The toast only confirms a copy that has already landed. Only the
+  // Library renders the toast stack, so it goes there whichever window the
+  // click came from.
+  findMainLibraryWindow()?.webContents.send(EVENT_CHANNELS.appNotice, {
+    message: "Diagnostics info copied"
+  });
+}
+
+const applicationMenuActions: ApplicationMenuActions = {
+  onAbout: (window) => {
+    // Decision A of the menu standard: About is Settings → About on every
+    // platform, not the native panel.
+    void bus.dispatch("settings:open", { page: "about" }, menuDispatchOptions(window));
+  },
+  onCheckForUpdates: () => {
+    // NOT `app:update:check`: this verb also announces "a user is waiting
+    // for this answer" on EVENT_CHANNELS.appUpdateCheckResult, which is what
+    // raises the live progress card, and it holds its answer until the
+    // download settles. See runMenuUpdateCheck.
+    //
+    // Over the bus rather than a direct call because THIS process may not be
+    // the one that owns the updater: under the process split the menu is
+    // installed by the library while `app:update:*` is routed to the agent.
+    // Calling locally would run a second, uninitialized updater and set a
+    // `userCheckRunning` flag that `app:update:userCheckRunning` — also
+    // agent-routed — never reads.
+    void bus.dispatch("app:update:menuCheck", {}, { principal: "ipc" });
+  },
+  onOpenSettings: (window) => {
+    void bus.dispatch("settings:open", {}, menuDispatchOptions(window));
+  },
+  onPasteFromClipboard: () => {
+    void runPasteFromClipboard();
+  },
+  onDuplicate: (window, mode, event) => sendLibraryDuplicate(window, mode, event),
+  onUndo: (window, event) => sendEditCommand(window, EVENT_CHANNELS.editUndo, event),
+  onRedo: (window, event) => sendEditCommand(window, EVENT_CHANNELS.editRedo, event),
+  onExportLibrary: () => {
+    void runExportLibrary();
+  },
+  onOpenSizzleReels: (window) => {
+    void bus.dispatch("sizzle:open", {}, menuDispatchOptions(window));
+  },
+  onOpenChangelog: (window) => {
+    void bus.dispatch(
+      "app:openDocumentWindow",
+      { kind: "changelog" },
+      menuDispatchOptions(window)
+    );
+  },
+  onOpenLicense: (window) => {
+    void bus.dispatch("app:openDocumentWindow", { kind: "license" }, menuDispatchOptions(window));
+  },
+  onOpenThirdPartyNotices: (window) => {
+    void bus.dispatch(
+      "app:openDocumentWindow",
+      { kind: "third-party-licenses" },
+      menuDispatchOptions(window)
+    );
+  },
+  onOpenLogs: (window) => {
+    void bus.dispatch("logs:openWindow", {}, menuDispatchOptions(window));
+  },
+  onReloadWindow: (window) => {
+    // Only PwrSnap's own windows. ⌘R / Ctrl+R reaching the region selector,
+    // tray popover, float-over or recording HUD would reload that chrome
+    // mid-use, so the menu never targets them.
+    const target = resolveMenuTargetWindow(window);
+    if (target === null) return;
+    if (!listOpenAppWindows().some((entry) => entry.window === target)) return;
+    target.webContents.reload();
+  },
+  onCopyDiagnostics: () => {
+    void copyDiagnosticsInfo();
+  },
+  onOpenExternal: (url) => {
+    // The same allowlist every outbound URL clears (navigation-guard.ts).
+    if (!isAllowedExternalUrl(url)) {
+      getMainLogger("pwrsnap:menu").warn("menu link refused by the external URL allowlist", {
+        url
+      });
+      return;
+    }
+    shell.openExternal(url).catch((cause: unknown) => {
+      getMainLogger("pwrsnap:menu").warn("menu link failed to open", {
+        url,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    });
+  },
+  onFocusWindow: (id) => {
+    const window = BrowserWindow.fromId(id);
+    if (window === null || window.isDestroyed()) return;
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
+  }
+};
+
+/**
+ * Settles File → New → Paste from Clipboard from the clipboard's type names
+ * alone (clipboard/paste-menu-hint.ts). It never reads a flavor's bytes: on
+ * macOS reading the bytes of a Universal Clipboard or remote-desktop item is
+ * what pulls it across the network, and this runs without the user asking
+ * to paste. Where no types-only listing exists (Windows, Linux) the item is
+ * simply enabled.
+ *
+ * The listing is async, so the answer `menu-will-show` asks for lands after
+ * the menu draws. That is why macOS also refreshes on `did-become-active`:
+ * a copy made in another app is listed by the time the user can open File.
+ * Listing types was measured to fetch nothing, so a refresh per activation
+ * costs one short helper process. An early version of the Electron 44
+ * upgrade refreshed on focus with a probe that read bytes, and pulled the
+ * clipboard across the network on every click into PwrSnap. A late answer
+ * from an older listing never overwrites a newer one.
+ */
 function refreshPasteFromClipboardMenu(): void {
-  if (pasteFromClipboardMenuItem === null) return;
-  pasteFromClipboardMenuItem.enabled = clipboardHasPasteableImage();
+  const item = pasteFromClipboardMenuItem;
+  if (item === null) return;
+  const seq = ++pasteFromClipboardRefreshSeq;
+  void pasteFromClipboardMenuEnabled().then(
+    (enabled) => {
+      if (seq === pasteFromClipboardRefreshSeq) item.enabled = enabled;
+    },
+    (cause: unknown) => {
+      getMainLogger("pwrsnap:clipboard").warn("paste menu clipboard probe failed", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      // An unlistable clipboard must not leave the item stuck at an older
+      // answer. Enabled is the safe hint: the command reports "no image".
+      if (seq === pasteFromClipboardRefreshSeq) item.enabled = true;
+    }
+  );
 }
 
 async function runPasteFromClipboard(): Promise<void> {
@@ -702,38 +752,107 @@ async function runPasteFromClipboard(): Promise<void> {
   }
 }
 
+const interactiveCaptureHotkeyGate = createInteractiveCaptureHotkeyGate();
+
+function triggerInteractiveCaptureFromHotkey(
+  mode: "auto" | "region" | "window" | "timed",
+  kind: "quickCapture" | "region" | "window" | "timed"
+): void {
+  const log = getMainLogger("pwrsnap:shortcut");
+  const decision = interactiveCaptureHotkeyGate.tryStart(async () => {
+    let trigger: CaptureInvocationTrigger;
+    switch (kind) {
+      case "quickCapture":
+        trigger = createInteractiveCaptureTrigger("global_hotkey.quick_capture");
+        break;
+      case "region":
+        trigger = createInteractiveCaptureTrigger("global_hotkey.region");
+        break;
+      case "window":
+        trigger = createInteractiveCaptureTrigger("global_hotkey.window");
+        break;
+      case "timed":
+        trigger = createInteractiveCaptureTrigger("global_hotkey.timed");
+        break;
+    }
+    log.info("global hotkey fired", {
+      kind,
+      mode,
+      invocationId: trigger.id
+    });
+    await runInteractiveCapture(mode, trigger);
+  });
+  log.info("interactive capture hotkey gate decision", {
+    kind,
+    mode,
+    decision: decision.status,
+    reason: decision.reason,
+    ageMs: decision.ageMs,
+    debounceMs: INTERACTIVE_CAPTURE_HOTKEY_DEBOUNCE_MS
+  });
+  if (decision.status === "accepted") {
+    void decision.completion.catch((cause: unknown) => {
+      log.error("interactive capture hotkey failed unexpectedly", {
+        kind,
+        mode,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    });
+  }
+}
+
+function triggerInteractiveRecordFromHotkey(kind: "videoCapture"): void {
+  const log = getMainLogger("pwrsnap:shortcut");
+  const decision = interactiveCaptureHotkeyGate.tryStart(async () => {
+    // The video hotkey is a toggle: while a take is live it stops or cancels
+    // rather than starting a second one. `videoHotkeyAction` is the single
+    // authority on which of those the current lifecycle phase allows.
+    const action = videoHotkeyAction(getRecordingState());
+    log.info("global hotkey fired", { kind, mode: "video", action });
+    if (action === "stop") {
+      await bus.dispatch("recording:stop", {}, { principal: "ipc" });
+      return;
+    }
+    if (action === "cancel") {
+      await bus.dispatch("recording:cancel", {}, { principal: "ipc" });
+      return;
+    }
+    if (action === "start") {
+      await runInteractiveRecord();
+    }
+  });
+  log.info("interactive capture hotkey gate decision", {
+    kind,
+    mode: "video",
+    decision: decision.status,
+    reason: decision.reason,
+    ageMs: decision.ageMs,
+    debounceMs: INTERACTIVE_CAPTURE_HOTKEY_DEBOUNCE_MS
+  });
+  if (decision.status === "accepted") {
+    void decision.completion.catch((cause: unknown) => {
+      log.error("interactive video capture hotkey failed unexpectedly", {
+        kind,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    });
+  }
+}
+
 function handlerFor(kind: HotkeyKind): () => void {
   const log = getMainLogger("pwrsnap:shortcut");
   switch (kind) {
     case "quickCapture":
       return () => {
-        const trigger = createInteractiveCaptureTrigger("global_hotkey.quick_capture");
-        log.info("global hotkey fired", {
-          kind,
-          mode: "auto",
-          invocationId: trigger.id
-        });
-        void runInteractiveCapture("auto", trigger);
+        triggerInteractiveCaptureFromHotkey("auto", kind);
       };
     case "region":
       return () => {
-        const trigger = createInteractiveCaptureTrigger("global_hotkey.region");
-        log.info("global hotkey fired", {
-          kind,
-          mode: "region",
-          invocationId: trigger.id
-        });
-        void runInteractiveCapture("region", trigger);
+        triggerInteractiveCaptureFromHotkey("region", kind);
       };
     case "window":
       return () => {
-        const trigger = createInteractiveCaptureTrigger("global_hotkey.window");
-        log.info("global hotkey fired", {
-          kind,
-          mode: "window",
-          invocationId: trigger.id
-        });
-        void runInteractiveCapture("window", trigger);
+        triggerInteractiveCaptureFromHotkey("window", kind);
       };
     case "fullScreen":
       // Capture the display under the cursor end-to-end (no selector).
@@ -754,13 +873,7 @@ function handlerFor(kind: HotkeyKind): () => void {
       // 5-second countdown, then the auto-mode selector. Routed through
       // `capture:interactive` (mode `"timed"`), same as the tray tile.
       return () => {
-        const trigger = createInteractiveCaptureTrigger("global_hotkey.timed");
-        log.info("global hotkey fired", {
-          kind,
-          mode: "timed",
-          invocationId: trigger.id
-        });
-        void runInteractiveCapture("timed", trigger);
+        triggerInteractiveCaptureFromHotkey("timed", kind);
       };
     case "videoCapture":
       // Fast Video Capture (issue #64). Opens the selector in auto
@@ -772,8 +885,7 @@ function handlerFor(kind: HotkeyKind): () => void {
       // choose anything. That is the whole reason to keep a second
       // hotkey now that the chooser exists.
       return () => {
-        log.info("global hotkey fired", { kind, mode: "video" });
-        void runInteractiveRecord();
+        triggerInteractiveRecordFromHotkey(kind);
       };
     case "reshowFloatOver":
       // Re-pop the most recent capture's float-over toast (issue: the
@@ -781,6 +893,14 @@ function handlerFor(kind: HotkeyKind): () => void {
       return () => {
         log.info("global hotkey fired", { kind });
         return runReshowLastFloatOver();
+      };
+    case "openLibrary":
+      // Bring the Library forward (creating the window if it was
+      // closed). Same `library:focus` verb the tray's folder button
+      // dispatches; unbound by default (see the schema doc).
+      return () => {
+        log.info("global hotkey fired", { kind });
+        void runOpenLibrary();
       };
   }
 }
@@ -802,8 +922,6 @@ async function wireHotkeyRegistrations(): Promise<void> {
   // Hotkeys, tray, updater, capture and AI consumers all share the same
   // immutable snapshot instead of independently reading settings.json.
   const service = getDesktopSettingsStore();
-  let currentChannel: Settings["updates"]["channel"] = "latest";
-  let currentTrain: Settings["updates"]["train"] = "stable";
   try {
     const settings = await service.read();
     hotkeyRegistrationManager.initialize(settings.hotkeys);
@@ -814,25 +932,17 @@ async function wireHotkeyRegistrations(): Promise<void> {
     if (settings.general.developerMode !== lastKnownDeveloperMode) {
       installApplicationMenu(settings.general.developerMode);
     }
-    currentChannel = settings.updates.channel;
-    currentTrain = settings.updates.train;
   } catch (cause) {
     log.warn("hotkey wire-up: initial read failed (continuing with no bindings)", {
       message: cause instanceof Error ? cause.message : String(cause)
     });
   }
-  setUpdateSelectionResolver(() => ({
-    channel: currentChannel,
-    train: currentTrain
-  }));
   onSettingsChanged((settings) => {
     setTrayHotkeys(settings.hotkeys, () => hotkeyRegistrationManager.statusSnapshot());
     if (settings.general.developerMode !== lastKnownDeveloperMode) {
       installApplicationMenu(settings.general.developerMode);
     }
-    currentChannel = settings.updates.channel;
-    currentTrain = settings.updates.train;
-    reconcileAppUpdateSelection();
+    handleAppUpdateSelectionChanged();
     // Theme may have changed — re-color the Windows title-bar overlay so the
     // caption strip tracks the active theme (no-op off win32).
     refreshWindowsTitleBarOverlay();
@@ -898,12 +1008,8 @@ async function wireHotkeyRegistrations(): Promise<void> {
 
 async function runExportLibrary(): Promise<void> {
   const log = getMainLogger("pwrsnap:export");
-  const result = await dialog.showOpenDialog({
-    title: "Choose a destination for the PwrSnap export",
-    properties: ["openDirectory", "createDirectory"]
-  });
-  if (result.canceled || result.filePaths.length === 0) return;
-  const destDir = result.filePaths[0]!;
+  const destDir = await pickExportDestination();
+  if (destDir === null) return;
   const dispatched = await bus.dispatch("library:export", { destDir }, { principal: "ipc" });
   if (!dispatched.ok) {
     log.warn("export library failed", { code: dispatched.error.code, message: dispatched.error.message });
@@ -1010,6 +1116,30 @@ function runReshowLastFloatOver(): void {
   }
 }
 
+/** Open Library hotkey — raise the singleton Library window, creating
+ *  it if the user closed it. Routed through the bus (not
+ *  `bringLibraryForward` directly) so two-process mode dispatches it to
+ *  whichever process owns the window, same as the tray's folder button.
+ *  Rejections are swallowed + logged for the same reason
+ *  `runReshowLastFloatOver` swallows: this runs inside a globalShortcut
+ *  callback, where a throw has nowhere to go. */
+async function runOpenLibrary(): Promise<void> {
+  const log = getMainLogger("pwrsnap:shortcut");
+  try {
+    const result = await bus.dispatch("library:focus", {}, { principal: "ipc" });
+    if (!result.ok) {
+      log.warn("library:focus failed", {
+        code: result.error.code,
+        message: result.error.message
+      });
+    }
+  } catch (cause) {
+    log.warn("library:focus threw", {
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+  }
+}
+
 /**
  * Fast Video Capture entry (issue #64). Opens the selector to pick a
  * region/window, then routes the commit to `recording:start` instead
@@ -1060,6 +1190,7 @@ async function runInteractiveRecord(
   // seeds from the persisted default. Reused below for audio
   // capabilities + the cursor value passed to `recording:start`.
   const settings = await getDesktopSettingsStore().read();
+  const recordingSources = recordingBackendCapabilities().sources;
   const selection = await pickRegion({
     mode: "auto",
     keepPwrSnapChrome: false,
@@ -1072,7 +1203,33 @@ async function runInteractiveRecord(
     // Library as a valid target.
     protectWindowIds,
     // Seed the selector's cursor toggle from the persisted default.
-    cursorDefault: settings.recording.videoCaptureCursor
+    cursorDefault: settings.recording.videoCaptureCursor,
+    hudStyle: settings.recording.selectorHud,
+    // Seed the source chips the same way. This is the first path that
+    // makes `recording.includeMicrophone` / `.includeSystemAudio`
+    // reachable from a renderer at all — before the chips they were
+    // read here and never shown, so nothing in the app could tell the
+    // user whether their recording had audio.
+    // Gated on the backend's own capability table, not on the persisted
+    // setting alone. `guardRecordingAttempt` rejects the whole take when a
+    // non-darwin backend is handed either source, so offering the chips
+    // there advertised a control whose only outcome was a failed
+    // recording — worse than the pre-chip behavior, where the same
+    // setting was simply ignored end-to-end. protocol.ts states the rule:
+    // unsupported controls are omitted, not rendered as if they might work.
+    cameraOffered: recordingSources.webcam,
+    devicesDefault: {
+      microphone: settings.recording.microphoneDevice,
+      camera: settings.recording.cameraDevice
+    },
+    ...(recordingSources.microphone || recordingSources.systemAudio
+      ? {
+          sourcesDefault: {
+            microphone: recordingSources.microphone && settings.recording.includeMicrophone,
+            systemAudio: recordingSources.systemAudio && settings.recording.includeSystemAudio
+          }
+        }
+      : {})
   });
   if (!selection.ok) {
     setFloatOverState({ kind: "cancel" });
@@ -1247,13 +1404,130 @@ function scheduleDarwinRegionSelectorPreWarm(): void {
   }, 0);
 }
 
+/**
+ * Log lines that say where a quit stopped. A quit has stalled with every
+ * window gone and nothing logged: the second before-quit pass tore the
+ * helper windows down, the Library closed, and will-quit never fired.
+ * The cause was not a window still closing: the retried app.quit() ran
+ * nested inside the first, deferred pass, which then reset Electron's
+ * `is_quitting_` (quit-retry.ts). These lines are what showed it.
+ *
+ * Registered after the transient-window teardown, so the list on each
+ * pass is what the close pass will have to close. Windows are named by
+ * their title and `#stage=` hash, never by URL: in `pnpm dev` the URL is
+ * `http://localhost:<port>/…`, and a terminal turns that into a link that
+ * opens the page in the user's browser.
+ */
+const QUIT_STALL_REPORT_MS = 5_000;
+
+function pageOf(rawUrl: string): string {
+  try {
+    const url = new URL(rawUrl);
+    if (url.hash !== "") return url.hash;
+    return url.protocol === "http:" || url.protocol === "https:" || url.protocol === "file:"
+      ? "(library)"
+      : url.protocol;
+  } catch {
+    return "(none)";
+  }
+}
+
+function installQuitDiagnostics(): void {
+  const log = getMainLogger("pwrsnap:quit");
+  let quitting = false;
+  let stallTimer: ReturnType<typeof setTimeout> | null = null;
+  const describe = (window: BrowserWindow) => ({
+    id: window.id,
+    title: window.getTitle(),
+    page: window.webContents.isDestroyed() ? "(destroyed)" : pageOf(window.webContents.getURL())
+  });
+  // Everything Electron still holds, including what BrowserWindow's own
+  // list no longer reports.
+  const reportStall = (): void => {
+    stallTimer = null;
+    log.warn("quit stalled: no will-quit since the last before-quit", {
+      waitedMs: QUIT_STALL_REPORT_MS,
+      baseWindows: BaseWindow.getAllWindows().map((window) => ({
+        id: window.id,
+        title: window.getTitle(),
+        destroyed: window.isDestroyed(),
+        visible: window.isVisible(),
+        browser: window instanceof BrowserWindow
+      })),
+      webContents: webContents.getAllWebContents().map((contents) => ({
+        id: contents.id,
+        type: contents.getType(),
+        page: contents.isDestroyed() ? "(destroyed)" : pageOf(contents.getURL())
+      }))
+    });
+  };
+  app.on("before-quit", () => {
+    quitting = true;
+    log.info("quit requested", { windows: BrowserWindow.getAllWindows().map(describe) });
+    if (stallTimer !== null) clearTimeout(stallTimer);
+    stallTimer = setTimeout(reportStall, QUIT_STALL_REPORT_MS);
+    stallTimer.unref();
+  });
+  app.on("browser-window-created", (_event, window) => {
+    if (!quitting) return;
+    log.warn("window created during quit", { ...describe(window), stack: new Error().stack });
+  });
+  app.on("will-quit", () => {
+    if (stallTimer !== null) clearTimeout(stallTimer);
+    stallTimer = null;
+    log.info("will-quit");
+  });
+}
+
+function logSharpWasmSteerDecision(): void {
+  const decision = sharpWasmSteerDecision;
+  if (decision.kind === "steered") {
+    log.info("sharp: using the WebAssembly build (Electron on Linux)", {
+      wasmBinding: decision.wasmBinding
+    });
+  } else if (decision.kind === "wasm-unavailable") {
+    // Native sharp in Electron on Linux crashes main with SIGTRAP. This is
+    // the line that explains a crash after an install without the package.
+    log.warn("sharp: @img/sharp-wasm32 is not installed; using the native addon, which can crash Electron on Linux", {
+      reason: decision.reason
+    });
+  }
+}
+
 export function bootstrapApp(): void {
   markStartup("main: bootstrapApp begin");
   initializeMainLogger();
+  logSharpWasmSteerDecision();
   installTerminalSignalShutdown();
   // Install first: a Sizzle save may defer the initial before-quit pass.
   // Transient teardown skips that pass and runs on the resumed app.quit().
   installSizzleQuitBarrier(app);
+  let diagnosticsQuitDeferred = false;
+  const diagnosticsShutdown = createDiagnosticsShutdown({
+    stop: async () => {
+      // Flush every target concurrently; one failure must not cut off another.
+      const results = await Promise.allSettled([
+        stopHotCpuProfilers(),
+        shutdownContentTrace()
+      ]);
+      const failure = results.find((result) => result.status === "rejected");
+      if (failure?.status === "rejected") throw failure.reason;
+    },
+    resumeQuit: () => app.quit(),
+    warn: (message) => getMainLogger("pwrsnap:bootstrap").warn(message),
+    // Only a running hot-CPU profiler or an armed trace has anything to
+    // save. Without one, deferring quit just to flush nothing doubled every
+    // quit.
+    hasPendingWork: () => hasActiveHotCpuProfilers() || isContentTraceArmed()
+  });
+  app.on("before-quit", (event) => {
+    // Sizzle may cancel quit while asking to save. Let that decision finish.
+    if (isSizzleQuitDeferred()) return;
+    diagnosticsQuitDeferred = diagnosticsShutdown.beforeQuit(event);
+  });
+  setAppUpdateInstallHandler((install) => diagnosticsShutdown.quitAndInstall(install));
+  // The pass Electron will act on: nothing above deferred it.
+  const isFinalQuitPass = (): boolean => !isSizzleQuitDeferred() && !diagnosticsQuitDeferred;
   // Electron emits before-quit before it begins closing BrowserWindows. Tear
   // down persistent transient/infrastructure windows there so they cannot
   // hold the graceful quit handshake open. The returned idempotent helper is
@@ -1265,12 +1539,19 @@ export function bootstrapApp(): void {
       disposeTray,
       disposeFloatOver,
       disposeRecordingController,
+      disposeRecordingFrame,
       disposeRegionSelector,
       disposeFocusSink,
       destroyTextBakePool
     },
-    { shouldDisposeOnBeforeQuit: () => !isSizzleQuitDeferred() }
+    { shouldDisposeOnBeforeQuit: isFinalQuitPass }
   );
+  installQuitDiagnostics();
+  installQuitStallRecovery(app, {
+    isFinalPass: isFinalQuitPass,
+    hasWindows: () => BaseWindow.getAllWindows().length > 0,
+    log: getMainLogger("pwrsnap:quit")
+  });
 
   // setName BEFORE the first app.getPath("userData") access — Electron
   // derives userData from the app name, and the role peek below reads
@@ -1317,6 +1598,10 @@ export function bootstrapApp(): void {
     )
   });
   setRuntimeProcessRole(role);
+  // Before anything can purge or clear: the library needs its forwarder and
+  // the agent needs the verb behind it. Registration only — the first
+  // dispatch happens whenever a cleanup actually runs.
+  registerDerivedCacheCleanupOwner(role);
   if (role !== "combined") {
     log.info("booting with process role", { role, pid: process.pid });
   }
@@ -1376,6 +1661,13 @@ export function bootstrapApp(): void {
       "enable-features",
       "ScreenCaptureKitMac,ScreenCaptureKitMacWindow,ScreenCaptureKitMacScreen,ScreenCaptureKitPickerScreen"
     );
+    // E2E hermeticity, same rule as the userData / documents / home rebasing
+    // below: an E2E run must not touch the developer's real login keychain.
+    // See darwin-keychain-startup-policy.ts for why, and why this is
+    // deliberately NOT applied to a plain `pnpm dev` run.
+    if (applyDarwinKeychainStartupPolicy(app.commandLine, { platform: process.platform, isE2E })) {
+      log.info("E2E: using Chromium's mock keychain; the real login keychain is untouched");
+    }
   }
   if (process.platform === "win32") {
     // Disable Chromium's native window occlusion calculation. The post-capture
@@ -1556,19 +1848,8 @@ export function bootstrapApp(): void {
     app.setPath("sessionData", join(app.getPath("userData"), "library-session"));
   }
 
-  const appVersion = app.getVersion();
-  const runtimeIdentity = resolveDevelopmentRuntimeIdentity({
-    isPackaged: app.isPackaged,
-    nodeEnv: process.env.NODE_ENV
-  });
-  app.setAboutPanelOptions({
-    applicationName: APP_NAME,
-    applicationVersion: appVersion,
-    version: resolveAboutPanelBuildVersion(appVersion, runtimeIdentity),
-    copyright: APP_COPYRIGHT
-  });
-
   app.whenReady().then(async () => {
+    installSystemShutdown();
     if (windowsUpdateSmokeConfig !== null) {
       // Purpose-built headless boot: open the real packaged DB, wire only the
       // updater, and let the signed baseline exercise electron-updater's real
@@ -1579,8 +1860,7 @@ export function bootstrapApp(): void {
       app.on("will-quit", closeDatabase);
       try {
         await openDatabase();
-        setUpdateSelectionResolver(() => ({ channel: "prerelease", train: "beta" }));
-        initAppUpdater();
+        initAppUpdater(() => ({ channel: "prerelease", train: "beta" }));
         await runWindowsUpdateSmoke({
           config: windowsUpdateSmokeConfig,
           checkForUpdates: () => checkForAppUpdatesNow("startup"),
@@ -1610,6 +1890,18 @@ export function bootstrapApp(): void {
       }
       return;
     }
+    // Before any window loads. Electron's no-handler default GRANTS
+    // every permission a renderer asks for; this denies by default and
+    // allows only `media` (the selector's level meter + camera preview)
+    // and sanitized clipboard writes, and only from a PwrSnap-loaded
+    // page. See media-permissions.ts for why both hooks are installed.
+    installMediaPermissionPolicy();
+    // Same seam, same reason: `web-contents-created` is not replayed, so
+    // this has to be armed before the first window exists. Denies every
+    // `window.open` (what a middle-click or cmd-click on a link becomes)
+    // and every navigation away from PwrSnap's own content, routing an
+    // allowlisted https URL to the user's browser instead.
+    installNavigationGuard();
 
     if (process.platform === "darwin" && (isE2E || role === "agent")) {
       // Agent role: menubar-only process — no Dock presence, ever.
@@ -1665,6 +1957,7 @@ export function bootstrapApp(): void {
     try {
       const storageSettings = await storageSettingsService.read();
       setCapturesLocation(storageSettings.storage.capturesLocation);
+      setFloatOverRecentSidebarVisible(storageSettings.recording.showRecentCaptureSidebar);
     } catch (cause) {
       log.warn("captures location: initial settings read failed; using Documents", {
         message: cause instanceof Error ? cause.message : String(cause)
@@ -1676,6 +1969,9 @@ export function bootstrapApp(): void {
     // event below.
     onSettingsChanged((settings) => {
       setCapturesLocation(settings.storage.capturesLocation);
+      // The float-over (and its dock) lives in this process in both roles
+      // that receive these broadcasts.
+      setFloatOverRecentSidebarVisible(settings.recording.showRecentCaptureSidebar);
     });
     // Open the DB before anything else — cold first-INSERT cost
     // (~40ms) lands here instead of inside ⌘⇧P's <120ms budget.
@@ -1755,12 +2051,38 @@ export function bootstrapApp(): void {
     } else {
       installApplicationMenu();
     }
-    // Windows custom title-bar menu bar: lets the renderer pop the real native
-    // submenus (the native menu bar is gone under titleBarStyle:"hidden").
-    // No-op surface off Windows — the renderer only mounts the bar on win32.
+    // Custom title-bar menu bar: lets the renderer pop the real native
+    // submenus. Both platforms that hide the native title bar need it —
+    // Windows because the menu lived in the bar `titleBarStyle: "hidden"`
+    // removed, Linux because a frameless window never builds a menu bar at
+    // all. No-op surface on macOS, which keeps the system menu bar and where
+    // the renderer mounts no bar of its own.
     if (role !== "agent") {
       wireAppMenuBridge();
+      wireWindowMenuRefresh();
     }
+    // The other half of a renderer-painted Linux strip: minimize / maximize /
+    // close, which no OS API provides for a frameless window there.
+    //
+    // NOT gated on role, unlike the menu bridge above. The local-agent consent
+    // window spreads `platformWindowChrome()` — so it is frameless on Linux and
+    // paints its own caption buttons — and it is built by the AGENT process
+    // (`role !== "library"`, where the consent broker lives). Gating this the
+    // same way as the menu bridge left that window in split mode with no OS
+    // frame and three dead buttons: nothing could close it. Registered on every
+    // platform and every role; the channels are inert where nothing calls them,
+    // and the bridge itself refuses any window that is not a chrome window.
+    wireWindowControlsBridge();
+    // Every window, whoever opens it — including any added later. The renderer
+    // draws two things from the maximize state on Linux (the caption glyph and
+    // the hairline standing in for the border a frameless window is not given),
+    // and the window manager changes it behind our back.
+    app.on("browser-window-created", (_event, window) => {
+      trackWindowFrameState(window);
+    });
+    // Another app's copy is listed by the time the user can open File.
+    // Types only; see refreshPasteFromClipboardMenu.
+    if (isMac) app.on("did-become-active", refreshPasteFromClipboardMenu);
     // Issue #139 — wire the menu refresh + renderer broadcast to OUR
     // clipboard writes. menu-will-show alone was insufficient on macOS;
     // the in-app "Copy MED" flow now updates the menu state at write
@@ -1822,7 +2144,7 @@ export function bootstrapApp(): void {
         }
       );
       registerCaptureStorageHandlers();
-      registerCodexHandlers();
+      registerEnrichmentRepairHandlers(productionRepairDeps(registerCodexHandlers()));
       registerCodexProfileHandlers();
       registerAcpHandlers();
       // `capture:saveAs` is the one capture verb owned by the Library in
@@ -1848,9 +2170,10 @@ export function bootstrapApp(): void {
       // Startup Codex readiness probe — deferred past the library's first
       // contentful paint (#238). The probe's `codex` process spawns
       // (~0.9s) otherwise land in the window-shown→first-paint gap,
-      // stalling the main thread in ~100ms chunks. Nothing on the boot
-      // path consumes the result; on-demand dispatches (Settings → AI)
-      // trigger their own. E2E skips the boot probe entirely: each spec
+      // stalling the main thread in ~100ms chunks. Enabled Codex surfaces
+      // then reconcile defaults against the live catalog. On-demand model
+      // pickers and enrichment use the same policy. E2E skips the boot probe
+      // entirely: each spec
       // launches a fresh app, so probing the host's real Codex install on
       // every launch adds unrelated child-process work and makes ordinary
       // specs depend on the runner's installed Codex state. The discovery E2E
@@ -1864,12 +2187,21 @@ export function bootstrapApp(): void {
           // publication as renderer mounts. If Library/Float-Over already
           // populated it, this is an in-memory read rather than a second scan.
           .dispatch("settings:refreshCodexDiscovery", { force: false }, { principal: "ipc" })
-          .then((result) => {
+          .then(async (result) => {
             if (!result.ok) {
               log.warn("startup Codex readiness probe failed", {
                 code: result.error.code,
                 message: result.error.message
               });
+            }
+            if (result.ok && result.value.resolvedPath !== null) {
+              const settings = await bus.dispatch("settings:read", {}, { principal: "ipc" });
+              // List the catalog only when a saved Codex default can migrate;
+              // an up-to-date install pays nothing at boot.
+              if (settings.ok && settings.value.ai.enabled &&
+                  hasObsoleteCodexDefaults(settings.value)) {
+                await bus.dispatch("codex:models", {}, { principal: "ipc" });
+              }
             }
           });
       };
@@ -1910,6 +2242,9 @@ export function bootstrapApp(): void {
     // a BrowserWindow on the first state transition.
     if (role !== "library") {
       installRecordingController();
+      // Region frame — same install gate and the same reason: it
+      // creates a BrowserWindow on the first non-idle transition.
+      installRecordingFrame();
     }
     // Dev seeder — gated on DEV at static-substitution time + a
     // belt-and-suspenders runtime NODE_ENV check. Production builds
@@ -2097,14 +2432,28 @@ export function bootstrapApp(): void {
           });
         });
       processQueuedOpenFiles();
+      // A video duplicate interrupted by the last quit or crash left an
+      // intent row naming its staging + destination files; remove them.
+      // Mutating, so a profiling run on a cloned DB leaves them alone.
+      if (!startupProfilingEnabled()) {
+        void recoverInterruptedVideoDuplicates().catch((cause: unknown) => {
+          log.warn("video duplicate recovery failed", {
+            message: cause instanceof Error ? cause.message : String(cause)
+          });
+        });
+      }
     }
     if (!isE2E && role !== "library") {
-      // Auto-update needs the channel resolver wired
-      // (wireHotkeyRegistrations sets it). In production, kicks off
+      // Read the already-hydrated settings snapshot directly: async hotkey
+      // wiring may still be pending (or skipped for profiling). Kicks off
       // an initial check after the main window has mounted so the
       // renderer's banner subscription is alive to receive events.
       // No-op in development (skips gracefully).
-      initAppUpdater();
+      initAppUpdater(() => {
+        const settings = getDesktopSettingsStore().getCurrentSnapshot();
+        if (!settings) throw new Error("Update settings have not been loaded");
+        return settings.updates;
+      });
     }
     if (role !== "library") {
       await wireLocalAgentMcpLifecycle();
@@ -2180,48 +2529,32 @@ export function bootstrapApp(): void {
         // bridge surface so specs don't reach into module internals
         // via dynamic imports — those tend to drift across path /
         // bundler changes.
-        // seedCapture accepts the pre-bundle-storage `src_path` field
-        // name as a back-compat alias. Migration 0005 renamed the
-        // column to `legacy_src_path`, but specs pulled from main still
-        // use the old name. Normalize here so specs work unchanged.
-        seedCapture: (input: Parameters<typeof insertCapture>[0] & { src_path?: string }) => {
-          const { src_path: legacyAlias, ...rest } = input;
-          const normalized =
-            legacyAlias !== undefined && rest.legacy_src_path === undefined
-              ? { ...rest, legacy_src_path: legacyAlias }
-              : rest;
-          // v2 is the only bundle format. Default row-only seeds to v2 so
-          // the editor's useCaptureModel resolves the v2 layer-tree model
-          // — a `bundle_format_version = 1` row now resolves to an error
-          // model (the v1 read path is gone). An explicit version in the
-          // input still wins. (Harmless for `kind: "video"`: nothing reads
-          // the flag for videos — they render via pwrsnap-capture://.)
-          return insertCapture({ bundle_format_version: 2, ...normalized });
+        // Seed capture rows. An image row gets a real v2 `.pwrsnap`
+        // (the coordinator renders nothing else), its layer tree and its
+        // source.png cache before the row lands, so Library thumbnails
+        // load; a video row is inserted as given. Async — specs must
+        // await it before broadcasting captures-changed. `src_path` is
+        // accepted as the pre-0005 name of `legacy_src_path`. See
+        // persistence/e2e-capture-seed.ts.
+        seedCapture: async (input: E2ESeedCaptureInput) => {
+          const [result] = await seedCapturesForE2E([input]);
+          return result;
         },
-        // Batch variant — runs all inserts inside one SQLite
-        // transaction so the chain pays one fsync instead of N.
-        // Lets specs seed 100+ captures inside a single
-        // `electronApp.evaluate` without blowing their time budget
-        // on slow CI disks. Same src_path alias applied to each input.
-        seedCaptures: (inputs: Array<Parameters<typeof insertCapture>[0] & { src_path?: string }>) => {
-          const normalized = inputs.map((input) => {
-            const { src_path: legacyAlias, ...rest } = input;
-            const withAlias =
-              legacyAlias !== undefined && rest.legacy_src_path === undefined
-                ? { ...rest, legacy_src_path: legacyAlias }
-                : rest;
-            // Default to v2 (the only bundle format); explicit wins. See
-            // `seedCapture` above for the rationale.
-            return { bundle_format_version: 2, ...withAlias };
-          });
-          return insertCapturesBatch(normalized);
-        },
+        // Batch variant: one SQLite transaction for every row, and the
+        // per-fixture decode/thumbnail work is shared, so specs can seed
+        // 100+ captures inside a single `electronApp.evaluate`.
+        seedCaptures: (inputs: E2ESeedCaptureInput[]) => seedCapturesForE2E(inputs),
         // Insert the video_captures metadata row for a previously-
         // seeded `kind="video"` capture. Specs use this to drive the
         // float-over's video asset branch without spawning a real
         // recording (which would need TCC permission + a Mac).
         seedVideoMetadata: (input: Parameters<typeof insertVideoMetadata>[0]) =>
           insertVideoMetadata(input),
+        // Index a camera track for a seeded video. The caller writes the
+        // `<id>.camera/` directory (track.json + source) beside the
+        // screen file first, exactly where a recording would leave it.
+        seedVideoCamera: (captureId: string, camera: Parameters<typeof setVideoCamera>[1]) =>
+          setVideoCamera(captureId, camera),
         // Seed a real bundle-backed capture by running the production
         // persistCaptureFromTempV2 pipeline — packs `.pwrsnap`, writes
         // the per-capture source.png cache under <userData>/render-cache/<id>/.
@@ -2251,21 +2584,31 @@ export function bootstrapApp(): void {
         // when the clipboard doesn't currently hold an image. Used by
         // clipboard-copy.spec.ts to verify each preset (low/med/high)
         // produces an image of the expected width on the clipboard.
-        readClipboardImage: () => {
-          const img = clipboard.readImage();
+        // On macOS that is the pasteboard PNG, which Electron 44 cannot see
+        // beside the file URL every PwrSnap copy writes
+        // (clipboard/macos-pasteboard-png.ts).
+        readClipboardImage: async () => {
+          const img =
+            process.platform === "darwin"
+              ? nativeImage.createFromBuffer((await readMacPasteboardPng()) ?? Buffer.alloc(0))
+              : await (await readClipboard()).readImage();
           if (img.isEmpty()) return null;
           const size = img.getSize();
           return { width: size.width, height: size.height, isEmpty: false };
         },
-        readClipboardBookmark: () => clipboard.readBookmark(),
-        readClipboardText: () => clipboard.readText(),
-        readClipboardFormats: () => clipboard.availableFormats(),
-        readClipboardBufferText: (format: string) => clipboard.readBuffer(format).toString("utf8"),
+        // `{ title: "", url: "" }` when there is no bookmark — the pre-44
+        // `readBookmark()` shape the specs assert against.
+        readClipboardBookmark: async () =>
+          (await (await readClipboard()).readBookmark()) ?? { title: "", url: "" },
+        readClipboardText: async () => (await readClipboard()).readText(),
+        readClipboardFormats: async () => [...(await readClipboard()).formats],
+        readClipboardBufferText: async (format: string) =>
+          (await (await readClipboard()).readBuffer(format)).toString("utf8"),
         // Clear clipboard before the spec runs so we know any image
         // we read back came from THIS test's dispatch, not a stale
         // earlier paste.
         clearClipboard: () => {
-          clipboard.clear();
+          clearClipboard();
         },
         // Tray-sizing test surface. `installTray()` is skipped in E2E
         // mode (no NSStatusItem in tests), so these helpers stand in
@@ -2453,28 +2796,84 @@ export function bootstrapApp(): void {
   // teardown so we don't loop on the will-quit handler firing again
   // after `app.quit()` is called from inside it.
   let quitTeardownInFlight = false;
+  /**
+   * How long ⌘Q waits for a stopping/processing take to finalize before
+   * quitting regardless. Generous enough for an ordinary encode + move,
+   * short enough that a wedged persistence cannot make the app unquittable.
+   */
+  const RECORDING_QUIT_BARRIER_TIMEOUT_MS = 15_000;
   app.on("will-quit", (event) => {
-    // Fast Video Capture (issue #64): if a recording is active when
-    // the user hits ⌘Q, cancel it cleanly BEFORE the rest of teardown
-    // runs. Without this the Swift recorder is orphaned (parent dies,
-    // launchd reparents it) and the user's clip is lost AND a stray
-    // PwrSnapRecorder process sits in their process list until it
-    // hits its own write error or the parent-death watchdog reaps it.
+    // If the user quits with a recording attempt alive, let the recording
+    // service own the transition before ordinary teardown. Lead-in and active
+    // capture are cancelled cleanly. Once Stop has begun, wait for the
+    // authoritative ready/failed transition so quitting cannot discard a clip
+    // while recorder exit or persistence is still in flight.
     if (isRecordingActive() && !quitTeardownInFlight) {
       quitTeardownInFlight = true;
       event.preventDefault();
-      void getRecordingService()
-        .cancel()
+      const phase = getRecordingState().phase;
+      const finish =
+        phase === "stopping" || phase === "processing"
+          ? new Promise<void>((resolve) => {
+              let settled = false;
+              let unsubscribe = (): void => undefined;
+              let deadline: ReturnType<typeof setTimeout> | undefined;
+              const settle = (): void => {
+                settled = true;
+                clearTimeout(deadline);
+                unsubscribe();
+                resolve();
+              };
+              const onState = (state: ReturnType<typeof getRecordingState>): void => {
+                if (state.phase !== "ready" && state.phase !== "failed" && state.phase !== "idle") {
+                  return;
+                }
+                settle();
+              };
+              // Bounded. `preventDefault()` has already run and
+              // `quitTeardownInFlight` is latched, so if this promise never
+              // settles the app can no longer be quit at all — and the two
+              // phases it waits on are exactly the ones `recording:cancel`
+              // refuses, so nothing can break the wait from outside.
+              // Persistence moves the clip into `~/Documents/PwrSnap`, which
+              // is TCC-gated and parks without bound while the consent
+              // prompt is pending (AGENTS.md, "Never block the main thread on
+              // a TCC-gated path"), so the hang is reachable, not theoretical.
+              // Giving up loses at most the finalization of one clip; not
+              // giving up loses the ability to quit.
+              // Finalization runs during diagnostics flushing too. Share the
+              // original quit budget rather than adding another 15 seconds.
+              const remainingMs = diagnosticsShutdown.remainingQuitTime(
+                RECORDING_QUIT_BARRIER_TIMEOUT_MS
+              );
+              deadline = setTimeout(() => {
+                if (settled) return;
+                getMainLogger("pwrsnap:bootstrap").warn(
+                  "recording quit barrier timed out; quitting anyway",
+                  { phase, waitedMs: RECORDING_QUIT_BARRIER_TIMEOUT_MS }
+                );
+                settle();
+              }, remainingMs);
+              unsubscribe = subscribeToRecordingState(onState);
+              // subscribeToRecordingState emits synchronously. If finalization
+              // won the race before registration returned, remove the newly
+              // installed listener after its handle becomes available.
+              if (settled) unsubscribe();
+            })
+          : getRecordingService().cancel();
+      void finish
         .catch((cause) => {
-          getMainLogger("pwrsnap:bootstrap").warn("cancel-on-quit failed", {
+          getMainLogger("pwrsnap:bootstrap").warn("recording quit barrier failed", {
             message: cause instanceof Error ? cause.message : String(cause)
           });
         })
         .finally(() => {
           // Retry the quit — the second time around the recording
           // state is idle so this branch falls through to the
-          // ordinary teardown below.
-          app.quit();
+          // ordinary teardown below. From a macrotask: will-quit is
+          // emitted from a native task, so a retry that settles in
+          // microtasks runs inside it and is lost (quit-retry.ts).
+          retryQuitAfterDispatch(() => app.quit());
         });
       return;
     }

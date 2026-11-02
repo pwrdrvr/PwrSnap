@@ -28,7 +28,7 @@
 // immediately; this handler resolves with the layer id when the
 // worker returns.
 
-import { BrowserWindow, clipboard, type Event } from "electron";
+import { BrowserWindow, type Event } from "electron";
 import { nanoid } from "nanoid";
 import type { BundleLayerNode } from "@pwrsnap/shared";
 import {
@@ -37,6 +37,7 @@ import {
   err,
   PASTE_IMAGE_MAX_BYTES
 } from "@pwrsnap/shared";
+import { readClipboard } from "../clipboard/system-clipboard";
 import { bus } from "../command-bus";
 import { getCaptureById } from "../persistence/captures-repo";
 import { insertLayer, listLayerTree } from "../persistence/layers-repo";
@@ -492,10 +493,10 @@ export function registerEditorHandlers(): void {
       });
     }
 
-    // Read the clipboard image. nativeImage.toPNG() returns the bytes
-    // in the standard image slot; if empty, the clipboard either
-    // holds something non-image (text only) or nothing at all.
-    const image = clipboard.readImage();
+    // Read the clipboard image from its `image/*` flavor; if empty, the
+    // clipboard either holds something non-image (text only) or nothing
+    // at all.
+    const image = await (await readClipboard()).readImage();
     if (image.isEmpty()) {
       return err({
         kind: "clipboard",

@@ -66,7 +66,9 @@ vi.mock("../bundle-store", async (importOriginal) => {
 const { buildCaptureBundleFilenameStem, bundleStemFromPath } = await import(
   "../bundle-filename"
 );
-const { packBundleV2, runExclusiveBundleFileOperation } = await import("../bundle-store");
+const { cancelScheduledRepacks, packBundleV2, runExclusiveBundleFileOperation } = await import(
+  "../bundle-store"
+);
 const {
   bundleFilenamePermissionWarning,
   expectedBundleStemForCapture,
@@ -144,7 +146,11 @@ function insertEnrichment(args: {
     .run(args);
 }
 
-async function writeBundleFixture(path: string, captureId: string): Promise<void> {
+async function writeBundleFixture(
+  path: string,
+  captureId: string,
+  lineage: { family_id?: string; duplicated_from?: string } = {}
+): Promise<void> {
   const sourceSha = "a1b2c3d4".repeat(8);
   const manifest: BundleManifestV2 = {
     bundle_format_version: 2,
@@ -152,7 +158,8 @@ async function writeBundleFixture(path: string, captureId: string): Promise<void
     canvas_dimensions: { width_px: 100, height_px: 80 },
     paired_png_filename: `${captureId}.png`,
     created_at: "2026-05-29T18:38:12.000Z",
-    bundle_modified_at: "2026-05-29T18:38:12.000Z"
+    bundle_modified_at: "2026-05-29T18:38:12.000Z",
+    ...lineage
   };
   const document: BundleDocumentV2 = {
     document_format_version: 1,
@@ -182,6 +189,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  cancelScheduledRepacks();
   mocks.db?.close();
   mocks.db = null;
   await rm(workDir, { recursive: true, force: true });
@@ -546,5 +554,45 @@ describe("bundle filename maintenance", () => {
       .prepare("SELECT bundle_path FROM captures WHERE id = ?")
       .get(captureId) as { bundle_path: string };
     expect(row.bundle_path).toBe(oldPath);
+  });
+
+  test("restores duplicate lineage the database lost from the manifests it reads", async () => {
+    // A rebuilt DB: neither row remembers the family. Only the copy's
+    // manifest carries it — the root's repack never ran.
+    const rootId = "cap_lineage_root";
+    const copyId = "cap_lineage_copy";
+    const rootPath = join(workDir, "lineage-root.pwrsnap");
+    const copyPath = join(workDir, "lineage-copy.pwrsnap");
+    await writeBundleFixture(rootPath, rootId);
+    await writeBundleFixture(copyPath, copyId, { family_id: rootId, duplicated_from: rootId });
+    insertCapture({
+      id: rootId,
+      bundlePath: rootPath,
+      sourceAppName: null,
+      sha256: "0a1b2c3d".repeat(8)
+    });
+    insertCapture({
+      id: copyId,
+      bundlePath: copyPath,
+      sourceAppName: null,
+      sha256: "4e5f6a7b".repeat(8)
+    });
+
+    const result = await runBundleFilenameMaintenanceOnBoot();
+
+    expect(result).toMatchObject({ lineageRepaired: 1, lineageConflicts: 0, failed: 0 });
+    const lineage = mocks.db!
+      .prepare("SELECT id, family_id, duplicated_from FROM captures ORDER BY id")
+      .all();
+    expect(lineage).toEqual([
+      { id: copyId, family_id: rootId, duplicated_from: rootId },
+      { id: rootId, family_id: rootId, duplicated_from: null }
+    ]);
+
+    // Idempotent: the next boot finds nothing left to fill.
+    await expect(runBundleFilenameMaintenanceOnBoot()).resolves.toMatchObject({
+      lineageRepaired: 0,
+      lineageConflicts: 0
+    });
   });
 });

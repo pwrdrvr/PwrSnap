@@ -46,6 +46,7 @@ export interface ToolConfigPanelProps {
    *  field so a setStyleField('arrow', 'thickness', 'medium') call
    *  typechecks both arms. */
   onStyleFieldChange<T extends StyledTool, K extends keyof StyleFor<T>>(
+    this: void,
     tool: T,
     field: K,
     value: StyleFor<T>[K]
@@ -57,7 +58,8 @@ const TOOL_TITLES: Record<StyledTool, string> = {
   text: "Text style",
   shape: "Shape style",
   blur: "Blur style",
-  highlight: "Highlight style"
+  highlight: "Highlight style",
+  draw: "Draw style"
 };
 
 export function ToolConfigPanel({

@@ -7,7 +7,13 @@
 
    Vite resolves these imports through node_modules and inlines the
    .woff2 binaries into the asset graph, so the production build emits
-   them as hashed assets next to index.css. No runtime network calls. */
+   them as hashed assets next to index.css. No runtime network calls.
+
+   The families these files REGISTER are "Geist Sans" and "Geist Mono" —
+   a font-family that names anything else (bare "Geist", say) never
+   loads them. The --font-* stacks in tokens.css must lead with those
+   names; __tests__/font-family-contract.test.ts reads the imported
+   @font-face rules and fails if they drift apart. */
 
 @import "@fontsource/geist-sans/400.css";
 @import "@fontsource/geist-sans/500.css";

@@ -21,7 +21,7 @@
 // systemPreferences + the recording service so we don't touch macOS TCC
 // or spawn the Swift recorder binary.
 
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { PwrSnapError, Result } from "@pwrsnap/shared";
 
 // Full RecordingService surface — only `cancel` and `restart` are
@@ -37,6 +37,7 @@ const mocks = vi.hoisted(() => ({
     throw new Error("not_recording");
   }),
   start: vi.fn(),
+  askForMediaAccess: vi.fn(async () => true),
   stop: vi.fn(),
   retryCapabilities: vi.fn(() => ({ microphone: false, systemAudio: false })),
   retry: vi.fn(async () => ({ sessionId: "retry-session" })),
@@ -51,7 +52,21 @@ const mocks = vi.hoisted(() => ({
   mediaAccess: {
     screen: "granted",
     microphone: "granted"
-  } as Record<string, string>
+  } as Record<string, string>,
+  capture: null as unknown,
+  // The saved MP4 audio preference an export with no `audio` resolves.
+  readRecordingSettings: vi.fn(async (): Promise<Record<string, unknown>> => ({
+    mp4IncludeMicrophone: true,
+    mp4IncludeSystemAudio: true
+  })),
+  exportVideoRange: vi.fn(async (_input: unknown) => ({
+    path: "/cache/export.mp4",
+    byteSize: 10,
+    durationSec: 4,
+    widthPx: 720,
+    heightPx: 404,
+    fromCache: false
+  }))
 }));
 
 vi.mock("electron", (): Partial<typeof import("electron")> => ({
@@ -61,7 +76,8 @@ vi.mock("electron", (): Partial<typeof import("electron")> => ({
   // is deterministic regardless of the host. Tests that need to assert
   // a specific status can override process.platform locally.
   systemPreferences: {
-    getMediaAccessStatus: (permission: string) => mocks.mediaAccess[permission] ?? "granted"
+    getMediaAccessStatus: (permission: string) => mocks.mediaAccess[permission] ?? "granted",
+    askForMediaAccess: mocks.askForMediaAccess
   } as unknown as typeof import("electron").systemPreferences,
   shell: {
     openExternal: async () => undefined
@@ -76,7 +92,7 @@ vi.mock("electron", (): Partial<typeof import("electron")> => ({
 // never exercise those verbs in this file, but bus.register runs at
 // import time and the module-load chain has to resolve.
 vi.mock("../../persistence/captures-repo", () => ({
-  getCaptureById: () => null
+  getCaptureById: () => mocks.capture
 }));
 
 vi.mock("../../persistence/video-repo", () => ({
@@ -86,7 +102,11 @@ vi.mock("../../persistence/video-repo", () => ({
 }));
 
 vi.mock("../../recording/recording-exporter", () => ({
-  exportVideoRange: async () => undefined
+  exportVideoRange: mocks.exportVideoRange
+}));
+
+vi.mock("../../settings/desktop-settings-store", () => ({
+  getDesktopSettingsStore: () => ({ readDomain: mocks.readRecordingSettings })
 }));
 
 // Stub the recording service factory before recording-handlers imports
@@ -117,10 +137,15 @@ const originalPlatform = process.platform;
 registerRecordingHandlers();
 
 beforeEach(() => {
+  Object.defineProperty(process, "platform", { value: "win32", configurable: true });
   setRecordingState({ phase: "idle" });
   mocks.cancel.mockClear();
   mocks.restart.mockClear();
   mocks.start.mockClear();
+  mocks.stop.mockReset();
+  mocks.stop.mockResolvedValue({ captureId: "cap-1" });
+  mocks.askForMediaAccess.mockReset();
+  mocks.askForMediaAccess.mockResolvedValue(true);
   mocks.retryCapabilities.mockReset();
   mocks.retryCapabilities.mockReturnValue({ microphone: false, systemAudio: false });
   mocks.retry.mockClear();
@@ -131,6 +156,162 @@ beforeEach(() => {
   mocks.ensureCapturesDirReady.mockResolvedValue(null);
   mocks.mediaAccess.screen = "granted";
   mocks.mediaAccess.microphone = "granted";
+  mocks.capture = null;
+  mocks.exportVideoRange.mockClear();
+});
+
+afterEach(() => {
+  Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+});
+
+describe("recording microphone preflight", () => {
+  const request = {
+    subject: { kind: "display" as const, displayId: 1 },
+    capabilities: { microphone: true, systemAudio: false },
+    countdownSeconds: 0
+  };
+
+  beforeEach(() => {
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    mocks.start.mockResolvedValue({ sessionId: "mic-session" });
+  });
+
+  test("waits for first-use consent, then records with the selected microphone", async () => {
+    mocks.mediaAccess.microphone = "not-determined";
+    let grant!: (value: boolean) => void;
+    mocks.askForMediaAccess.mockImplementationOnce(() => new Promise((resolve) => { grant = resolve; }));
+    const pending = bus.dispatch("recording:start", request, { principal: "ipc" });
+    await vi.waitFor(() => expect(mocks.askForMediaAccess).toHaveBeenCalledWith("microphone"));
+    expect(mocks.start).not.toHaveBeenCalled();
+    grant(true);
+    expect(await pending).toEqual({ ok: true, value: { sessionId: "mic-session" } });
+    expect(mocks.start).toHaveBeenCalledWith(expect.objectContaining({ capabilities: request.capabilities }));
+  });
+
+  test("does not start a silent recording when consent is declined", async () => {
+    mocks.mediaAccess.microphone = "not-determined";
+    mocks.askForMediaAccess.mockImplementationOnce(async () => {
+      mocks.mediaAccess.microphone = "denied";
+      return false;
+    });
+    expect(await bus.dispatch("recording:start", request, { principal: "ipc" })).toMatchObject({
+      ok: false, error: { kind: "permission", code: "microphone_not_granted" }
+    });
+    expect(mocks.start).not.toHaveBeenCalled();
+  });
+
+  test.each(["denied", "restricted"])("does not re-prompt a %s microphone", async (status) => {
+    mocks.mediaAccess.microphone = status;
+    expect(await bus.dispatch("recording:start", request, { principal: "ipc" })).toMatchObject({
+      ok: false, error: { code: "microphone_not_granted" }
+    });
+    expect(mocks.askForMediaAccess).not.toHaveBeenCalled();
+    expect(mocks.start).not.toHaveBeenCalled();
+  });
+
+  test("returns an actionable error when the OS prompt fails", async () => {
+    mocks.mediaAccess.microphone = "not-determined";
+    mocks.askForMediaAccess.mockRejectedValueOnce(new Error("TCC unavailable"));
+    expect(await bus.dispatch("recording:start", request, { principal: "ipc" })).toMatchObject({
+      ok: false, error: { kind: "permission", code: "microphone_request_failed" }
+    });
+    expect(mocks.start).not.toHaveBeenCalled();
+  });
+
+  test.each([true, false])("does not prompt when already granted (microphone=%s)", async (microphone) => {
+    expect(await bus.dispatch("recording:start", {
+      ...request, capabilities: { microphone, systemAudio: false }
+    }, { principal: "ipc" })).toMatchObject({ ok: true });
+    expect(mocks.askForMediaAccess).not.toHaveBeenCalled();
+  });
+
+  test("a named microphone rides through to the recorder", async () => {
+    const capabilities = {
+      microphone: true,
+      systemAudio: false,
+      microphoneDevice: { label: "Granola Interface (USB)" }
+    };
+    expect(await bus.dispatch("recording:start", { ...request, capabilities }, { principal: "ipc" })).toMatchObject({
+      ok: true
+    });
+    expect(mocks.start).toHaveBeenCalledWith(expect.objectContaining({ capabilities }));
+  });
+
+  // A name with the microphone off, or a malformed one, means the caller
+  // meant something this request cannot say. Refuse rather than guess.
+  test.each([
+    [{ microphone: false, systemAudio: false, microphoneDevice: { label: "Granola Interface" } }],
+    [{ microphone: true, systemAudio: false, microphoneDevice: { label: "" } }],
+    [{ microphone: true, systemAudio: false, microphoneDevice: "Granola Interface" }],
+    [{ microphone: true, systemAudio: false, microphoneDevice: { label: "Granola", deviceId: "x" } }]
+  ])("refuses a microphone name it cannot honour: %j", async (capabilities) => {
+    expect(
+      await bus.dispatch(
+        "recording:start",
+        { ...request, capabilities } as unknown as typeof request,
+        { principal: "ipc" }
+      )
+    ).toMatchObject({ ok: false });
+    expect(mocks.start).not.toHaveBeenCalled();
+  });
+
+  test("does not ask for unselected microphone access", async () => {
+    mocks.mediaAccess.microphone = "not-determined";
+    expect(await bus.dispatch("recording:start", {
+      ...request, capabilities: { microphone: false, systemAudio: true }
+    }, { principal: "ipc" })).toMatchObject({ ok: true });
+    expect(mocks.askForMediaAccess).not.toHaveBeenCalled();
+  });
+
+  test("retry shares the first-use permission flow", async () => {
+    mocks.mediaAccess.microphone = "not-determined";
+    mocks.retryCapabilities.mockReturnValueOnce(request.capabilities);
+    expect(await bus.dispatch("recording:retry", { sessionId: "failed-session" }, { principal: "ipc" })).toMatchObject({ ok: true });
+    expect(mocks.askForMediaAccess).toHaveBeenCalledOnce();
+    expect(mocks.retry).toHaveBeenCalledWith("failed-session");
+  });
+
+  // A guard decides; it does not act. The preflight used to
+  // `void bus.dispatch("settings:open", ...)` for every microphone status
+  // that was not `not-determined` — `denied`, `restricted`, `unavailable`
+  // AND `unknown` — so a hotkey-driven recording threw a PwrSnap window
+  // the user had not asked for on top of an error that sends them to
+  // *macOS* System Settings instead, and re-threw it on every Retry. For
+  // `restricted` and `unavailable` that page has nothing actionable on
+  // it at all. The interactive caller (record-from-selection.ts) already
+  // offers the same window as a dialog BUTTON, which is where the choice
+  // belongs.
+  test.each(["denied", "restricted", "unavailable", "unknown"])(
+    "opens no window of its own for a %s microphone",
+    async (status) => {
+      mocks.mediaAccess.microphone = status;
+      const opened = vi.fn(async () => ({ ok: true as const, value: undefined }));
+      bus.register("settings:open", opened);
+      try {
+        expect(await bus.dispatch("recording:start", request, { principal: "ipc" })).toMatchObject({
+          ok: false, error: { kind: "permission", code: "microphone_not_granted" }
+        });
+        // And again on the retry the failure card offers, which shares
+        // this guard.
+        mocks.retryCapabilities.mockReturnValueOnce(request.capabilities);
+        expect(
+          await bus.dispatch("recording:retry", { sessionId: "failed-session" }, { principal: "ipc" })
+        ).toMatchObject({ ok: false, error: { code: "microphone_not_granted" } });
+        expect(opened).not.toHaveBeenCalled();
+      } finally {
+        bus.unregister("settings:open");
+      }
+    }
+  );
+
+  test.each(["win32", "linux"])("rejects unsupported audio on %s instead of silently discarding it", async (platform) => {
+    Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    expect(await bus.dispatch("recording:start", request, { principal: "ipc" })).toMatchObject({
+      ok: false, error: { code: "recording_audio_unsupported" }
+    });
+    expect(mocks.start).not.toHaveBeenCalled();
+    expect(mocks.askForMediaAccess).not.toHaveBeenCalled();
+  });
 });
 
 describe("recording:* command-bus surface", () => {
@@ -160,16 +341,82 @@ describe("recording:* command-bus surface", () => {
     expect(mocks.cancel).toHaveBeenCalledTimes(1);
   });
 
-  test("recording:restart from idle returns validation/not_recording", async () => {
-    // RecordingService.restart() throws Error("not_recording") when
-    // nothing is active. The handler must translate that into a
-    // validation error, NOT propagate it as an unknown handler-threw.
+  test("recording:restart from idle is rejected before calling the backend", async () => {
     const result = await bus.dispatch("recording:restart", {}, { principal: "ipc" });
 
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected error");
     expect(result.error.kind).toBe("validation");
-    expect(result.error.code).toBe("not_recording");
+    expect(result.error.code).toBe("control_unavailable");
+    expect(mocks.restart).not.toHaveBeenCalled();
+  });
+
+  test("recording:capabilities reports only implemented host controls", async () => {
+    const result = await bus.dispatch("recording:capabilities", {}, { principal: "ipc" });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.value.controls).toEqual({
+      stop: true,
+      cancel: true,
+      restart: true,
+      pauseResume: false
+    });
+    expect(result.value.sources.webcam).toBe(true);
+    expect(result.value.sources.liveAudioLevels).toBe(false);
+  });
+
+  test("recording:stop rejects lead-in and finalization concurrency", async () => {
+    for (const state of [
+      {
+        phase: "countdown" as const,
+        sessionId: "rec-1",
+        secondsRemaining: 2,
+        rect: { x: 0, y: 0, w: 100, h: 100 },
+        displayId: 1
+      },
+      { phase: "stopping" as const, sessionId: "rec-1" },
+      { phase: "processing" as const, sessionId: "rec-1" }
+    ]) {
+      setRecordingState(state);
+      const result = await bus.dispatch("recording:stop", {}, { principal: "ipc" });
+      expect(result).toMatchObject({
+        ok: false,
+        error: { kind: "validation", code: "control_unavailable" }
+      });
+    }
+    expect(mocks.stop).not.toHaveBeenCalled();
+  });
+
+  test("recording:cancel cannot interrupt Stop-owned finalization", async () => {
+    for (const state of [
+      { phase: "stopping" as const, sessionId: "rec-1" },
+      { phase: "processing" as const, sessionId: "rec-1" }
+    ]) {
+      setRecordingState(state);
+      const result = await bus.dispatch("recording:cancel", {}, { principal: "ipc" });
+      expect(result).toMatchObject({
+        ok: false,
+        error: { kind: "validation", code: "control_unavailable" }
+      });
+    }
+    expect(mocks.cancel).not.toHaveBeenCalled();
+  });
+
+  test("recording:stop delegates exactly once during active capture", async () => {
+    setRecordingState({
+      phase: "recording",
+      sessionId: "rec-1",
+      startedAt: new Date(0).toISOString(),
+      rect: { x: 0, y: 0, w: 100, h: 100 },
+      displayId: 1,
+      capabilities: { systemAudio: false, microphone: false }
+    });
+
+    const result = await bus.dispatch("recording:stop", {}, { principal: "ipc" });
+
+    expect(result).toEqual({ ok: true, value: { captureId: "cap-1" } });
+    expect(mocks.stop).toHaveBeenCalledTimes(1);
   });
 
   test("failed state blocks generic start/cancel/restart and allows only session recovery", async () => {
@@ -320,6 +567,188 @@ describe("recording:* command-bus surface", () => {
     expect(JSON.stringify(result)).not.toContain("PwrSnapFFmpeg.exe");
     expect(JSON.stringify(result)).not.toContain("--token");
   });
+
+  function audioCapture(tracks: { system: boolean; microphone: boolean }): unknown {
+    return {
+      id: "cap-audio",
+      kind: "video",
+      width_px: 1_280,
+      height_px: 720,
+      deleted_at: null,
+      video: {
+        durationSec: 8,
+        defaultRange: { start: 1, end: 5 },
+        hasSystemAudio: tracks.system,
+        hasMicrophoneAudio: tracks.microphone
+      }
+    };
+  }
+
+  test("video:export rejects segments outside the recording before encoding", async () => {
+    mocks.capture = audioCapture({ system: false, microphone: false });
+    const result = await bus.dispatch("video:export", { captureId: "cap-audio", format: "mp4", preset: "med", segments: [{ start: 100, end: 101 }] }, { principal: "ipc" });
+    expect(result).toMatchObject({ ok: false, error: { kind: "validation", code: "invalid_segments" } });
+    expect(mocks.exportVideoRange).not.toHaveBeenCalled();
+  });
+
+  test("video:export with no audio keeps every recorded track the saved preference keeps", async () => {
+    mocks.capture = audioCapture({ system: true, microphone: true });
+
+    const result = await bus.dispatch(
+      "video:export",
+      { captureId: "cap-audio", format: "mp4", preset: "med" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(mocks.exportVideoRange).toHaveBeenCalledOnce();
+    expect(mocks.exportVideoRange.mock.calls[0]?.[0]).toMatchObject({
+      audio: { includeSystemAudio: true, includeMicrophone: true }
+    });
+  });
+
+  // The ⌘4–⌘6 shortcuts and drag-out send no `audio`. Before the MP4 audio
+  // toggle, omitted meant "every track", so a mic switched off on the grid
+  // still shipped from a keystroke.
+  test("video:export with no audio leaves out a track the user switched off", async () => {
+    mocks.capture = audioCapture({ system: true, microphone: true });
+    mocks.readRecordingSettings.mockResolvedValueOnce({
+      mp4IncludeMicrophone: false,
+      mp4IncludeSystemAudio: true
+    });
+
+    const result = await bus.dispatch(
+      "video:export",
+      { captureId: "cap-audio", format: "mp4", preset: "med" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(mocks.exportVideoRange.mock.calls[0]?.[0]).toMatchObject({
+      audio: { includeSystemAudio: true, includeMicrophone: false }
+    });
+  });
+
+  test("video:export exports silently when the saved preference cannot be read", async () => {
+    mocks.capture = audioCapture({ system: true, microphone: true });
+    mocks.readRecordingSettings.mockRejectedValueOnce(new Error("settings unreadable"));
+
+    const result = await bus.dispatch(
+      "video:export",
+      { captureId: "cap-audio", format: "mp4", preset: "med" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(mocks.exportVideoRange.mock.calls[0]?.[0]).toMatchObject({
+      audio: { includeSystemAudio: false, includeMicrophone: false }
+    });
+  });
+
+  test("video:export honors an explicit audio choice over the saved preference", async () => {
+    mocks.capture = audioCapture({ system: true, microphone: true });
+    mocks.readRecordingSettings.mockResolvedValueOnce({
+      mp4IncludeMicrophone: false,
+      mp4IncludeSystemAudio: false
+    });
+
+    const result = await bus.dispatch(
+      "video:export",
+      {
+        captureId: "cap-audio",
+        format: "mp4",
+        preset: "med",
+        audio: { includeSystemAudio: false, includeMicrophone: true }
+      },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(mocks.exportVideoRange.mock.calls[0]?.[0]).toMatchObject({
+      audio: { includeSystemAudio: false, includeMicrophone: true }
+    });
+  });
+
+  test.each([
+    ["spoofed title", "Untrusted renderer title"],
+    ["non-string title", { nested: "value" }]
+  ])("recording:start rejects %s before touching the recorder", async (_name, windowTitle) => {
+    const result = await bus.dispatch(
+      "recording:start",
+      {
+        subject: {
+          kind: "window",
+          windowId: 77,
+          rect: { x: 0, y: 0, w: 100, h: 100 },
+          displayId: 1,
+          windowTitle
+        },
+        capabilities: { systemAudio: false, microphone: false },
+        countdownSeconds: 0
+      } as never,
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected error");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_recording_start");
+    expect(mocks.start).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["rect", { x: 0, y: 0, w: 0, h: 100 }],
+    ["displayId", 1.5],
+    ["windowId", -1],
+    ["appName", 42],
+    ["appBundleId", { path: "spoof" }]
+  ])("recording:start validates window subject field %s", async (field, invalidValue) => {
+    const subject: Record<string, unknown> = {
+      kind: "window",
+      windowId: 77,
+      rect: { x: 0, y: 0, w: 100, h: 100 },
+      displayId: 1,
+      appName: "Example",
+      appBundleId: "com.example"
+    };
+    subject[field] = invalidValue;
+    const result = await bus.dispatch(
+      "recording:start",
+      {
+        subject,
+        capabilities: { systemAudio: false, microphone: false },
+        countdownSeconds: 0
+      } as never,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    expect(mocks.start).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["capabilities", { systemAudio: "yes", microphone: false }],
+    ["countdownSeconds", 31],
+    ["captureCursor", "yes"],
+    ["unknown", true]
+  ])("recording:start validates top-level field %s", async (field, invalidValue) => {
+    const request: Record<string, unknown> = {
+      subject: {
+        kind: "region",
+        rect: { x: 0, y: 0, w: 100, h: 100 },
+        displayId: 1
+      },
+      capabilities: { systemAudio: false, microphone: false },
+      countdownSeconds: 0
+    };
+    request[field] = invalidValue;
+    const result = await bus.dispatch(
+      "recording:start",
+      request as never,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    expect(mocks.start).not.toHaveBeenCalled();
+  });
 });
 
 describe("permissions:* command-bus surface", () => {
@@ -391,6 +820,19 @@ describe("permissions:* command-bus surface", () => {
         value: originalPlatform,
         configurable: true
       });
+    }
+  });
+
+  test("permissions:openSoundSettings is a typed refusal where there is no page", async () => {
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+    try {
+      const result = await bus.dispatch("permissions:openSoundSettings", {}, { principal: "ipc" });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected error");
+      expect(result.error.kind).toBe("permission");
+      expect(result.error.code).toBe("permission_settings_unsupported");
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
     }
   });
 

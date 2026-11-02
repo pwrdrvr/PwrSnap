@@ -208,6 +208,75 @@ describe("settings:open", () => {
     );
   });
 
+  test("passes a known `sub` into the hash on first create", async () => {
+    mocks.findSettingsWindow.mockReturnValue(null);
+    mocks.createSettingsWindow.mockReturnValue(makeFakeWindow());
+
+    const result = await bus.dispatch(
+      "settings:open",
+      { page: "ai", sub: "codex" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(mocks.createSettingsWindow).toHaveBeenCalledWith("page=ai&sub=codex", {});
+    expect(mocks.loggerWarn).not.toHaveBeenCalled();
+  });
+
+  test("carries a known `sub` on the typed navigate event", async () => {
+    const fake = makeFakeWindow();
+    mocks.findSettingsWindow.mockReturnValue(fake);
+
+    await bus.dispatch("settings:open", { page: "ai", sub: "kimi" }, { principal: "ipc" });
+
+    expect(fake.webContents.send).toHaveBeenCalledWith("events:settings:navigate", {
+      page: "ai",
+      sub: "kimi"
+    });
+  });
+
+  // An unknown sub never blocks opening Settings: the page's hub opens and
+  // the stale link is logged. Covers a renamed/unknown screen, a sub on a
+  // page that has none, a non-string, and a sub with no page at all.
+  test.each([
+    { req: { page: "ai", sub: "claude" }, hash: "page=ai", event: { page: "ai" } },
+    { req: { page: "hotkeys", sub: "codex" }, hash: "page=hotkeys", event: { page: "hotkeys" } },
+    { req: { page: "ai", sub: 42 }, hash: "page=ai", event: { page: "ai" } },
+    { req: { page: "ai", sub: "codex&page=developer" }, hash: "page=ai", event: { page: "ai" } },
+    { req: { sub: "codex" }, hash: undefined, event: undefined }
+  ])("drops an unknown sub and opens the hub: $req", async ({ req, hash, event }) => {
+    mocks.findSettingsWindow.mockReturnValue(null);
+    mocks.createSettingsWindow.mockReturnValue(makeFakeWindow());
+
+    const created = await bus.dispatch(
+      "settings:open",
+      req as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+
+    expect(created.ok).toBe(true);
+    expect(mocks.createSettingsWindow).toHaveBeenCalledWith(hash, {});
+    expect(mocks.loggerWarn).toHaveBeenCalledWith(
+      "settings:open: ignoring unknown sub; opening the page's hub",
+      expect.objectContaining({ page: (req as { page?: string }).page ?? null })
+    );
+
+    const fake = makeFakeWindow();
+    mocks.findSettingsWindow.mockReturnValue(fake);
+    const navigated = await bus.dispatch(
+      "settings:open",
+      req as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+
+    expect(navigated.ok).toBe(true);
+    if (event === undefined) {
+      expect(fake.webContents.send).not.toHaveBeenCalled();
+    } else {
+      expect(fake.webContents.send).toHaveBeenCalledWith("events:settings:navigate", event);
+    }
+  });
+
   test("rejects unknown `page` with kind=validation, code=invalid_page", async () => {
     const fake = makeFakeWindow();
     mocks.findSettingsWindow.mockReturnValue(fake);
@@ -287,6 +356,36 @@ describe("settings:* validation", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.error.kind).toBe("validation");
     expect(result.error.code).toBe("invalid_ai_enabled");
+  });
+
+  test.each([
+    { burst: 0, perMinute: 10 },
+    { burst: 20, perMinute: 601 },
+    { burst: 2.5, perMinute: 10 },
+    { burst: 20 },
+    "fast"
+  ])("settings:write rejects an out-of-range ai.enrichmentRateLimit %j", async (enrichmentRateLimit) => {
+    const result = await bus.dispatch(
+      "settings:write",
+      { ai: { enrichmentRateLimit } } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("invalid_ai_enrichmentRateLimit");
+  });
+
+  test("settings:write accepts an ai.enrichmentRateLimit and null to clear it", async () => {
+    const set = await bus.dispatch(
+      "settings:write",
+      { ai: { enrichmentRateLimit: { burst: 60, perMinute: 120 } } },
+      { principal: "ipc" }
+    );
+    expect(set.ok).toBe(true);
+    if (!set.ok) throw new Error("unreachable");
+    expect(set.value.ai.enrichmentRateLimit).toEqual({ burst: 60, perMinute: 120 });
+    const cleared = await bus.dispatch("settings:write", { ai: { enrichmentRateLimit: null } }, { principal: "ipc" });
+    expect(cleared.ok && cleared.value.ai.enrichmentRateLimit).toBeNull();
   });
 
   test("settings:write rejects non-boolean general.launchAtLogin", async () => {
@@ -700,6 +799,30 @@ describe("settings:* validation", () => {
     expect(good.ok).toBe(true);
   });
 
+  test("settings:write validates the newer hotkey keys (openLibrary)", async () => {
+    // `openLibrary` is the newest entry in the validator's fixed key
+    // list; without it the loop would wave through any garbage the
+    // renderer sent for the Open Library binding.
+    const bad = await bus.dispatch(
+      "settings:write",
+      { hotkeys: { openLibrary: "garbage" } } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(bad.ok).toBe(false);
+    if (bad.ok) throw new Error("unreachable");
+    expect(bad.error.code).toBe("invalid_hotkey_shape");
+
+    const good = await bus.dispatch(
+      "settings:write",
+      { hotkeys: { openLibrary: "CommandOrControl+Alt+Shift+L" } } as unknown as Record<
+        string,
+        never
+      >,
+      { principal: "ipc" }
+    );
+    expect(good.ok).toBe(true);
+  });
+
   test("settings:write rejects an invalid filename timestamp zone", async () => {
     const result = await bus.dispatch(
       "settings:write",
@@ -771,6 +894,40 @@ describe("settings:* validation", () => {
 // seam so the lazy-init code path doesn't try to call `app.getPath`
 // through the partial mock above.
 describe("settings:read + settings:write round-trip (integration)", () => {
+  test("catalog migration broadcasts committed defaults once to settings listeners", async () => {
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { DesktopSettingsStore } = await import("../../settings/desktop-settings-store");
+    const { DesktopSecretStore } = await import("../../settings/desktop-secret-store");
+    const { __setSettingsServicesForTests, reconcileCodexModelDefaults, onSettingsChanged } =
+      await import("../settings-handlers");
+    const dir = await mkdtemp(join(tmpdir(), "pwrsnap-codex-default-broadcast-"));
+    const service = new DesktopSettingsStore({ filePath: join(dir, "settings.json") });
+    const secrets = new DesktopSecretStore({ filePath: join(dir, "secrets.bin") });
+    // An explicit choice migrates; the managed default (unset) never does.
+    await service.write({ ai: { defaults: { enrichment: { model: "gpt-5.6-luna" } } } });
+    __setSettingsServicesForTests({ service, secrets });
+    const listener = vi.fn();
+    const unsubscribe = onSettingsChanged(listener);
+    try {
+      const models = [{ id: "gpt-6-luna", model: "gpt-6-luna", displayName: "GPT-6-Luna",
+        description: "", hidden: false, inputModalities: ["text", "image"] as ("text" | "image")[],
+        defaultServiceTier: null, isDefault: true }];
+      const result = await reconcileCodexModelDefaults(models, { command: "codex", profile: "" });
+      expect(result.ai.defaults.enrichment.model).toBe("gpt-6-luna");
+      expect(listener).toHaveBeenCalledExactlyOnceWith(result);
+      await reconcileCodexModelDefaults(models, { command: "codex", profile: "" });
+      expect(listener).toHaveBeenCalledTimes(1);
+      const read = await bus.dispatch("settings:read", {}, { principal: "ipc" });
+      expect(read.ok && read.value.ai.defaults.enrichment.model).toBe("gpt-6-luna");
+    } finally {
+      unsubscribe();
+      __setSettingsServicesForTests({ service: null, secrets: null });
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("repeated settings and export-strategy reads share one disk hydration", async () => {
     const { DesktopSettingsService, defaultSettings } = await import(
       "../../settings/desktop-settings-service"

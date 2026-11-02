@@ -1,16 +1,417 @@
 # Changelog
 
-## v1.1.0-alpha.11 - 2026-09-06
+## v1.2.2 - 2026-10-28
 
-This alpha makes screen capture and update selection more dependable across
-Windows and prerelease channels.
+This maintenance update improves automatic update downloads.
 
-- Windows Capture - Fixed Windows screen capture to bypass a failing DXGI path,
-  reducing acquisition delays and keeping capture responsive when that driver
-  path cannot supply a frame.
-- Updates - Fixed installed builds to follow their own release feed and
-  improved the Updates page to show all Stable/Beta and Latest/Prerelease
-  choices, so switching channels targets the release you expect.
+- App Updates - Improved differential downloads from update servers,
+  avoiding unnecessary full downloads when a server returns multipart
+  responses the updater previously could not process.
+
+## v1.2.1 - 2026-10-23
+
+This security update moves PwrSnap to Electron 44.9.3. Updating is recommended.
+
+- Connection Security - Fixed trust in compromised eMudhra intermediate
+  certificates by updating the desktop runtime's certificate blocklist,
+  protecting both browser-engine and Node.js network connections.
+- Desktop Runtime - Improved security with the runtime fixes included
+  between Electron 44.5.1 and 44.9.3.
+
+## v1.2.0 - 2026-10-14
+
+PwrSnap 1.2 moves to Electron 44.5.1, with more dependable clipboard,
+update checks, and Codex connection discovery.
+
+- Desktop Runtime - Improved runtime security with the move from Electron
+  41 to 44.5.1, including a newer Chromium browser engine.
+- Clipboard - Fixed opening menus fetching remote clipboard contents before
+  you choose Paste from Clipboard, avoiding unwanted Universal Clipboard transfers.
+- App Updates - Improved checks on slow connections with a longer request
+  deadline and a clear timeout message instead of an unexplained abort.
+- Codex Connection - Fixed discovering npm-installed Codex when PwrSnap
+  starts without Node on its inherited PATH, allowing compatible installs to connect.
+
+## v1.2.0-prerelease.1 - 2026-10-13
+
+This first 1.2 candidate moves PwrSnap to Electron 44.5.1. It is a prerelease
+for checking capture, recording, clipboard, and update behavior on the new runtime.
+
+- Desktop Runtime - Improved runtime security with the move from Electron
+  41 to 44.5.1, including a newer Chromium browser engine.
+- Clipboard - Fixed opening menus fetching remote clipboard contents before
+  you choose Paste from Clipboard, avoiding unwanted Universal Clipboard transfers.
+- App Updates - Improved checks on slow connections with a longer request
+  deadline and a clear timeout message instead of an unexplained abort.
+- Codex Connection - Fixed discovering npm-installed Codex when PwrSnap
+  starts without Node on its inherited PATH, allowing compatible installs to connect.
+
+## v1.1.21 - 2026-10-11
+
+This release makes permission recovery, AI re-runs, and updates easier to manage.
+
+- macOS Permissions - Added a Screen Recording guide beside System Settings.
+  Drag the running PwrSnap app into the permission list and relaunch that exact
+  copy, avoiding confusion when multiple copies are installed.
+- AI Re-runs - Improved setup, progress, and results for re-running AI on past
+  snaps, with easier access from the Library and Settings and a recovery prompt
+  when the caption model comes back online. Bulk re-runs are paced separately
+  so they do not consume the allowance for new captures.
+- AI Captions - Added an optional fallback model when the primary cannot be
+  reached, with a visible FALLBACK indicator showing which backend answered.
+- App Updates - Fixed update checks stopping after a download, so a newer
+  release can replace the pending update instead of requiring two upgrades.
+
+## v1.1.20 - 2026-10-11
+
+This release makes capture controls and recording setup easier to use.
+
+- Capture Controls - Added Shutter and Clapperboard selector styles, with
+  clear Snap and Record modes and recording sources together in one compact
+  bar. Choose the style in General settings.
+- Recording Devices - Added saved microphone and camera choices before
+  recording, with a live microphone level meter, clipping warning, and a
+  short record-and-playback test to check your input before a take.
+- Recording Devices - Improved handling of disconnected inputs and macOS
+  Bluetooth and virtual microphones, making the selected device more dependable
+  and showing when a saved device is disconnected or a source is unavailable.
+- macOS Dock - Fixed redundant Dock transitions when opening additional
+  windows, avoiding stale miniature Dock icons.
+
+## v1.1.19 - 2026-10-08
+
+This release adds presenter camera recording and batch AI re-runs, with more
+control over enrichment and cleaner system shutdown.
+
+- Camera Recording - Added an optional presenter camera alongside screen
+  recordings. Adjust its position, size, framing, mirror, background cut-out,
+  and sync after recording, with separate presenter settings for each reel scene.
+- AI Re-runs - Added batch re-enrichment for failed or never-run captures,
+  filtered by date and app, with adjustable parallelism, progress, and cancellation.
+- AI Enrichment - Added live run durations and a configurable rate limit,
+  making slow runs easier to understand and backlogs easier to clear while
+  retaining cost-safety limits.
+- System Shutdown - Improved cleanup during macOS and Linux shutdown,
+  using the normal quit path and honoring cancelled shutdowns on macOS.
+
+## v1.1.18 - 2026-10-07
+
+This patch makes diagnostics copying more dependable immediately after startup.
+
+- Diagnostics - Fixed the confirmation for Copy Diagnostics Info disappearing
+  when used before the Library finishes starting, so the copied build details
+  receive the same visible confirmation as later menu actions.
+
+## v1.1.17 - 2026-10-06
+
+This release adds easier window trimming and more control over recent captures,
+and makes everyday menu actions easier to find.
+
+- Window Capture - Added edge and corner resize handles to a selected window,
+  letting you trim its capture from the exact window bounds instead of drawing
+  a new region.
+- Recent Captures - Fixed recent captures disappearing from the screen-edge
+  sidebar when AI enrichment is unavailable or fails, keeping them accessible
+  after the popup closes.
+- Recent Captures - Added a General setting to show or hide the screen-edge
+  sidebar without deleting captures or changing background AI processing.
+- App Menus - Improved menu organization across platforms and added Copy
+  Diagnostics Info for support, View License, and Reload Window outside
+  Developer Mode. Windows also gains Close Window and an open-window list.
+
+## v1.1.16 - 2026-10-06
+
+This patch makes the Library detail rail and prerelease update checks more predictable.
+
+- Library Detail Rail - Fixed the rail switching to Cart when a saved cart
+  loads or when adding an item in Grid, keeping the editor's Info tab and copy
+  buttons where you left them.
+- Update Channels - Fixed Beta / Prerelease checks to offer newer stable
+  candidates, including stable builds awaiting promotion, while still preferring
+  a newer alpha or beta when one is available.
+
+## v1.1.15 - 2026-10-05
+
+This patch improves recording previews and background capture enrichment.
+
+- Recording Preview - Fixed playback to stay within the current trim range,
+  so previews reflect the portion of the recording you intend to keep.
+- Codex Enrichment - Improved isolation of background capture descriptions
+  by disabling user lifecycle hooks and notification commands for enrichment,
+  without changing your chat configuration.
+
+## v1.1.14 - 2026-10-02
+
+This patch restores capture enrichment with newer Codex installations.
+
+- Codex Enrichment - Fixed capture descriptions and other AI metadata from
+  failing on Codex 0.160 with "failed to load workspace requirements," and
+  improved configuration-error guidance when enrichment cannot start.
+
+## v1.1.13 - 2026-10-02
+
+This release adds freehand drawing and flexible toolbar docking, and improves
+annotation controls and Codex model selection.
+
+- Freehand Drawing - Added pen, marker, airbrush, and eraser tools for drawing
+  directly on captures. Save favorite drawing styles in the tool bag and erase
+  parts of a stroke without changing the underlying image.
+- Editor Toolbar - Added docking to the top, bottom, left, or right of the
+  editing stage, keeping tools accessible without covering the capture.
+  Drag the toolbar to an edge or choose its position from the docking menu.
+- Annotation Controls - Improved tool icons and fast tooltips with previews
+  of the stroke you will draw, using the selected color and weight.
+- Codex Models - Improved the model picker and saved defaults for the current
+  model catalog, and added installation-specific upgrade guidance when an
+  older Codex version cannot offer the latest models.
+
+## v1.1.12 - 2026-10-01
+
+This release adds capture copies and families, expands annotation tools, and
+makes editing and everyday desktop actions more dependable.
+
+- Capture Copies - Added Duplicate and Edit a Copy for images and videos,
+  with a choice to keep edits or start from the original. Large video copies
+  run in the background with progress while you continue using the Library.
+- Capture Families - Added a Family view that keeps originals and copies
+  together, and restores their relationships when importing capture bundles.
+  MCP agents can also duplicate captures and browse their families.
+- Annotation Tools - Added nine saved tool-and-style slots and a docked
+  property bar, making favorite styles quick to select and apply to existing
+  annotations. Shapes now support dashed and dotted outlines.
+- Arrow Labels - Improved Add label to open a ready-to-type draft at the
+  arrow's tail, matching its color and size without another canvas click.
+- Tooltips - Improved icon controls with faster, consistent tooltips that
+  show their names and keyboard shortcuts throughout the app.
+- Local AI - Added detected reasoning choices for supported local models
+  during capture enrichment, with a saved choice for each model.
+- Desktop Reliability - Fixed intermittent hangs when quitting on macOS
+  and Linux crashes during image processing and editing.
+
+## v1.1.11 - 2026-09-30
+
+This patch keeps AI settings and update checks reliable across restarts and
+improves everyday controls on smaller displays.
+
+- Library AI - Improved the suggestion status layout and added an Auto-apply
+  switch beside the draft actions, so the result is readable and easy to use.
+- AI Connections - Improved version switching by preserving Direct API
+  connections and model selections when this build saves your settings.
+- Updates - Fixed automatic checks from repeatedly contacting GitHub after
+  restarts, reducing rate-limit errors while keeping manual checks available.
+- Float-Over and Tray - Fixed the post-capture countdown from remaining paused
+  after leaving recent captures, and improved popover sizing on compact screens.
+- Library Grid - Improved thumbnail controls so selection, edit, and delete
+  actions stay visible over both light and dark captures.
+- Window Chrome - Improved title-bar alignment and the PwrSnap mark across
+  Library, Settings, Sizzle, and other desktop windows.
+
+## v1.1.10 - 2026-09-28
+
+This release adds direct AI model connections, non-destructive video cutting,
+and a dock for captures that are still being processed.
+
+- AI Connections - Added direct API connections for OpenAI, compatible chat
+  endpoints, and Anthropic, so selected models can power Library chat, Sizzle
+  chat, and capture enrichment without an installed agent.
+- Video Editing - Added split, cut, and automatic idle-removal controls to the
+  Library timeline. Playback and GIF/MP4 exports follow the kept footage while
+  the original recording remains untouched.
+- Agent Video Tools - Added video inspection and editing through PwrSnap MCP
+  and in-app chat, including activity-based cuts that remove long still stretches.
+- Sizzle Reels - Improved video clips to follow Library cuts by default, with
+  an option to play the removed footage when a reel needs it.
+- Float-Over - Added a movable screen-edge dock for captures still being read
+  by AI, keeping their progress and completed results reachable without holding
+  the post-capture toast open on macOS, Windows, and X11.
+
+## v1.1.9 - 2026-09-28
+
+This patch makes update downloads, copying, and diagnostic capture more
+reliable.
+
+- Updates - Fixed newly selected update tracks and the Updates page to start
+  downloading a newer available release instead of only showing it. The restart
+  action is now easier to spot.
+- Clipboard - Fixed macOS image copying from hanging indefinitely when the
+  pasteboard stalls, and kept copied file references usable during replacement.
+- Diagnostics - Fixed quitting or installing an update during a CPU profile or
+  trace from discarding the capture before it can be saved.
+
+## v1.1.8 - 2026-09-27
+
+This patch makes opening captures and the first post-capture notification more
+reliable, and improves macOS network-permission isolation.
+
+- Library and Editor - Fixed an Edit or Open in Library action during startup
+  from being lost while the Library was loading, so the requested capture
+  opens on the first attempt.
+- Float-Over - Fixed the first capture of a session from occasionally showing
+  no post-capture toast or leaving an invisible window that intercepted clicks.
+- macOS Network Permissions - Improved separation from other Electron apps by
+  giving PwrSnap's signed launcher its own identity.
+
+## v1.1.7 - 2026-09-26
+
+This patch improves MP4 sharing and makes capture controls more dependable on
+Linux desktops.
+
+- MP4 Export - Added microphone and system-audio switches for each recorded
+  track, so you can leave unwanted audio out before copying, dragging, or
+  exporting a video. Your choices carry over to later exports.
+- Linux Tray - Fixed the tray icon and native menu so Quick Capture, recording,
+  Library, and Settings actions are available from the desktop indicator.
+- Linux Popovers - Fixed the last-capture popover and post-capture toast to
+  appear and dismiss reliably on X11 and Wayland desktops.
+- Linux Region Capture - Fixed the selector to align with the desktop instead
+  of showing an offset snapshot. On multi-monitor Wayland sessions where
+  region selection is unavailable, PwrSnap offers full-screen capture.
+
+## v1.1.6 - 2026-09-25
+
+This patch keeps editing controls usable in smaller windows and improves
+keyboard access throughout PwrSnap.
+
+- Library - Fixed editing tools and copy controls to stay visible at the
+  minimum window size instead of being clipped by sidebars.
+- Sizzle Reels - Improved narrow-window layouts so the editor keeps usable
+  space beside chat and scene controls remain reachable by scrolling.
+- Keyboard Access - Improved dialogs, menus, and popovers with predictable
+  Tab, Escape, and arrow-key behavior, visible focus rings, and focus return.
+- Annotations - Fixed existing arrows from triggering a false "+ Add label"
+  prompt when opening or switching captures.
+
+## v1.1.5 - 2026-09-23
+
+This patch makes video review and post-capture actions more reliable in the
+Float-Over.
+
+- Video Filmstrips - Fixed every timeline preview tile to show a real video
+  frame, including recordings that begin or end on a still screen.
+- Float-Over - Improved video Float-Over sizing so content fits the window,
+  dense details scroll in the middle, and the header and Discard, Dismiss, and
+  Edit actions remain reachable.
+
+## v1.1.4 - 2026-09-21
+
+This patch makes Sizzle playback and PwrSnap's visual presentation more
+reliable across machines.
+
+- Sizzle Reels - Fixed newly rendered narration to load into reel playback
+  immediately, including its transcript timing and measured duration.
+- Typography - Fixed PwrSnap to load its bundled Geist Sans font instead of a
+  system fallback, keeping labels, layout, and recording countdown text
+  consistent across macOS, Windows, and Linux.
+
+## v1.1.3 - 2026-09-19
+
+This release makes AI configuration, recording, editing, and update decisions
+clearer and more reliable.
+
+- AI Settings - Added an AI Providers status view and a separate AI Features
+  page, and now applies the selected ACP model and reasoning level to local
+  agent features.
+- Updates - Added links from offered versions to their GitHub release notes so
+  you can review changes before installing an update.
+- Recording - Fixed recording bounds, countdown focus, and the capture HUD so
+  recordings stay framed on the usable work area and PwrSnap controls remain
+  visible without becoming transparent.
+- Sizzle Reels - Improved phrase-picker placement, long-chat inspector layout,
+  and trim-timeline sizing so editing remains usable in constrained space.
+- Float-Over and Tray - Fixed Float-Over and tray popovers to render as opaque
+  surfaces instead of showing unintended transparent background content.
+- Capture Selector - Fixed selected-window outlines to stay behind windows
+  picked in front, making stacked-window selections easier to inspect.
+
+## v1.1.2 - 2026-09-17
+
+This security patch keeps every PwrSnap window on trusted app content.
+
+- App Security - Fixed PwrSnap to block untrusted navigations, pop-up windows,
+  and embedded page loads while opening approved product links only in the
+  default browser.
+
+## v1.1.1 - 2026-09-15
+
+This patch makes update delivery more reliable after a stable release is
+promoted.
+
+- Updates - Fixed Beta-channel installs so they continue to receive a promoted
+  stable release until a newer prerelease is available.
+- Updates - Fixed a completed update request from repeatedly retrying while a
+  different update channel is selected, preventing the app from becoming
+  unresponsive.
+
+## v1.1.0-beta.5 - 2026-09-15
+
+This beta makes manual update checks easier to follow and cancel, keeps local
+Codex integration current, and makes Windows installs and diagnostics clearer.
+
+- Update Checks - Improved manual update checks with live progress, clear
+  download state, and cancellation, while background checks remain quiet.
+- Codex Integration - Updated PwrSnap's local Codex App Server protocol support
+  and fixed audio tool-result translation so local agent requests retain
+  produced media across supported protocol versions.
+- Windows Downloads - Added a stable `PwrSnap.Setup.exe` installer alias for a
+  consistent Windows download link while updater metadata stays versioned.
+- Terminal Logs - Restored level colors in terminal logs so warnings and errors
+  are easier to distinguish during troubleshooting.
+
+## v1.1.0-beta.3 - 2026-09-12
+
+This beta makes recording audio dependable end to end, adds Apple Silicon
+downloads, and tightens recording, update, and playback reliability.
+
+- Recording Audio - Added microphone and system-audio controls with source
+  status, live microphone feedback, and clear permission guidance; recordings,
+  Library playback, and exports now use the audible audio tracks correctly.
+- Recording Experience - Improved recording with a visible tangerine capture
+  frame, actionable preflight errors, and safeguards that keep PwrSnap's own
+  controls out of the finished recording.
+- Apple Silicon - Added native Apple Silicon macOS DMG and updater ZIP
+  downloads alongside the universal macOS release assets.
+- Updates and Startup - Fixed PwrSnap to honor the saved update channel at
+  startup and stopped unexpected Keychain password prompts before access is
+  needed.
+- Capture Controls - Fixed the Float-Over Reveal action, made Open Library an
+  optional configurable hotkey, and surfaced recording-audio and matching-text
+  defaults in Settings.
+- Video Cache - Fixed cache clearing, trimming, and capture cleanup so they do
+  not race with in-progress video playback preparation or leave stale media.
+
+## v1.1.0-beta.2 - 2026-09-11
+
+This beta makes Windows capture more responsive and prevents a downloaded
+update from consuming the app's event loop.
+
+- Windows Capture - Improved selector responsiveness by keeping the frozen
+  screen snapshot as raw pixels, avoiding full-screen PNG encoding and
+  temporary-file work on the normal Windows path.
+- Updates - Fixed a post-download update-check loop that could consume the
+  main event loop and leave PwrSnap unresponsive.
+- Capture Storage - Fixed a bundle directory-handle leak during failed
+  best-effort syncs, preventing later capture and file operations from
+  accumulating open handles.
+
+## v1.1.0-beta.1 - 2026-09-09
+
+This beta adds local agent connections, stronger Windows media workflows, and
+more reliable capture, recording, export, and update flows.
+
+- Local Agents - Added direct connection flows for Claude Code and Codex to use
+  PwrSnap's local MCP tools through the existing approval window.
+- Windows Media - Fixed image, GIF, and MP4 Copy actions to place usable files
+  on the clipboard, and improved MP4 export with the supported Windows encoder
+  and packaged FFmpeg.
+- Capture Context - Added source window titles to captured images and videos,
+  where they are shown in the Library and Editor and included in search.
+- Video Export - Added live export progress so longer GIF and MP4 renders show
+  their current state instead of appearing stalled.
+- Capture and Recording Reliability - Improved selector responsiveness, stopped
+  repeated hotkeys from starting duplicate captures, and fixed recording
+  restart recovery with direct access to diagnostics.
+- Updates - Added Restart controls for ready updates in the tray and the
+  post-capture toast.
 
 ## v1.1.0-alpha.6 - 2026-09-03
 

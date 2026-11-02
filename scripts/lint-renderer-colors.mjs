@@ -45,7 +45,8 @@ const targets = [
   "apps/desktop/src/renderer/src/styles/video-timeline.css",
   "apps/desktop/src/renderer/src/styles/settings.css",
   "apps/desktop/src/renderer/src/styles/documents.css",
-  "apps/desktop/src/renderer/src/features/editor/editor.css"
+  "apps/desktop/src/renderer/src/features/editor/editor.css",
+  "apps/desktop/src/renderer/src/features/shared/SourceChip.css"
   // Path-excluded:
   //   styles/region.css — the region selector paints a "darkroom"
   //     scrim that intentionally does NOT theme. Every rule sits on
@@ -56,6 +57,22 @@ const targets = [
   //     `.context-window-moon` illustration in PR #509.
   //   fonts.css — @font-face declarations only, no color literals
   //     possible.
+  //   features/recording/RecordingController.css — same exemption
+  //     category as region.css. The in-recording HUD floats over
+  //     arbitrary user content that is about to be captured, so it
+  //     paints its own near-opaque black scrim rather than a themed
+  //     panel: a translucent themed surface would be unreadable over a
+  //     light document and would change appearance between takes. Its
+  //     on-scrim literals are marked `/* on-scrim */` inline. The
+  //     SHARED chip styles it composes with (SourceChip.css) are fully
+  //     tokenized and ARE gated, above — only the scrim overrides live
+  //     in the excluded file.
+  //
+  // KNOWN GAP: this script only reads .css. Inline `style={{ … }}` in a
+  // .tsx is invisible to it, which is how RecordingController.tsx came
+  // to carry `#ff8a1f` six times while this gate reported clean. Those
+  // are now extracted; a future pass could scan .tsx style objects for
+  // the same literal patterns.
 ].map((p) => resolve(repoRoot, p));
 
 // Rules whose bodies are allowed to contain raw color literals — the

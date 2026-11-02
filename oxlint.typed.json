@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript"],
+  "categories": { "correctness": "off" },
+  "rules": { "typescript/unbound-method": "error" },
+  "options": { "typeAware": true },
+  "ignorePatterns": ["**/__tests__/**", "**/*.test.ts", "**/*.test.tsx", "**/*.js", "**/*.jsx", "**/*.mjs", "**/*.cjs", "apps/desktop/src/test-setup/**"],
+  "overrides": [
+    {
+      "files": [
+        "apps/desktop/src/main/**/*.ts",
+        "apps/desktop/src/preload/**/*.ts",
+        "apps/desktop/src/renderer/src/**/*.ts",
+        "apps/desktop/src/renderer/src/**/*.tsx",
+        "packages/shared/src/**/*.ts"
+      ]
+    }
+  ]
+}

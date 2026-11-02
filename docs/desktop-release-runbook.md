@@ -7,7 +7,7 @@
 > living successor and supersedes it.
 
 This runbook covers cutting v0.x and v1.x desktop releases. macOS ships as a
-universal Apple Silicon + Intel build outside the Mac App Store; Windows ships
+pair of Apple Silicon-only and universal Apple Silicon + Intel builds outside the Mac App Store; Windows ships
 as an Azure Artifact Signed x64 NSIS installer. Linux distribution remains
 Phase 8b, but a native Linux desktop build is a required release gate.
 
@@ -15,6 +15,23 @@ All CI-published GitHub Releases are created as **Pre-release** entries by
 default, even when the version string has no prerelease suffix. Promotion to
 Latest is a separate operator action after the build, assets, updater metadata,
 and smoke checks are validated.
+
+Every release, including prereleases, must run the remote Winget and Homebrew
+baseline in the [package-manager release runbook](package-manager-release-runbook.md)
+before changing metadata and again at handoff. Advance eligible stable updates
+within the authorized scope, and record submission links, accepted source and
+refreshed client versions, delays, blockers and a named follow-up owner. The new
+GitHub Pre-release waits for manual promotion; package channels may still need
+to catch up to an earlier promoted stable release.
+
+Release CI invokes `distribution-audit.yml` before preparation and after
+publication. Only its public Winget/Homebrew/source searches use organization
+secret `DISTRIBUTION_READ_TOKEN` with the workflow-token fallback. Publication
+and signing credentials remain separate. The
+[package-manager runbook](package-manager-release-runbook.md#organization-provided-public-read-credential)
+describes public-read-only scope, bounded rate-limit retries, fork behavior and
+organization-owned expiry/rotation. An incomplete or throttled audit is a
+blocker, not package absence; a post-publication blocker does not undo publication.
 
 ---
 
@@ -122,25 +139,28 @@ since it is not a secret.
 
 ## Release trains and maintenance branches
 
-`main` carries the active next-version train. Long-lived maintenance branches
-carry stable promotions from accepted prereleases and later patch releases for
-that major/minor train. Name them `releases/<major>.<minor>`, for example
-`releases/1.0` or `releases/1.1`; do not include the patch component.
+`main` carries the active major/minor train. It remains the release branch for
+that train's alpha, beta, first stable, and follow-up patch releases until the
+team decides to begin the next major/minor effort.
 
-When an accepted beta must become the first stable release while `main` has
-continued onto newer work, create the maintenance branch from the exact signed
-beta tag, prepare the stable metadata there, and tag the resulting commit:
+At that point, cut `releases/<major>.<minor>` from the chosen current `main`
+commit, then bump `main` to the next train. Name the branch without a patch
+component, for example `releases/1.0` or `releases/1.1`. The chosen branch
+point commonly includes small post-release fixes and enhancements, so do not
+assume the previous stable tag is the right point.
 
 ```bash
 git fetch origin --tags
-git switch -c releases/1.0 v1.0.0-beta.<n>
-git push -u origin releases/1.0
+git switch main
+git pull --ff-only
+git switch -c releases/1.1
+git push -u origin releases/1.1
 ```
 
-After the stable `v1.0.0` tag is cut, `releases/1.0` remains the only branch
-for `v1.0.x` patches. Before `main` moves to the next major/minor train, verify
-that the prior train's branch exists; create it from the exact prior release
-tag if it does not.
+Create a maintenance branch only for that transition. Do not create one merely
+to promote an accepted beta to its first stable release. Once cut,
+`releases/1.1` is the only branch for `v1.1.x` maintenance candidates and
+patches; `main` carries the next major/minor train.
 
 CI runs for pushes to `main` and `releases/**`, and pull requests targeting a
 maintenance branch use the same CI workflow. Backport release-workflow fixes to
@@ -162,6 +182,14 @@ it cannot steal `/releases/latest` from the Stable train. Promote a smoked
 alpha by bumping `apps/desktop/package.json` and the CHANGELOG heading to
 the beta version, then tagging that commit. Do not retag the alpha SHA.
 
+Beta · Prerelease is the most adventurous slot, so it also offers any Stable
+candidate that outranks Stable Latest. That covers a `-prerelease.N` or
+`-rc.N` maintenance candidate, and a bare `vX.Y.Z` still staged as a GitHub
+Pre-release. Selection is by semver precedence, so a newer alpha or beta still
+wins. A candidate at or below Stable Latest stays out. Semver sorts `rc` after
+`prerelease`, and both after `alpha` and `beta`. A `v1.2.0-alpha.N` tag
+therefore sorts below an existing `v1.2.0-prerelease.N`.
+
 Moving a slot BACKWARD is supported. If a build ends up ahead of the slot the
 user selected — someone on a 1.1 alpha who picks Stable · Latest, or a tester
 stepping off Beta — the resolved release is older than what they are running,
@@ -174,15 +202,70 @@ Updates after switching.
 
 ---
 
+## Main executable UUID and symbols
+
+The macOS `afterPack` hook personalizes `Contents/MacOS/PwrSnap` before
+electron-builder signs the app. Stock Electron launchers share a build UUID
+across apps; macOS can use that UUID to associate network restrictions with
+an app ([Apple TN3178](https://developer.apple.com/documentation/technotes/tn3178-checking-for-and-resolving-build-uuid-problems),
+[TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)).
+
+`scripts/macos-executable-uuid.mjs` derives each slice's UUID from the app ID,
+app version, pinned Electron version, CPU type and CPU subtype. Repeated hooks
+and universal merging produce the same per-architecture UUID as a thin build.
+Missing identity metadata or malformed Mach-O input fails packaging. Only the
+staged launcher changes: bundle IDs, Developer ID identity, entitlements,
+frameworks and helper executables retain their existing behavior.
+
+The UUID is covered by the code signature. Never apply this patch to an
+installed or already signed release; all mutation must precede final signing
+and notarization. The existing signing pass seals the new UUID. This does not
+prove that macOS preserves or repairs existing privacy grants across an upgrade;
+that requires a signed upgrade test with the prior release.
+
+Launcher symbolication now requires a matching personalized UUID in each
+architecture of the launcher's dSYM. Upstream Electron launcher dSYMs will no
+longer match automatically. If archiving or uploading those symbols, keep the
+original-to-personalized UUID mapping and align the dSYM UUIDs before use;
+verify both with `xcrun dwarfdump --uuid`. The executable patcher intentionally
+accepts only `MH_EXECUTE`, so it is not a dSYM patching tool. Electron Framework
+UUIDs are unchanged and its upstream symbols continue to match. This release
+pipeline does not currently transform or upload launcher dSYMs.
+
+After packaging, inspect every slice with
+`xcrun dwarfdump --uuid PwrSnap.app/Contents/MacOS/PwrSnap` and verify the sealed
+bundle with `codesign --verify --deep --strict PwrSnap.app`.
+
 ## Cutting a release (CI path — preferred)
 
-```bash
-# 1. Bump the version. Use semver pre-release tags during alpha/beta:
-pnpm --filter @pwrsnap/desktop version 0.0.1-alpha.1
+First complete the package-channel baseline above, then follow the
+[release skill](../.agents/skills/release/SKILL.md) for branch selection,
+changelog, signed metadata commit and tagging. Do not let a version command
+create a tag before the metadata is reviewed and landed:
 
-# 2. Push the tag (the version command commits and tags automatically).
-git push --follow-tags
+```bash
+pnpm --filter @pwrsnap/desktop version <version> --no-git-tag-version
+# Add matching CHANGELOG.md notes, validate, commit and land on RELEASE_BRANCH.
+RELEASE_TAG=v<version> pnpm release:check
+# Create a signed tag on the intended landed commit as described in the skill.
+git push origin v<version>
 ```
+
+The macOS preparation, signing and same-repository preview jobs use the
+restricted organization self-hosted macOS runner group managed by PwrSuiteLab.
+They require a macOS 26 host and a stable installed Xcode with actool 26+;
+the selector checks this without changing the global toolchain. Preparation
+and previews reuse a per-runner PwrSnap download store. Windows and Linux jobs
+continue on their hosted images.
+
+Signing never reuses checkout contents. It expands the verified artifact into
+a fresh `release-signing` directory and puts decoded certificates, App Store
+Connect keys and temporary keychains inside a private job directory. An
+`always()` cleanup restores the original keychain search list and removes that
+job's signing material, including when the Node process was interrupted. The
+workspace is removed after artifact upload. The `apple-signing` environment
+approval and tag restrictions still gate credentials; preview jobs exclude
+forks and receive no signing secrets.
 
 The release workflow separates preparation, signing, and publication:
 
@@ -199,7 +282,9 @@ The release workflow separates preparation, signing, and publication:
    signing credentials. It archives the stage and records its SHA-256.
 5. **`windows-sign`** runs inside `windows-signing`, verifies the archive,
    injects the pinned Windows FFmpeg artifact, installs `TrustedSigning`, and
-   packages the release via `--sign-stage-only --release --require-signing`.
+   packages via `--sign-stage-only --release --require-signing`. It verifies
+   Authenticode on both the app executable and the installer, then copies the
+   verified installer to the stable `PwrSnap.Setup.exe` alias.
    It also creates an isolated signed baseline/target pair for the updater
    gate; those synthetic artifacts never enter release publication globs. It
    does not check out source or install dependencies. See
@@ -213,29 +298,67 @@ The release workflow separates preparation, signing, and publication:
    signing, and packaged updater jobs. Only this job creates the GitHub
    Pre-release, with changelog notes,
    macOS DMG/ZIP/updater metadata, the stable `PwrSnap.dmg` alias, the signed
-   Windows installer/updater metadata, the stable
-   `PwrSnap-windows-x64-setup.exe` alias, and checksums.
+   Windows installer/updater metadata, the stable `PwrSnap.Setup.exe` alias,
+   and checksums.
 
 Both stable-name aliases exist so a download link never has to name a version:
 
 | Alias | Stable URL |
 | --- | --- |
 | `PwrSnap.dmg` | `https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.dmg` |
-| `PwrSnap-windows-x64-setup.exe` | `https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap-windows-x64-setup.exe` |
+| `PwrSnap.Setup.exe` | `https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.Setup.exe` |
 
 Each is a byte-identical copy of its versioned artifact, made inside the
 platform's protected signing job after signing, so the macOS notarization and
-the Windows Authenticode signature carry over without re-signing. The Windows
-alias is added to `PwrSnap-windows-SHA256SUMS` with the versioned installer's
-digest, so the checksum file covers every published installer. Neither alias is
-an updater target: `latest-mac.yml`, `latest.yml`, and the `.blockmap` files
+the Windows Authenticode signature carry over without re-signing. Neither alias
+is an updater target: `latest-mac.yml`, `latest.yml`, and the `.blockmap` files
 keep naming the versioned artifacts, because electron-updater resolves updates
 and delta downloads through them. `publish-release-assets` fails if either
 alias is missing from the downloaded artifacts.
 
+`PwrSnap.Setup.exe` is deliberately **absent** from
+`PwrSnap-windows-SHA256SUMS`. It is the same bytes under a second name, so a
+second line states no new fact, and a manifest listing one build twice reads
+like two builds — nothing in the format marks one entry as an alias. The bytes
+are still covered: hash what you downloaded and find that digest beside the
+versioned name, which also tells you which build you got.
+
+```bash
+shasum -a 256 PwrSnap.Setup.exe
+grep -- -setup.exe PwrSnap-windows-SHA256SUMS
+```
+
+`apps/desktop/scripts/windows-release-artifacts.mjs` cuts the alias, checking
+each installer against its `SHA256SUMS` entry before copying and the copy
+against the original after, and refusing an architecture it has no agreed alias
+for rather than pointing a stable URL at the wrong installer. A future Windows
+ARM build takes `PwrSnap.Setup.Arm.exe`.
+
+The name has no space on purpose. GitHub Releases replaces spaces in an
+uploaded asset's filename with periods — on `gh`, the REST API and the web UI
+alike — and a later rename cannot restore one, so `PwrSnap Setup.exe` would
+publish as `PwrSnap.Setup.exe` regardless. Naming the build output that way
+keeps it spelled the same as the published asset. This does not match the macOS
+aliases (`PwrSnap.dmg`, `PwrSnap-arm64.dmg`), which are already published URLs
+that must keep working; each platform keeps its own spelling deliberately.
+
+`releases/latest/download/` resolves only for the release marked Latest, and
+every release is published as a Pre-release, so the stable aliases start working
+at promotion and not before. After promoting the first release that carries
+`PwrSnap.Setup.exe`, point README.md's Windows download chip at that URL
+instead of the releases page, and drop the guard against it in
+`apps/desktop/scripts/windows-release-config.test.mjs`.
+
 No signing job publishes directly. A macOS or Windows signing failure, an
 unapproved environment, or a Linux build failure leaves no partial GitHub
 Release behind.
+
+After GitHub asset/notes verification, perform the package-manager runbook's
+post-publication steps and leave its completion record. `release.yml` does not
+submit Winget or merge Homebrew updates. Homebrew's separate tap workflow opens
+bump PRs; its success is not publication. Repeat channel follow-up after the
+operator manually promotes the release, retaining ownership through submission
+acceptance and refreshed-client verification.
 
 For a non-publishing Windows signing smoke check, apply `ci:windows-signing` to
 a same-repository PR after reviewing its head SHA. Temporarily allow that exact
@@ -294,11 +417,13 @@ APP=apps/desktop/release-stage/dist/mac-universal/PwrSnap.app
 # Identity must be PwrDrvr LLC
 codesign -dv --verbose=4 "$APP"
 
-# Universal: main executable and native sidecar must contain both Apple
-# Silicon and Intel slices.
+# Universal: the main executable and helpers carry both Apple Silicon and
+# Intel slices. better-sqlite3 ships one thin prebuild per arch instead, and
+# loads whichever matches the running CPU: expect `arm64` and `x86_64`.
 lipo -archs "$APP/Contents/MacOS/PwrSnap"
 lipo -archs "$APP/Contents/Resources/PwrSnapWindowList"
-lipo -archs "$APP/Contents/Resources/app.asar.unpacked/node_modules/better-sqlite3/electron-native/better_sqlite3.node"
+lipo -archs "$APP/Contents/Resources/app.asar.unpacked/node_modules/better-sqlite3/prebuilds/darwin-arm64.node"
+lipo -archs "$APP/Contents/Resources/app.asar.unpacked/node_modules/better-sqlite3/prebuilds/darwin-x64.node"
 
 # Gatekeeper-approved (Notarized Developer ID)
 spctl -a -vv "$APP"
@@ -315,12 +440,14 @@ npx --yes @electron/fuses read --app "$APP"
 # User-viewable release documents must ship outside app.asar
 test -f "$APP/Contents/Resources/THIRD_PARTY_LICENSES"
 test -f "$APP/Contents/Resources/CHANGELOG.md"
+test -f "$APP/Contents/Resources/LICENSE"
 ```
 
 After launch, spot-check the document surfaces:
 
 - Help → Changelog opens the bundled changelog.
-- Help → Third-party Licenses opens the bundled notices.
+- Help → View License opens the bundled LICENSE.
+- Help → Third-Party Notices opens the bundled notices.
 - Settings → About can open both release notes and third-party notices.
 
 After a local publish, make the GitHub Release body match the changelog entry
@@ -410,3 +537,53 @@ Most-common Electron failures:
 - Architecture and direction: [docs/architecture.md](architecture.md)
 - Windows signing: [docs/desktop-windows-signing.md](desktop-windows-signing.md)
 - Windows operator guide: [docs/windows/README.md](windows/README.md)
+
+## Paired macOS artifacts and updater compatibility
+
+The macOS prepare/sign lane runs sequentially for `universal` and `arm64`, using
+`release-stage/` and `release-stage-arm64/`. Each stage records its architecture
+and version in `release-target.json`; the sign phase rejects a mismatch. Shared
+Swift build outputs stay universal; only the ARM64 stage's copies are thinned.
+SQLite is prepared for its target, and ARM64 staging prunes foreign Sharp
+packages. All unpacked Mach-O payloads are checked after packaging.
+
+The ARM64 FFmpeg is extracted from the same hash-verified controlled universal
+artifact before signing. `ffmpeg-macos-arm64-slice.json` records its input and
+output digests; the original manifest and LGPL source offer remain attached.
+This does not change FFmpeg's source, configure profile, or license contract.
+
+Both apps keep the same bundle identity and signing team, and each is signed
+and notarized independently. `macos-release-artifacts.mjs` validates both
+versioned DMGs, ZIPs, ZIP blockmaps, and metadata hashes/sizes before assembling
+one `latest-mac.yml`. Its `files` array contains universal then ARM64; its legacy
+`path` and `sha512` remain universal. Never upload either intermediate manifest
+separately. The pinned updater recognizes `arm64` in ZIP filenames, including
+when the running universal app is translated by Rosetta. Intel receives the
+universal ZIP. Existing train/channel selection and universal-only releases
+remain supported; equal-version installs are not forced to migrate.
+
+`PwrSnap.dmg` remains universal. The new stable alias is `PwrSnap-arm64.dmg`;
+versioned names are `PwrSnap-<version>-arm64.dmg` and
+`PwrSnap-<version>-arm64-mac.zip`. Stable aliases become website targets only
+after the containing release is explicitly promoted to Latest. Both aliases,
+both versioned pairs, the merged feed, blockmaps, source offers, and
+`macos-artifact-sizes.json` are uploaded to a draft after every platform gate; the workflow exposes the
+prerelease only after all uploads succeed.
+Do not publish ARM64 alone: the local release script requires `--no-publish`
+for that target to prevent replacing the shared feed.
+
+For local packaging validation, prepare each target with `--prepare-only`
+(and `--arch=arm64` for ARM64), inject the verified controlled FFmpeg and source
+metadata into both stages, then use `--sign-stage-only --dryrun --with-zip`
+with the corresponding architecture. These ad-hoc builds test packaging only;
+they do not demonstrate notarization or successful production updates.
+
+Before the first paired release is promoted, verify signed upgrades from an
+existing universal app on Intel, native Apple Silicon, and Rosetta; ARM64 to
+ARM64; and an explicit channel switch back to a universal-only version.
+Verify cached ZIP/differential-download fallback, persistent settings/captures,
+Sharp, sqlite, capture helpers, FFmpeg, Quick Look, and Gatekeeper. Use the
+PwrSuiteLab workflow for headed macOS tests. Record actual DMG/ZIP bytes and
+installed size separately; do not advertise half-size downloads based on CPU
+count. Rollback can use a new higher-version universal-only release, preserving
+the shared feed and existing universal alias.

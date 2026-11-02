@@ -7,14 +7,20 @@ import {
   distributeSequenceBeatStarts,
   estimateSequenceTimelineDurationSec,
   normalizeSizzleSequenceBeatContinuity,
+  normalizeVideoMediaTrim,
   resolveSizzleVideoFit,
+  sizzleMediaSourceTimeSec,
+  sizzleMediaSpans,
+  sizzleMediaSpansDurationSec,
+  sizzleUsesCaptureCuts,
   type CaptureRecord,
   type SizzleProject,
   type SizzleScene,
   type SizzleSequenceBeat,
   type SizzleSequencePreviewBeat,
   type SizzleSequencePreviewPlan,
-  type SizzleSequenceTranscriptPhrase
+  type SizzleSequenceTranscriptPhrase,
+  type VideoRange
 } from "@pwrsnap/shared";
 import { clampTime } from "./sizzle-helpers";
 
@@ -63,7 +69,10 @@ export function sequencePreviewPlanKey(scene: SizzleScene): string {
       timing: beat.timing,
       mediaTrim: beat.mediaTrim,
       transition: beat.transition,
-      videoFit: beat.videoFit
+      videoFit: beat.videoFit,
+      // Only the opt-out changes the plan; leaving the default out keeps
+      // every existing key what it was.
+      ...(sizzleUsesCaptureCuts(beat) ? {} : { useCaptureCuts: false })
     }))
   });
 }
@@ -99,6 +108,11 @@ export type SequencePreviewVideoState = {
   sourceTimeSec: number;
   playbackRate: number;
   shouldPlay: boolean;
+  /** True when the clip skips Library cuts, so a video element playing
+   *  straight through the source has to be re-seeked at each one. */
+  hasCuts: boolean;
+  /** The source spans the clip plays (one span when uncut). */
+  spans: VideoRange[];
 };
 
 export type CachedSequenceTranscriptPhrases = {
@@ -125,17 +139,38 @@ export function sequencePreviewVideoState(args: {
   if (capture.kind !== "video" || capture.video === undefined || capture.video === null) {
     return null;
   }
-  const trim = beat.mediaTrim ?? sceneBeat.mediaTrim ?? {
-    startSec: capture.video.defaultRange.start,
-    endSec: capture.video.defaultRange.end
-  };
-  const sourceDurationSec = Math.max(0.05, trim.endSec - trim.startSec);
-  const targetDurationSec = Math.max(0.05, beat.endSec - beat.startSec);
-  const fit = beat.fit ?? resolveSizzleVideoFit({
-    policy: sceneBeat.videoFit,
-    sourceDurationSec,
-    targetDurationSec
+  // Resolved from the STORED beat and the live record — exactly what the
+  // planner does — not from the plan's copy: a clip with no trim of its
+  // own follows the Library's in/out, and the plan's copy is only as
+  // fresh as the last preview.
+  const trim = normalizeVideoMediaTrim({
+    trim: sceneBeat.mediaTrim,
+    defaultRange: capture.video.defaultRange,
+    sourceDurationSec: capture.video.durationSec
   });
+  // The same spans the export plays: the trim minus the capture's Library
+  // cuts, read live from the record so a cut made while the reel is open
+  // shows up on the next frame.
+  const spans = sizzleMediaSpans({
+    trim,
+    segments: capture.video.segments,
+    useCaptureCuts: sizzleUsesCaptureCuts(sceneBeat)
+  });
+  const sourceDurationSec = Math.max(0.05, sizzleMediaSpansDurationSec(spans));
+  const targetDurationSec = Math.max(0.05, beat.endSec - beat.startSec);
+  // A resolved plan's fit is only good for the footage it was planned
+  // against; one made before the capture was (re)cut is re-derived here.
+  const planned = beat.fit ?? null;
+  const fit =
+    planned !== null &&
+    (planned.sourceDurationSec === undefined ||
+      Math.abs(planned.sourceDurationSec - sourceDurationSec) < 0.01)
+      ? planned
+      : resolveSizzleVideoFit({
+          policy: sceneBeat.videoFit,
+          sourceDurationSec,
+          targetDurationSec
+        });
   const elapsedSec = Math.max(0, timelineTimeSec - beat.startSec);
   const inputDurationSec = Math.max(0.05, fit.inputDurationSec);
   let sourceOffsetSec: number;
@@ -155,8 +190,10 @@ export function sequencePreviewVideoState(args: {
 
   return {
     beatId: beat.beatId,
-    sourceTimeSec: trim.startSec + sourceOffsetSec,
+    sourceTimeSec: sizzleMediaSourceTimeSec(spans, sourceOffsetSec),
     playbackRate: fit.playbackRate,
-    shouldPlay: !(fit.renderMode === "freeze-end" && elapsedSec >= inputDurationSec)
+    shouldPlay: !(fit.renderMode === "freeze-end" && elapsedSec >= inputDurationSec),
+    hasCuts: spans.length > 1,
+    spans
   };
 }

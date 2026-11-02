@@ -1,0 +1,192 @@
+/* Recording frame — the tangerine rectangle drawn around the recorded
+   rect for the life of a video capture. Lives in its own transparent,
+   click-through BrowserWindow (`createRecordingFrameWindow`); geometry
+   arrives over `events:recording:frame` as CSS px insets.
+
+   THREE LAYERS, AND THE SPLIT IS LOAD-BEARING. The glow lives on its
+   own promoted element so the breathing animation only ever changes
+   `opacity` on a composited layer. Merging it into `.psrf__edge` would
+   animate a `box-shadow`, which re-rasters a tile the size of the
+   recorded region ~60 times a second — the exact shape of the 2026-08
+   video-playback GPU burn (docs/solutions/2026-08-20-…). */
+
+.psrf {
+  position: absolute;
+  /* Set from the layout event. The box is the recorded rect exactly. */
+  inset: var(--psrf-top, 0) var(--psrf-right, 0) var(--psrf-bottom, 0) var(--psrf-left, 0);
+  pointer-events: none;
+}
+
+/* ---------- 1 · the hairline ----------
+   The only hard line in the whole frame, and the reason it reads as a
+   measurement rather than a mood. WHERE it sits is the platform split:
+
+   straddle (macOS) — an inset ring, so the line occupies the outermost
+     recorded pixel. Content protection keeps it out of the file, and
+     because it is inside the box it can never be clipped by the window
+     edge, so a region flush against the display edge still shows all
+     four sides.
+   outset (Windows/Linux) — a real border on a box grown 1px, so the
+     line occupies the ring just OUTSIDE the rect. FFmpeg gdigrab reads
+     the desktop DC and would bake an inside line into every frame. */
+.psrf__edge {
+  position: absolute;
+  border-radius: 2px;
+}
+
+.psrf[data-mode="straddle"] .psrf__edge {
+  inset: 0;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 88%, transparent);
+}
+
+.psrf[data-mode="outset"] .psrf__edge {
+  inset: -1px;
+  border: 1px solid color-mix(in srgb, var(--accent) 88%, transparent);
+}
+
+/* ---------- 2 · the glow ----------
+   Outward only. This is the Windows/Linux posture, and macOS ADDS to it
+   below rather than replacing it — so if the platform override is ever
+   dropped, what survives is the safe shape, not the recorded one. */
+.psrf__glow {
+  position: absolute;
+  inset: 0;
+  border-radius: 2px;
+  will-change: opacity;
+  box-shadow:
+    0 0 0 2.5px color-mix(in srgb, var(--accent) 34%, transparent),
+    0 0 10px 2px color-mix(in srgb, var(--accent) 28%, transparent),
+    0 0 30px 9px color-mix(in srgb, var(--accent) 13%, transparent);
+}
+
+/* ⚠️  The outward extent here (spread 9 + blur/2 15 = 24px) is what
+   `RECORDING_FRAME_BAND_PX` in recording-frame-geometry.ts reserves
+   around the rect. Widening the falloff without raising that constant
+   gets the glow a hard edge where the window stops. */
+.psrf[data-mode="straddle"] .psrf__glow {
+  box-shadow:
+    0 0 0 2.5px color-mix(in srgb, var(--accent) 34%, transparent),
+    0 0 10px 2px color-mix(in srgb, var(--accent) 28%, transparent),
+    0 0 30px 9px color-mix(in srgb, var(--accent) 13%, transparent),
+    inset 0 0 14px 0 color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+/* ---------- 3 · corner ticks ----------
+   What makes the rectangle read as a FRAME rather than a colour wash,
+   for almost no added ink. Sized as a fraction of the short side (set
+   by the renderer) so they never meet in the middle of a small region. */
+.psrf__corner {
+  position: absolute;
+  /* No fallback on purpose: the renderer is the single authority for
+     this size (`cornerSizeFor` in RecordingFrame.tsx). A second value
+     here would be a constant that can silently drift from it. */
+  width: var(--psrf-corner);
+  height: var(--psrf-corner);
+  --psrf-corner-weight: 2px;
+  border: 0 solid var(--accent-bright);
+}
+
+/* ⚠️  Under `outset` the offset must be at least as far out as
+   `--psrf-corner-weight`. A border paints INWARD from the element's own
+   edge (`box-sizing: border-box`, app.css), so a -1px offset against a
+   2px border lights the pixel at rect-relative 0 — one tangerine column
+   INSIDE the capture, at all four corners, on the two platforms that
+   cannot hide this window from their recorder. Pinned by
+   recording-frame-css-boundary.test.ts. */
+.psrf[data-mode="straddle"] .psrf__corner {
+  --psrf-corner-offset: 0px;
+}
+
+.psrf[data-mode="outset"] .psrf__corner {
+  --psrf-corner-offset: -2px;
+}
+
+/* The arming edge grows 1px under straddle (below); the ticks move with
+   it so the dashed line and the corners share an outer edge. */
+.psrf[data-phase="arming"][data-mode="straddle"] .psrf__corner {
+  --psrf-corner-offset: -1px;
+}
+
+.psrf__corner[data-corner="tl"] {
+  left: var(--psrf-corner-offset);
+  top: var(--psrf-corner-offset);
+  border-left-width: var(--psrf-corner-weight);
+  border-top-width: var(--psrf-corner-weight);
+}
+
+.psrf__corner[data-corner="tr"] {
+  right: var(--psrf-corner-offset);
+  top: var(--psrf-corner-offset);
+  border-right-width: var(--psrf-corner-weight);
+  border-top-width: var(--psrf-corner-weight);
+}
+
+.psrf__corner[data-corner="bl"] {
+  left: var(--psrf-corner-offset);
+  bottom: var(--psrf-corner-offset);
+  border-left-width: var(--psrf-corner-weight);
+  border-bottom-width: var(--psrf-corner-weight);
+}
+
+.psrf__corner[data-corner="br"] {
+  right: var(--psrf-corner-offset);
+  bottom: var(--psrf-corner-offset);
+  border-right-width: var(--psrf-corner-weight);
+  border-bottom-width: var(--psrf-corner-weight);
+}
+
+/* ---------- phases ----------
+   `arming` borrows the selector's dashed-accent convention, which
+   already means "a selection you have not taken yet". That leaves
+   solid-plus-breathing to mean exactly one thing: pixels are being
+   written right now. */
+.psrf[data-phase="arming"][data-mode="outset"] .psrf__edge {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--accent) 72%, transparent);
+}
+
+.psrf[data-phase="arming"][data-mode="straddle"] .psrf__edge {
+  /* No dashed equivalent for an inset ring — a 1.5px border on a box
+     grown 1px gives the same read without moving the geometry. */
+  inset: -1px;
+  box-shadow: none;
+  border: 1.5px dashed color-mix(in srgb, var(--accent) 72%, transparent);
+}
+
+.psrf[data-phase="arming"] .psrf__glow {
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent),
+    0 0 22px 4px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.psrf[data-phase="arming"] .psrf__corner {
+  border-color: color-mix(in srgb, var(--accent) 78%, transparent);
+}
+
+.psrf[data-phase="recording"] .psrf__glow {
+  animation: psrf-breathe 3.6s ease-in-out infinite;
+}
+
+/* Stop ends the signal, but the window outlives it by however long the
+   encoder takes to exit. Fading rather than vanishing says "this is
+   finishing", and keeping the position says "this is still the rect
+   that was taken". */
+.psrf[data-phase="stopping"] {
+  opacity: 0.4;
+}
+
+@keyframes psrf-breathe {
+  0%,
+  100% {
+    opacity: 0.62;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .psrf__glow {
+    animation: none !important;
+  }
+}

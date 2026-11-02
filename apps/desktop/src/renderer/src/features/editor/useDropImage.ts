@@ -125,10 +125,10 @@ export function isPotentialDroppedImage(file: File): boolean {
 }
 
 function getFilePath(file: File): string | null {
-  const fn = window.pwrsnapApi?.getPathForFile;
-  if (typeof fn === "function") {
+  const api = window.pwrsnapApi;
+  if (typeof api?.getPathForFile === "function") {
     try {
-      const value = fn(file);
+      const value = api.getPathForFile(file);
       return value.length > 0 ? value : null;
     } catch {
       return null;

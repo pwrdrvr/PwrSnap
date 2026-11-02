@@ -1,6 +1,9 @@
 import { AppDocumentWindow } from "./features/documents/AppDocumentWindow";
 import { Library } from "./features/library/Library";
 import { LocalAgentConsent } from "./features/local-agents/LocalAgentConsent";
+import { AppNoticeToast } from "./features/shared/AppNoticeToast";
+import { WindowControls } from "./features/shared/WindowControls";
+import { paintsOwnCaptionButtons, rendererPlatform } from "./lib/window-chrome";
 import { LogsWindow } from "./features/logs/LogsWindow";
 import { CapturesAccessBanner } from "./features/library/CapturesAccessBanner";
 import { CodexCompatibilityBanner } from "./features/library/CodexCompatibilityBanner";
@@ -8,6 +11,8 @@ import { CartProvider } from "./features/library/CartContext";
 import { HotCpuProfileBanner } from "./features/library/HotCpuProfileBanner";
 import { FloatOverHost } from "./features/float-over/FloatOverHost";
 import { RecordingController } from "./features/recording/RecordingController";
+import { RecordingFrame } from "./features/recording/RecordingFrame";
+import { PermissionGuide } from "./features/permission-guide/PermissionGuide";
 import { RegionSelector } from "./features/region/RegionSelector";
 import { SettingsApp } from "./features/settings/SettingsApp";
 import { SizzleApp } from "./features/sizzle/SizzleApp";
@@ -17,6 +22,13 @@ import { RendererErrorBoundary } from "./RendererErrorBoundary";
 import { useAppearanceSync } from "./lib/useAppearance";
 import { useEditMenuBridge } from "./lib/editMenuBridge";
 import { usePreventBrowserZoom } from "./lib/usePreventBrowserZoom";
+import { FastTooltipHost } from "./lib/useFastTooltip";
+import {
+  APP_DOCUMENT_TITLES,
+  isAppDocumentKind,
+  isWindowChromeStage,
+  type AppDocumentKind
+} from "@pwrsnap/shared";
 
 type Stage =
   | "library"
@@ -28,8 +40,9 @@ type Stage =
   | "sizzle"
   | "document"
   | "local-agent-consent"
-  | "recording-controller";
-type AppDocumentKind = "changelog" | "third-party-licenses";
+  | "recording-controller"
+  | "recording-frame"
+  | "permission-guide";
 
 function readStage(): Stage {
   const hash = window.location.hash.replace(/^#/, "");
@@ -44,7 +57,9 @@ function readStage(): Stage {
     v === "sizzle" ||
     v === "document" ||
     v === "local-agent-consent" ||
-    v === "recording-controller"
+    v === "recording-controller" ||
+    v === "recording-frame" ||
+    v === "permission-guide"
   ) {
     return v;
   }
@@ -55,15 +70,22 @@ function readDocumentKind(): AppDocumentKind | null {
   const hash = window.location.hash.replace(/^#/, "");
   const params = new URLSearchParams(hash);
   const kind = params.get("kind");
-  if (kind === "changelog" || kind === "third-party-licenses") {
-    return kind;
-  }
-  return null;
+  return isAppDocumentKind(kind) ? kind : null;
 }
 
 const STAGE = readStage();
 const DOCUMENT_KIND = readDocumentKind();
 document.body.dataset.stage = STAGE;
+/**
+ * Is this stage a WINDOW (title bar, caption buttons, its own edge) or a
+ * popover surface? library.css keys the Linux window hairline off the
+ * attribute rather than re-listing stage names, `main.tsx` imports the flag to
+ * decide whether to subscribe to frame state, and main's window-controls
+ * bridge asks the same shared predicate before it will minimize or close
+ * anything — so the four cannot drift as stages are added or renamed.
+ */
+export const IS_WINDOW_CHROME = isWindowChromeStage(STAGE);
+if (IS_WINDOW_CHROME) document.body.dataset.chrome = "window";
 
 // Distinct document.title per stage. Every PwrSnap window loads
 // the same `index.html` whose `<title>` tag would otherwise stamp
@@ -84,10 +106,9 @@ const TITLE_BY_STAGE: Record<Stage, string> = {
   sizzle: "PwrSnap Sizzle Reels",
   "local-agent-consent": "Authorize Local Agent - PwrSnap",
   "recording-controller": "PwrSnap Recording",
-  document:
-    DOCUMENT_KIND === "third-party-licenses"
-      ? "PwrSnap Third-party Licenses"
-      : "PwrSnap Changelog"
+  "recording-frame": "PwrSnap Recording Frame",
+  "permission-guide": "PwrSnap Permission Guide",
+  document: `PwrSnap ${APP_DOCUMENT_TITLES[DOCUMENT_KIND ?? "changelog"]}`
 };
 document.title = TITLE_BY_STAGE[STAGE] ?? "PwrSnap";
 
@@ -121,7 +142,7 @@ export function App() {
 
   const app = (() => {
     if (STAGE === "tray") {
-      return <TrayMenu activeMode="auto" />;
+      return <TrayMenu />;
     }
     if (STAGE === "float-over") {
       return <FloatOverHost />;
@@ -141,8 +162,32 @@ export function App() {
     if (STAGE === "recording-controller") {
       return <RecordingController />;
     }
+    if (STAGE === "recording-frame") {
+      return <RecordingFrame />;
+    }
+    if (STAGE === "permission-guide") {
+      return <PermissionGuide />;
+    }
     if (STAGE === "local-agent-consent") {
-      return <LocalAgentConsent />;
+      return (
+        <>
+          {/* This window is the one `platformWindowChrome()` consumer with no
+              title bar of its own — a centred column with 52px of top padding
+              and no drag region. macOS still draws its traffic lights into
+              that space and Windows still fills its `titleBarOverlay`, so on
+              both the window can be moved and closed without us. Linux is
+              frameless with nothing but what we paint, so without this strip
+              the authorization prompt could not be dragged, minimized or
+              closed at all. It occupies exactly the padding the design
+              already leaves. */}
+          {paintsOwnCaptionButtons(rendererPlatform()) ? (
+            <div className="ps-consent-chrome">
+              <WindowControls />
+            </div>
+          ) : null}
+          <LocalAgentConsent />
+        </>
+      );
     }
     if (STAGE === "document") {
       return <AppDocumentWindow kind={DOCUMENT_KIND} />;
@@ -162,10 +207,18 @@ export function App() {
           <CodexCompatibilityBanner />
           <HotCpuProfileBanner />
           <AppUpdateBanner />
+          <AppNoticeToast />
         </div>
       </div>
     );
   })();
 
-  return <RendererErrorBoundary stage={STAGE}>{app}</RendererErrorBoundary>;
+  // One hover tooltip per window, for every surface it renders: a control
+  // opts in with `data-tip` (see ./lib/useFastTooltip.tsx).
+  return (
+    <RendererErrorBoundary stage={STAGE}>
+      {app}
+      <FastTooltipHost />
+    </RendererErrorBoundary>
+  );
 }

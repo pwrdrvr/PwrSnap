@@ -8,6 +8,7 @@ import { ToolStyleBody } from "../editor/ToolStylePopover";
 import { useCaptureModel } from "../editor/useCaptureModel";
 import type { LayersPanelApi } from "../editor/Editor";
 import { styledLayerStyle } from "./styled-layer-style";
+import { strokeLayerName } from "../editor/overlayToLayer";
 import "./LayerPropertiesPanel.css";
 
 export type LayerPropertiesPanelProps = {
@@ -37,6 +38,8 @@ function labelForNode(node: BundleLayerNode): string {
       return "Blur";
     case "step":
       return "Step";
+    case "stroke":
+      return strokeLayerName(node.shape.tool);
     case "crop":
       return "Crop";
   }
@@ -102,6 +105,7 @@ export function LayerPropertiesPanel({
                 api?.updateLayerStyle(selected.id, field, value);
               }}
               styleTargetKey={selected.id}
+              allowEraser={false}
             />
           </div>
         </>

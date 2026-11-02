@@ -31,7 +31,6 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 
 const MIN_SCALE = 0.1;
 const MAX_SCALE = 8;
-const KEYBOARD_STEP = 1.25;
 const WHEEL_STEP_BASE = 1.0025;
 
 /** Minimum extent of the canvas (CSS px, per axis) that must remain

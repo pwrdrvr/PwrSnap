@@ -50,16 +50,3 @@ export function resolveDevelopmentRuntimeIdentity(
   if (identity.branch === undefined && identity.commitSha === undefined) return undefined;
   return identity;
 }
-
-/** Electron renders `version` as the parenthesized build value in the native
- *  About panel. Put the useful checkout identity there for development runs. */
-export function resolveAboutPanelBuildVersion(
-  appVersion: string,
-  identity: AppRuntimeIdentity | undefined
-): string {
-  if (identity?.branch !== undefined) return identity.branch;
-  if (identity?.detachedHead === true && identity.commitSha !== undefined) {
-    return `HEAD ${identity.commitSha.slice(0, 8)}`;
-  }
-  return appVersion;
-}

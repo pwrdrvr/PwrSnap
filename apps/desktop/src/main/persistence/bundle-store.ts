@@ -29,6 +29,7 @@ import yazl from "yazl";
 import {
   BundleDocumentV2,
   BundleManifestV2,
+  type BundleLayerNode,
   cloneAffineTransform,
   validateBundleZipEntryNamesV2
 } from "@pwrsnap/shared";
@@ -73,6 +74,7 @@ import {
 import { getMainLogger } from "../log";
 import { buildCaptureBundleFilenameStem, bundleStemFromPath } from "./bundle-filename";
 import { readBundleFilenameTimestampZone } from "./bundle-filename-settings";
+import { moveFileWithExdevFallback } from "./cross-device-move";
 import { TRASH_RETENTION_DAYS } from "./trash-retention";
 
 import type { CursorLayerPlacement } from "../capture/cursor-sample";
@@ -108,6 +110,20 @@ export async function assertSafeBundleFile(filePath: string): Promise<void> {
 }
 
 /**
+ * The manifest's copy of a capture's duplicate lineage. Keys are omitted,
+ * not written as null, when the capture has no family, so every bundle
+ * outside a family keeps the manifest it always had.
+ */
+export function manifestLineage(
+  record: Pick<CaptureRecord, "family_id" | "duplicated_from">
+): Pick<BundleManifestV2, "family_id" | "duplicated_from"> {
+  return {
+    ...(record.family_id != null ? { family_id: record.family_id } : {}),
+    ...(record.duplicated_from != null ? { duplicated_from: record.duplicated_from } : {})
+  };
+}
+
+/**
  * Atomically write a bundle (or any byte buffer) to `destPath`. The
  * temp file lives in the SAME directory as the destination — never
  * `os.tmpdir()` — so APFS rename is single-volume and atomic. fsync
@@ -131,8 +147,20 @@ export async function assertSafeBundleFile(filePath: string): Promise<void> {
  *
  * The three steps are ordered for iCloud/Files-on-Demand safety — a
  * bundle must never be observable half-written by the sync daemon.
+ *
+ * `durable: false` drops both fsyncs (rules 2 and 3) and keeps the
+ * temp-file + rename, so a reader still never sees partial bytes; only
+ * the power-loss guarantee goes. On macOS libuv makes each fsync an
+ * F_FULLFSYNC, about 4 ms apiece, which dominated the dev seeder's cost
+ * per synthetic row. The E2E seeder (`e2e-capture-seed.ts`) passes it
+ * too. Nothing that writes user data does.
  */
-export async function atomicWriteBundle(destPath: string, contents: Buffer): Promise<void> {
+export async function atomicWriteBundle(
+  destPath: string,
+  contents: Buffer,
+  options: { durable?: boolean } = {}
+): Promise<void> {
+  const durable = options.durable ?? true;
   const dir = dirname(destPath);
   await mkdir(dir, { recursive: true });
 
@@ -148,7 +176,7 @@ export async function atomicWriteBundle(destPath: string, contents: Buffer): Pro
   try {
     fh = await open(tmp, "w", 0o600);
     await fh.writeFile(contents);
-    await fh.sync();
+    if (durable) await fh.sync();
     await fh.close();
     fh = null;
 
@@ -169,15 +197,20 @@ export async function atomicWriteBundle(destPath: string, contents: Buffer): Pro
     throw err;
   }
 
+  if (!durable) return;
+
   // fsync the containing directory so the rename itself is durable
   // across a power loss. On Linux this is required; on macOS it's
   // belt-and-suspenders against APFS quirks. Best-effort — if open()
-  // on a directory isn't supported here (rare, and not on macOS) we
-  // log and continue rather than failing the whole write.
+  // or sync() on a directory isn't supported, continue rather than
+  // failing the whole write. Close even when sync() rejects (Windows).
   try {
     const dirfd = await open(dir, "r");
-    await dirfd.sync();
-    await dirfd.close();
+    try {
+      await dirfd.sync();
+    } finally {
+      await dirfd.close();
+    }
   } catch {
     // Some filesystems / platforms don't support fsync on dirfds.
     // The single-volume rename above is still atomic at the
@@ -658,12 +691,21 @@ export async function readSourceForCapture(
 export type PersistCaptureFromTempArgs = {
   tempPath: string;
   sourceApp: { bundleId: string | null; appName: string | null } | null;
+  /** Exact selected-window title; omitted/null for every non-window capture. */
+  sourceWindowTitle?: string | null | undefined;
   /** Optional stable id for controlled imports and deterministic E2E fixtures. */
   captureId?: string | undefined;
   /** Optional capture timestamp for controlled imports and deterministic E2E fixtures. */
   capturedAt?: string | undefined;
   /** Defaults to `getCapturesRoot()` (`~/Documents/PwrSnap/`). */
   outputDir?: string;
+  /**
+   * Defaults to true. False skips the bundle write's fsyncs (see
+   * {@link atomicWriteBundle}). Only the dev seeder's `capture:ingest`
+   * passes false: its rows are synthetic, regenerated from a fixed plan,
+   * and wiped on every run. Never pass it for a capture a user made.
+   */
+  durable?: boolean | undefined;
   /**
    * Captured-display DPR. Capture callers pass the selected display's
    * scale explicitly. Unknown/imported density defaults to 1 because
@@ -682,6 +724,12 @@ export type PersistCaptureFromTempArgs = {
    * cursor layer (setting off, sampling failed, cursor outside region).
    */
   cursorLayer?: CursorLayerPlacement | undefined;
+  /**
+   * Duplicate lineage for a base-image copy (`capture:duplicate` with
+   * `withEdits: false`). Written to the row AND the manifest up front so
+   * the new bundle never needs a repack just to learn its family.
+   */
+  lineage?: { familyId: string; duplicatedFrom: string } | undefined;
 };
 
 export type PersistCaptureFromTempResult = {
@@ -915,6 +963,92 @@ export async function compositeCursorForThumbnail(
     .toBuffer();
 }
 
+/**
+ * The manifest and layer tree every new v2 capture starts with: canvas
+ * == source dimensions, a root group, and one raster at identity
+ * pointing at the single embedded source. `persistCaptureFromTempV2`
+ * builds on this (adding an optional cursor layer); the E2E seeder
+ * (`e2e-capture-seed.ts`) uses it as-is, so a seeded capture has the
+ * same shape a real one does.
+ */
+export function buildInitialV2Tree(args: {
+  captureId: string;
+  createdAt: string;
+  sha256: string;
+  widthPx: number;
+  heightPx: number;
+  pairedPngFilename: string;
+  lineage?: { familyId: string; duplicatedFrom: string } | undefined;
+}): { manifest: BundleManifestV2; rootGroupId: string; layers: BundleLayerNode[] } {
+  const now = args.createdAt;
+  const rootGroupId = nanoid(16);
+  const rasterLayerId = nanoid(16);
+
+  const manifest: BundleManifestV2 = {
+    bundle_format_version: 2,
+    capture_id: args.captureId,
+    canvas_dimensions: { width_px: args.widthPx, height_px: args.heightPx },
+    paired_png_filename: args.pairedPngFilename,
+    created_at: now,
+    bundle_modified_at: now,
+    ...(args.lineage === undefined
+      ? {}
+      : manifestLineage({
+          family_id: args.lineage.familyId,
+          duplicated_from: args.lineage.duplicatedFrom
+        }))
+  };
+
+  const layers: BundleLayerNode[] = [
+    {
+      id: rootGroupId,
+      parent_id: null,
+      kind: "group" as const,
+      collapsed: false,
+      name: "Root",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal" as const,
+      transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
+      z_index: 0,
+      source: "user" as const,
+      ai_run_id: null,
+      applied_at: now,
+      rejected_at: null,
+      superseded_by: null,
+      created_at: now
+    },
+    {
+      id: rasterLayerId,
+      parent_id: rootGroupId,
+      kind: "raster" as const,
+      source_ref: { kind: "embedded" as const, sha256: args.sha256 },
+      natural_width_px: args.widthPx,
+      natural_height_px: args.heightPx,
+      name: "Source",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal" as const,
+      transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
+      // Home transform, set for uniformity. Identity at creation (the base
+      // fills the frame 1:1); the base never shows a Reset control, so this
+      // is only ever carried, never applied. Separate literal — not aliased.
+      original_transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
+      z_index: 0,
+      source: "user" as const,
+      ai_run_id: null,
+      applied_at: now,
+      rejected_at: null,
+      superseded_by: null,
+      created_at: now
+    }
+  ];
+
+  return { manifest, rootGroupId, layers };
+}
+
 export async function persistCaptureFromTempV2(
   args: PersistCaptureFromTempArgs
 ): Promise<PersistCaptureFromTempResult> {
@@ -950,64 +1084,15 @@ export async function persistCaptureFromTempV2(
   }));
   const pairedPngFilename = `${filenameStem}.png`;
 
-  const rootGroupId = nanoid(16);
-  const rasterLayerId = nanoid(16);
-
-  const manifest: BundleManifestV2 = {
-    bundle_format_version: 2,
-    capture_id: id,
-    canvas_dimensions: { width_px: widthPx, height_px: heightPx },
-    paired_png_filename: pairedPngFilename,
-    created_at: now,
-    bundle_modified_at: now
-  };
-
-  const initialLayers = [
-    {
-      id: rootGroupId,
-      parent_id: null,
-      kind: "group" as const,
-      collapsed: false,
-      name: "Root",
-      visible: true,
-      locked: false,
-      opacity: 1,
-      blend_mode: "normal" as const,
-      transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
-      z_index: 0,
-      source: "user" as const,
-      ai_run_id: null,
-      applied_at: now,
-      rejected_at: null,
-      superseded_by: null,
-      created_at: now
-    },
-    {
-      id: rasterLayerId,
-      parent_id: rootGroupId,
-      kind: "raster" as const,
-      source_ref: { kind: "embedded" as const, sha256 },
-      natural_width_px: widthPx,
-      natural_height_px: heightPx,
-      name: "Source",
-      visible: true,
-      locked: false,
-      opacity: 1,
-      blend_mode: "normal" as const,
-      transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
-      // Home transform, set for uniformity. Identity at creation (the base
-      // fills the frame 1:1); the base never shows a Reset control, so this
-      // is only ever carried, never applied. Separate literal — not aliased.
-      original_transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
-      z_index: 0,
-      source: "user" as const,
-      ai_run_id: null,
-      applied_at: now,
-      rejected_at: null,
-      superseded_by: null,
-      created_at: now
-    }
-  ];
+  const { manifest, rootGroupId, layers: initialLayers } = buildInitialV2Tree({
+    captureId: id,
+    createdAt: now,
+    sha256,
+    widthPx,
+    heightPx,
+    pairedPngFilename,
+    lineage: args.lineage
+  });
 
   // Optional cursor layer (cursor-capture Phase 3): embed the sampled
   // sprite as a second content-addressed source and stack a deletable
@@ -1122,7 +1207,7 @@ export async function persistCaptureFromTempV2(
     thumbnailJpg
   });
 
-  await atomicWriteBundle(bundlePath, bundleBuf);
+  await atomicWriteBundle(bundlePath, bundleBuf, { durable: args.durable ?? true });
 
   // Materialize source.png to per-capture cache.
   const cacheSource = getCacheSourcePath(id);
@@ -1141,6 +1226,7 @@ export async function persistCaptureFromTempV2(
     captured_at: now,
     source_app_bundle_id: args.sourceApp?.bundleId ?? null,
     source_app_name: args.sourceApp?.appName ?? null,
+    source_window_title: args.sourceWindowTitle ?? null,
     legacy_src_path: null,
     bundle_path: bundlePath,
     flat_png_path: null,
@@ -1152,7 +1238,9 @@ export async function persistCaptureFromTempV2(
     device_pixel_ratio: args.devicePixelRatio ?? 1,
     byte_size: buf.length,
     sha256,
-    has_alpha: hasAlpha
+    has_alpha: hasAlpha,
+    family_id: args.lineage?.familyId ?? null,
+    duplicated_from: args.lineage?.duplicatedFrom ?? null
   });
 
   // Seed the layers table so listLayerTree returns the initial tree
@@ -1286,7 +1374,8 @@ async function runRepackV2(captureId: string): Promise<void> {
         },
         paired_png_filename: `${filenameStem}.png`,
         created_at: snapshot.record.captured_at,
-        bundle_modified_at: now
+        bundle_modified_at: now,
+        ...manifestLineage(snapshot.record)
       };
       const acceptedDescription = snapshot.enrichment?.acceptedDescription ?? null;
       const acceptedTags = snapshot.enrichment?.acceptedTags ?? [];
@@ -1412,11 +1501,13 @@ export async function repackCaptureNow(captureId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Move a bundle + paired PNG to `<userData>/.trash/<id>/`. Two
- * atomic renames (paired PNG first, bundle second), reversed on
- * failure so a partial failure never leaves the SoR (the bundle)
- * orphaned in the live folder while the derivative (the paired
- * PNG) sits in trash.
+ * Move a bundle + paired PNG to `<userData>/.trash/<id>/`. Each move is
+ * an atomic rename when the roots share a volume; a relocated Documents
+ * folder can cross a Windows drive boundary, so EXDEV uses a completed
+ * destination-sibling copy before deleting the source. The paired PNG is
+ * moved first and reversed on bundle failure so a partial failure never
+ * leaves the SoR (the bundle) orphaned in the live folder while the
+ * derivative sits in trash.
  *
  * Idempotent: missing files are silently skipped (deleted-out-of-band
  * by Finder, already-trashed twice in a row, etc.).
@@ -1438,7 +1529,7 @@ export async function moveBundlePairToTrash(args: {
   // moved — return early; the live folder is still consistent.
   if (args.flatPngPath !== null && pngTrashPath !== null && existsSync(args.flatPngPath)) {
     try {
-      await rename(args.flatPngPath, pngTrashPath);
+      await moveFileWithExdevFallback(args.flatPngPath, pngTrashPath);
     } catch (cause) {
       log.warn("trash move: paired PNG rename failed (bailing before bundle move)", {
         captureId: args.captureId,
@@ -1453,7 +1544,7 @@ export async function moveBundlePairToTrash(args: {
   // PNG move so the live folder converges back to its prior state.
   if (args.bundlePath !== null && bundleTrashPath !== null && existsSync(args.bundlePath)) {
     try {
-      await rename(args.bundlePath, bundleTrashPath);
+      await moveFileWithExdevFallback(args.bundlePath, bundleTrashPath);
     } catch (cause) {
       log.warn("trash move: bundle rename failed; reversing paired-PNG rename", {
         captureId: args.captureId,
@@ -1466,7 +1557,7 @@ export async function moveBundlePairToTrash(args: {
         existsSync(pngTrashPath)
       ) {
         try {
-          await rename(pngTrashPath, args.flatPngPath);
+          await moveFileWithExdevFallback(pngTrashPath, args.flatPngPath);
         } catch (reverseCause) {
           log.error(
             "trash move: reverse rename also failed; bundle pair is now split — surface to user via doctor",
@@ -1498,14 +1589,14 @@ export async function restoreBundlePairFromTrash(args: {
     const pngTrashPath = join(trashDir, basename(args.flatPngPath));
     if (existsSync(pngTrashPath)) {
       await mkdir(dirname(args.flatPngPath), { recursive: true });
-      await rename(pngTrashPath, args.flatPngPath);
+      await moveFileWithExdevFallback(pngTrashPath, args.flatPngPath);
     }
   }
   if (args.bundlePath !== null) {
     const bundleTrashPath = join(trashDir, basename(args.bundlePath));
     if (existsSync(bundleTrashPath)) {
       await mkdir(dirname(args.bundlePath), { recursive: true });
-      await rename(bundleTrashPath, args.bundlePath);
+      await moveFileWithExdevFallback(bundleTrashPath, args.bundlePath);
     }
   }
 

@@ -14,6 +14,7 @@ import {
   type Req,
   type Res,
   type Result,
+  type VideoExportAudio,
   type VideoPreset,
   type VideoRange
 } from "@pwrsnap/shared";
@@ -103,13 +104,18 @@ export function startVideoDrag(
   captureId: string,
   format: "gif" | "mp4",
   preset: VideoPreset,
-  range?: VideoRange
+  range?: VideoRange,
+  /** Export spans for an edit with cuts; omitted for an uncut one. */
+  segments?: readonly VideoRange[],
+  audio?: VideoExportAudio
 ): void {
   window.pwrsnapApi?.startVideoDrag({
     captureId,
     format,
     preset,
-    ...(range !== undefined ? { range } : {})
+    ...(range !== undefined ? { range } : {}),
+    ...(segments !== undefined ? { segments: segments.map((s) => ({ ...s })) } : {}),
+    ...(audio !== undefined ? { audio } : {})
   });
 }
 

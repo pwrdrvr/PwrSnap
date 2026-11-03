@@ -68,6 +68,11 @@ export class BridgeEndpoint {
     this.options = options;
     this.unsubscribe.push(options.channel.onMessage((message) => this.handleMessage(message)));
     this.unsubscribe.push(options.channel.onClose(() => this.handleClosed()));
+    // onClose may fire synchronously when attaching to an already-dead pipe.
+    if (this.closed) {
+      this.detach();
+      return;
+    }
     options.channel.send({
       pwrsnapBridge: BRIDGE_PROTOCOL_VERSION,
       kind: "hello",
@@ -91,10 +96,10 @@ export class BridgeEndpoint {
    * rejecting, per the transport-failure convention.
    */
   waitForPeer(timeoutMs: number): Promise<Result<ProcessRole, PwrSnapError>> {
-    if (this.peer !== null) return Promise.resolve(ok(this.peer));
     if (this.closed) {
       return Promise.resolve(bridgeError("bridge_closed", "bridge closed before peer hello"));
     }
+    if (this.peer !== null) return Promise.resolve(ok(this.peer));
     return new Promise((resolve) => {
       const waiter = {
         resolve,
@@ -163,12 +168,16 @@ export class BridgeEndpoint {
   /** Detach from the channel and fail anything in flight. Idempotent. */
   close(): void {
     this.handleClosed();
+  }
+
+  private detach(): void {
     for (const detach of this.unsubscribe.splice(0)) detach();
   }
 
   private handleClosed(): void {
     if (this.closed) return;
     this.closed = true;
+    this.detach();
     const pending = [...this.pending.values()];
     this.pending.clear();
     for (const resolve of pending) {
@@ -233,6 +242,7 @@ export class BridgeEndpoint {
         cause instanceof Error ? cause.message : String(cause)
       );
     }
+    if (this.closed) return;
     const sent = this.options.channel.send({
       pwrsnapBridge: BRIDGE_PROTOCOL_VERSION,
       kind: "response",

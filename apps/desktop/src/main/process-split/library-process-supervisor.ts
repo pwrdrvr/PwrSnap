@@ -70,50 +70,61 @@ export function libraryProcessSpawnPlan(input: {
     : { command: input.execPath, args: [input.appPath, processRoleFlag("library")] };
 }
 
-let child: ChildProcess | null = null;
-let endpoint: BridgeEndpoint | null = null;
-let windowWatchdog: ReturnType<typeof setTimeout> | null = null;
+type LibraryProcessGeneration = {
+  child: ChildProcess;
+  endpoint: BridgeEndpoint;
+  windowWatchdogs: Set<ReturnType<typeof setTimeout>>;
+  detachClose: () => void;
+  retired: boolean;
+};
 
-function clearWindowWatchdog(): void {
-  if (windowWatchdog !== null) {
-    clearTimeout(windowWatchdog);
-    windowWatchdog = null;
-  }
+// Every delayed effect belongs to this spawn, never to mutable process-wide
+// child/endpoint slots. Retired generations cannot dispatch or arm timers.
+let current: LibraryProcessGeneration | null = null;
+
+function clearWindowWatchdogs(generation: LibraryProcessGeneration): void {
+  for (const timer of generation.windowWatchdogs) clearTimeout(timer);
+  generation.windowWatchdogs.clear();
 }
 
-/** Arm (or re-arm) the cold-launch watchdog for `verb`. Fires only if
+/** Arm the cold-launch watchdog for one `verb`. Fires only if
  *  the library doesn't signal window-ready in time — then it logs a
  *  loud, unmistakable line and KILLS the wedged library so the user can
  *  simply re-open (the next intent respawns a fresh process) instead of
  *  being stuck with a black window that needs a force-quit. */
-function armWindowWatchdog(verb: string): void {
-  clearWindowWatchdog();
-  windowWatchdog = setTimeout(() => {
-    windowWatchdog = null;
+function armWindowWatchdog(generation: LibraryProcessGeneration, verb: string): () => void {
+  const timer = setTimeout(() => {
+    if (current !== generation || !generation.windowWatchdogs.delete(timer)) return;
     log.error(
       "library window watchdog: no window-ready signal within budget — " +
         "library main thread appears wedged; killing it for a clean respawn",
-      { verb, timeoutMs: LIBRARY_WINDOW_WATCHDOG_MS, pid: child?.pid }
+      { verb, timeoutMs: LIBRARY_WINDOW_WATCHDOG_MS, pid: generation.child.pid }
     );
-    killWedgedLibrary();
+    retireGeneration(generation, true);
   }, LIBRARY_WINDOW_WATCHDOG_MS);
-  windowWatchdog.unref?.();
+  generation.windowWatchdogs.add(timer);
+  timer.unref?.();
+  // A failed verb owes no window. Remove only its own obligation: a
+  // concurrent successful verb still needs readiness within its own budget.
+  return () => {
+    clearTimeout(timer);
+    generation.windowWatchdogs.delete(timer);
+  };
 }
 
-/** Kill the (presumed-wedged) library + forget it, so the next
- *  window-verb forward respawns a fresh process. The agent stays up. */
-function killWedgedLibrary(): void {
-  const spawned = child;
-  const ep = endpoint;
-  child = null;
-  endpoint = null;
-  ep?.close();
-  if (spawned !== null && spawned.exitCode === null) {
-    spawned.kill();
-  }
+/** Terminal for a spawn: settle its bridge and timers before killing it.
+ * The next user intent may spawn again; in-flight commands are never retried. */
+function retireGeneration(generation: LibraryProcessGeneration, kill: boolean): void {
+  if (generation.retired) return;
+  generation.retired = true;
+  if (current === generation) current = null;
+  clearWindowWatchdogs(generation);
+  generation.detachClose();
+  generation.endpoint.close();
+  if (kill && generation.child.exitCode === null) generation.child.kill();
 }
 
-function spawnLibraryProcess(): BridgeEndpoint {
+function spawnLibraryProcess(): LibraryProcessGeneration {
   const plan = libraryProcessSpawnPlan({
     execPath: process.execPath,
     appPath: app.getAppPath(),
@@ -129,18 +140,21 @@ function spawnLibraryProcess(): BridgeEndpoint {
     stdio: ["ignore", "inherit", "inherit", "ipc"],
     env
   });
+  const channel = channelForChildProcess(spawned);
+  let generation: LibraryProcessGeneration;
   const ep = new BridgeEndpoint({
     role: "agent",
-    channel: channelForChildProcess(spawned),
+    channel,
     dispatchLocal: (name, req, context) =>
       bus.dispatch(name as never, req as never, context),
     onRemoteEvent: (channel, payload) => {
+      if (current !== generation) return;
       // Internal control signal — the library's window is up; disarm the
       // cold-launch watchdog. Not a renderer event: don't fan it out to
       // the agent's windows.
       if (channel === LIBRARY_WINDOW_READY_CHANNEL) {
         log.info("library window-ready signal received — disarming watchdog");
-        clearWindowWatchdog();
+        clearWindowWatchdogs(generation);
         return;
       }
       deliverRelayedProcessEvent(
@@ -154,39 +168,46 @@ function spawnLibraryProcess(): BridgeEndpoint {
     },
     warn: (message, meta) => log.warn(message, meta)
   });
-  const forget = (): void => {
-    if (child === spawned) {
-      child = null;
-      endpoint = null;
-      // The process this watchdog was guarding is gone — don't let a
-      // stale timer fire against a dead/replaced child.
-      clearWindowWatchdog();
-    }
-    ep.close();
+  generation = {
+    child: spawned,
+    endpoint: ep,
+    windowWatchdogs: new Set(),
+    detachClose: () => undefined,
+    retired: false
   };
+  current = generation;
   spawned.on("exit", (code, signal) => {
     log.info("library process exited", { code, signal });
-    forget();
+    retireGeneration(generation, false);
   });
   spawned.on("error", (cause) => {
     log.error("library process spawn error", {
       message: cause instanceof Error ? cause.message : String(cause)
     });
-    forget();
+    retireGeneration(generation, true);
   });
-  child = spawned;
-  endpoint = ep;
-  return ep;
+  // Disconnect can precede exit indefinitely. A live child with a dead pipe
+  // is unusable and must not block the next explicit ensure-on-demand.
+  generation.detachClose = channel.onClose(() => retireGeneration(generation, true));
+  return generation;
 }
 
 /** Spawn the library if it isn't running; idempotent. */
 export function ensureLibraryProcess(): BridgeEndpoint {
-  if (child !== null && endpoint !== null) return endpoint;
-  return spawnLibraryProcess();
+  return (current ?? spawnLibraryProcess()).endpoint;
 }
 
 export function isLibraryProcessRunning(): boolean {
-  return child !== null;
+  return current !== null;
+}
+
+async function waitForGeneration(generation: LibraryProcessGeneration): Promise<Result<unknown, PwrSnapError>> {
+  const ready = await generation.endpoint.waitForPeer(LIBRARY_READY_TIMEOUT_MS);
+  if (!ready.ok) {
+    retireGeneration(generation, true);
+    return ready;
+  }
+  return ready;
 }
 
 /**
@@ -200,24 +221,28 @@ export async function dispatchToLibraryProcess(
 ): Promise<Result<unknown, PwrSnapError>> {
   // Name the trigger whenever a dispatch is what pulls the process up
   // — a spawn the user didn't ask for traces back to one log line.
-  if (child === null) {
+  if (current === null) {
     log.info("library process spawn triggered by command", { name });
   }
-  const ep = ensureLibraryProcess();
-  const ready = await ep.waitForPeer(LIBRARY_READY_TIMEOUT_MS);
+  const generation = current ?? spawnLibraryProcess();
+  const ready = await waitForGeneration(generation);
   // DIAG (cold-launch race): brackets the agent→library round trip so a
   // hang shows up as "sent, never returned" vs "peer never ready".
   log.info("dispatchToLibraryProcess: peer ready", { name, ok: ready.ok });
   if (!ready.ok) return ready;
+  if (current !== generation) {
+    return err({ kind: "unknown", code: "bridge_closed", message: "library generation retired before dispatch" });
+  }
   // Cold-launch watchdog for window-spawning verbs: armed AFTER the boot
   // gate (waitForPeer already covers boot) and BEFORE the dispatch await,
   // so an existing-window's synchronous window-ready signal — which can
   // arrive during the await — disarms it instead of racing a re-arm.
   // A new window disarms later, on its did-finish-load.
-  if (isLibraryWindowSpawnVerb(name)) {
-    armWindowWatchdog(name);
-  }
-  const result = await ep.dispatchRemote(name, req, context);
+  const cancelWatchdog = isLibraryWindowSpawnVerb(name)
+    ? armWindowWatchdog(generation, name)
+    : undefined;
+  const result = await generation.endpoint.dispatchRemote(name, req, context);
+  if (!result.ok) cancelWatchdog?.();
   log.info("dispatchToLibraryProcess: remote returned", {
     name,
     ok: result.ok,
@@ -235,41 +260,33 @@ export async function dispatchToRunningLibraryProcess(
   req: unknown,
   context: CommandDispatchOptions
 ): Promise<Result<unknown, PwrSnapError>> {
-  const ep = endpoint;
-  if (child === null || ep === null) {
+  const generation = current;
+  if (generation === null) {
     return err({
       kind: "unknown",
       code: "bridge_unavailable",
       message: `no running library process; cannot dispatch ${name}`
     });
   }
-  const ready = await ep.waitForPeer(LIBRARY_READY_TIMEOUT_MS);
+  const ready = await waitForGeneration(generation);
   if (!ready.ok) return ready;
-  return ep.dispatchRemote(name, req, context);
+  return generation.endpoint.dispatchRemote(name, req, context);
 }
 
 /** Renderer-event relay toward the library. Deliberately does NOT
  *  spawn: broadcasting a capture change to a closed library is
  *  meaningless — its renderers re-read fresh state on next launch. */
 export function forwardRendererEventToLibrary(channel: string, payload: unknown): void {
-  endpoint?.emitEvent(channel, payload);
+  current?.endpoint.emitEvent(channel, payload);
 }
 
 /** Cancellation relay toward the library (no spawn — a process that
  *  isn't running has nothing to cancel). */
 export function forwardCancellationToLibrary(key: string): void {
-  endpoint?.cancelRemote(key);
+  current?.endpoint.cancelRemote(key);
 }
 
 /** Agent quit path: take the library down with us. */
 export function stopLibraryProcess(): void {
-  clearWindowWatchdog();
-  const spawned = child;
-  const ep = endpoint;
-  child = null;
-  endpoint = null;
-  ep?.close();
-  if (spawned !== null && spawned.exitCode === null) {
-    spawned.kill();
-  }
+  if (current !== null) retireGeneration(current, true);
 }

@@ -29,8 +29,8 @@ let pipeAlive = false;
  * `bridge_unavailable`.
  */
 export function connectAgentBridge(): boolean {
-  if (endpoint !== null) return true;
-  if (typeof process.send !== "function") {
+  if (endpoint !== null) return pipeAlive;
+  if (typeof process.send !== "function" || process.connected !== true) {
     log.warn("no parent IPC pipe — library running standalone, agent commands unavailable");
     return false;
   }

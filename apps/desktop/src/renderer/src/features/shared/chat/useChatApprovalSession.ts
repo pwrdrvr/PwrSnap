@@ -82,7 +82,10 @@ export function useChatApprovalSession(
   const submitRef = useRef(submit);
   submitRef.current = submit;
   const mountedRef = useRef(true);
-  const submittingIdentityRef = useRef<string | null>(null);
+  // Submission ownership survives navigation. Several threads may be waiting
+  // for IPC/terminal acknowledgement at once; the visible state is a projection
+  // of the exact request's phase, not the owner of that phase.
+  const submissionStatesRef = useRef<Map<string, ApprovalSessionState>>(new Map());
   // A terminal event can arrive before the accompanying threadUpdated view.
   // Remember it so switching away and back cannot replay that stale detail.
   const terminalIdentityKeysRef = useRef<Set<string>>(new Set());
@@ -110,7 +113,7 @@ export function useChatApprovalSession(
         !sameApproval(current.request, pendingApproval)
       ) {
         return pendingApproval.threadId === activeThreadId
-          ? {
+          ? submissionStatesRef.current.get(identityKey(pendingApproval)) ?? {
               request: pendingApproval,
               phase: "pending",
               errorMessage: null,
@@ -140,7 +143,7 @@ export function useChatApprovalSession(
       setState((current) =>
         sameApproval(current.request, request)
           ? current
-          : {
+          : submissionStatesRef.current.get(identityKey(request)) ?? {
               request,
               phase: "pending",
               errorMessage: null,
@@ -155,8 +158,7 @@ export function useChatApprovalSession(
       setState((current) =>
         sameApproval(current.request, identity) ? INITIAL_STATE : current
       );
-      const key = identityKey(identity);
-      if (submittingIdentityRef.current === key) submittingIdentityRef.current = null;
+      submissionStatesRef.current.delete(identityKey(identity));
     };
 
     const unsubs = [
@@ -175,33 +177,40 @@ export function useChatApprovalSession(
     const request = stateRef.current.request;
     if (request === null) return;
     const key = identityKey(request);
-    if (submittingIdentityRef.current === key) return;
+    if (submissionStatesRef.current.get(key)?.phase === "submitting") return;
 
-    submittingIdentityRef.current = key;
+    const submission: ApprovalSessionState = {
+      request,
+      phase: "submitting",
+      errorMessage: null,
+      retryDecision: decision
+    };
+    submissionStatesRef.current.set(key, submission);
     setState((current) =>
-      sameApproval(current.request, request)
-        ? {
-            request: current.request,
-            phase: "submitting",
-            errorMessage: null,
-            retryDecision: decision
-          }
-        : current
+      sameApproval(current.request, request) ? submission : current
     );
+
+    const markFailure = (): void => {
+      if (!mountedRef.current || submissionStatesRef.current.get(key) !== submission) return;
+      const failed: ApprovalSessionState = {
+        ...submission,
+        phase: "pending",
+        errorMessage:
+          "PwrSnap couldn’t send your response. The request is still pending. Try again, or send Deny instead."
+      };
+      submissionStatesRef.current.set(key, failed);
+      setState((current) => sameApproval(current.request, request) ? failed : current);
+    };
 
     try {
       const result = await submitRef.current(request, decision);
-      if (!result.ok && mountedRef.current) {
-        markFailure(request, decision, setState);
-      }
+      if (!result.ok) markFailure();
       // A successful Result only acknowledges command handling. The broker's
       // resolved/superseded event clears the request in this and other windows.
     } catch {
       // Never surface thrown transport details (which may carry tool payloads,
       // paths, or stack data). The exact request remains visible and retryable.
-      if (mountedRef.current) markFailure(request, decision, setState);
-    } finally {
-      if (submittingIdentityRef.current === key) submittingIdentityRef.current = null;
+      markFailure();
     }
   }, []);
 
@@ -212,24 +221,6 @@ export function useChatApprovalSession(
     retryDecision: state.retryDecision,
     resolve
   };
-}
-
-function markFailure(
-  request: ChatApprovalRequest,
-  decision: ChatApprovalDecision,
-  setState: React.Dispatch<React.SetStateAction<ApprovalSessionState>>
-): void {
-  setState((current) =>
-    sameApproval(current.request, request)
-      ? {
-          request: current.request,
-          phase: "pending",
-          errorMessage:
-            "PwrSnap couldn’t send your response. The request is still pending. Try again, or send Deny instead.",
-          retryDecision: decision
-        }
-      : current
-  );
 }
 
 function sameApproval(

@@ -132,6 +132,69 @@ async function startPartial(
 }
 
 describe("PwrSnapChatSessionController interrupt lifecycle", () => {
+  test.each(["resolve", "reject"] as const)(
+    "a previous turn's pending Stop cannot claim the next turn's Stop (%s)",
+    async (outcome) => {
+      const { backend, events, controller } = setup();
+      await startPartial(controller, backend);
+      const cancellation = deferred<void>();
+      const nextCancellation = deferred<void>();
+      backend.interruptTurn.mockReturnValueOnce(cancellation.promise);
+      backend.interruptTurn.mockReturnValueOnce(nextCancellation.promise);
+      const oldStop = controller.interrupt("t1");
+      backend.emit({ kind: "turn_completed", threadId: "t1", turnId: "turn-1", status: "completed" });
+      await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
+        type: "thread_updated", thread: expect.objectContaining({ status: { kind: "idle" } })
+      })));
+      vi.spyOn(backend, "startTurn").mockResolvedValueOnce({ turnId: "turn-2" });
+      await controller.sendMessage({ threadId: "t1", text: "next question" });
+      const nextStop = controller.interrupt("t1");
+      const requests = backend.interruptTurn.mock.calls.length;
+      if (outcome === "resolve") cancellation.resolve();
+      else cancellation.reject(new Error("old cancellation failed"));
+      await oldStop;
+      // Retiring A must not release B's single-flight ownership.
+      const repeatedNextStop = controller.interrupt("t1");
+      nextCancellation.resolve();
+      await Promise.all([nextStop, repeatedNextStop]);
+
+      expect(requests).toBe(2);
+      expect(repeatedNextStop).toBe(nextStop);
+      expect(backend.interruptTurn).toHaveBeenCalledTimes(2);
+      expect(events.filter((event) => event.type === "turn_interrupted")).toEqual([
+        { type: "turn_interrupted", threadId: "t1", turnId: "turn-2" }
+      ]);
+    }
+  );
+
+  test("acknowledged Stop wins a later completion and remains idempotent", async () => {
+    const { backend, events, controller } = setup();
+    await startPartial(controller, backend);
+    await controller.interrupt("t1");
+    backend.emit({ kind: "turn_completed", threadId: "t1", turnId: "turn-1", status: "completed" });
+    await controller.interrupt("t1");
+    expect(backend.interruptTurn).toHaveBeenCalledTimes(1);
+    expect(events.filter((event) => event.type === "turn_interrupted")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "message_committed" && event.message.role === "assistant"))
+      .toHaveLength(1);
+  });
+
+  test("retryable backend errors do not suppress a required cancellation", async () => {
+    const { backend, controller } = setup();
+    await startPartial(controller, backend);
+    backend.emit({ kind: "error", threadId: "t1", turnId: "turn-1", message: "retrying", willRetry: true });
+    await controller.interrupt("t1");
+    expect(backend.interruptTurn).toHaveBeenCalledTimes(1);
+  });
+
+  test("a reconstructed controller requires acknowledgement to quiesce an approval", async () => {
+    const { backend, controller } = setup();
+    backend.interruptTurn.mockRejectedValueOnce(new Error("backend unavailable"));
+    await expect(controller.interruptAcknowledged("t1")).rejects.toThrow("backend unavailable");
+    await expect(controller.interruptAcknowledged("t1")).resolves.toBeUndefined();
+    expect(backend.interruptTurn).toHaveBeenCalledTimes(2);
+  });
+
   test("idle interrupt is a no-op and never calls the backend", async () => {
     const { backend, controller } = setup();
     await controller.interrupt("t1");

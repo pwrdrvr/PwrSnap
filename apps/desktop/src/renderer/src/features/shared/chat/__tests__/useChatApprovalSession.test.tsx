@@ -163,6 +163,64 @@ function deferred<T>(): {
 }
 
 describe("useChatApprovalSession", () => {
+  test("thread switching retains each overlapping submission until its own terminal event", async () => {
+    const requestB = { ...REQUEST_B, threadId: "thread-2" };
+    const responseA = deferred<Result<void, PwrSnapError>>();
+    const responseB = deferred<Result<void, PwrSnapError>>();
+    const submit = vi.fn<Submit>((request) =>
+      request.threadId === REQUEST_A.threadId ? responseA.promise : responseB.promise
+    );
+    await mount(<Harness pendingApproval={REQUEST_A} submit={submit} />);
+    await act(async () => click("approve"));
+    await act(async () => root?.render(
+      <Harness activeThreadId={requestB.threadId} pendingApproval={requestB} submit={submit} />
+    ));
+    await act(async () => click("deny"));
+    await act(async () => root?.render(<Harness pendingApproval={REQUEST_A} submit={submit} />));
+
+    expect(text("request")).toBe(REQUEST_A.approvalId);
+    expect(text("phase")).toBe("submitting");
+    await act(async () => click("deny"));
+    expect(submit).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      responseB.resolve({ ok: false, error: { kind: "ai", code: "failed", message: "private B failure" } });
+      responseA.resolve({ ok: true, value: undefined });
+      await Promise.all([responseA.promise, responseB.promise]);
+    });
+    expect(text("phase")).toBe("submitting");
+    expect(text("error")).toBe("");
+    await act(async () => {
+      emit(EVENT_CHANNELS.libraryChatApprovalResolved, { ...REQUEST_A, decision: "approve" });
+    });
+    expect(text("request")).toBe("none");
+    await act(async () => root?.render(
+      <Harness activeThreadId={requestB.threadId} pendingApproval={requestB} submit={submit} />
+    ));
+    expect(text("phase")).toBe("pending");
+    expect(text("error")).toContain("request is still pending");
+    expect(text("error")).not.toContain("private B failure");
+    await act(async () => click("retry"));
+    expect(submit).toHaveBeenLastCalledWith(requestB, "deny");
+  });
+
+  test("offscreen supersession prevents a late submission failure from reviving replay", async () => {
+    const response = deferred<Result<void, PwrSnapError>>();
+    const submit = vi.fn<Submit>(() => response.promise);
+    await mount(<Harness pendingApproval={REQUEST_A} submit={submit} />);
+    await act(async () => click("approve"));
+    await act(async () => root?.render(<Harness activeThreadId="thread-2" submit={submit} />));
+    await act(async () => {
+      emit(EVENT_CHANNELS.libraryChatApprovalSuperseded, { ...REQUEST_A, reason: "controller_disposed" });
+      response.resolve({ ok: false, error: { kind: "ai", code: "closed", message: "old failure" } });
+      await response.promise;
+    });
+    await act(async () => root?.render(<Harness pendingApproval={REQUEST_A} submit={submit} />));
+    expect(text("request")).toBe("none");
+    expect(text("error")).toBe("");
+    expect(submit).toHaveBeenCalledTimes(1);
+  });
+
   test("rehydrates an exact pending request after unmount/remount without denying it", async () => {
     const submit = vi.fn<Submit>();
     await mount(<Harness pendingApproval={REQUEST_A} submit={submit} />);

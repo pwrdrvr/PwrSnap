@@ -142,7 +142,9 @@ export class PwrSnapChatSessionController<
   private readonly state: ChatInterruptState;
   private readonly sessionBackend: SessionBackend;
   private readonly hostBroadcast: ChatBroadcast;
-  private readonly interrupts = new Map<string, Promise<void>>();
+  // Single-flight belongs to an exact turn. A completed turn's backend Stop
+  // can still be settling when another window starts and stops the next turn.
+  private readonly interrupts = new Map<string, { turnId: string; result: Promise<void> }>();
   private readonly interruptedBroadcasts: Set<string>;
 
   constructor(deps: ChatThreadControllerDeps<TSettings>) {
@@ -169,11 +171,10 @@ export class PwrSnapChatSessionController<
   }
 
   override interrupt(threadId: string): Promise<void> {
-    const existing = this.interrupts.get(threadId);
-    if (existing !== undefined) return existing;
-
     const turnId = this.state.activeTurn(threadId);
     if (turnId === null) return Promise.resolve();
+    const existing = this.interrupts.get(threadId);
+    if (existing?.turnId === turnId) return existing.result;
     const knownTerminal = this.state.terminalStatus(threadId, turnId);
     if (knownTerminal !== null) {
       this.emitBackendInterruption(threadId, turnId, knownTerminal);
@@ -208,10 +209,10 @@ export class PwrSnapChatSessionController<
       }
     })();
 
-    this.interrupts.set(threadId, running);
+    this.interrupts.set(threadId, { turnId, result: running });
     void running
       .finally(() => {
-        if (this.interrupts.get(threadId) === running) {
+        if (this.interrupts.get(threadId)?.result === running) {
           this.interrupts.delete(threadId);
         }
       })

@@ -6,6 +6,7 @@
 // can still install while that happens (see `supersedingDownload` in
 // auto-updater.ts).
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { EventEmitter } from "node:events";
 
 type Handler = (...args: unknown[]) => void;
 
@@ -721,5 +722,117 @@ describe("an install that lands past the recorded version", () => {
     expect(updater.readAppUpdateStatus()).toMatchObject({
       status: "install-failed", version: "1.0.1", currentVersion: "1.0.0"
     });
+  });
+});
+
+describe("explicit Sizzle cancellation of a native update quit", () => {
+  beforeEach(() => setPlatform("darwin"));
+
+  async function nativeClose() {
+    const barrier = await import("../sizzle/sizzle-close-barrier");
+    const events = new EventEmitter();
+    const contentsEvents = new EventEmitter();
+    let destroyed = false;
+    const send = vi.fn();
+    const window = {
+      id: 991,
+      isDestroyed: () => destroyed,
+      on: (event: string, handler: Handler) => events.on(event, handler),
+      webContents: {
+        isDestroyed: () => false,
+        send,
+        on: (event: string, handler: Handler) => contentsEvents.on(event, handler)
+      },
+      close: () => {
+        const event = { preventDefault: vi.fn() };
+        events.emit("close", event);
+        if (!event.preventDefault.mock.calls.length) {
+          destroyed = true;
+          events.emit("closed");
+        }
+      }
+    };
+    barrier.wireSizzleCloseBarrier(window as unknown as import("electron").BrowserWindow);
+    barrier.markSizzleCloseRendererReady(window.id);
+    // Electron's native updater closes windows BEFORE app.before-quit. Do
+    // not set quitDeferred through installSizzleQuitBarrier in this fixture.
+    mocks.autoUpdater.quitAndInstall.mockImplementation(() => window.close());
+    return {
+      barrier,
+      send,
+      cancel: (requestId: number) => barrier.completeSizzleCloseRequest(window.id, requestId, "cancel"),
+      finish: (requestId: number) => barrier.completeSizzleCloseRequest(window.id, requestId, "close"),
+      isDestroyed: () => destroyed
+    };
+  }
+
+  test("a canceled native window close permits a later Restart after reopening Settings", async () => {
+    const updater = await bootWithDownloaded();
+    const close = await nativeClose();
+    await updater.installDownloadedAppUpdate();
+    expect(close.send).toHaveBeenCalledWith(expect.any(String), { requestId: 1 });
+    expect(close.barrier.isSizzleQuitDeferred()).toBe(false);
+    expect(close.cancel(1)).toBe(true);
+    // A Settings mount only reads/reconciles the status; it cannot repair a
+    // native install owner whose quit was explicitly canceled.
+    expect(updater.readAppUpdateStatus()).toEqual({ status: "downloaded", version: "1.0.1" });
+    await updater.installDownloadedAppUpdate();
+    expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledTimes(2);
+    expect(close.send).toHaveBeenLastCalledWith(expect.any(String), { requestId: 2 });
+  });
+
+  test("a pending save and its successful close retain the native install owner", async () => {
+    const updater = await bootWithDownloaded();
+    const close = await nativeClose();
+    const installing = updater.installDownloadedAppUpdate();
+    await installing;
+    expect(updater.installDownloadedAppUpdate()).toBe(installing);
+    expect(close.isDestroyed()).toBe(false);
+    expect(close.finish(1)).toBe(true);
+    expect(close.isDestroyed()).toBe(true);
+    expect(updater.installDownloadedAppUpdate()).toBe(installing);
+    expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledOnce();
+  });
+
+  test("signals only the matching native attempt, ignoring stale and duplicate cancel responses", async () => {
+    const updater = await bootWithDownloaded();
+    const close = await nativeClose();
+    const firstAbandoned = vi.fn();
+    updater.setAppUpdateInstallHandler(async (install) => install(firstAbandoned));
+    await updater.installDownloadedAppUpdate();
+    expect(close.cancel(1)).toBe(true);
+    const secondAbandoned = vi.fn();
+    updater.setAppUpdateInstallHandler(async (install) => install(secondAbandoned));
+    const second = updater.installDownloadedAppUpdate();
+    await second;
+    expect(close.cancel(1)).toBe(false);
+    expect(updater.installDownloadedAppUpdate()).toBe(second);
+    expect(firstAbandoned).toHaveBeenCalledOnce();
+    expect(secondAbandoned).not.toHaveBeenCalled();
+    expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledTimes(2);
+    expect(close.cancel(2)).toBe(true);
+    expect(close.cancel(2)).toBe(false);
+    expect(secondAbandoned).toHaveBeenCalledOnce();
+  });
+
+  test("disposal retires the close-cancel observer without notifying the old diagnostics attempt", async () => {
+    const updater = await bootWithDownloaded();
+    const close = await nativeClose();
+    const abandoned = vi.fn();
+    updater.setAppUpdateInstallHandler(async (install) => install(abandoned));
+    await updater.installDownloadedAppUpdate();
+    updater.disposeAutoUpdater();
+    expect(close.cancel(1)).toBe(true);
+    expect(abandoned).not.toHaveBeenCalled();
+  });
+
+  test("a synchronous native close cancellation returns an error and permits retry", async () => {
+    const updater = await bootWithDownloaded();
+    const close = await nativeClose();
+    const native = mocks.autoUpdater.quitAndInstall.getMockImplementation()!;
+    mocks.autoUpdater.quitAndInstall.mockImplementationOnce(() => { native(); close.cancel(1); });
+    await expect(updater.installDownloadedAppUpdate()).resolves.toMatchObject({ status: "error" });
+    await expect(updater.installDownloadedAppUpdate()).resolves.toEqual({ status: "restarting" });
+    expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledTimes(2);
   });
 });

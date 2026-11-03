@@ -20,6 +20,7 @@
 
 import { app, autoUpdater as electronNativeUpdater } from "electron";
 import { waitForUpdateCheckSlot } from "./update-check-wait";
+import { onSizzleCloseCancelled } from "./sizzle/sizzle-close-barrier";
 import electronUpdater from "electron-updater";
 import type {
   AppUpdateCancelResult,
@@ -2049,8 +2050,8 @@ let installWithQuitFlush = async (
 
 /** Installation is independent of discovery/transfer and their UI projection.
  * One request owns retry preparation and the deferred quit callback. A successful
- * handoff stays latched until native failure or disposal: another click cannot
- * start a second quit while the native updater still owns this attempt. */
+ * handoff stays latched until native failure, explicit quit cancellation or
+ * disposal: another click cannot start a second quit while this attempt is live. */
 type InstallRequest = {
   generation: number;
   phase: "preparing" | "installing" | "handed-off";
@@ -2201,7 +2202,15 @@ async function performAppUpdateInstall(
       // install. Keep observing after return: quitAndInstall can report its
       // failure asynchronously, and a normal return does not confirm a quit.
       request.phase = "installing";
-      request.stopObserving = () => updater.removeListener("error", failNativeInstall);
+      // Native update quit closes windows before app.before-quit, so the
+      // ordinary app-quit cancellation signal cannot see this close barrier.
+      const stopCloseCancellation = onSizzleCloseCancelled(() => {
+        failNativeInstall(new Error("Update installation canceled because quitting was canceled."));
+      });
+      request.stopObserving = () => {
+        updater.removeListener("error", failNativeInstall);
+        stopCloseCancellation();
+      };
       updater.on("error", failNativeInstall);
       try {
         if (process.platform === "win32") {

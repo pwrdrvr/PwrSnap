@@ -180,6 +180,38 @@ describe("production recording quit barrier", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it.each(["sync", "late"] as const)(
+    "keeps the full finalization budget after a %s native install failure leaves the app running",
+    async (when) => {
+      vi.useFakeTimers();
+      const diagnostics = createDiagnosticsShutdown({
+        stop: () => undefined, resumeQuit: vi.fn(), warn: vi.fn()
+      });
+      let reportFailure: (() => void) | undefined;
+      await diagnostics.quitAndInstall((onInstallFailed) => {
+        reportFailure = onInstallFailed;
+        if (when === "sync") reportFailure?.();
+      });
+      if (when === "late") {
+        await vi.advanceTimersByTimeAsync(1_000);
+        reportFailure?.();
+      }
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(diagnostics.beforeQuit({ preventDefault: vi.fn() })).toBe(false);
+      const f = fixture("processing", { diagnostics });
+      expect(f.willQuit().preventDefault).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(14_999);
+      expect(f.quit).not.toHaveBeenCalled();
+      expect(f.closeDatabase).not.toHaveBeenCalled();
+      f.setPhase("ready");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(f.quit).toHaveBeenCalledOnce();
+      expect(f.warn).not.toHaveBeenCalled();
+      expect(f.listeners.size).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  );
+
   it.each([0, 5_000])("spends only the remaining %i ms and ignores late finalization", async (remainingMs) => {
     vi.useFakeTimers();
     const f = fixture("processing", { remainingMs });

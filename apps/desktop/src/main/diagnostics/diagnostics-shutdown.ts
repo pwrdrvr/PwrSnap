@@ -112,16 +112,29 @@ export function createDiagnosticsShutdown(options: {
       }
       return true;
     },
-    quitAndInstall(install: () => void): Promise<void> {
+    quitAndInstall(install: (onInstallFailed?: () => void) => void): Promise<void> {
+      if (installing !== null) return installing;
+      // The updater can replace/dispose a completed native handoff without
+      // reporting failure. A later install owns a new clock; only the first
+      // takeover shares elapsed time with an already pending normal quit.
+      if (quitAttempt > 0) startedAt = undefined;
       updateOwnsQuit = true;
       // Permanently revoke a normal retry already queued before takeover.
       // A failed install releases update ownership before that macrotask runs.
-      quitAttempt += 1;
-      // Claim ownership before awaiting, including takeover of a normal quit.
-      installing ??= flush().then(install).catch((error: unknown) => {
-        // Abandon only this quit attempt's clock. Diagnostics are already
-        // stopped (or timed out), so retain their shared completion state.
+      const attempt = ++quitAttempt;
+      let abandoned = false;
+      const abandon = (): void => {
+        if (abandoned || attempt !== quitAttempt) return;
+        abandoned = true;
+        // Native install may emit an error after returning normally. Abandon
+        // only its quit clock, retaining completed diagnostics and revocation
+        // of the earlier normal retry. Duplicate/stale signals cannot reset
+        // a later normal or update quit's budget.
         startedAt = undefined;
+      };
+      // Claim ownership before awaiting, including takeover of a normal quit.
+      installing = flush().then(() => install(abandon)).catch((error: unknown) => {
+        abandon();
         throw error;
       }).finally(() => {
         updateOwnsQuit = false;

@@ -131,6 +131,39 @@ describe.each(["library", "sizzle"] as const)("%s turn view ownership", (surface
     return container!.querySelector<HTMLButtonElement>('[data-testid="composer-stop"]');
   }
 
+  test.each(["failed", "complete"] as const)(
+    "a foreground %s commit cannot consume another thread's unassigned interruption",
+    async (foregroundStatus) => {
+      const { emit, select } = await mount();
+      await select("b");
+      await act(async () => {
+        // A has no delta/message association. Its terminal event must stay
+        // available for A's later assistant commit, regardless of selection.
+        emit(channels.interrupted, { threadId: "a", turnId: "turn-a", reason: "user_interrupted" });
+        emit(channels.updated, { thread: thread("a", null) });
+        // Turn startup failure commits have no turnId; the foreground thread
+        // has no active turn to correlate either.
+        emit(channels.commit, { threadId: "b", message: {
+          id: "startup-result", role: "assistant", content: [{ kind: "text", text: "foreground result" }],
+          status: foregroundStatus, createdAt: "2026-11-01T00:00:00.000Z"
+        } });
+      });
+      const foregroundObserved = container!.querySelector('[data-testid="message-list-msg-startup-result"]')
+        ?.getAttribute("data-status");
+      await select("a");
+      await act(async () => emit(channels.commit, { threadId: "a", message: {
+        id: "interrupted-result", role: "assistant", content: [{ kind: "text", text: "A result" }],
+        status: "complete", createdAt: "2026-11-01T00:00:00.000Z"
+      } }));
+      const interruptedObserved = container!.querySelector('[data-testid="message-list-msg-interrupted-result"]')
+        ?.getAttribute("data-status");
+      expect({ foregroundObserved, interruptedObserved }).toEqual({
+        foregroundObserved: foregroundStatus,
+        interruptedObserved: "interrupted"
+      });
+    }
+  );
+
   test.each([
     ["delta", "resolve"], ["delta", "reject"],
     ["tool", "resolve"], ["tool", "reject"]

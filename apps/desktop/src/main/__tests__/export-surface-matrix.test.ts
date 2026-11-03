@@ -513,6 +513,18 @@ const VARIANTS: readonly Variant[] = [
 // ---------------------------------------------------------------------
 
 describe("export-surface-matrix: every surface composites the v2 layer set", () => {
+  test("prepareDrag renders an annotated cold bundle without populating source.png", async () => {
+    const { getCacheSourcePath } = await import("../persistence/paths");
+    const { access } = await import("node:fs/promises");
+    const id = "cold-drag";
+    await seedV2Capture({ id, annotated: true });
+    const sourcePath = getCacheSourcePath(id);
+    await expect(access(sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
+    const surface = SURFACES.find((entry) => entry.name === "capture:prepareDrag")!;
+    expect(await pngHasRedInOverlayRegion(await surface.run(id))).toBe(true);
+    await expect(access(sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   for (const surface of SURFACES) {
     for (const variant of VARIANTS) {
       if (surface.appliesTo !== undefined && !surface.appliesTo(variant.name)) {

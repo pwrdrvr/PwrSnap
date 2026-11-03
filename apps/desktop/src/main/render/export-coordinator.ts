@@ -137,9 +137,6 @@ export async function exportCapture(
         : (
             await renderViaCoordinator({
               captureId: record.id,
-              srcPath: await ensureEffectiveSrcPath(record),
-              imageWidthPx: record.width_px,
-              imageHeightPx: record.height_px,
               width: Math.min(record.width_px, dimensions.width),
               format: "png"
             })

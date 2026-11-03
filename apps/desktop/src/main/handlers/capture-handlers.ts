@@ -99,7 +99,6 @@ import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
 import { findMainLibraryWindow, scheduleDockReclaim } from "../window";
 import { maybeEnqueueCaptureEnrichment } from "./codex-handlers";
 import { getCaptureById } from "../persistence/captures-repo";
-import { ensureEffectiveSrcPath } from "../persistence/source-store";
 import { persistCaptureFromTempV2 } from "../persistence/bundle-store";
 import { ingestSyntheticCapture } from "../capture/synthetic-ingest";
 import {
@@ -1235,9 +1234,6 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       const presetFile = await renderPresetFile(record, req.preset, strategy);
       const icon = await renderViaCoordinator({
         captureId: record.id,
-        srcPath: await ensureEffectiveSrcPath(record),
-        imageWidthPx: record.width_px,
-        imageHeightPx: record.height_px,
         width: Math.min(DRAG_ICON_WIDTH, record.width_px),
         format: "png"
       });

@@ -55,9 +55,6 @@ export async function resolveImagePresetFile(
 
   const result = await renderViaCoordinator({
     captureId: record.id,
-    srcPath: await ensureEffectiveSrcPath(record),
-    imageWidthPx: record.width_px,
-    imageHeightPx: record.height_px,
     width: targetWidth,
     format: "png"
   });

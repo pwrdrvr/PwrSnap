@@ -82,6 +82,14 @@ beforeEach(async () => {
 });
 
 describe("exportCapture", () => {
+  test("composite export does not depend on source-file materialization", async () => {
+    mocks.ensureEffectiveSrcPath.mockRejectedValue(new Error("source cache unavailable"));
+    const result = await exportCapture({ captureId: "cap_1", variant: "composite", format: "png" });
+    expect((await sharp(result.path).metadata()).format).toBe("png");
+    expect(mocks.ensureEffectiveSrcPath).not.toHaveBeenCalled();
+    expect(mocks.renderViaCoordinator).toHaveBeenCalledTimes(1);
+  });
+
   test("exports the edited composite to resized JPEG and reuses its cache", async () => {
     const first = await exportCapture({
       captureId: "cap_1",

@@ -114,6 +114,22 @@ describe("installTerminalSignalShutdown", () => {
     );
   });
 
+  it.each([
+    ["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]
+  ] as const)("uses the repeated %s signal's exit code and disposes all handlers", (signal, code) => {
+    const signalProcess = createSignalProcess();
+    const dispose = installTerminalSignalShutdown({ app, logger, process: signalProcess, processSnapshot });
+    signalProcess.emit("SIGINT");
+    signalProcess.emit(signal);
+    expect(app.quit).toHaveBeenCalledOnce();
+    expect(app.exit).toHaveBeenCalledExactlyOnceWith(code);
+    dispose();
+    dispose();
+    for (const next of ["SIGINT", "SIGTERM", "SIGHUP"] as const) signalProcess.emit(next);
+    expect(app.quit).toHaveBeenCalledOnce();
+    expect(app.exit).toHaveBeenCalledOnce();
+  });
+
   it("returns a dispose function that unregisters installed listeners", () => {
     const signalProcess = createSignalProcess();
 

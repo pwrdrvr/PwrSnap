@@ -2718,9 +2718,8 @@ export function bootstrapApp(): void {
   });
 
   // Track whether we've already initiated the recording-cancel
-  // teardown so we don't loop on the will-quit handler firing again
-  // after `app.quit()` is called from inside it.
-  let quitTeardownInFlight = false;
+  // teardown, and keep every later quit pass behind its pending work.
+  let recordingQuitBarrier: "idle" | "waiting" | "complete" = "idle";
   /**
    * How long ⌘Q waits for a stopping/processing take to finalize before
    * quitting regardless. Generous enough for an ordinary encode + move,
@@ -2728,13 +2727,17 @@ export function bootstrapApp(): void {
    */
   const RECORDING_QUIT_BARRIER_TIMEOUT_MS = 15_000;
   app.on("will-quit", (event) => {
+    if (recordingQuitBarrier === "waiting") {
+      event.preventDefault();
+      return;
+    }
     // If the user quits with a recording attempt alive, let the recording
     // service own the transition before ordinary teardown. Lead-in and active
     // capture are cancelled cleanly. Once Stop has begun, wait for the
     // authoritative ready/failed transition so quitting cannot discard a clip
     // while recorder exit or persistence is still in flight.
-    if (isRecordingActive() && !quitTeardownInFlight) {
-      quitTeardownInFlight = true;
+    if (isRecordingActive() && recordingQuitBarrier === "idle") {
+      recordingQuitBarrier = "waiting";
       event.preventDefault();
       const phase = getRecordingState().phase;
       const finish =
@@ -2756,7 +2759,7 @@ export function bootstrapApp(): void {
                 settle();
               };
               // Bounded. `preventDefault()` has already run and
-              // `quitTeardownInFlight` is latched, so if this promise never
+              // the barrier is waiting, so if this promise never
               // settles the app can no longer be quit at all — and the two
               // phases it waits on are exactly the ones `recording:cancel`
               // refuses, so nothing can break the wait from outside.
@@ -2793,9 +2796,10 @@ export function bootstrapApp(): void {
           });
         })
         .finally(() => {
-          // Retry the quit — the second time around the recording
-          // state is idle so this branch falls through to the
-          // ordinary teardown below. From a macrotask: will-quit is
+          // Only settlement (including the deadline) releases teardown.
+          // Repeated quit requests cannot overtake cancellation/finalization.
+          recordingQuitBarrier = "complete";
+          // Retry from a macrotask: will-quit is
           // emitted from a native task, so a retry that settles in
           // microtasks runs inside it and is lost (quit-retry.ts).
           retryQuitAfterDispatch(() => app.quit());

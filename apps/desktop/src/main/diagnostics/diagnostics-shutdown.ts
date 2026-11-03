@@ -43,6 +43,7 @@ export function createDiagnosticsShutdown(options: {
   let complete = false;
   let resumingQuit = false;
   let updateOwnsQuit = false;
+  let quitAttempt = 0;
   let pending: Promise<void> | null = null;
   let installing: Promise<void> | null = null;
   let startedAt: number | undefined;
@@ -96,15 +97,16 @@ export function createDiagnosticsShutdown(options: {
       event.preventDefault();
       if (!resumingQuit) {
         resumingQuit = true;
+        const attempt = quitAttempt;
         // Not from this chain directly: with nothing to flush it settles in
         // microtasks, which run INSIDE the native quit pass being deferred,
         // and that pass then cancels the retry. See quit-retry.ts.
         // An update that took over decides at settle time, as before; one
         // that takes over during the hop wins too.
         void flush().then(() => {
-          if (updateOwnsQuit) return;
+          if (updateOwnsQuit || attempt !== quitAttempt) return;
           retryQuitAfterDispatch(() => {
-            if (!updateOwnsQuit) options.resumeQuit();
+            if (!updateOwnsQuit && attempt === quitAttempt) options.resumeQuit();
           });
         });
       }
@@ -112,6 +114,9 @@ export function createDiagnosticsShutdown(options: {
     },
     quitAndInstall(install: () => void): Promise<void> {
       updateOwnsQuit = true;
+      // Permanently revoke a normal retry already queued before takeover.
+      // A failed install releases update ownership before that macrotask runs.
+      quitAttempt += 1;
       // Claim ownership before awaiting, including takeover of a normal quit.
       installing ??= flush().then(install).catch((error: unknown) => {
         // Abandon only this quit attempt's clock. Diagnostics are already

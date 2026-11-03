@@ -193,6 +193,23 @@ describe("diagnostics shutdown", () => {
     expect(f.resumedEvent.preventDefault).not.toHaveBeenCalled();
   });
 
+  it("revokes an already queued normal retry when update takeover fails before dispatch", async () => {
+    const f = fixture(() => undefined);
+    f.shutdown.beforeQuit(f.event);
+    // The flush has settled and queued setImmediate, but Electron has not
+    // returned to the next macrotask yet.
+    await f.shutdown.flush();
+    const install = vi.fn(() => { throw new Error("install failed"); });
+    await expect(f.shutdown.quitAndInstall(install)).rejects.toThrow("install failed");
+    await afterQuitDispatch();
+
+    expect(install).toHaveBeenCalledOnce();
+    expect(f.resumeQuit).not.toHaveBeenCalled();
+    expect(f.shutdown.beforeQuit(f.resumedEvent)).toBe(false);
+    expect(f.shutdown.remainingQuitTime(15_000)).toBe(15_000);
+    expect(f.stopSpy).toHaveBeenCalledOnce();
+  });
+
   it.each([false, true])("gives a later normal quit a fresh budget after install failure (flush timeout: %s)", async (timeout) => {
     const capture = deferred();
     const f = fixture(() => capture.promise);

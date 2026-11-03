@@ -3,7 +3,12 @@ import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
+import { getMainLogger } from "../log";
 import { resolveFfmpegPath } from "../recording/ffmpeg-resolver";
+
+const log = getMainLogger("pwrsnap:enrichment-image");
+const VIDEO_FRAME_SIGTERM_GRACE_MS = 1_000;
+const VIDEO_FRAME_SIGKILL_DRAIN_MS = 5_000;
 
 export const DEFAULT_ENRICHMENT_IMAGE_MAX_EDGE_PX = 1024;
 export const DEFAULT_ENRICHMENT_IMAGE_QUALITY = 75;
@@ -150,6 +155,7 @@ export async function prepareEnrichmentVideoFrames(
   await mkdir(tempParent, { recursive: true });
   const workDir = await mkdtemp(join(tempParent, "pwrsnap-ai-video-"));
   const samples = getVideoFrameSamples(options.durationSec);
+  const childDrains = new Set<Promise<void>>();
   const abort = new AbortController();
   const signal = options.abortSignal === undefined
     ? abort.signal
@@ -167,7 +173,8 @@ export async function prepareEnrichmentVideoFrames(
         sourcePath,
         outputPath,
         sample.timestampSec,
-        { maxEdgePx, quality, abortSignal: signal }
+        { maxEdgePx, quality, abortSignal: signal },
+        childDrains
       );
       const outputMetadata = await sharp(outputPath).metadata();
       const outputStat = await stat(outputPath);
@@ -206,8 +213,8 @@ export async function prepareEnrichmentVideoFrames(
       };
     };
     // Two ffmpeg processes per admitted enrichment, never one per capture in
-    // the queue. Drain both workers before scratch cleanup: SIGTERM only asks
-    // the child to stop and it may still hold or write its output file.
+    // the queue. Child cancellation is bounded separately from actual close:
+    // a child that misses its kill deadline must retain its scratch directory.
     const worker = async (): Promise<void> => {
       while (!signal.aborted && nextSample < samples.length) {
         const index = nextSample++;
@@ -230,7 +237,21 @@ export async function prepareEnrichmentVideoFrames(
       }
     };
   } catch (error) {
-    await rm(workDir, { force: true, recursive: true });
+    const cleanup = async (): Promise<void> => {
+      await Promise.all(childDrains);
+      await rm(workDir, { force: true, recursive: true });
+    };
+    if (childDrains.size === 0) await cleanup();
+    else {
+      // Release the caller's enrichment slot at the termination deadline, but
+      // never delete files still owned by a child. A late close completes this
+      // cleanup; a permanently stuck child leaves its scratch for OS reaping.
+      void cleanup().catch((cause: unknown) => {
+        log.warn("deferred enrichment video scratch cleanup failed", {
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+      });
+    }
     throw error;
   }
 }
@@ -240,7 +261,8 @@ async function extractVideoFrame(
   sourcePath: string,
   outputPath: string,
   timestampSec: number,
-  options: { maxEdgePx: number; quality: number; abortSignal?: AbortSignal }
+  options: { maxEdgePx: number; quality: number; abortSignal?: AbortSignal },
+  childDrains: Set<Promise<void>>
 ): Promise<void> {
   throwIfAborted(options.abortSignal);
   const args = [
@@ -257,7 +279,7 @@ async function extractVideoFrame(
     qualityToFfmpegQscale(options.quality).toString(),
     outputPath
   ];
-  await runFfmpeg(ffmpeg, args, options.abortSignal);
+  await runFfmpeg(ffmpeg, args, childDrains, options.abortSignal);
 }
 
 function qualityToFfmpegQscale(quality: number): number {
@@ -277,23 +299,54 @@ function scaleRatio(
   return Number((sentLongest / sourceLongest).toFixed(6));
 }
 
-function runFfmpeg(ffmpeg: string, args: string[], abortSignal?: AbortSignal): Promise<void> {
+function runFfmpeg(
+  ffmpeg: string,
+  args: string[],
+  childDrains: Set<Promise<void>>,
+  abortSignal?: AbortSignal
+): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const child = spawn(ffmpeg, args, { stdio: ["ignore", "ignore", "pipe"] });
+    let markClosed!: () => void;
+    const closed = new Promise<void>((done) => { markClosed = done; });
+    childDrains.add(closed);
     let stderr = "";
     let terminalError: Error | undefined;
+    let terminating = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    let drainTimer: ReturnType<typeof setTimeout> | undefined;
 
     const settle = (error?: Error): void => {
       if (settled) return;
       settled = true;
+      clearTimeout(killTimer);
+      clearTimeout(drainTimer);
       abortSignal?.removeEventListener("abort", abortHandler);
       if (error) reject(error);
       else resolve();
     };
 
     const abortHandler = (): void => {
+      if (settled || terminating) return;
+      terminating = true;
       terminalError ??= new DOMException("video frame extraction aborted", "AbortError");
+      killTimer = setTimeout(() => {
+        // Install the deadline before killing: a child may close immediately.
+        drainTimer = setTimeout(() => {
+          settle(terminalError);
+          child.unref();
+          child.stderr.destroy();
+          log.warn("enrichment video extractor did not close after SIGKILL; retaining scratch until close");
+        }, VIDEO_FRAME_SIGKILL_DRAIN_MS);
+        drainTimer.unref();
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* retain the deadline even if signaling fails */
+        }
+      }, VIDEO_FRAME_SIGTERM_GRACE_MS);
+      killTimer.unref();
       try {
         child.kill("SIGTERM");
       } catch {
@@ -307,6 +360,8 @@ function runFfmpeg(ffmpeg: string, args: string[], abortSignal?: AbortSignal): P
     });
     child.on("error", (error) => { terminalError ??= error; });
     child.on("close", (code) => {
+      childDrains.delete(closed);
+      markClosed();
       if (settled) return;
       if (terminalError !== undefined) settle(terminalError);
       else if (code === 0) settle();

@@ -3,7 +3,7 @@
 // missing), per-image partial-failure tolerance, zip entry naming +
 // collision suffixing, and the cancelled / nothing-to-export results.
 
-import { PassThrough, Writable } from "node:stream";
+import { PassThrough, Readable, Writable } from "node:stream";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { CaptureRecord, Result } from "@pwrsnap/shared";
 
@@ -67,6 +67,7 @@ vi.mock("../../window", () => ({ findMainLibraryWindow: () => null }));
 // pipe ends it. A PassThrough here would never drain its readable side, so
 // it would never emit 'close' and the handler's await would hang.
 vi.mock("node:fs", () => ({
+  createReadStream: (path: string) => Object.assign(Readable.from([]), { path }),
   createWriteStream: mocks.createWriteStream,
   existsSync: mocks.existsSync
 }));
@@ -85,9 +86,13 @@ vi.mock("yazl", () => ({
   default: {
     ZipFile: class {
       outputStream = new PassThrough();
-      addFile(path: string, entry: string): void {
-        mocks.addFile(path, entry);
+      addReadStreamLazy(entry: string, _options: unknown, open: (callback: (error: unknown, input: Readable & { path: string }) => void) => void): void {
+        open((_error, input) => {
+          mocks.addFile(input.path, entry);
+          input.resume();
+        });
       }
+      on(): this { return this; }
       end(): void {
         this.outputStream.end();
       }
@@ -165,7 +170,7 @@ beforeEach(() => {
   mocks.resolveImagePresetFile.mockResolvedValue({ path: "/cache/img.png" });
   mocks.rename.mockResolvedValue(undefined);
   mocks.rm.mockResolvedValue(undefined);
-  mocks.stat.mockResolvedValue({ size: 4242 });
+  mocks.stat.mockResolvedValue({ size: 4242, isFile: () => true, mtime: new Date(0), mode: 0o100644 } as unknown as { size: number });
   mocks.mkdir.mockResolvedValue(undefined);
   registerCartHandlers();
 });
@@ -415,7 +420,7 @@ describe("cart:prepareZipDrag (drag-out)", () => {
     mocks.getCaptureById.mockImplementation((id) => imageRecord(id));
     mocks.readdir.mockResolvedValue(["old-low-deadbeef.zip"]);
     // Old enough to prune (mtime way in the past).
-    mocks.stat.mockResolvedValue({ size: 10, mtimeMs: 0 } as unknown as { size: number });
+    mocks.stat.mockResolvedValue({ size: 10, mtimeMs: 0, isFile: () => true, mtime: new Date(0), mode: 0o100644 } as unknown as { size: number });
     await callPrepareDrag({ captureIds: ["a"], preset: "low" });
     expect(mocks.readdir).toHaveBeenCalled();
     expect(mocks.rm).toHaveBeenCalledWith(

@@ -9,10 +9,11 @@
 
 import { app, BrowserWindow, dialog, shell } from "electron";
 import { createHash, randomUUID } from "node:crypto";
-import { createWriteStream, existsSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, type ReadStream } from "node:fs";
 import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
+import type { Readable } from "node:stream";
 import yazl from "yazl";
 import {
   EVENT_CHANNELS,
@@ -155,7 +156,7 @@ async function writeCartZip(
   opts: { signal?: AbortSignal; onProgress?: (p: CartZipProgress) => void } = {}
 ): Promise<CartZipOutcome> {
   const total = records.length;
-  const zip = new yazl.ZipFile();
+  const entries: Array<{ path: string; name: string }> = [];
   const usedNames = new Set<string>();
   let fileCount = 0;
   let failed = 0;
@@ -189,7 +190,7 @@ async function writeCartZip(
           n++;
         }
         usedNames.add(entry);
-        zip.addFile(file.path, entry, { compress: false });
+        entries.push({ path: file.path, name: entry });
         fileCount++;
       } catch (cause) {
         // One unrenderable image (corrupt source, etc.) must not sink the whole
@@ -208,15 +209,88 @@ async function writeCartZip(
   if (fileCount === 0) return { fileCount, failed, cancelled: false, firstPath };
   opts.onProgress?.({ phase: "zipping", completed: total, total });
   try {
-    const ws = createWriteStream(destPath);
-    const writing = pipeline(zip.outputStream, ws, { signal: opts.signal });
-    zip.end();
-    await writing;
+    await writeCartArchive(entries, destPath, opts.signal);
   } catch (cause) {
     if (!opts.signal?.aborted) throw cause;
   }
   if (opts.signal?.aborted) return { fileCount, failed, cancelled: true, firstPath };
   return { fileCount, failed, cancelled: false, firstPath };
+}
+
+async function writeCartArchive(
+  entries: Array<{ path: string; name: string }>,
+  destPath: string,
+  signal?: AbortSignal
+): Promise<void> {
+  // Preserve addFile's metadata, but do not let it own hidden ReadStreams.
+  // All inputs stay unopened until the output pipeline has an error handler.
+  const files = [];
+  for (const entry of entries) {
+    signal?.throwIfAborted();
+    const metadata = await stat(entry.path);
+    if (!metadata.isFile()) throw new Error(`not a file: ${entry.path}`);
+    files.push({ ...entry, metadata });
+  }
+  signal?.throwIfAborted();
+  const zip = new yazl.ZipFile();
+  const output = zip.outputStream as Readable;
+  const destination = createWriteStream(destPath);
+  const inputs = new Map<ReadStream, Promise<void>>();
+  let stopped = false;
+  const stopInputs = (): void => {
+    // This also closes lazy admission: an already-queued yazl pump must not
+    // open another file after cancellation or an archive/destination error.
+    stopped = true;
+    for (const input of inputs.keys()) {
+      input.unpipe();
+      input.destroy();
+    }
+  };
+  const archiveError = (cause: Error): void => {
+    stopInputs();
+    output.destroy(cause);
+  };
+  zip.on("error", archiveError);
+  output.on("error", stopInputs);
+  destination.on("error", stopInputs);
+  signal?.addEventListener("abort", stopInputs, { once: true });
+  if (signal?.aborted) stopInputs();
+  // Observe immediately, including when registration throws before the await.
+  const writing = pipeline(output, destination, { signal }).then(
+    () => ({ ok: true as const }),
+    (cause: unknown) => ({ ok: false as const, cause })
+  );
+  try {
+    for (const file of files) {
+      if (stopped) break;
+      zip.addReadStreamLazy(file.name, {
+        compress: false,
+        size: file.metadata.size,
+        mtime: file.metadata.mtime,
+        mode: file.metadata.mode
+      }, (callback) => {
+        if (stopped) return; // the output has no remaining consumer
+        const input = createReadStream(file.path);
+        inputs.set(input, new Promise<void>((resolve) => {
+          input.once("close", () => { inputs.delete(input); resolve(); });
+        }));
+        input.on("error", archiveError);
+        callback(null, input);
+      });
+    }
+    zip.end();
+    const result = await writing;
+    if (!result.ok) throw result.cause;
+  } finally {
+    stopInputs();
+    output.destroy();
+    destination.destroy();
+    signal?.removeEventListener("abort", stopInputs);
+    // pipeline owns only the archive output and destination. yazl's ordinary
+    // inner pipes do not destroy or drain a paused source on output failure.
+    // Keep the export pending until every actual file descriptor has closed.
+    await Promise.all([writing, ...inputs.values()]);
+  }
 }
 
 function broadcastCartChanged(cart: DraftCart): void {

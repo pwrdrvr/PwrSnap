@@ -1,9 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createDiagnosticsShutdown } from "../diagnostics/diagnostics-shutdown";
 import { retryQuitAfterDispatch } from "../quit-retry";
 import { installQuitStallRecovery } from "../quit-stall-recovery";
 import { ElectronQuitModel } from "./electron-quit-model";
+
+afterEach(() => vi.useRealTimers());
 
 /** Defer the first quit at `stage`, then retry it the way `retry` says. */
 function deferOnce(
@@ -165,6 +167,9 @@ describe("installQuitStallRecovery", () => {
   });
 
   it("exits when a quit stalls with no window left and no event to react to", async () => {
+    // Keep Electron's setImmediate dispatch real, but advance the fail-safe
+    // deadline explicitly. A busy worker can spend >20 ms in model.settle().
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const model = new ElectronQuitModel(["library"]);
     const recovery = install(model, { exitAfterMs: 20 });
     deferOnce(model, "will-quit", "microtask");
@@ -172,7 +177,7 @@ describe("installQuitStallRecovery", () => {
     await model.quitFromNativeTask();
     await model.settle();
     expect(model.hasQuit).toBe(false);
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    vi.advanceTimersByTime(20);
 
     expect(model.exitCode).toBe(0);
     expect(recovery.warn).toHaveBeenCalledWith(
@@ -237,11 +242,12 @@ describe("installQuitStallRecovery", () => {
   });
 
   it("stays out of a quit that completes", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const model = new ElectronQuitModel(["library"]);
     const recovery = install(model, { exitAfterMs: 20 });
     await model.quitFromNativeTask();
     await model.settle();
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    vi.advanceTimersByTime(40);
     expect(model.hasQuit).toBe(true);
     expect(model.exitCode).toBeNull();
     expect(recovery.warn).not.toHaveBeenCalled();

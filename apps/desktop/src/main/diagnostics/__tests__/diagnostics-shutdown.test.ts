@@ -193,6 +193,23 @@ describe("diagnostics shutdown", () => {
     expect(f.resumedEvent.preventDefault).not.toHaveBeenCalled();
   });
 
+  it("revokes an already queued normal retry when update takeover fails before dispatch", async () => {
+    const f = fixture(() => undefined);
+    f.shutdown.beforeQuit(f.event);
+    // The flush has settled and queued setImmediate, but Electron has not
+    // returned to the next macrotask yet.
+    await f.shutdown.flush();
+    const install = vi.fn(() => { throw new Error("install failed"); });
+    await expect(f.shutdown.quitAndInstall(install)).rejects.toThrow("install failed");
+    await afterQuitDispatch();
+
+    expect(install).toHaveBeenCalledOnce();
+    expect(f.resumeQuit).not.toHaveBeenCalled();
+    expect(f.shutdown.beforeQuit(f.resumedEvent)).toBe(false);
+    expect(f.shutdown.remainingQuitTime(15_000)).toBe(15_000);
+    expect(f.stopSpy).toHaveBeenCalledOnce();
+  });
+
   it.each([false, true])("gives a later normal quit a fresh budget after install failure (flush timeout: %s)", async (timeout) => {
     const capture = deferred();
     const f = fixture(() => capture.promise);
@@ -236,5 +253,88 @@ describe("diagnostics shutdown", () => {
     expect(retry).toHaveBeenCalledOnce();
     expect(f.stopSpy).toHaveBeenCalledOnce();
     expect(f.resumeQuit).not.toHaveBeenCalled();
+  });
+
+  it.each(["sync", "late"] as const)(
+    "gives normal quit a fresh budget when native install reports %s failure without throwing",
+    async (when) => {
+      const f = fixture(() => undefined);
+      f.shutdown.beforeQuit(f.event);
+      await f.shutdown.flush();
+      let reportFailure: (() => void) | undefined;
+      const install = vi.fn((onInstallFailed?: () => void) => {
+        reportFailure = onInstallFailed;
+        if (when === "sync") reportFailure?.();
+      });
+      // Native updater error events need not throw or reject the handoff.
+      await expect(f.shutdown.quitAndInstall(install)).resolves.toBeUndefined();
+      if (when === "late") {
+        await vi.advanceTimersByTimeAsync(1_000);
+        reportFailure?.();
+      }
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(f.shutdown.beforeQuit(f.event)).toBe(false);
+      expect(f.shutdown.remainingQuitTime(15_000)).toBe(15_000);
+      expect(f.stopSpy).toHaveBeenCalledOnce();
+      expect(f.resumeQuit).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(4_000);
+      reportFailure?.();
+      expect(f.shutdown.beforeQuit(f.resumedEvent)).toBe(false);
+      expect(f.shutdown.remainingQuitTime(15_000)).toBe(11_000);
+    }
+  );
+
+  it("starts a fresh clock for a replacement handoff and ignores the previous owner's signal", async () => {
+    const f = fixture(() => undefined);
+    let reportOldFailure: (() => void) | undefined;
+    await f.shutdown.quitAndInstall((onInstallFailed?: () => void) => {
+      reportOldFailure = onInstallFailed;
+    });
+    await vi.advanceTimersByTimeAsync(20_000);
+    await f.shutdown.quitAndInstall(() => undefined);
+    expect(f.shutdown.remainingQuitTime(15_000)).toBe(15_000);
+    await vi.advanceTimersByTimeAsync(4_000);
+    reportOldFailure?.();
+    expect(f.shutdown.remainingQuitTime(15_000)).toBe(11_000);
+    expect(f.stopSpy).toHaveBeenCalledOnce();
+  });
+
+  it("preserves the initial takeover's shared clock until native failure abandons it", async () => {
+    const f = fixture(() => new Promise<void>(() => {}));
+    f.shutdown.beforeQuit(f.event);
+    await vi.advanceTimersByTimeAsync(5_000);
+    let reportFailure: (() => void) | undefined;
+    const install = f.shutdown.quitAndInstall((onInstallFailed?: () => void) => {
+      reportFailure = onInstallFailed;
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await install;
+    expect(f.shutdown.remainingQuitTime(15_000)).toBe(5_000);
+    reportFailure?.();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(f.shutdown.beforeQuit(f.resumedEvent)).toBe(false);
+    expect(f.shutdown.remainingQuitTime(15_000)).toBe(15_000);
+    expect(f.resumeQuit).not.toHaveBeenCalled();
+    expect(f.stopSpy).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a native failure callback valid when a concurrent install joins the same flush", async () => {
+    const capture = deferred();
+    const f = fixture(() => capture.promise);
+    let reportFailure: (() => void) | undefined;
+    const first = f.shutdown.quitAndInstall((onInstallFailed?: () => void) => {
+      reportFailure = onInstallFailed;
+    });
+    const duplicate = vi.fn();
+    expect(f.shutdown.quitAndInstall(duplicate)).toBe(first);
+    capture.resolve();
+    await first;
+    reportFailure?.();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(f.shutdown.beforeQuit(f.event)).toBe(false);
+    expect(f.shutdown.remainingQuitTime(15_000)).toBe(15_000);
+    expect(duplicate).not.toHaveBeenCalled();
+    expect(f.stopSpy).toHaveBeenCalledOnce();
   });
 });

@@ -1,5 +1,6 @@
 import type { App, BrowserWindow } from "electron";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import { retryQuitAfterDispatch } from "../quit-retry";
 
 type CloseBarrierState = {
   window: BrowserWindow;
@@ -14,8 +15,18 @@ type QuitApp = Pick<App, "on" | "quit">;
 
 const barriers = new Map<number, CloseBarrierState>();
 let quitApp: QuitApp | null = null;
-let quitDeferred = false;
+let deferredQuit: CloseBarrierState | null = null;
+let quitAttempt = 0;
 const quitCancelledListeners = new Set<() => void>();
+
+function resumeDeferredQuit(): void {
+  deferredQuit = null;
+  const app = quitApp;
+  const attempt = quitAttempt;
+  retryQuitAfterDispatch(() => {
+    if (attempt === quitAttempt) app?.quit();
+  });
+}
 
 /** Observe an explicit cancellation of app quit, rather than a pending save. */
 export function onSizzleQuitCancelled(listener: () => void): () => void {
@@ -69,14 +80,14 @@ export function installSizzleQuitBarrier(app: QuitApp): void {
     if (state === undefined) return;
 
     event.preventDefault();
-    quitDeferred = true;
+    deferredQuit = state;
     requestClose(state);
   });
 }
 
 /** True only during the first, intentionally deferred before-quit pass. */
 export function isSizzleQuitDeferred(): boolean {
-  return quitDeferred;
+  return deferredQuit !== null;
 }
 
 /**
@@ -112,6 +123,9 @@ export function wireSizzleCloseBarrier(window: BrowserWindow): void {
 
   window.on("closed", () => {
     if (barriers.get(window.id) === state) barriers.delete(window.id);
+    // destroy() bypasses close and can win while a save acknowledgement is
+    // pending. Its window can no longer answer, so release only its barrier.
+    if (deferredQuit === state) resumeDeferredQuit();
   });
 }
 
@@ -142,8 +156,10 @@ export function completeSizzleCloseRequest(
   state.pendingRequestId = null;
   state.requestSent = false;
   if (action === "cancel") {
-    const cancelledQuit = quitDeferred;
-    quitDeferred = false;
+    const cancelledQuit = deferredQuit !== null;
+    deferredQuit = null;
+    // Also revoke a successful save's retry queued before this cancellation.
+    quitAttempt += 1;
     if (cancelledQuit) {
       for (const listener of quitCancelledListeners) listener();
     }
@@ -151,9 +167,8 @@ export function completeSizzleCloseRequest(
   }
 
   state.allowNextClose = true;
-  if (quitDeferred && quitApp !== null) {
-    quitDeferred = false;
-    quitApp.quit();
+  if (deferredQuit !== null && quitApp !== null) {
+    resumeDeferredQuit();
   } else {
     state.window.close();
   }

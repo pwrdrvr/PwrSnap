@@ -21,6 +21,9 @@ const mocks = vi.hoisted(() => {
         handlers.set(event, eventHandlers);
         return mocks.autoUpdater;
       }),
+      removeListener: (event: string, handler: (...args: unknown[]) => void) => {
+        handlers.get(event)?.delete(handler);
+      },
       quitAndInstall: vi.fn(),
       setFeedURL: vi.fn()
     },

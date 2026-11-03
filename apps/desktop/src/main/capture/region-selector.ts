@@ -78,6 +78,7 @@ type SelectorInvocation = {
   displayId: number | null;
   snapshot: ScreenSnapshot | null;
   previousAppPid: number | null;
+  windowListSnapshot: readonly WindowInfo[];
   releaseProtection: () => void;
   resolve: (result: SelectorResult) => void;
 };
@@ -340,6 +341,9 @@ type SelectorOutcome =
        *  the consumer when this result is produced, so
        *  `hideAllSelectors` skips the cleanup on this code path. */
       screenSnapshotId: string;
+      /** The main-owned provenance used for this committed selection. A later
+       * invocation may replace the shared cache before its consumer resumes. */
+      windowListSnapshot: readonly WindowInfo[];
       /** Pid of the app that was frontmost when the selector opened.
        *  The capture handler activates this app via NSRunningApplication
        *  AFTER the float-over has been populated, so the toast wins
@@ -727,6 +731,7 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
             },
             displayId: payload.displayId,
             screenSnapshotId: snapshot.id,
+            windowListSnapshot: invocation.windowListSnapshot,
             previousAppPid: prevPid
           };
           if (typeof payload.snappedWindowId === "number") {
@@ -904,6 +909,7 @@ export function pickRegion(opts: SelectorOptions = {}): Promise<SelectorResult> 
     displayId: null,
     snapshot: null,
     previousAppPid: null,
+    windowListSnapshot: [],
     releaseProtection: () => undefined,
     resolve: resolveResult
   };
@@ -1127,6 +1133,7 @@ async function prepareRegion(
         frontmostBundleId: snapshot.frontmostBundleId
       });
       lastSnapshot = prepared.snapshot;
+      invocation.windowListSnapshot = prepared.snapshot;
       invocation.previousAppPid = prepared.previousAppPid;
       windowListPayload = prepared.payload;
       deliverWindowListPayload(prepared.payload);
@@ -1781,13 +1788,16 @@ hotkeyRecorderSuspension.registerParticipant({
 });
 
 /**
- * The window-list snapshot taken at the most recent pickRegion call.
- * Capture handlers query this to backfill source-app metadata on
- * commit (no need to re-shell to the helper — the snapshot from the
- * moment of capture is exactly the right point-in-time).
+ * Latest selector enumeration for headless region attribution. Committed
+ * selections carry their own windowListSnapshot across asynchronous handoffs.
  */
 export function getLastWindowListSnapshot(): readonly WindowInfo[] {
   return lastSnapshot;
+}
+
+export function isSelectorInvocationCurrent(selectorInvocationId: number): boolean {
+  // A settled result retains ownership until its caller retires the overlay.
+  return activeInvocation?.id === selectorInvocationId;
 }
 
 /**
@@ -1801,7 +1811,7 @@ export function getLastWindowListSnapshot(): readonly WindowInfo[] {
  * no token this is an explicit cancellation, including during preparation.
  */
 export function hideSelector(selectorInvocationId?: number): void {
-  if (selectorInvocationId !== undefined && activeInvocation?.id !== selectorInvocationId) return;
+  if (selectorInvocationId !== undefined && !isSelectorInvocationCurrent(selectorInvocationId)) return;
   hideAllSelectors();
 }
 

@@ -1666,17 +1666,19 @@ describe("region-selector — invocation ownership during preparation", () => {
   });
 
   test.each(["preparing", "selecting"])("old token cleanup cannot cancel a %s successor; explicit cancellation still works", async (phase) => {
-    const { pickRegion, hideSelector } = await import("../capture/region-selector");
+    const { pickRegion, hideSelector, isSelectorInvocationCurrent } = await import("../capture/region-selector");
     const oldPick = pickRegion({ keepPwrSnapChrome: true });
     await flushSelector();
     emitSelectorResult({ ok: false });
     const oldResult = await oldPick;
+    expect(isSelectorInvocationCurrent(oldResult.selectorInvocationId)).toBe(true);
     const frame = deferred<ScreenSnapshot>();
     if (phase === "preparing") screenSnapshotMocks.captureAndRegister.mockReturnValueOnce(frame.promise);
     const settled = vi.fn();
     const newPick = pickRegion({ keepPwrSnapChrome: true }).then(settled);
     await flushSelector();
     expect(oldResult).toHaveProperty("selectorInvocationId");
+    expect(isSelectorInvocationCurrent(oldResult.selectorInvocationId)).toBe(false);
     const hideCount = constructed[0]!.hide.mock.calls.length;
     setTimeout(() => hideSelector(oldResult.selectorInvocationId), 50);
     await vi.advanceTimersByTimeAsync(50);
@@ -1735,6 +1737,26 @@ describe("region-selector — invocation ownership during preparation", () => {
     emitSelectorResult({ ok: true, displayId: 1, rect: { x: 10, y: 20, w: 30, h: 40 } });
     await expect(newPick).resolves.toMatchObject({ ok: true, previousAppPid: 222, screenSnapshotId: "new" });
     await oldPick;
+  });
+
+  test("a committed result carries its own window provenance across a newer invocation and disposal", async () => {
+    const { listWindowsSnapshot } = await import("../capture/window-list");
+    const makeLayout = (pid: number) => ({
+      windows: [{ windowId: 42, pid, bundleId: `example.app${pid}`, appName: `Fixture ${pid}`, title: "Fixture", bounds: { x: 10, y: 20, width: 300, height: 200 }, layer: 0, alpha: 1, isFrontmostInApp: true }],
+      frontmostPid: pid, frontmostBundleId: `example.app${pid}`
+    });
+    vi.mocked(listWindowsSnapshot).mockResolvedValueOnce(makeLayout(111)).mockResolvedValueOnce(makeLayout(222));
+    const { pickRegion, disposeRegionSelector, getLastWindowListSnapshot } = await import("../capture/region-selector");
+    const firstPick = pickRegion({ keepPwrSnapChrome: true });
+    await flushSelector();
+    emitSelectorResult({ ok: true, displayId: 1, snappedWindowId: 42, rect: { x: 10, y: 20, w: 30, h: 40 } });
+    const committed = await firstPick;
+    const newerPick = pickRegion({ keepPwrSnapChrome: true });
+    await flushSelector();
+    expect(getLastWindowListSnapshot().map(({ pid }) => pid)).toEqual([222]);
+    disposeRegionSelector();
+    await newerPick;
+    expect(committed).toHaveProperty("windowListSnapshot", makeLayout(111).windows);
   });
 
   test.each(["result-first", "dispose-first"])("the first terminal event wins and transferred snapshots remain consumer-owned (%s)", async (order) => {

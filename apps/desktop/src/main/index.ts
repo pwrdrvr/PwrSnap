@@ -33,10 +33,10 @@ import type {
 } from "@pwrsnap/shared";
 import {
   disposeRegionSelector,
-  hideSelector,
   pickRegion,
   preWarmRegionSelector
 } from "./capture/region-selector";
+import { finishSelectorCancellation } from "./capture/selector-cancellation";
 import { startRecordingFromSelection } from "./recording/record-from-selection";
 import { guardScreenCapture } from "./capture/screen-permission-gate";
 import { ensureCapturesDirReady } from "./capture/capture-storage-gate";
@@ -1221,32 +1221,7 @@ async function runInteractiveRecord(
       : {})
   });
   if (!selection.ok) {
-    setFloatOverState({ kind: "cancel" });
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    hideSelector(selection.selectorInvocationId);
-    // No activateApp(previousAppPid): the selector is a non-activating
-    // NSPanel, so the previously-frontmost app was never deactivated —
-    // it stays frontmost as the selector hides. Re-activating it was a
-    // primary trigger for AppKit demoting PwrSnap to Accessory (Dock
-    // flash + orphaned Library). Mirrors the image cancel path in
-    // capture-handlers.ts. Only intervene when PwrSnap's OWN window was
-    // frontmost (previousAppPid null): there the selector-hide
-    // key-window cascade would let the floating focus-sink steal key
-    // from the Library, so restore it explicitly.
-    if (selection.previousAppPid === null || selection.previousAppPid === undefined) {
-      const library = findMainLibraryWindow();
-      if (library !== null && !library.isDestroyed()) {
-        if (library.isMinimized()) library.restore();
-        library.show();
-        library.focus();
-      }
-    }
-    // The Accessory demotion lands async — and with PwrSnap a background
-    // app (capture triggered from another app) WITHOUT a
-    // did-resign-active to catch it — so a single synchronous reclaim
-    // races it. Re-assert Regular across a spread of delays; guarded, so
-    // it no-ops once the Dock is back. Mirrors the image cancel path.
-    scheduleDockReclaim();
+    await finishSelectorCancellation(selection);
     return;
   }
   // Everything from here is shared with Quick Capture's Record

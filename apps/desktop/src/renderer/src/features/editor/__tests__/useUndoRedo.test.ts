@@ -1384,8 +1384,9 @@ describe("useUndoRedo partial replay retries", () => {
     const failureIndex = failure === "restore" ? 1 : 3;
     state.failOnceAt = steps[failureIndex]!;
     await act(async () => { await current.api![direction](); });
-    expect(current.api!.canUndo).toBe(direction === "undo");
-    expect(current.api!.canRedo).toBe(direction === "redo");
+    // The unfinished piece can be retried and the acknowledged piece reversed.
+    expect(current.api!.canUndo).toBe(true);
+    expect(current.api!.canRedo).toBe(true);
     await act(async () => { await current.api![direction](); });
     expect(state.calls).toEqual([...steps.slice(0, failureIndex + 1), ...steps.slice(failureIndex)]);
     expect(new Set(state.live.keys())).toEqual(new Set(restore.map((entry) => entry.id)));
@@ -1518,6 +1519,97 @@ describe("useUndoRedo partial replay retries", () => {
     expect(new Set(state.live.keys())).toEqual(new Set());
     expect(reversed).toEqual(new Set([a.id, b.id]));
     expect(current.api!.canUndo).toBe(false);
+    expect(state.conflicts).toBe(0);
+  });
+
+  test.each(["undo", "redo"] as const)("partial %s exposes reverse history to the keyboard bridge even when its destination stack was empty", async (direction) => {
+    const a = node("a");
+    const b = node("b");
+    const state = persistence([a, b]);
+    let api!: UseUndoRedoResult;
+    render(createElement(BridgeProbe, { captureId: "cap-1", onSnapshot: (snapshot) => { api = snapshot; } }));
+    const fallback = { undo: vi.fn(), redo: vi.fn() };
+    const unregister = registerCaptureUndoFallback(fallback);
+    try {
+      act(() => { recordPair(api, "create", [a, b]); });
+      if (direction === "redo") await act(async () => { await api.undo(); });
+      state.failOnceAt = `${direction === "redo" ? "upsert" : "delete"}:${b.id}`;
+      await act(async () => { await api[direction](); });
+      const canReverse = direction === "redo" ? api.canUndo : api.canRedo;
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, shiftKey: direction === "undo", bubbles: true }));
+      });
+      expect(new Set(state.live.keys())).toEqual(new Set(direction === "redo" ? [] : [a.id, b.id]));
+      expect(canReverse).toBe(true);
+      expect(fallback.undo).not.toHaveBeenCalled();
+      expect(fallback.redo).not.toHaveBeenCalled();
+      expect(state.conflicts).toBe(0);
+    } finally {
+      unregister();
+    }
+  });
+
+  test.each(["reverse", "new-edit"] as const)("partial geometry redo preserves live ID chains across %s admission", async (scenario) => {
+    const a = node("a");
+    const b = node("b");
+    const c = node("c");
+    const state = persistence([a, b]);
+    const layerDispatch = dispatchEditMock.getMockImplementation()!;
+    const previousGeometry = { kind: "arrow", from: { x: 0, y: 0 }, to: { x: 0.5, y: 0.5 } } as const;
+    const nextGeometry = { ...previousGeometry, to: { x: 1, y: 1 } };
+    const refs = [{ current: a.id }, { current: b.id }];
+    let updates = 0;
+    let failNextB = false;
+    dispatchEditMock.mockImplementation(async (op) => {
+      if (op.kind !== "updateGeometry") return layerDispatch(op);
+      const previous = state.live.get(op.layerId);
+      if (previous === undefined) throw new Error("update targeted a stale layer id");
+      if (failNextB && op.layerId === refs[1]!.current) {
+        failNextB = false;
+        return { ok: false, error: { kind: "persistence", code: "insert_failed", message: "transient geometry failure" } };
+      }
+      if (op.geometry.kind !== "arrow") throw new Error("unexpected fixture geometry");
+      const freshBase = node(`fresh-${++updates}`);
+      if (freshBase.kind !== "vector") throw new Error("unexpected fixture layer");
+      const fresh = { ...freshBase, shape: { ...op.geometry, color: "auto" as const } };
+      state.live.delete(op.layerId);
+      state.live.set(fresh.id, fresh);
+      return { ok: true, value: { kind: "update", artifact: { format: 2, node: fresh, previousNode: previous } } };
+    });
+    const geometries = () => refs.map((ref) => {
+      const live = state.live.get(ref.current);
+      if (live?.kind !== "vector") throw new Error("geometry chain has no live vector");
+      return live.shape;
+    });
+    const current = mountProbe();
+    act(() => {
+      const token = current.api!.beginInteraction("drag", "pair");
+      for (const currentIdRef of refs) current.api!.recordGeometry({ currentIdRef, previousGeometry, nextGeometry }, {
+        opKind: "drag", layerId: "pair", mergeMode: "append"
+      });
+      current.api!.endInteraction(token);
+    });
+    await act(async () => { await current.api!.undo(); });
+    failNextB = true;
+    await act(async () => { await current.api!.redo(); });
+    if (scenario === "new-edit") {
+      await act(async () => {
+        await dispatchEditMock({ kind: "upsert", node: c });
+        current.api!.recordCreate({ id: c.id }, { node: c });
+      });
+      await act(async () => { await current.api!.undo(); });
+    }
+    await act(async () => { await current.api!.undo(); });
+    expect(geometries()).toEqual([
+      expect.objectContaining(previousGeometry), expect.objectContaining(previousGeometry)
+    ]);
+    if (scenario === "reverse") {
+      await act(async () => { await current.api!.redo(); });
+      await act(async () => { await current.api!.redo(); });
+      expect(geometries()).toEqual([
+        expect.objectContaining(nextGeometry), expect.objectContaining(nextGeometry)
+      ]);
+    }
     expect(state.conflicts).toBe(0);
   });
 

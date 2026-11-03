@@ -150,6 +150,55 @@ type ReplayProgress = {
   completedSteps: number;
 };
 
+type PartialReplay = ReplayProgress & { op: EditOp };
+
+/** Only acknowledged writes belong to the completed piece. Legacy null
+ * restore payloads do not dispatch a step and stay in the remaining piece. */
+function splitLayerItems(items: CreateDeleteItem[], steps: number, restoring: boolean) {
+  const completed: CreateDeleteItem[] = [];
+  const remaining: CreateDeleteItem[] = [];
+  for (const item of items) {
+    if (steps > 0 && (!restoring || item.node !== null)) {
+      completed.push(item);
+      steps -= 1;
+    } else {
+      remaining.push(item);
+    }
+  }
+  return { completed, remaining };
+}
+
+/** A direct retry keeps the original batch. Crossing it with an edit or
+ * reverse replay instead makes both sides honest stack entries: the writes
+ * already acknowledged can be reversed, and the rest can still be retried. */
+function splitPartialReplay(op: EditOp, progress: ReplayProgress): { completed: EditOp; remaining: EditOp } {
+  if (op.kind === "create" || op.kind === "delete") {
+    const restoring = (op.kind === "create") === (progress.direction === "redo");
+    const parts = splitLayerItems(op.items, progress.completedSteps, restoring);
+    return {
+      completed: { kind: op.kind, items: parts.completed },
+      remaining: { kind: op.kind, items: parts.remaining }
+    };
+  }
+  if (op.kind === "geometry") {
+    return {
+      completed: { kind: op.kind, items: op.items.slice(0, progress.completedSteps) },
+      remaining: { kind: op.kind, items: op.items.slice(progress.completedSteps) }
+    };
+  }
+  if (op.kind === "replace") {
+    const undo = progress.direction === "undo";
+    const restore = splitLayerItems(undo ? op.removed : op.added, progress.completedSteps, true);
+    const take = splitLayerItems(undo ? op.added : op.removed, progress.completedSteps - restore.completed.length, false);
+    return {
+      completed: { kind: op.kind, removed: undo ? restore.completed : take.completed, added: undo ? take.completed : restore.completed },
+      remaining: { kind: op.kind, removed: undo ? restore.remaining : take.remaining, added: undo ? take.remaining : restore.remaining }
+    };
+  }
+  // Crop and style each dispatch one step: failure cannot acknowledge a prefix.
+  throw new Error("Single-step history operation has no partial replay");
+}
+
 /** Merge the new op's items into the existing entry's items array
  *  per the requested mergeMode. Each op produced by recordCreate /
  *  recordDelete / recordGeometry carries exactly one item (the
@@ -364,11 +413,14 @@ export function useUndoRedo(opts: {
   // `applyingRef`, we expose ours through that one too — but the
   // canonical source of truth lives here.
   const operationRef = useRef<"idle" | "reconciling" | "applying">("idle");
-  // A failed replay retains only its acknowledged-step cursor. Weak keys
-  // tie that progress to the exact stack entry, without retaining entries
-  // discarded by a new edit or the history depth bound. Separate entries
-  // keep their progress when a newer operation is undone first.
-  const replayProgressRef = useRef(new WeakMap<EditOp, ReplayProgress>());
+  // A partial replay owns the boundary between the stacks until it is
+  // retried or split. Other edits/history must not invalidate its cursor.
+  const [partialReplay, setPartialReplayState] = useState<PartialReplay | null>(null);
+  const partialReplayRef = useRef(partialReplay);
+  const setPartialReplay = useCallback((partial: PartialReplay | null) => {
+    partialReplayRef.current = partial;
+    setPartialReplayState(partial);
+  }, []);
 
   // Coalescing state — refs so it doesn't trigger renders.
   //
@@ -392,8 +444,26 @@ export function useUndoRedo(opts: {
     timestamp: number;
   } | null>(null);
 
+  const splitPendingReplay = useCallback(() => {
+    const partial = partialReplayRef.current;
+    if (partial === null) return;
+    const { completed, remaining } = splitPartialReplay(partial.op, partial);
+    if (partial.direction === "redo") {
+      setFuture((prev) => [...prev.slice(0, -1), remaining]);
+      setPast((prev) => [...prev.slice(-(MAX_DEPTH - 1)), completed]);
+    } else {
+      setPast((prev) => [...prev.slice(0, -1), remaining]);
+      setFuture((prev) => [...prev, completed]);
+    }
+    setPartialReplay(null);
+    lastCoalesceRef.current = null;
+  }, [setPast, setFuture, setPartialReplay]);
+
   const push = useCallback((op: EditOp, recordOpts?: RecordOptions) => {
     if (operationRef.current === "applying") return;
+    // Recording happens after persistence. Preserve a partial redo's live
+    // writes in past BEFORE the new edit clears future, and disarm coalescing.
+    splitPendingReplay();
     const opKind = recordOpts?.opKind;
     const layerId = recordOpts?.layerId;
     const now = typeof performance !== "undefined" ? performance.now() : Date.now();
@@ -520,7 +590,7 @@ export function useUndoRedo(opts: {
     // is derived from `lastCoalesceRef` above, which the two branches
     // immediately above have already set (tagged) or cleared
     // (untagged) for this push.
-  }, []);
+  }, [splitPendingReplay]);
 
   const recordCreate = useCallback(
     (
@@ -862,22 +932,28 @@ export function useUndoRedo(opts: {
     try {
       if ((await onBeforeHistoryRef.current?.()) === true) return;
       if (!mountedRef.current) return;
+      if (partialReplayRef.current !== null && partialReplayRef.current.direction !== direction) {
+        splitPendingReplay();
+      }
       const source = direction === "undo" ? pastRef.current : futureRef.current;
       const op = source[source.length - 1];
       if (op === undefined) return;
-      let progress = replayProgressRef.current.get(op);
-      if (progress?.direction !== direction) {
-        progress = { direction, completedSteps: 0 };
-        replayProgressRef.current.set(op, progress);
-      }
+      const partial = partialReplayRef.current;
+      const progress = partial?.op === op && partial.direction === direction ? partial : { op, direction, completedSteps: 0 };
       // A replay attempt, including one that fails partway, disarms the
       // bracket/grace ownership. A later push must start a new entry so
       // it cannot merge over this operation and discard its retry cursor.
       lastCoalesceRef.current = null;
       operationRef.current = "applying";
       if (opts.applyingRef !== undefined) opts.applyingRef.current = true;
-      await applyInverse(op, direction, progress);
-      replayProgressRef.current.delete(op);
+      try {
+        await applyInverse(op, direction, progress);
+      } catch (error) {
+        // Retain only a genuinely applied prefix, tied to this exact entry.
+        if (progress.completedSteps > 0) setPartialReplay(progress);
+        throw error;
+      }
+      setPartialReplay(null);
       if (direction === "undo") {
         setPast((prev) => prev.slice(0, -1));
         setFuture((prev) => [...prev, op]);
@@ -894,7 +970,7 @@ export function useUndoRedo(opts: {
       if (opts.applyingRef !== undefined) opts.applyingRef.current = false;
       operationRef.current = "idle";
     }
-  }, [applyInverse, opts.applyingRef, setPast, setFuture]);
+  }, [applyInverse, opts.applyingRef, setPast, setFuture, splitPendingReplay, setPartialReplay]);
 
   const undo = useCallback(() => replay("undo"), [replay]);
   const redo = useCallback(() => replay("redo"), [replay]);
@@ -920,8 +996,8 @@ export function useUndoRedo(opts: {
       redo: () => {
         void redo();
       },
-      canUndo: () => operationRef.current !== "idle" || pastRef.current.length > 0 || (hasPendingHistoryRef.current?.() ?? false),
-      canRedo: () => operationRef.current !== "idle" || futureRef.current.length > 0 || (hasPendingHistoryRef.current?.() ?? false)
+      canUndo: () => operationRef.current !== "idle" || pastRef.current.length > 0 || partialReplayRef.current?.direction === "redo" || (hasPendingHistoryRef.current?.() ?? false),
+      canRedo: () => operationRef.current !== "idle" || futureRef.current.length > 0 || partialReplayRef.current?.direction === "undo" || (hasPendingHistoryRef.current?.() ?? false)
     });
   }, [undo, redo]);
 
@@ -937,8 +1013,8 @@ export function useUndoRedo(opts: {
       endInteraction,
       undo,
       redo,
-      canUndo: past.length > 0,
-      canRedo: future.length > 0
+      canUndo: past.length > 0 || partialReplay?.direction === "redo",
+      canRedo: future.length > 0 || partialReplay?.direction === "undo"
     }),
     [
       recordCreate,
@@ -952,7 +1028,8 @@ export function useUndoRedo(opts: {
       undo,
       redo,
       past.length,
-      future.length
+      future.length,
+      partialReplay?.direction
     ]
   );
 }

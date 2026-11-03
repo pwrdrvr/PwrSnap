@@ -111,6 +111,7 @@ import { recordingBackendCapabilities } from "../recording/recording-capabilitie
 import { getMainLogger } from "../log";
 import { renderViaCoordinator } from "../render/coordinator";
 import { prepareRenderedFileAlias } from "../render/file-alias";
+import { publishRenderedFile } from "../render/publish-rendered-file";
 import { buildPresetExportDisplayName } from "../render/export-filename";
 import { resolveImagePresetFile, targetWidthForImagePreset } from "../render/image-presets";
 import { getActiveExportStrategy, readDesktopSettings } from "./settings-handlers";
@@ -192,11 +193,6 @@ export function registerCaptureSaveAsHandler(): void {
 
     try {
       const strategy = await getActiveExportStrategy();
-      // Render (or hit the cache for) the preset the user asked for
-      // BEFORE showing the sheet, so the file is ready the instant they
-      // click Save and a slow render can't strand a half-written file
-      // at the chosen path.
-      const presetFile = await renderPresetFile(record, req.preset, strategy);
       const displayName = buildPresetExportDisplayName({
         record,
         enrichment: getCaptureEnrichment(record.id),
@@ -214,6 +210,13 @@ export function registerCaptureSaveAsHandler(): void {
         defaultPath: displayName,
         filters: [{ name: "PNG Image", extensions: ["png"] }]
       };
+      // Render while the user chooses a destination. Observe rejection at
+      // creation: cancel/sheet failure may return before the render settles.
+      // Renders are shared cache work and continue after a cancelled sheet.
+      const presetFile = renderPresetFile(record, req.preset, strategy).then(
+        (value) => ({ ok: true as const, value }),
+        (cause: unknown) => ({ ok: false as const, cause })
+      );
       const dialogResult =
         win !== null
           ? await dialog.showSaveDialog(win, saveOpts)
@@ -225,8 +228,9 @@ export function registerCaptureSaveAsHandler(): void {
       ) {
         return ok({ path: null });
       }
-      const { copyFile } = await import("node:fs/promises");
-      await copyFile(presetFile.path, dialogResult.filePath);
+      const rendered = await presetFile;
+      if (!rendered.ok) throw rendered.cause;
+      await publishRenderedFile(rendered.value.path, dialogResult.filePath);
       return ok({ path: dialogResult.filePath });
     } catch (cause) {
       log.error("save as failed", {

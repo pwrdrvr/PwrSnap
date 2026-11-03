@@ -69,6 +69,17 @@ function makeRecord(overrides: Partial<CaptureRecord> = {}): CaptureRecord {
   };
 }
 
+// A bare spy does not forward `new` to the native constructor. Count
+// calls while returning real instances so cache refreshes keep working.
+function spyOnDateTimeFormat() {
+  const RealDateTimeFormat = Intl.DateTimeFormat;
+  return vi.spyOn(Intl, "DateTimeFormat").mockImplementation(function (
+    ...args: ConstructorParameters<typeof Intl.DateTimeFormat>
+  ) {
+    return new RealDateTimeFormat(...args);
+  } as unknown as typeof Intl.DateTimeFormat);
+}
+
 describe("mapBundleIdToAppId — null / empty input", () => {
   test("null bundle id falls back to 'any'", () => {
     expect(mapBundleIdToAppId(null)).toBe("any");
@@ -443,33 +454,58 @@ describe("fixture building — perf regression guard (no per-record formatter co
   // `new Intl.DateTimeFormat` / `toLocaleString` / `toLocaleTimeString`
   // call into the recordToFixture path — hoist it to a cached
   // module-level formatter instead.
-  test("building 500 fixtures performs zero Intl/locale-API calls", () => {
-    const records = Array.from({ length: 500 }, (_, i) =>
-      makeRecord({
-        id: `rec-${i}`,
-        captured_at: new Date(2026, i % 12, (i % 27) + 1, i % 24, i % 60).toISOString(),
-        source_app_bundle_id: i % 2 === 0 ? "com.apple.Safari" : null,
-        source_app_name: i % 2 === 0 ? "Safari" : null
-      })
-    );
-    const projects = Array.from({ length: 20 }, (_, i) =>
-      makeProject({ id: `proj-${i}` })
-    );
-    const dtfSpy = vi.spyOn(Intl, "DateTimeFormat");
-    const localeStringSpy = vi.spyOn(Date.prototype, "toLocaleString");
-    const localeTimeSpy = vi.spyOn(Date.prototype, "toLocaleTimeString");
-    try {
-      const backed = new FixtureBackedRecords(records, projects);
-      expect(backed.fixtures()).toHaveLength(520);
-      expect(dtfSpy).not.toHaveBeenCalled();
-      expect(localeStringSpy).not.toHaveBeenCalled();
-      expect(localeTimeSpy).not.toHaveBeenCalled();
-    } finally {
-      dtfSpy.mockRestore();
-      localeStringSpy.mockRestore();
-      localeTimeSpy.mockRestore();
+  test.each([0, 60])(
+    "building 500 fixtures performs zero Intl/locale-API calls (prior offset delta: %i minutes)",
+    (offsetDelta) => {
+      const now = new Date(2026, 4, 27, 14, 0, 0);
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(now);
+      try {
+        // Exercise both a matching cache and a stale reference offset,
+        // independent of the host's time zone, season or test order.
+        const priorNow = new Date(now);
+        const offsetSpy = vi.spyOn(priorNow, "getTimezoneOffset").mockReturnValue(
+          now.getTimezoneOffset() + offsetDelta
+        );
+        try {
+          recordToFixture(makeRecord(), 1, priorNow);
+        } finally {
+          offsetSpy.mockRestore();
+        }
+
+        const records = Array.from({ length: 500 }, (_, i) =>
+          makeRecord({
+            id: `rec-${i}`,
+            captured_at: new Date(2026, i % 12, (i % 27) + 1, i % 24, i % 60).toISOString(),
+            source_app_bundle_id: i % 2 === 0 ? "com.apple.Safari" : null,
+            source_app_name: i % 2 === 0 ? "Safari" : null
+          })
+        );
+        const projects = Array.from({ length: 20 }, (_, i) =>
+          makeProject({ id: `proj-${i}` })
+        );
+        // Allow the one-time offset refresh before measuring steady-state
+        // work. FixtureBackedRecords uses the same pinned clock below.
+        new FixtureBackedRecords([makeRecord()]);
+        const dtfSpy = spyOnDateTimeFormat();
+        const localeStringSpy = vi.spyOn(Date.prototype, "toLocaleString");
+        const localeTimeSpy = vi.spyOn(Date.prototype, "toLocaleTimeString");
+        try {
+          const backed = new FixtureBackedRecords(records, projects);
+          expect(backed.fixtures()).toHaveLength(520);
+          expect(dtfSpy).not.toHaveBeenCalled();
+          expect(localeStringSpy).not.toHaveBeenCalled();
+          expect(localeTimeSpy).not.toHaveBeenCalled();
+        } finally {
+          dtfSpy.mockRestore();
+          localeStringSpy.mockRestore();
+          localeTimeSpy.mockRestore();
+        }
+      } finally {
+        vi.useRealTimers();
+      }
     }
-  });
+  );
 });
 
 describe("time-zone change — cached formatters refresh", () => {
@@ -491,18 +527,7 @@ describe("time-zone change — cached formatters refresh", () => {
       realNow.getTimezoneOffset() + 60
     );
 
-    // Count constructions while still producing REAL formatter
-    // instances — a bare spyOn doesn't proxy `new` through to the
-    // native constructor, and the rebuilt cache must actually work.
-    const RealDateTimeFormat = Intl.DateTimeFormat;
-    const dtfSpy = vi.spyOn(Intl, "DateTimeFormat").mockImplementation(function (
-      ...args: ConstructorParameters<typeof Intl.DateTimeFormat>
-    ) {
-      // Constructible (not an arrow fn) — `new` on the spy lands here
-      // and the returned real instance wins per constructor-return
-      // semantics.
-      return new RealDateTimeFormat(...args);
-    } as unknown as typeof Intl.DateTimeFormat);
+    const dtfSpy = spyOnDateTimeFormat();
     try {
       // First build under the shifted offset: exactly one rebuild —
       // the three cached formatters (month, weekday, time).

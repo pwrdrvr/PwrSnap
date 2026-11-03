@@ -85,6 +85,7 @@ describe("auto-updater failed install retry", () => {
   const roots: string[] = [];
 
   afterEach(async () => {
+    (await import("../auto-updater")).disposeAutoUpdater();
     process.env.NODE_ENV = originalNodeEnv;
     Object.defineProperty(process, "platform", {
       configurable: true,
@@ -103,7 +104,7 @@ describe("auto-updater failed install retry", () => {
     }
   });
 
-  test.each(["darwin", "win32"] as const)("waits for the retry download event and shutdown flush before installing on %s", async (platform) => {
+  test.each(["darwin", "win32"] as const)("joins retry requests through the download event and shutdown flush on %s", async (platform) => {
     Object.defineProperty(process, "platform", {
       configurable: true,
       value: platform
@@ -146,6 +147,7 @@ describe("auto-updater failed install retry", () => {
     initAppUpdater(() => ({ channel: "prerelease", train: "stable" }));
 
     const installResult = installDownloadedAppUpdate();
+    const duplicate = installDownloadedAppUpdate();
     await vi.waitFor(() => {
       expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
     });
@@ -158,6 +160,9 @@ describe("auto-updater failed install retry", () => {
     finishFlush();
 
     await expect(installResult).resolves.toEqual({ status: "restarting" });
+    await expect(duplicate).resolves.toEqual({ status: "restarting" });
+    await expect(installDownloadedAppUpdate()).resolves.toEqual({ status: "restarting" });
+    expect(beforeInstall).toHaveBeenCalledOnce();
     expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);
     expect(mocks.autoUpdater.quitAndInstall.mock.calls).toEqual([
       platform === "win32" ? [true, true] : []

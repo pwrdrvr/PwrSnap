@@ -145,6 +145,7 @@ vi.mock("../log", () => ({
 
 import {
   disposeFloatOver,
+  ensureFloatOverTopmost,
   floatOverCapabilities,
   floatOverDockBounds,
   getFloatOverState,
@@ -312,6 +313,121 @@ describe("float-over dock", () => {
     postLayout({ width: 392, height: 480, mode: "toast" });
     expect(window.setContentSize).not.toHaveBeenCalled();
     expect(onScreen(window)).toBe(false);
+  });
+
+  it("keeps a dock-shaped idle window parked until its toast layout arrives", () => {
+    const window = showDock();
+    setFloatOverState({ kind: "cancel", chromeHide: true });
+    setFloatOverState({ kind: "show-idle" });
+    expect(onScreen(window)).toBe(false);
+
+    postLayout({ width: 18, height: 174, mode: "dock" });
+    expect(onScreen(window)).toBe(false);
+    postLayout({ width: 392, height: 200, mode: "toast" });
+    expect(onScreen(window)).toBe(true);
+    expect(getFloatOverState()).toEqual({ kind: "idle" });
+  });
+
+  it("does not let a foreign or retired renderer complete the shape handshake", () => {
+    const first = showDock();
+    disposeFloatOver();
+    const window = showDock();
+    setFloatOverState({ kind: "show-loaded", captureId: "next" });
+    window.setContentSize.mockClear();
+    const resize = mocks.ipcHandlers.get(RESIZE_CHANNEL)!;
+
+    for (const sender of [{}, first.webContents]) {
+      resize({ sender }, { width: 392, height: 480, mode: "toast" });
+      expect(onScreen(window)).toBe(false);
+      expect(window.setContentSize).not.toHaveBeenCalled();
+    }
+    postLayout({ width: 392, height: 480, mode: "toast" });
+    expect(onScreen(window)).toBe(true);
+  });
+
+  it("does not let Windows topmost recovery show a pending toast in the dock's shape", () => {
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      const window = showDock();
+      setFloatOverState({ kind: "show-loaded", captureId: "next" });
+      window.showInactive.mockClear();
+      ensureFloatOverTopmost();
+      vi.advanceTimersByTime(2_000);
+      expect(window.showInactive).not.toHaveBeenCalled();
+      expect(onScreen(window)).toBe(false);
+
+      postLayout({ width: 392, height: 480, mode: "toast" });
+      expect(window.showInactive).toHaveBeenCalled();
+      expect(onScreen(window)).toBe(true);
+    } finally {
+      Object.defineProperty(process, "platform", { value: "darwin" });
+    }
+  });
+
+  it("bounds Windows topmost retries and cancels them on dismissal or disposal", () => {
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      const window = showToast();
+      window.isAlwaysOnTop.mockReturnValue(false);
+      window.setAlwaysOnTop.mockClear();
+      ensureFloatOverTopmost();
+      vi.advanceTimersByTime(10_000);
+      expect(window.setAlwaysOnTop).toHaveBeenCalledTimes(41);
+      expect(vi.getTimerCount()).toBe(0);
+
+      ensureFloatOverTopmost();
+      setFloatOverState({ kind: "dismiss" });
+      window.showInactive.mockClear();
+      vi.advanceTimersByTime(10_000);
+      expect(window.showInactive).not.toHaveBeenCalled();
+
+      setFloatOverState({ kind: "show-loaded", captureId: "another" });
+      ensureFloatOverTopmost();
+      disposeFloatOver();
+      disposeFloatOver();
+      window.showInactive.mockClear();
+      vi.advanceTimersByTime(10_000);
+      expect(window.showInactive).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      Object.defineProperty(process, "platform", { value: "darwin" });
+    }
+  });
+
+  it("does not restore a dismissed toast when its deferred layout arrives", () => {
+    const window = showDock();
+    setFloatOverState({ kind: "show-loaded", captureId: "next" });
+    setFloatOverState({ kind: "dismiss" });
+    postLayout({ width: 392, height: 480, mode: "toast" });
+    postLayout({ width: 18, height: 174, mode: "dock" });
+    expect(onScreen(window)).toBe(false);
+    expect(getFloatOverState()).toEqual({ kind: "hidden" });
+    releaseFloatOverDock();
+    expect(onScreen(window)).toBe(false);
+  });
+
+  it("lets a new capture supersede an unacknowledged tuck", () => {
+    const window = showToast();
+    tuckFloatOver();
+    setFloatOverState({ kind: "show-loaded", captureId: "new_capture" });
+    postLayout({ width: 18, height: 174, mode: "dock" });
+    expect(onScreen(window)).toBe(true);
+    expect(window.getContentSize()).toEqual([392, 480]);
+    expect(getFloatOverState()).toEqual({ kind: "loaded", captureId: "new_capture" });
+  });
+
+  it("drops a pending dock layout throughout recording and restores only after a fresh layout", () => {
+    const window = showToast();
+    tuckFloatOver();
+    setRecordingState({ phase: "preflight", sessionId: "rec_pending", displayId: 1,
+      rect: { x: 0, y: 0, w: 800, h: 600 } });
+    postLayout({ width: 18, height: 174, mode: "dock" });
+    expect(onScreen(window)).toBe(false);
+    setRecordingState({ phase: "idle" });
+    expect(onScreen(window)).toBe(false);
+    postLayout({ width: 18, height: 174, mode: "dock" });
+    expect(onScreen(window)).toBe(true);
+    expect(window.setContentProtection).toHaveBeenLastCalledWith(true);
   });
 
   it("keeps the dock out of screen captures, and the toast in them", () => {

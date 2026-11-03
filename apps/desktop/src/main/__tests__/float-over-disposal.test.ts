@@ -324,4 +324,31 @@ describe("disposeFloatOver", () => {
 
     expect(mocks.globalShortcut.register).not.toHaveBeenCalled();
   });
+
+  it("keeps only the newest shortcut lookup when the same capture is reopened", async () => {
+    const lookups: Array<(value: unknown) => void> = [];
+    mocks.dispatch.mockImplementation(() => new Promise((resolve) => lookups.push(resolve)));
+    setFloatOverState({ kind: "show-loaded", captureId: "same_capture" });
+    setFloatOverState({ kind: "show-loaded", captureId: "same_capture" });
+    lookups[1]!({ ok: true, value: { id: "same_capture", kind: "image" } });
+    await flushShortcutLookup();
+    expect(mocks.globalShortcut.register).toHaveBeenCalledTimes(3);
+    lookups[0]!({ ok: true, value: { id: "same_capture", kind: "video" } });
+    await flushShortcutLookup();
+    expect(mocks.globalShortcut.register).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not let a disposed window's lookup arm shortcuts on its replacement", async () => {
+    const lookups: Array<(value: unknown) => void> = [];
+    mocks.dispatch.mockImplementation(() => new Promise((resolve) => lookups.push(resolve)));
+    setFloatOverState({ kind: "show-loaded", captureId: "same_capture" });
+    disposeFloatOver();
+    setFloatOverState({ kind: "show-loaded", captureId: "same_capture" });
+    lookups[0]!({ ok: true, value: { id: "same_capture", kind: "video" } });
+    await flushShortcutLookup();
+    expect(mocks.globalShortcut.register).not.toHaveBeenCalled();
+    lookups[1]!({ ok: true, value: { id: "same_capture", kind: "image" } });
+    await flushShortcutLookup();
+    expect(mocks.globalShortcut.register).toHaveBeenCalledTimes(3);
+  });
 });

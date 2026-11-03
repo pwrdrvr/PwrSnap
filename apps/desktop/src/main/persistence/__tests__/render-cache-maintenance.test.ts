@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -6,7 +6,17 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   currentRoot: "",
   legacyRoot: "",
-  captureRows: [] as Array<{ id: string; width_px?: number; height_px?: number }>
+  captureRows: [] as Array<{ id: string; width_px?: number; height_px?: number }>,
+  cp: vi.fn(),
+  rename: vi.fn(),
+  link: vi.fn()
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => ({
+  ...await importOriginal<typeof import("node:fs/promises")>(),
+  cp: mocks.cp,
+  rename: mocks.rename,
+  link: mocks.link
 }));
 
 vi.mock("../db", () => ({
@@ -42,6 +52,10 @@ beforeEach(async () => {
   mocks.legacyRoot = join(tempRoot, "cache");
   mocks.currentRoot = join(tempRoot, "render-cache");
   mocks.captureRows = [];
+  const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+  mocks.cp.mockReset().mockImplementation(actual.cp);
+  mocks.rename.mockReset().mockImplementation(actual.rename);
+  mocks.link.mockReset().mockImplementation(actual.link);
 });
 
 afterEach(async () => {
@@ -49,6 +63,151 @@ afterEach(async () => {
 });
 
 describe("migrateLegacyRenderCache", () => {
+  test.each([
+    { scenario: "merge", rebuild: false },
+    { scenario: "cross-volume", rebuild: false },
+    { scenario: "merge", rebuild: true },
+    { scenario: "cross-volume", rebuild: true }
+  ])("$scenario copies publish complete cache files without exposing partial bytes (concurrent rebuild: $rebuild)", async ({ scenario, rebuild }) => {
+    mocks.captureRows = [{ id: "capture-a" }];
+    const legacyDir = join(mocks.legacyRoot, "capture-a");
+    const currentDir = join(mocks.currentRoot, "capture-a");
+    await mkdir(legacyDir, { recursive: true });
+    await writeFile(join(legacyDir, "hash.webp"), "complete");
+    if (scenario === "merge") await mkdir(currentDir, { recursive: true });
+    else mocks.rename.mockRejectedValue(Object.assign(new Error("cross-device"), { code: "EXDEV" }));
+    let started!: () => void;
+    const copying = new Promise<void>((resolve) => { started = resolve; });
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    mocks.cp.mockImplementation(async (_from: string, to: string) => {
+      await mkdir(to, { recursive: true });
+      await writeFile(join(to, "hash.webp"), "partial");
+      started();
+      await barrier;
+      await writeFile(join(to, "hash.webp"), "complete");
+    });
+    const { migrateLegacyRenderCache } = await import("../render-cache-maintenance");
+    const migration = migrateLegacyRenderCache();
+    try {
+      await copying;
+      // Render bakes intentionally bypass the derived-video gate. Readers
+      // must continue to see a cache miss until a complete file is published.
+      await expect(stat(join(currentDir, "hash.webp"))).rejects.toThrow();
+      if (rebuild) {
+        await mkdir(currentDir, { recursive: true });
+        await writeFile(join(currentDir, "hash.webp"), "rebuilt meanwhile");
+      }
+      release();
+      expect(await migration).toEqual({ movedDirs: 1, skippedDirs: 0 });
+      expect(await readFile(join(currentDir, "hash.webp"), "utf8"))
+        .toBe(rebuild ? "rebuilt meanwhile" : "complete");
+    } finally {
+      release();
+      await migration;
+    }
+  });
+
+  test("an interrupted copy removes staging and retains the legacy cache for retry", async () => {
+    mocks.captureRows = [{ id: "capture-a" }];
+    const legacyDir = join(mocks.legacyRoot, "capture-a");
+    await mkdir(legacyDir, { recursive: true });
+    await mkdir(join(mocks.currentRoot, "capture-a"), { recursive: true });
+    await writeFile(join(legacyDir, "hash.webp"), "complete");
+    mocks.cp.mockImplementation(async (_from: string, to: string) => {
+      await writeFile(join(to, "hash.webp"), "partial");
+      throw new Error("copy interrupted");
+    });
+    const { migrateLegacyRenderCache } = await import("../render-cache-maintenance");
+    expect(await migrateLegacyRenderCache()).toEqual({ movedDirs: 0, skippedDirs: 1 });
+    expect(await readFile(join(legacyDir, "hash.webp"), "utf8")).toBe("complete");
+    await expect(stat(join(mocks.currentRoot, "capture-a", "hash.webp"))).rejects.toThrow();
+    expect(await readdir(mocks.currentRoot)).toEqual(["capture-a"]);
+  });
+
+  test("a failed atomic publication removes staging and retains the legacy cache for retry", async () => {
+    mocks.captureRows = [{ id: "capture-a" }];
+    const legacyDir = join(mocks.legacyRoot, "capture-a");
+    await mkdir(legacyDir, { recursive: true });
+    await mkdir(join(mocks.currentRoot, "capture-a"), { recursive: true });
+    await writeFile(join(legacyDir, "hash.webp"), "complete");
+    mocks.link.mockRejectedValue(Object.assign(new Error("hardlinks unsupported"), { code: "EPERM" }));
+    const { migrateLegacyRenderCache } = await import("../render-cache-maintenance");
+    expect(await migrateLegacyRenderCache()).toEqual({ movedDirs: 0, skippedDirs: 1 });
+    expect(await readFile(join(legacyDir, "hash.webp"), "utf8")).toBe("complete");
+    await expect(stat(join(mocks.currentRoot, "capture-a", "hash.webp"))).rejects.toThrow();
+    expect(await readdir(mocks.currentRoot)).toEqual(["capture-a"]);
+  });
+
+  test("closes admission synchronously, drains existing writes, and runs a concurrent Clear after migration", async () => {
+    mocks.captureRows = [{ id: "capture-a" }];
+    await mkdir(join(mocks.legacyRoot, "capture-a"), { recursive: true });
+    await writeFile(join(mocks.legacyRoot, "capture-a", "hash.webp"), "legacy render");
+    const { runGatedCacheWrite } = await import("../derived-cache-gate");
+    const { migrateLegacyRenderCache, clearRenderCache } = await import("../render-cache-maintenance");
+    let releaseWrite!: () => void;
+    let writerSignal!: AbortSignal;
+    let started!: () => void;
+    const start = new Promise<void>((resolve) => { started = resolve; });
+    const writing = runGatedCacheWrite("capture-a", "fixture", async (signal) => {
+      writerSignal = signal;
+      started();
+      await new Promise<void>((resolve) => { releaseWrite = resolve; });
+    }).catch((error: unknown) => error);
+    await start;
+    const migration = migrateLegacyRenderCache();
+    let clearing: Promise<void> | undefined;
+    try {
+      // No await between starting maintenance and testing the admission gate.
+      expect(writerSignal.aborted).toBe(true);
+      const newWork = vi.fn(async () => undefined);
+      await expect(runGatedCacheWrite("capture-b", "new-fixture", newWork))
+        .rejects.toMatchObject({ name: "AbortError" });
+      expect(newWork).not.toHaveBeenCalled();
+      // The active writer deliberately ignores abort until its barrier opens.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await expect(readFile(join(mocks.legacyRoot, "capture-a", "hash.webp"), "utf8"))
+        .resolves.toBe("legacy render");
+      clearing = clearRenderCache();
+      releaseWrite();
+      expect(await migration).toEqual({ movedDirs: 1, skippedDirs: 0 });
+      expect(await writing).toMatchObject({ name: "AbortError" });
+      await clearing;
+      await expect(stat(join(mocks.currentRoot, "capture-a"))).rejects.toThrow();
+      await expect(stat(join(mocks.legacyRoot, "capture-a"))).rejects.toThrow();
+      await expect(runGatedCacheWrite("capture-a", "after-clear", async () => "admitted"))
+        .resolves.toBe("admitted");
+    } finally {
+      releaseWrite();
+      await writing;
+      await migration;
+      await clearing;
+    }
+  });
+
+  test("a failed migration releases admission for subsequent work and cleanup", async () => {
+    mocks.captureRows = [{ id: "capture-a" }];
+    await mkdir(mocks.legacyRoot, { recursive: true });
+    await writeFile(mocks.currentRoot, "not a directory");
+    const { migrateLegacyRenderCache, clearRenderCache } = await import("../render-cache-maintenance");
+    const { runGatedCacheWrite } = await import("../derived-cache-gate");
+    await expect(migrateLegacyRenderCache()).rejects.toThrow();
+    await expect(runGatedCacheWrite("capture-a", "after-failure", async () => "admitted"))
+      .resolves.toBe("admitted");
+    await expect(clearRenderCache()).resolves.toBeUndefined();
+  });
+
+  test("merging a legacy cache never overwrites a render already rebuilt at the new root", async () => {
+    mocks.captureRows = [{ id: "capture-a" }];
+    await mkdir(join(mocks.legacyRoot, "capture-a"), { recursive: true });
+    await mkdir(join(mocks.currentRoot, "capture-a"), { recursive: true });
+    await writeFile(join(mocks.legacyRoot, "capture-a", "hash.webp"), "old");
+    await writeFile(join(mocks.currentRoot, "capture-a", "hash.webp"), "rebuilt");
+    const { migrateLegacyRenderCache } = await import("../render-cache-maintenance");
+    await migrateLegacyRenderCache();
+    expect(await readFile(join(mocks.currentRoot, "capture-a", "hash.webp"), "utf8")).toBe("rebuilt");
+  });
+
   test("moves only capture-id directories out of the legacy Chromium cache bucket", async () => {
     mocks.captureRows = [{ id: "capture-a" }];
     await mkdir(join(mocks.legacyRoot, "capture-a"), { recursive: true });

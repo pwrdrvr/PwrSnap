@@ -1954,8 +1954,22 @@ export function bootstrapApp(): void {
         log.info("reset orphaned enrichment runs on boot", { count: orphanedRuns });
       }
       await migrateLegacyCaptureSources();
-      await migrateLegacyRenderCache();
-      markStartup("main: legacy migrations done");
+      markStartup("main: legacy source migration done");
+      // Source migration repairs durable paths and must finish before reads.
+      // Render derivatives rebuild on demand; their migration must not hold
+      // handlers, hotkeys or the Library behind an entire cache-tree walk.
+      // Start it before exposing handlers so its synchronous admission gate
+      // orders later Clear/Trim/purge requests after this work. Skip this
+      // optional work for profiling; the split Library only verifies.
+      if (!startupProfilingEnabled()) {
+        void migrateLegacyRenderCache()
+          .then(() => markStartup("main: legacy render-cache migration done"))
+          .catch((cause: unknown) => {
+            log.warn("legacy render-cache migration failed; derivatives will rebuild on demand", {
+              message: cause instanceof Error ? cause.message : String(cause)
+            });
+          });
+      }
     }
     if (role === "library") {
       // The persisted developer-mode flag normally reaches the menu via

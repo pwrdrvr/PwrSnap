@@ -63,6 +63,7 @@ describe.each(["library", "sizzle"] as const)("%s turn view ownership", (surface
     delta: EVENT_CHANNELS.libraryChatStreamDelta,
     commit: EVENT_CHANNELS.libraryChatMessageCommitted,
     interrupted: EVENT_CHANNELS.libraryChatTurnInterrupted,
+    tool: EVENT_CHANNELS.libraryChatToolCall,
     updated: EVENT_CHANNELS.libraryChatThreadUpdated,
     approvalRequested: EVENT_CHANNELS.libraryChatApprovalRequested,
     approvalResolved: EVENT_CHANNELS.libraryChatApprovalResolved
@@ -70,6 +71,7 @@ describe.each(["library", "sizzle"] as const)("%s turn view ownership", (surface
     delta: EVENT_CHANNELS.sizzleChatStreamDelta,
     commit: EVENT_CHANNELS.sizzleChatMessageCommitted,
     interrupted: EVENT_CHANNELS.sizzleChatTurnInterrupted,
+    tool: EVENT_CHANNELS.sizzleChatToolCall,
     updated: EVENT_CHANNELS.sizzleChatThreadUpdated,
     approvalRequested: EVENT_CHANNELS.sizzleChatApprovalRequested,
     approvalResolved: EVENT_CHANNELS.sizzleChatApprovalResolved
@@ -128,6 +130,69 @@ describe.each(["library", "sizzle"] as const)("%s turn view ownership", (surface
   function stopButton(): HTMLButtonElement | null {
     return container!.querySelector<HTMLButtonElement>('[data-testid="composer-stop"]');
   }
+
+  test.each([
+    ["delta", "resolve"], ["delta", "reject"],
+    ["tool", "resolve"], ["tool", "reject"]
+  ] as const)("foreign %s after approval navigation cannot replace live Stop A (%s)", async (kind, outcome) => {
+    const acknowledgement = deferred<unknown>();
+    const interrupt = vi.fn().mockReturnValueOnce(acknowledgement.promise)
+      .mockResolvedValue({ ok: true, value: undefined });
+    const { emit, select, commit } = await mount(interrupt);
+    await act(async () => stopButton()!.click());
+    const request = { threadId: "a", turnId: "turn-a", approvalId: "approval-a", summary: "Run A?" };
+    await act(async () => {
+      emit(channels.updated, { thread: {
+        ...thread("a", "turn-a"),
+        status: { kind: "awaiting_approval", approvalId: request.approvalId },
+        pendingApproval: request
+      } });
+      emit(channels.approvalRequested, request);
+    });
+    await select("b");
+    await select("a");
+    const beforeActivity = stopButton()?.disabled;
+    await act(async () => {
+      if (kind === "delta") emit(channels.delta, {
+        threadId: "a", turnId: "turn-before-a", messageId: "old-message", delta: "foreign old text"
+      });
+      else emit(channels.tool, {
+        threadId: "a", turnId: "turn-before-a", callId: "old-call", tool: "old-tool", summary: "foreign old tool", ok: true
+      });
+    });
+    const afterActivity = stopButton()?.disabled;
+    await act(async () => stopButton()!.click());
+    const callsAfterForeign = interrupt.mock.calls.length;
+    // Matching activity remains admissible after the same navigation, and a
+    // failed real Stop still targets A and enables its retry.
+    await act(async () => emit(channels.delta, {
+      threadId: "a", turnId: "turn-a", messageId: "message-a", delta: "legitimate A output"
+    }));
+    await flushFrames();
+    const ownOutput = container!.textContent?.includes("legitimate A output");
+    const foreignOutput = container!.textContent?.includes("foreign old");
+    await act(async () => {
+      if (outcome === "resolve") acknowledgement.resolve({ ok: true, value: undefined });
+      else acknowledgement.reject(new Error("A cancellation failed"));
+      await acknowledgement.promise.catch(() => undefined);
+    });
+    const afterAcknowledgement = stopButton()?.disabled;
+    if (outcome === "reject") await act(async () => stopButton()!.click());
+    const approvalStillPending = container!.querySelector('[data-testid="ps-approval"]') !== null;
+    const finalCalls = interrupt.mock.calls.length;
+    await act(async () => {
+      commit("complete");
+      emit(channels.approvalResolved, { ...request, decision: "deny" });
+    });
+    expect({ beforeActivity, afterActivity }).toEqual({ beforeActivity: true, afterActivity: true });
+    expect(callsAfterForeign).toBe(1);
+    expect(ownOutput).toBe(true);
+    expect(foreignOutput).toBe(false);
+    expect(afterAcknowledgement).toBe(outcome === "resolve");
+    expect(finalCalls).toBe(outcome === "reject" ? 2 : 1);
+    expect(approvalStillPending).toBe(true);
+    expect(stopButton()).toBeNull();
+  });
 
   test("a delayed delta from another turn cannot retire the current live Stop", async () => {
     const acknowledgement = deferred<unknown>();

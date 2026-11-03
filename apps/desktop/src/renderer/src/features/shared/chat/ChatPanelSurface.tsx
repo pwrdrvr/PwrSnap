@@ -293,12 +293,24 @@ export function ChatPanelSurface({
     }
   }, [updateStoppingTurn]);
 
+  const acceptTurnActivity = useCallback((threadId: string, turnId: string): boolean => {
+    const stop = stopRequestsRef.current.get(threadId);
+    if (stop !== undefined && stop.turnId !== turnId) {
+      // Delta/tool events may be delayed. They cannot establish a foreign
+      // active turn while a live Stop owns this thread, even after navigation
+      // projects an awaiting-approval thread without an active turn id.
+      if (!terminalStatusRef.current.has(stop.turnId)) return false;
+      observeTurnAdmission(threadId, turnId);
+    }
+    return true;
+  }, [observeTurnAdmission]);
+
+  // Projection is deliberately separate from admission: speculative activity
+  // must pass acceptTurnActivity before it can supply a missing active id.
   const updateActiveTurn = useCallback((turnId: string | null): void => {
-    const threadId = activeThreadRef.current;
-    if (threadId !== null && turnId !== null) observeTurnAdmission(threadId, turnId);
     activeTurnRef.current = turnId;
     setActiveTurnId(turnId);
-  }, [observeTurnAdmission]);
+  }, []);
 
   const clearTurnTracking = useCallback((): void => {
     updateActiveTurn(null);
@@ -425,10 +437,12 @@ export function ChatPanelSurface({
     setStreamingMessageId(bufferedMessageId);
     setActionError(null);
     const selected = threadsRef.current.find((thread) => thread.threadId === activeThreadId);
-    updateActiveTurn(
-      selected?.status.kind === "streaming" && !terminalStatusRef.current.has(selected.status.turnId)
-        ? selected.status.turnId : null
-    );
+    const selectedTurnId = selected?.status.kind === "streaming" &&
+      !terminalStatusRef.current.has(selected.status.turnId) ? selected.status.turnId : null;
+    if (activeThreadId !== null && selectedTurnId !== null) {
+      observeTurnAdmission(activeThreadId, selectedTurnId);
+    }
+    updateActiveTurn(selectedTurnId);
     if (activeThreadId === null) {
       setMessages([]);
       return;
@@ -454,7 +468,7 @@ export function ChatPanelSurface({
     return () => {
       cancelled = true;
     };
-  }, [surface, activeThreadId, updateActiveTurn, updatePendingChips, updateStoppingTurn, observeTerminalStop]);
+  }, [surface, activeThreadId, updateActiveTurn, updatePendingChips, updateStoppingTurn, observeTerminalStop, observeTurnAdmission]);
 
   // Subscribe to the chat event stream.
   useEffect(() => {
@@ -498,12 +512,7 @@ export function ChatPanelSurface({
           return;
         }
         if (terminalStatusRef.current.has(e.turnId)) return;
-        // A delta can arrive late. It releases an already-terminal Stop, but
-        // cannot replace a live turn's Stop without a streaming thread view.
-        const stop = stopRequestsRef.current.get(e.threadId);
-        if (stop !== undefined && terminalStatusRef.current.has(stop.turnId)) {
-          observeTurnAdmission(e.threadId, e.turnId);
-        }
+        if (!acceptTurnActivity(e.threadId, e.turnId)) return;
         let entry = streamsForThread(streamState.current, e.threadId).get(e.messageId);
         if (entry === undefined) {
           entry = { full: "", listeners: new Set() };
@@ -541,6 +550,7 @@ export function ChatPanelSurface({
         const e = payload as LibraryChatToolCallEvent;
         if (e.threadId !== activeThreadRef.current) return;
         const terminal = terminalStatusRef.current.has(e.turnId);
+        if (!terminal && !acceptTurnActivity(e.threadId, e.turnId)) return;
         // A tool fired → the agent is working. Adopt the turn id if we
         // didn't capture it from the send result.
         if (!terminal && activeTurnRef.current === null) updateActiveTurn(e.turnId);
@@ -687,7 +697,7 @@ export function ChatPanelSurface({
       terminalStatusRef.current.clear();
       stopRequestsRef.current.clear();
     };
-  }, [surface, scopeId, channels, appendActivity, flushPendingTo, updateActiveTurn, updatePendingChips, observeTerminalStop, observeTurnAdmission]);
+  }, [surface, scopeId, channels, appendActivity, flushPendingTo, updateActiveTurn, updatePendingChips, observeTerminalStop, observeTurnAdmission, acceptTurnActivity]);
 
   const subscribeToStream = useCallback(
     (messageId: string, onDelta: (fullText: string) => void): (() => void) => {
@@ -791,14 +801,12 @@ export function ChatPanelSurface({
           setDraftResetVersion((version) => version + 1);
         }
       }
-      if (
-        activeThreadRef.current === threadId &&
-        !terminalStatusRef.current.has(result.value.turnId)
-      ) {
-        updateActiveTurn(result.value.turnId);
+      if (!terminalStatusRef.current.has(result.value.turnId)) {
+        observeTurnAdmission(threadId, result.value.turnId);
+        if (activeThreadRef.current === threadId) updateActiveTurn(result.value.turnId);
       }
     },
-    [surface, scopeId, backendAvailability, updateActiveTurn, updatePendingChips]
+    [surface, scopeId, backendAvailability, updateActiveTurn, updatePendingChips, observeTurnAdmission]
   );
 
   const onStop = useCallback(async (): Promise<void> => {

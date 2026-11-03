@@ -23,6 +23,7 @@ import {
   type BundleLayerNode
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
+import { registerLayerHistoryReplayHandlers } from "./layer-history-replay";
 import { broadcastLayersChanged } from "./broadcast-layers";
 import { getMainLogger } from "../log";
 import { scheduleRepack } from "../persistence/bundle-store";
@@ -211,6 +212,7 @@ function applyCropCanvasAtomic(input: {
 }
 
 export function registerLayersHandlers(): void {
+  registerLayerHistoryReplayHandlers();
   bus.register("layers:list", async (req) => {
     const refusal = refuseIfV1Capture(req.captureId);
     if (refusal !== null) return err(refusal);

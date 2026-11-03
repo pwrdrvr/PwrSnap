@@ -4370,6 +4370,10 @@ export type CaptureEnrichmentSummary = {
  * shape and the response shape. The handler signature in main/command-bus.ts
  * is generated from this via mapped types.
  */
+/** Main-sealed identity for one IPC document's reserved history operation.
+ * Acknowledgement retires the sequence permanently for that document. */
+export type LayerHistoryReplayId = { owner: string; sequence: number };
+
 export type Commands = {
   // ---- capture ----
   /** Headless region capture. Agents call this; humans go through `capture:interactive`. */
@@ -4827,6 +4831,23 @@ export type Commands = {
   "layers:upsert": {
     req: { captureId: string; layer: BundleLayerNode; bumpZIndexToMax?: boolean };
     res: BundleLayerNode;
+  };
+  /** IPC-main-document only. Reserve before mutation, then atomically replay
+   * a history group. Committed duplicates read current state without writes;
+   * acknowledged/unknown sequences fail closed, never become fresh writes. */
+  "layers:replayHistory": {
+    req: { phase: "reserve"; captureId: string } | {
+      phase: "apply"; captureId: string; replayId: LayerHistoryReplayId;
+      restore: BundleLayerNode[]; removeIds: string[];
+    };
+    res: { phase: "reserved"; replayId: LayerHistoryReplayId } | {
+      phase: "applied"; record: CaptureRecord; layers: BundleLayerNode[];
+    };
+  };
+  /** IPC owner only. Frees a receipt while retaining its retirement watermark. */
+  "layers:ackHistoryReplay": {
+    req: { captureId: string; replayId: LayerHistoryReplayId };
+    res: void;
   };
   /** Update an existing live layer in place, preserving its id and
    *  z-order. Intended for style/geometry edits where the annotation is

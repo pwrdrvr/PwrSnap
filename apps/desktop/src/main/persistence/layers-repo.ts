@@ -901,7 +901,7 @@ function splitNodeForStorage(node: BundleLayerNode): {
   };
 }
 
-function loadLayer(id: string): BundleLayerNode {
+export function loadLayer(id: string): BundleLayerNode {
   const row = getDb()
     .prepare<[string], DbLayerRow>(
       `SELECT id, capture_id, parent_id, kind, z_index, name, visible,

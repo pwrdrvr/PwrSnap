@@ -17,11 +17,27 @@ import {
 import { BundleLayerNode, type OverlayRow } from "@pwrsnap/shared";
 import { registerCaptureUndoFallback, useEditMenuBridge } from "../../../lib/editMenuBridge";
 
+import type { LayerEditOp } from "../useCaptureModel";
+
 import {
   useUndoRedo,
   type UndoRedoDispatchEdit,
   type UseUndoRedoResult
 } from "../useUndoRedo";
+
+// Project a single atomic history request into its intended mutations for
+// coalescing/content assertions. The SQLite integration suite checks the actual
+// command count, transaction boundary, live-ID conflicts and replay receipts.
+function replayedEdits(mock: { mock: { calls: [LayerEditOp][] } }): [LayerEditOp][] {
+  return mock.mock.calls.flatMap(([op]): [LayerEditOp][] => {
+    if (op.kind === "historyReplay") return [
+      ...op.restore.map((node): [LayerEditOp] => [{ kind: "upsert", node }]),
+      ...op.removeIds.map((id): [LayerEditOp] => [{ kind: "delete", id }])
+    ];
+    if (op.kind === "historyAck") return [];
+    return [[op]];
+  });
+}
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -29,7 +45,7 @@ beforeAll(() => {
 });
 
 // A v2 dispatchEdit spy that records every op and returns plausible
-// results. Tests assert against `dispatchEditMock.mock.calls`. Reset
+// results. Tests assert against `replayedEdits(dispatchEditMock)`. Reset
 // per-test in beforeEach.
 const dispatchEditMock = vi.fn<UndoRedoDispatchEdit>();
 
@@ -38,6 +54,7 @@ beforeEach(() => {
   let n = 0;
   dispatchEditMock.mockImplementation(async (op) => {
     n += 1;
+    if (op.kind === "historyReplay" || op.kind === "historyAck") return { ok: true, value: { kind: op.kind } };
     if (op.kind === "upsert") {
       return { ok: true, value: { kind: "upsert", artifact: { format: 2, node: op.node } } };
     }
@@ -362,7 +379,7 @@ describe("useUndoRedo", () => {
       await api!.undo();
     });
 
-    expect(dispatchEditMock).toHaveBeenCalledWith({ kind: "delete", id: "row-A" });
+    expect(replayedEdits(dispatchEditMock)).toContainEqual([{ kind: "delete", id: "row-A" }]);
     expect(api!.canUndo).toBe(false);
     expect(api!.canRedo).toBe(true);
   });
@@ -391,7 +408,7 @@ describe("useUndoRedo", () => {
     // node carries its original z_index so the restored layer comes
     // back where it was (layers:upsert preserves node.z_index when
     // bumpZIndexToMax isn't set).
-    expect(dispatchEditMock).toHaveBeenCalledWith({ kind: "upsert", node });
+    expect(replayedEdits(dispatchEditMock)).toContainEqual([{ kind: "upsert", node }]);
   });
 
   test("recordDelete with a bare { id } ref (raster — no OverlayRow) round-trips undo/redo", async () => {
@@ -439,12 +456,12 @@ describe("useUndoRedo", () => {
       await api!.undo();
     });
     // Undo restores the raster via its node.
-    expect(dispatchEditMock).toHaveBeenCalledWith({ kind: "upsert", node: rasterNode });
+    expect(replayedEdits(dispatchEditMock)).toContainEqual([{ kind: "upsert", node: rasterNode }]);
     await act(async () => {
       await api!.redo();
     });
     // Redo re-deletes by the recorded id — the only field replay reads.
-    expect(dispatchEditMock).toHaveBeenCalledWith({ kind: "delete", id: "ras-cursor" });
+    expect(replayedEdits(dispatchEditMock)).toContainEqual([{ kind: "delete", id: "ras-cursor" }]);
   });
 
   test("undo then redo replays the original op", async () => {
@@ -474,7 +491,7 @@ describe("useUndoRedo", () => {
 
     // Redoing a `create` re-dispatches the upsert with the original
     // node — so the redone layer lands at the same logical position.
-    expect(dispatchEditMock).toHaveBeenCalledWith({ kind: "upsert", node });
+    expect(replayedEdits(dispatchEditMock)).toContainEqual([{ kind: "upsert", node }]);
     expect(api!.canUndo).toBe(true);
     expect(api!.canRedo).toBe(false);
   });
@@ -597,7 +614,7 @@ describe("useUndoRedo", () => {
 
     // The hook routes the inverse through dispatchEdit.
     expect(dispatchEdit).toHaveBeenCalledTimes(1);
-    expect(dispatchEdit.mock.calls[0]?.[0]).toEqual({
+    expect(replayedEdits(dispatchEdit)[0]?.[0]).toEqual({
       kind: "delete",
       id: "layer_A"
     });
@@ -665,7 +682,7 @@ describe("useUndoRedo", () => {
 
     // Redo must dispatch an upsert with the ORIGINAL node (not a v1
     // overlay) so layers:upsert lands a structurally-identical layer.
-    const upsertCalls = dispatchEdit.mock.calls.filter(
+    const upsertCalls = replayedEdits(dispatchEdit).filter(
       (c) => (c[0] as { kind: string }).kind === "upsert"
     );
     expect(upsertCalls.length).toBe(1);
@@ -759,7 +776,7 @@ describe("useUndoRedo", () => {
     // Undo: restore previous dims. The dispatcher interprets `rect.w *
     // currentCanvasWidth` as the new width. Current canvas after the
     // crop is 500; restoring 1000 means rect.w = 1000/500 = 2.
-    const cropCalls = dispatchEdit.mock.calls.filter(
+    const cropCalls = replayedEdits(dispatchEdit).filter(
       (c) => (c[0] as { kind: string }).kind === "crop"
     );
     expect(cropCalls.length).toBe(1);
@@ -823,7 +840,7 @@ describe("useUndoRedo", () => {
       await api!.undo();
     });
 
-    const cropCalls = dispatchEdit.mock.calls.filter(
+    const cropCalls = replayedEdits(dispatchEdit).filter(
       (c) => (c[0] as { kind: string }).kind === "crop"
     );
     expect(cropCalls.length).toBe(1);
@@ -898,7 +915,7 @@ describe("useUndoRedo", () => {
     // Undo should dispatch updateGeometry with the PREVIOUS geometry
     // against the chain's CURRENT id.
     expect(dispatchEdit).toHaveBeenCalledTimes(1);
-    const call = dispatchEdit.mock.calls[0]?.[0] as {
+    const call = replayedEdits(dispatchEdit)[0]?.[0] as {
       kind: string;
       layerId: string;
       geometry: { kind: string; to: { x: number } };
@@ -1012,7 +1029,7 @@ describe("useUndoRedo", () => {
       await api!.undo();
     });
 
-    const call = dispatchEdit.mock.calls[0]?.[0] as {
+    const call = replayedEdits(dispatchEdit)[0]?.[0] as {
       kind: string;
       layerId: string;
       patch: { color: string };
@@ -1062,7 +1079,7 @@ describe("useUndoRedo", () => {
       await api!.redo();
     });
     expect(dispatchEditMock).toHaveBeenCalledTimes(2);
-    expect(dispatchEditMock.mock.calls[1]?.[0]).toEqual({
+    expect(replayedEdits(dispatchEditMock)[1]?.[0]).toEqual({
       kind: "updateOverlay",
       layerId: "fresh-1",
       patch: { kind: "shape", shape: "circle", rect: circle }
@@ -1102,7 +1119,7 @@ describe("useUndoRedo", () => {
       await api!.undo();
     });
 
-    expect(dispatchEditMock.mock.calls.map(([op]) => op)).toEqual([
+    expect(replayedEdits(dispatchEditMock).map(([op]) => op)).toEqual([
       {
         kind: "updateOverlay",
         layerId: "ly_arrow",
@@ -1160,7 +1177,7 @@ describe("useUndoRedo", () => {
       });
     }
 
-    const ops = dispatchEditMock.mock.calls.map((c) => c[0]);
+    const ops = replayedEdits(dispatchEditMock).map((c) => c[0]);
     expect(ops).toEqual([
       // 1. Hi Mommy → Hi Mom (body reverted, NOT a delete).
       {
@@ -1225,7 +1242,7 @@ describe("useUndoRedo", () => {
       });
     }
 
-    const ops = dispatchEditMock.mock.calls.map((c) => c[0]);
+    const ops = replayedEdits(dispatchEditMock).map((c) => c[0]);
     expect(ops).toEqual([
       // 1. revert arrow1's drag (geometry restored, NOT a delete).
       { kind: "updateGeometry", layerId: "arrow1", geometry: previousGeometry },
@@ -1296,7 +1313,7 @@ describe("useUndoRedo", () => {
     await act(async () => {
       await api!.undo();
     });
-    expect(dispatchEditMock.mock.calls.map(([op]) => op)).toEqual([
+    expect(replayedEdits(dispatchEditMock).map(([op]) => op)).toEqual([
       { kind: "upsert", node: original },
       { kind: "delete", id: "piece-a" },
       { kind: "delete", id: "piece-b" }
@@ -1308,7 +1325,7 @@ describe("useUndoRedo", () => {
     await act(async () => {
       await api!.redo();
     });
-    expect(dispatchEditMock.mock.calls.map(([op]) => op)).toEqual([
+    expect(replayedEdits(dispatchEditMock).map(([op]) => op)).toEqual([
       { kind: "upsert", node: pieceA },
       { kind: "upsert", node: pieceB },
       { kind: "delete", id: "stroke-orig" }

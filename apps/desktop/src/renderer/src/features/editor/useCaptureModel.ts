@@ -32,6 +32,7 @@ import {
   type AffineTransform,
   type BundleLayerNode,
   type CaptureRecord,
+  type LayerHistoryReplayId,
   type Overlay,
   type OverlayRow,
   type PwrSnapError,
@@ -208,7 +209,13 @@ export type EditCropArtifact = {
   rect: CropRect;
 };
 
+/** Kept by the history entry until replay is confirmed; a lost response
+ * retries the same main-owned reservation, never a new mutation. */
+export type HistoryReplayIdentity = { current: LayerHistoryReplayId | null };
+
 export type LayerEditOp =
+  | { kind: "historyReplay"; identity: HistoryReplayIdentity; restore: BundleLayerNode[]; removeIds: string[] }
+  | { kind: "historyAck"; replayId: LayerHistoryReplayId }
   /** v2 upsert. `bumpZIndexToMax` (optional, default false) signals
    *  that the layer is a FRESH DRAW that should land at the top of
    *  the stack — the repo resolves z_index to MAX(existing) + GAP
@@ -261,6 +268,8 @@ export type CaptureModelError = {
  *  PRE-PATCH node so undo can derive its inverse from the state the
  *  write actually replaced. */
 export type EditOpResult =
+  | { kind: "historyReplay" }
+  | { kind: "historyAck" }
   | { kind: "upsert"; artifact: EditUpsertArtifact }
   | { kind: "delete" }
   | { kind: "crop"; artifact: EditCropArtifact }
@@ -918,6 +927,35 @@ export function useCaptureModel(captureId: string): CaptureModel {
       if (!isCurrentCapture()) return err({ kind: "validation", code: "edit_cancelled", message: "capture changed or editor unmounted" });
       refetchSeqRef.current += 1;
       switch (op.kind) {
+        case "historyReplay": {
+          if (op.identity.current === null) {
+            const reservation = await dispatch("layers:replayHistory", { phase: "reserve", captureId });
+            if (!reservation.ok) return err(reservation.error);
+            if (reservation.value.phase !== "reserved") return err({ kind: "validation", code: "invalid_history_reply", message: "expected history reservation" });
+            op.identity.current = reservation.value.replayId;
+          }
+          const result = await dispatch("layers:replayHistory", {
+            phase: "apply", captureId, replayId: op.identity.current,
+            restore: op.restore, removeIds: op.removeIds
+          });
+          if (!result.ok) return err(result.error);
+          if (result.value.phase !== "applied") return err({ kind: "validation", code: "invalid_history_reply", message: "expected committed history" });
+          if (isCurrentCapture()) {
+            committedLayersRef.current.clear();
+            if ((recordRef.current?.edits_version ?? -1) <= result.value.record.edits_version) {
+              refetchSeqRef.current += 1;
+              recordRef.current = result.value.record;
+              layersRef.current = result.value.layers;
+              setState({ kind: "v2", record: result.value.record, layers: result.value.layers });
+            }
+          }
+          return { ok: true, value: { kind: "historyReplay" } };
+        }
+        case "historyAck": {
+          const result = await dispatch("layers:ackHistoryReplay", { captureId, replayId: op.replayId });
+          if (!result.ok) return err(result.error);
+          return { ok: true, value: { kind: "historyAck" } };
+        }
         case "upsert": {
           const result = await dispatch("layers:upsert", {
             captureId,

@@ -41,8 +41,9 @@ async function flushFrames(): Promise<void> {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 }
 
 function thread(threadId: string, turnId: string | null): LibraryChatThreadView {
@@ -60,20 +61,28 @@ describe.each(["library", "sizzle"] as const)("%s turn view ownership", (surface
     delta: EVENT_CHANNELS.libraryChatStreamDelta,
     commit: EVENT_CHANNELS.libraryChatMessageCommitted,
     interrupted: EVENT_CHANNELS.libraryChatTurnInterrupted,
-    updated: EVENT_CHANNELS.libraryChatThreadUpdated
+    updated: EVENT_CHANNELS.libraryChatThreadUpdated,
+    approvalRequested: EVENT_CHANNELS.libraryChatApprovalRequested,
+    approvalResolved: EVENT_CHANNELS.libraryChatApprovalResolved
   } : {
     delta: EVENT_CHANNELS.sizzleChatStreamDelta,
     commit: EVENT_CHANNELS.sizzleChatMessageCommitted,
     interrupted: EVENT_CHANNELS.sizzleChatTurnInterrupted,
-    updated: EVENT_CHANNELS.sizzleChatThreadUpdated
+    updated: EVENT_CHANNELS.sizzleChatThreadUpdated,
+    approvalRequested: EVENT_CHANNELS.sizzleChatApprovalRequested,
+    approvalResolved: EVENT_CHANNELS.sizzleChatApprovalResolved
   };
 
-  async function mount(interrupt: () => Promise<unknown> = async () => ({ ok: true })) {
+  async function mount(
+    interrupt: () => Promise<unknown> = async () => ({ ok: true }),
+    approval: () => Promise<unknown> = async () => ({ ok: true })
+  ) {
     const handlers = new Map<string, Set<(payload: unknown) => void>>();
     const dispatch = vi.fn(async (name: string) => {
       if (name.endsWith(":list")) return { ok: true, value: { threads: [thread("a", "turn-a"), thread("b", null)] } };
       if (name.endsWith(":history")) return { ok: true, value: { messages: [] } };
       if (name.endsWith(":interrupt")) return interrupt();
+      if (name.endsWith(":approval")) return approval();
       return { ok: true, value: undefined };
     });
     window.pwrsnapApi = {
@@ -103,14 +112,162 @@ describe.each(["library", "sizzle"] as const)("%s turn view ownership", (surface
     const delta = (text: string) => emit(channels.delta, {
       threadId: "a", turnId: "turn-a", messageId: "message-a", delta: text
     });
-    const commit = (status: ChatMessage["status"]) => emit(channels.commit, {
-      threadId: "a", turnId: "turn-a", message: {
-        id: "message-a", role: "assistant", content: [{ kind: "text", text: "answer" }],
+    const commit = (status: ChatMessage["status"], turnId = "turn-a") => emit(channels.commit, {
+      threadId: "a", turnId, message: {
+        id: turnId === "turn-a" ? "message-a" : turnId,
+        role: "assistant", content: [{ kind: "text", text: "answer" }],
         status, createdAt: "2026-11-01T00:00:00.000Z"
       }
     });
     return { emit, select, delta, commit, dispatch };
   }
+
+  function stopButton(): HTMLButtonElement | null {
+    return container!.querySelector<HTMLButtonElement>('[data-testid="composer-stop"]');
+  }
+
+  test.each([
+    ["resolve", "before B Stop"], ["reject", "before B Stop"],
+    ["resolve", "after B Stop"], ["reject", "after B Stop"]
+  ] as const)("A's late %s %s cannot own B or its successor", async (outcome, timing) => {
+    const first = deferred<unknown>();
+    const second = deferred<unknown>();
+    const third = deferred<unknown>();
+    const interrupt = vi.fn()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+      .mockReturnValueOnce(third.promise);
+    const { emit, commit, select } = await mount(interrupt);
+    await act(async () => stopButton()!.click());
+    await act(async () => {
+      commit("complete");
+      emit(channels.updated, { thread: thread("a", "turn-next") });
+    });
+    const admittedB = { disabled: stopButton()?.disabled, cancellations: interrupt.mock.calls.length };
+    if (timing === "after B Stop") await act(async () => stopButton()!.click());
+    await select("b");
+    await select("a");
+    const navigatedB = stopButton()?.disabled;
+    await act(async () => {
+      if (outcome === "resolve") first.resolve({ ok: true, value: undefined });
+      else first.reject(new Error("retired A cancellation failed"));
+      await first.promise.catch(() => undefined);
+    });
+    expect(container!.querySelector('[role="alert"]')).toBeNull();
+    expect(admittedB).toEqual({ disabled: false, cancellations: 1 });
+    expect(navigatedB).toBe(timing === "after B Stop");
+    expect(stopButton()?.disabled).toBe(timing === "after B Stop");
+    if (timing === "before B Stop") await act(async () => stopButton()!.click());
+    await act(async () => stopButton()!.click());
+    expect(interrupt).toHaveBeenCalledTimes(2);
+    expect(stopButton()?.disabled).toBe(true);
+    await act(async () => commit("complete", "turn-next"));
+    expect(stopButton()?.disabled).toBe(true);
+    await act(async () => {
+      second.resolve({ ok: true, value: undefined });
+      await second.promise;
+    });
+    expect(stopButton()).toBeNull();
+    await act(async () => emit(channels.updated, { thread: thread("a", "turn-third") }));
+    expect(stopButton()?.disabled).toBe(false);
+    await act(async () => stopButton()!.click());
+    expect(interrupt).toHaveBeenCalledTimes(3);
+    await act(async () => {
+      commit("complete", "turn-third");
+      third.resolve({ ok: true, value: undefined });
+      await third.promise;
+    });
+    expect(stopButton()).toBeNull();
+  });
+
+  test.each(["resolve", "reject"] as const)(
+    "B completing without Stop cannot resurrect A's guard before a third turn (%s)",
+    async (outcome) => {
+      const first = deferred<unknown>();
+      const third = deferred<unknown>();
+      const interrupt = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(third.promise);
+      const { emit, commit, select } = await mount(interrupt);
+      await act(async () => stopButton()!.click());
+      await act(async () => {
+        commit("complete");
+        emit(channels.updated, { thread: thread("a", "turn-next") });
+      });
+      await select("b");
+      await select("a");
+      await act(async () => commit("complete", "turn-next"));
+      const completedBHasStop = stopButton() !== null;
+      await act(async () => emit(channels.updated, { thread: thread("a", "turn-third") }));
+      const thirdDisabled = stopButton()?.disabled;
+      await act(async () => stopButton()!.click());
+      await act(async () => {
+        if (outcome === "resolve") first.resolve({ ok: true, value: undefined });
+        else first.reject(new Error("retired A cancellation failed"));
+        await first.promise.catch(() => undefined);
+      });
+      expect(completedBHasStop).toBe(false);
+      expect(thirdDisabled).toBe(false);
+      expect(interrupt).toHaveBeenCalledTimes(2);
+      expect(stopButton()?.disabled).toBe(true);
+      expect(container!.querySelector('[role="alert"]')).toBeNull();
+      await act(async () => {
+        commit("complete", "turn-third");
+        third.resolve({ ok: true, value: undefined });
+        await third.promise;
+      });
+      expect(stopButton()).toBeNull();
+    }
+  );
+
+  test("an old Stop cannot replace a next-turn approval submission across navigation", async () => {
+    const first = deferred<unknown>();
+    const next = deferred<unknown>();
+    const approval = deferred<unknown>();
+    const interrupt = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(next.promise);
+    const { emit, commit, select, dispatch } = await mount(interrupt, () => approval.promise);
+    await act(async () => stopButton()!.click());
+    const request = { threadId: "a", turnId: "turn-next", approvalId: "approval-next", summary: "Approve B?" };
+    await act(async () => {
+      commit("complete");
+      emit(channels.updated, { thread: thread("a", "turn-next") });
+      emit(channels.updated, { thread: {
+        ...thread("a", "turn-next"),
+        status: { kind: "awaiting_approval", approvalId: request.approvalId },
+        pendingApproval: request
+      } });
+      emit(channels.approvalRequested, request);
+    });
+    await act(async () => container!.querySelector<HTMLButtonElement>('[data-testid="ps-approval-approve"]')!.click());
+    await select("b");
+    await select("a");
+    expect(container!.querySelector('[data-testid="ps-approval"]')?.getAttribute("aria-busy")).toBe("true");
+    expect(dispatch.mock.calls.filter(([name]) => name.endsWith(":approval"))).toHaveLength(1);
+    await act(async () => {
+      approval.resolve({ ok: true, value: undefined });
+      await approval.promise;
+    });
+    expect(container!.querySelector('[data-testid="ps-approval"]')?.getAttribute("aria-busy")).toBe("true");
+    await act(async () => {
+      emit(channels.approvalResolved, { ...request, decision: "approve" });
+      emit(channels.updated, { thread: thread("a", "turn-next") });
+    });
+    const nextDisabled = stopButton()?.disabled;
+    await act(async () => stopButton()!.click());
+    await act(async () => {
+      first.reject(new Error("retired A cancellation failed"));
+      await first.promise.catch(() => undefined);
+    });
+    expect(container!.querySelector('[data-testid="ps-approval"]')).toBeNull();
+    expect(nextDisabled).toBe(false);
+    expect(interrupt).toHaveBeenCalledTimes(2);
+    expect(stopButton()?.disabled).toBe(true);
+    expect(container!.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => {
+      commit("complete", "turn-next");
+      next.resolve({ ok: true, value: undefined });
+      await next.promise;
+    });
+    expect(stopButton()).toBeNull();
+  });
 
   test.each(["complete", "interrupted"] as const)(
     "a background %s commit rejects stale deltas and streaming views on return",

@@ -231,7 +231,8 @@ export function ChatPanelSurface({
   const stoppingTurnRef = useRef<string | null>(null);
   stoppingTurnRef.current = stoppingTurnId;
   // Thread navigation changes the visible projection, never ownership of an
-  // outstanding Stop. Keep the request until both IPC and the turn settle.
+  // outstanding Stop. Keep it until IPC and the turn settle, or a newer turn
+  // is admitted on the same thread.
   const stopRequestsRef = useRef<Map<string, StopRequest>>(new Map());
   const pendingChipsRef = useRef<ChatActivityChip[]>(pendingChips);
   pendingChipsRef.current = pendingChips;
@@ -275,15 +276,24 @@ export function ChatPanelSurface({
     []
   );
 
-  const updateActiveTurn = useCallback((turnId: string | null): void => {
-    activeTurnRef.current = turnId;
-    setActiveTurnId(turnId);
-  }, []);
-
   const updateStoppingTurn = useCallback((turnId: string | null): void => {
     stoppingTurnRef.current = turnId;
     setStoppingTurnId(turnId);
   }, []);
+
+  const updateActiveTurn = useCallback((turnId: string | null): void => {
+    const threadId = activeThreadRef.current;
+    const stop = threadId === null ? undefined : stopRequestsRef.current.get(threadId);
+    if (threadId !== null && turnId !== null && stop !== undefined && stop.turnId !== turnId) {
+      // A new turn can be admitted by another window before the old Stop IPC
+      // settles. Retire only its view/guard; its identity-checked finally must
+      // not clear a replacement Stop or reappear when this turn completes.
+      stopRequestsRef.current.delete(threadId);
+      updateStoppingTurn(null);
+    }
+    activeTurnRef.current = turnId;
+    setActiveTurnId(turnId);
+  }, [updateStoppingTurn]);
 
   const clearTurnTracking = useCallback((): void => {
     updateActiveTurn(null);
@@ -781,7 +791,7 @@ export function ChatPanelSurface({
     const threadId = activeThreadRef.current;
     const turnId = activeTurnRef.current;
     if (threadId === null || turnId === null) return;
-    if (stopRequestsRef.current.has(threadId)) return;
+    if (stopRequestsRef.current.get(threadId)?.turnId === turnId) return;
 
     const request: StopRequest = { turnId, phase: "requesting" };
     stopRequestsRef.current.set(threadId, request);
@@ -865,6 +875,8 @@ export function ChatPanelSurface({
   }
 
   const showGreeting = activeThreadId === null;
+  const visibleStop = stoppingTurnId !== null &&
+    (activeTurnId === null || stoppingTurnId === activeTurnId);
   const composerDraftKey = chatDraftKey(surface, scopeId, activeThreadId);
   const composerDraft = readChatDraftSnapshot(composerDraftKey);
   const activeThread =
@@ -1007,7 +1019,7 @@ export function ChatPanelSurface({
           }
           onStop={onStop}
           turnState={
-            stoppingTurnId !== null
+            visibleStop
               ? "stopping"
               : activeTurnId !== null
                 ? "active"

@@ -1,6 +1,6 @@
 import { access, mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import sharp from "sharp";
 import { afterAll, beforeAll, beforeEach, expect, test, vi } from "vitest";
 
@@ -169,7 +169,7 @@ test("preparation leaves the root lock available and selects the root at commit 
     await runExclusiveCapturesRootOperation(async () => { root = join(workDir, "new-root"); });
   } finally { alpha.resolve(true); }
   const { record } = await pending;
-  expect(record.bundle_path).toContain(`${root}/`);
+  expect(dirname(record.bundle_path!)).toBe(root);
   expect(guard).toHaveBeenCalledOnce();
 });
 
@@ -192,7 +192,7 @@ test("root retry reuses preparation and retains input until the fallback commit 
   });
   expect(sourceBufferHasAlpha).toHaveBeenCalledOnce();
   expect(runCompositeThumbnailWorker).toHaveBeenCalledOnce();
-  expect(record.bundle_path).toContain(`${fallbackRoot}/`);
+  expect(dirname(record.bundle_path!)).toBe(fallbackRoot);
   const manifest = await readBundleManifest(record.bundle_path!);
   expect(manifest.paired_png_filename).toBe(basename(record.bundle_path!).replace(/\.pwrsnap$/, ".png"));
   expect(await readSourceFromBundle(record.bundle_path!, record.sha256)).toEqual(png);

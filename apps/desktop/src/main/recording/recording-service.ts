@@ -489,7 +489,15 @@ abstract class AttemptRecorderService implements RecordingService {
 
   async dismissFailure(sessionId: string): Promise<void> {
     const state = getRecordingState();
-    if (this.retryInFlight || this.attempt !== null || state.phase !== "failed" || state.sessionId !== sessionId) {
+    const attempt = this.attempt;
+    if (this.retryInFlight || state.phase !== "failed" || state.sessionId !== sessionId
+      || (attempt !== null && (attempt.sessionId !== sessionId || attempt.phase !== "retired"))) {
+      throw new Error("stale_failure");
+    }
+    if (attempt !== null) await attempt.cleanupOperation;
+    // Retry or another Dismiss may have claimed the failure while cleanup ran.
+    const current = getRecordingState();
+    if (this.retryInFlight || this.attempt !== null || current.phase !== "failed" || current.sessionId !== sessionId) {
       throw new Error("stale_failure");
     }
     this.retryOptions = null;
@@ -547,8 +555,15 @@ abstract class AttemptRecorderService implements RecordingService {
     if (attempt.cleanupOperation) return attempt.cleanupOperation;
     attempt.phase = "retired";
     // Capture the process-global camera synchronously before awaiting anything.
-    const cameraCleanup = cancelCameraRecording();
-    void cameraCleanup.catch(() => undefined);
+    // The camera is already detached and its worker closed before its file
+    // cleanup awaits. A close/remove error must not keep admission reserved or
+    // replace a saved capture or the original recorder failure with that error.
+    const cameraCleanup = cancelCameraRecording().catch((cause: unknown) => {
+      log.warn("recording camera cleanup failed", {
+        sessionId: attempt.sessionId,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    });
     try { attempt.child?.kill("SIGTERM"); } catch { /* already exited */ }
     attempt.cleanupOperation = (async () => {
       await attempt.allocation?.catch(() => undefined);

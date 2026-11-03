@@ -1,30 +1,7 @@
-// Render-cache clear-recovery spec — locks down the bug where
-// Settings → Storage → "Clear" wiped the per-capture cached
-// source.png that bundle-backed captures store under
-// <userData>/render-cache/<id>/source.png. Pre-fix, the wipe left
-// every thumbnail 500ing, Copy Med pasting un-decodable bytes,
-// drag-out failing — because nothing lazy-re-extracted from the
-// bundle. The fix in `ensureEffectiveSrcPath` re-materializes
-// source.png on demand from the bundle (system of record).
-//
-// This spec exercises the end-to-end loop the user actually hit:
-//
-//   1. Seed a real bundle-backed capture (production
-//      persistCaptureFromTempV2 path). Verify the per-capture
-//      source.png lives under render-cache.
-//   2. Delete the cache source.png from disk — same observable
-//      end state as `storage:maintainRenderCache mode='clear'`,
-//      but without depending on its storage-snapshot scan, which
-//      is unrelated to what we're testing.
-//   3. Dispatch clipboard:copy mode='med' — same command the
-//      Library + Float-Over Copy buttons fire.
-//   4. Assert the dispatch returns ok AND the clipboard holds a
-//      non-empty NativeImage. Pre-fix the dispatch returned err
-//      and the clipboard was unchanged (renderer fire-and-forgets
-//      the err, so the user pasted whatever stale bytes were
-//      already on the pasteboard).
-//   5. Assert source.png was re-materialized at the expected cache
-//      path so subsequent reads hit the fast path.
+// Clearing source.png must leave both resized copies and source reuse
+// working. V2 composition reads verified bytes directly from the bundle:
+// Copy Med needs no extracted source file. An unedited Copy High reuses
+// the original and must lazily restore that file after the cache wipe.
 //
 // macOS-only — same reason as clipboard-copy.spec.ts (NativeImage
 // round-trip is most consistent on the platform PwrSnap ships to
@@ -146,7 +123,7 @@ test.describe("render-cache clear → bundle source recovery", () => {
     "clipboard NativeImage round-trip is macOS-only in Phase 1; same gate as clipboard-copy.spec.ts"
   );
 
-  test("clipboard:copy recovers after the per-capture cache source.png is wiped", async () => {
+  test("clipboard:copy recovers after cache clear and only extracts a source for reuse", async () => {
     const app = await launchPwrSnap();
     try {
       // 1. Seed a real bundle capture — persistCaptureFromTempV2 packs
@@ -173,12 +150,7 @@ test.describe("render-cache clear → bundle source recovery", () => {
       await rm(cacheSourcePath, { force: true });
       expect(existsSync(cacheSourcePath), "cache source.png should be wiped").toBe(false);
 
-      // 3. + 4. Copy after the wipe. Pre-fix, the handler's compose()
-      //    call threw "Input file is missing" inside sharp, returned
-      //    err, the renderer's `void dispatch(...)` swallowed it, and
-      //    the clipboard kept whatever stale bytes were there. With
-      //    the fix, ensureEffectiveSrcPath re-extracts source.png
-      //    from the bundle and compose succeeds.
+      // 3. + 4. V2 composition renders directly from the durable bundle.
       await clearClipboard(app);
       const copyResult = await app.dispatch("clipboard:copy", { captureId, preset: "med" });
       expect(copyResult.ok, `clipboard:copy after wipe failed: ${JSON.stringify(copyResult)}`).toBe(
@@ -193,12 +165,18 @@ test.describe("render-cache clear → bundle source recovery", () => {
       expect(img!.width).toBeGreaterThanOrEqual(1438);
       expect(img!.width).toBeLessThanOrEqual(1442);
 
-      // 5. The recovered path should have re-materialized the cache
-      //    file so subsequent reads hit the fast path instead of
-      //    paying yauzl + decompress every time.
+      expect(existsSync(cacheSourcePath), "Copy Med needs no extracted source file").toBe(false);
+
+      // 5. Source-sized unedited output reuses the original instead of
+      //    composing. That caller still needs lazy source extraction.
+      await clearClipboard(app);
+      const highResult = await app.dispatch("clipboard:copy", { captureId, preset: "high" });
+      expect(highResult.ok, `Copy High after wipe failed: ${JSON.stringify(highResult)}`).toBe(true);
+      const highImage = await readClipboardImage(app);
+      expect(highImage).toMatchObject({ isEmpty: false, width: 2400, height: 1500 });
       expect(
         existsSync(cacheSourcePath),
-        "ensureEffectiveSrcPath should re-materialize source.png after the recovered copy"
+        "source reuse should re-materialize source.png after the cache wipe"
       ).toBe(true);
     } finally {
       await app.close();

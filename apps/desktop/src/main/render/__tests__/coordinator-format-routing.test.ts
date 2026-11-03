@@ -37,7 +37,8 @@ const { renderViaCoordinator, resolveCacheFile } = await import("../coordinator"
 beforeEach(() => {
   composeV2Mock.mockReset();
   getCaptureByIdMock.mockReset();
-  ensureEffectiveSrcPathMock.mockClear();
+  ensureEffectiveSrcPathMock.mockReset();
+  ensureEffectiveSrcPathMock.mockResolvedValue("/tmp/fake.png");
 
   composeV2Mock.mockResolvedValue({
     cachePath: "/cache/v2.png",
@@ -177,6 +178,31 @@ describe("renderViaCoordinator — in-flight coalescing", () => {
 });
 
 describe("resolveCacheFile — thin wrapper around renderViaCoordinator", () => {
+  test("renders a cold, trashed bundle without materializing a source file", async () => {
+    getCaptureByIdMock.mockReturnValue({
+      ...(v2Record() as Record<string, unknown>),
+      bundle_path: "/trash/cap_v2.pwrsnap",
+      deleted_at: "2026-11-03T00:00:00Z"
+    });
+    ensureEffectiveSrcPathMock.mockRejectedValue(new Error("source cache unavailable"));
+
+    await expect(resolveCacheFile({ captureId: "cap_v2", width: 400, format: "png" }))
+      .resolves.toBe("/cache/v2.png");
+    expect(ensureEffectiveSrcPathMock).not.toHaveBeenCalled();
+    expect(composeV2Mock).toHaveBeenCalledWith(expect.objectContaining({
+      bundlePath: "/trash/cap_v2.pwrsnap"
+    }));
+  });
+
+  test("propagates compositor rejection and permits a subsequent retry", async () => {
+    getCaptureByIdMock.mockReturnValue(v2Record());
+    composeV2Mock.mockRejectedValueOnce(new Error("source hash mismatch"));
+    const request = { captureId: "cap_v2", width: 400, format: "png" as const };
+    await expect(resolveCacheFile(request)).rejects.toThrow("source hash mismatch");
+    await expect(resolveCacheFile(request)).resolves.toBe("/cache/v2.png");
+    expect(composeV2Mock).toHaveBeenCalledTimes(2);
+  });
+
   test("v2 capture: returns cachePath produced by composeV2", async () => {
     getCaptureByIdMock.mockReturnValue(v2Record());
 

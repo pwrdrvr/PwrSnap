@@ -281,19 +281,24 @@ export function ChatPanelSurface({
     setStoppingTurnId(turnId);
   }, []);
 
+  const observeTurnAdmission = useCallback((threadId: string, turnId: string): void => {
+    const stop = stopRequestsRef.current.get(threadId);
+    if (stop !== undefined && stop.turnId !== turnId) {
+      // A new turn can be admitted by another window before the old Stop IPC
+      // settles, even when this thread stays offscreen for the entire turn.
+      // Retire the producer's guard without changing another thread's view.
+      // The old reply's identity-checked finally cannot clear a replacement.
+      stopRequestsRef.current.delete(threadId);
+      if (activeThreadRef.current === threadId) updateStoppingTurn(null);
+    }
+  }, [updateStoppingTurn]);
+
   const updateActiveTurn = useCallback((turnId: string | null): void => {
     const threadId = activeThreadRef.current;
-    const stop = threadId === null ? undefined : stopRequestsRef.current.get(threadId);
-    if (threadId !== null && turnId !== null && stop !== undefined && stop.turnId !== turnId) {
-      // A new turn can be admitted by another window before the old Stop IPC
-      // settles. Retire only its view/guard; its identity-checked finally must
-      // not clear a replacement Stop or reappear when this turn completes.
-      stopRequestsRef.current.delete(threadId);
-      updateStoppingTurn(null);
-    }
+    if (threadId !== null && turnId !== null) observeTurnAdmission(threadId, turnId);
     activeTurnRef.current = turnId;
     setActiveTurnId(turnId);
-  }, [updateStoppingTurn]);
+  }, [observeTurnAdmission]);
 
   const clearTurnTracking = useCallback((): void => {
     updateActiveTurn(null);
@@ -465,6 +470,9 @@ export function ChatPanelSurface({
         ) {
           return;
         }
+        if (thread.status.kind === "streaming") {
+          observeTurnAdmission(thread.threadId, thread.status.turnId);
+        }
         setThreads((prev) => {
           if (thread.archived) return prev.filter((t) => t.threadId !== thread.threadId);
           const idx = prev.findIndex((t) => t.threadId === thread.threadId);
@@ -490,6 +498,12 @@ export function ChatPanelSurface({
           return;
         }
         if (terminalStatusRef.current.has(e.turnId)) return;
+        // A delta can arrive late. It releases an already-terminal Stop, but
+        // cannot replace a live turn's Stop without a streaming thread view.
+        const stop = stopRequestsRef.current.get(e.threadId);
+        if (stop !== undefined && terminalStatusRef.current.has(stop.turnId)) {
+          observeTurnAdmission(e.threadId, e.turnId);
+        }
         let entry = streamsForThread(streamState.current, e.threadId).get(e.messageId);
         if (entry === undefined) {
           entry = { full: "", listeners: new Set() };
@@ -673,7 +687,7 @@ export function ChatPanelSurface({
       terminalStatusRef.current.clear();
       stopRequestsRef.current.clear();
     };
-  }, [surface, scopeId, channels, appendActivity, flushPendingTo, updateActiveTurn, updatePendingChips, observeTerminalStop]);
+  }, [surface, scopeId, channels, appendActivity, flushPendingTo, updateActiveTurn, updatePendingChips, observeTerminalStop, observeTurnAdmission]);
 
   const subscribeToStream = useCallback(
     (messageId: string, onDelta: (fullText: string) => void): (() => void) => {

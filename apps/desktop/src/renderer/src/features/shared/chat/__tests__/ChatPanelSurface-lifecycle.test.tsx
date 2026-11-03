@@ -5,6 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vi
 import type { ChatMessage, LibraryChatThreadView } from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { ChatPanelSurface } from "../ChatPanelSurface";
+import { clearChatDraftsForTests } from "../chat-draft-store";
 
 beforeAll(() => {
   Element.prototype.scrollIntoView = vi.fn();
@@ -28,6 +29,7 @@ afterEach(async () => {
   root = null;
   container = null;
   vi.unstubAllGlobals();
+  clearChatDraftsForTests();
 });
 
 async function flushFrames(): Promise<void> {
@@ -83,6 +85,7 @@ describe.each(["library", "sizzle"] as const)("%s turn view ownership", (surface
       if (name.endsWith(":history")) return { ok: true, value: { messages: [] } };
       if (name.endsWith(":interrupt")) return interrupt();
       if (name.endsWith(":approval")) return approval();
+      if (name.endsWith(":send")) return { ok: true, value: { turnId: "turn-third" } };
       return { ok: true, value: undefined };
     });
     window.pwrsnapApi = {
@@ -125,6 +128,103 @@ describe.each(["library", "sizzle"] as const)("%s turn view ownership", (surface
   function stopButton(): HTMLButtonElement | null {
     return container!.querySelector<HTMLButtonElement>('[data-testid="composer-stop"]');
   }
+
+  test("a delayed delta from another turn cannot retire the current live Stop", async () => {
+    const acknowledgement = deferred<unknown>();
+    const interrupt = vi.fn(() => acknowledgement.promise);
+    const { emit, commit } = await mount(interrupt);
+    await act(async () => stopButton()!.click());
+    await act(async () => emit(channels.delta, {
+      threadId: "a", turnId: "turn-before-a", messageId: "old-message", delta: "late old delta"
+    }));
+    const disabled = stopButton()?.disabled;
+    await act(async () => stopButton()!.click());
+    await act(async () => {
+      commit("complete");
+      acknowledgement.resolve({ ok: true, value: undefined });
+      await acknowledgement.promise;
+    });
+    expect(disabled).toBe(true);
+    expect(interrupt).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    ["resolve", "before C send", "view"], ["reject", "before C send", "view"],
+    ["resolve", "after C Stop", "view"], ["reject", "after C Stop", "view"],
+    ["resolve", "before C send", "delta"], ["reject", "before C send", "delta"],
+    ["resolve", "after C Stop", "delta"], ["reject", "after C Stop", "delta"]
+  ] as const)("A's %s %s cannot revive Stop after B runs entirely offscreen (%s admission)", async (outcome, timing, admission) => {
+    const first = deferred<unknown>();
+    const other = deferred<unknown>();
+    const third = deferred<unknown>();
+    const interrupt = vi.fn()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(other.promise)
+      .mockReturnValueOnce(third.promise);
+    const { emit, commit, select, dispatch } = await mount(interrupt);
+    const settleFirst = async () => {
+      await act(async () => {
+        if (outcome === "resolve") first.resolve({ ok: true, value: undefined });
+        else first.reject(new Error("retired A cancellation failed"));
+        await first.promise.catch(() => undefined);
+      });
+    };
+    await act(async () => stopButton()!.click());
+    await select("b");
+    // Keep another producer's Stop visible while A and its successor run
+    // offscreen: retiring A must not clear this thread's request or view.
+    await act(async () => emit(channels.updated, { thread: thread("b", "turn-other") }));
+    await act(async () => stopButton()!.click());
+    await act(async () => {
+      commit("complete");
+      emit(channels.updated, { thread: thread("a", null) });
+      if (admission === "view") {
+        emit(channels.updated, { thread: thread("a", "turn-next") });
+      } else {
+        emit(channels.delta, { threadId: "a", turnId: "turn-next", messageId: "turn-next", delta: "offscreen B" });
+      }
+    });
+    const otherStoppingAtBStart = stopButton()?.disabled;
+    await act(async () => {
+      commit("complete", "turn-next");
+      emit(channels.updated, { thread: thread("a", null) });
+    });
+    const otherStoppingAtBEnd = stopButton()?.disabled;
+    await act(async () => {
+      emit(channels.interrupted, { threadId: "b", turnId: "turn-other", reason: "user_interrupted" });
+      other.resolve({ ok: true, value: undefined });
+      await other.promise;
+    });
+    await select("a");
+    const staleStopOnReturn = stopButton() !== null;
+    if (timing === "before C send") await settleFirst();
+    const textarea = container!.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "third question");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => container!.querySelector<HTMLButtonElement>('[data-testid="composer-send"]')?.click());
+    const sends = dispatch.mock.calls.filter(([name]) => name.endsWith(":send")).length;
+    const thirdReady = stopButton()?.disabled;
+    await act(async () => stopButton()?.click());
+    if (timing === "after C Stop") await settleFirst();
+    const thirdStillStopping = stopButton()?.disabled;
+    const errorAfterA = container!.querySelector('[role="alert"]')?.textContent ?? null;
+    await act(async () => {
+      commit("complete", "turn-third");
+      third.resolve({ ok: true, value: undefined });
+      await third.promise;
+    });
+    expect(otherStoppingAtBStart).toBe(true);
+    expect(otherStoppingAtBEnd).toBe(true);
+    expect(staleStopOnReturn).toBe(false);
+    expect(sends).toBe(1);
+    expect(thirdReady).toBe(false);
+    expect(interrupt).toHaveBeenCalledTimes(3);
+    expect(thirdStillStopping).toBe(true);
+    expect(errorAfterA).toBeNull();
+    expect(stopButton()).toBeNull();
+  });
 
   test.each([
     ["resolve", "before B Stop"], ["reject", "before B Stop"],

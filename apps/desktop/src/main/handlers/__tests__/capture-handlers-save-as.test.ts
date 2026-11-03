@@ -19,6 +19,7 @@
 // module and will try to spawn a helper or load better-sqlite3.
 
 import { describe, expect, test, vi, beforeEach } from "vitest";
+import { join } from "node:path";
 import type { CaptureRecord } from "@pwrsnap/shared";
 
 function deferred<T>() {
@@ -168,6 +169,7 @@ const imageRecord = {
 } as unknown as CaptureRecord;
 
 const videoRecord = { ...imageRecord, kind: "video" } as unknown as CaptureRecord;
+const stagingPath = join("/Users/me/Desktop/.pwrsnap-save-test", "image.png");
 
 beforeEach(() => {
   mocks.getCaptureById.mockReset();
@@ -216,8 +218,8 @@ describe("capture:saveAs", () => {
     expect(mocks.copyFile).not.toHaveBeenCalled();
     render.resolve({ path: "/rendered.png", byteSize: 10, fromCache: false });
     expect(await pending).toMatchObject({ ok: true, value: { path: "/chosen.png" } });
-    expect(mocks.copyFile).toHaveBeenCalledWith("/rendered.png", "/Users/me/Desktop/.pwrsnap-save-test/image.png");
-    expect(mocks.rename).toHaveBeenCalledWith("/Users/me/Desktop/.pwrsnap-save-test/image.png", "/chosen.png");
+    expect(mocks.copyFile).toHaveBeenCalledWith("/rendered.png", stagingPath);
+    expect(mocks.rename).toHaveBeenCalledWith(stagingPath, "/chosen.png");
   });
 
   test("cancellation returns before rendering settles and consumes its later rejection", async () => {
@@ -277,10 +279,10 @@ describe("capture:saveAs", () => {
     expect(result.value.path).toBe("/Users/me/Desktop/example.png");
     expect(mocks.copyFile).toHaveBeenCalledWith(
       "/cache/cap_1-high.png",
-      "/Users/me/Desktop/.pwrsnap-save-test/image.png"
+      stagingPath
     );
     expect(mocks.rename).toHaveBeenCalledWith(
-      "/Users/me/Desktop/.pwrsnap-save-test/image.png", "/Users/me/Desktop/example.png"
+      stagingPath, "/Users/me/Desktop/example.png"
     );
   });
 

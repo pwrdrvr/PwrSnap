@@ -15,6 +15,7 @@ import {
   vi
 } from "vitest";
 import type { BundleLayerNode, OverlayRow } from "@pwrsnap/shared";
+import { registerCaptureUndoFallback, useEditMenuBridge } from "../../../lib/editMenuBridge";
 
 import {
   useUndoRedo,
@@ -110,6 +111,7 @@ type ProbeProps = {
   readonly captureId: string;
   readonly applyingRef?: React.RefObject<boolean>;
   readonly onSnapshot: (api: UseUndoRedoResult) => void;
+  readonly onBeforeHistory?: () => Promise<boolean>;
 };
 
 function Probe(props: ProbeProps): null {
@@ -117,12 +119,18 @@ function Probe(props: ProbeProps): null {
   const api = useUndoRedo({
     captureId: props.captureId,
     applyingRef: props.applyingRef ?? internal,
-    dispatchEdit: dispatchEditMock
+    dispatchEdit: dispatchEditMock,
+    onBeforeHistory: props.onBeforeHistory
   });
   useEffect(() => {
     props.onSnapshot(api);
   });
   return null;
+}
+
+function BridgeProbe(props: ProbeProps) {
+  useEditMenuBridge();
+  return createElement(Probe, props);
 }
 
 type RerenderProbeProps = {
@@ -171,6 +179,145 @@ afterEach(() => {
 });
 
 describe("useUndoRedo", () => {
+  test("a busy undo owns opposite-direction menu admission instead of invoking the capture fallback", async () => {
+    let api: UseUndoRedoResult | null = null;
+    render(createElement(BridgeProbe, { captureId: "cap-1", onSnapshot: (a) => { api = a; } }));
+    const fallback = { undo: vi.fn(), redo: vi.fn() };
+    const unregister = registerCaptureUndoFallback(fallback);
+    act(() => { api!.recordCreate(makeRow("pending"), { node: makeNode("pending") }); });
+    let release!: (result: Awaited<ReturnType<UndoRedoDispatchEdit>>) => void;
+    dispatchEditMock.mockImplementationOnce(() => new Promise((done) => { release = done; }));
+    let pending!: Promise<void>;
+    try {
+      await act(async () => { pending = api!.undo(); });
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, shiftKey: true, bubbles: true }));
+      });
+      await act(async () => {
+        release({ ok: true, value: { kind: "delete" } });
+        await pending;
+      });
+      expect(fallback.redo).not.toHaveBeenCalled();
+    } finally {
+      unregister();
+    }
+  });
+
+  test("unmount during reconciliation prevents a stale history dispatch", async () => {
+    let api: UseUndoRedoResult | null = null;
+    let release!: (value: boolean) => void;
+    const gate = new Promise<boolean>((done) => { release = done; });
+    render(createElement(Probe, {
+      captureId: "cap-1", onBeforeHistory: () => gate, onSnapshot: (a) => { api = a; }
+    }));
+    act(() => { api!.recordCreate(makeRow("old-session"), { node: makeNode("old-session") }); });
+    let pending!: Promise<void>;
+    await act(async () => { pending = api!.undo(); });
+    await act(async () => { root!.render(null); });
+    await act(async () => { release(false); await pending; });
+    expect(dispatchEditMock).not.toHaveBeenCalled();
+  });
+
+  test("history admits one request while reconciliation waits, and reads the entry recorded during that wait", async () => {
+    let api: UseUndoRedoResult | null = null;
+    let release!: (value: boolean) => void;
+    const gate = new Promise<boolean>((done) => { release = done; });
+    const before = vi.fn(() => gate);
+    render(createElement(Probe, {
+      captureId: "cap-1", onBeforeHistory: before, onSnapshot: (a) => { api = a; }
+    }));
+    act(() => { api!.recordCreate(makeRow("older"), { node: makeNode("older") }); });
+    let undo!: Promise<void>;
+    let redo!: Promise<void>;
+    await act(async () => {
+      undo = api!.undo();
+      redo = api!.redo();
+    });
+    const admissions = before.mock.calls.length;
+    await act(async () => {
+      // Model the released gesture's record and completion in one task,
+      // before React has republished a new API snapshot.
+      api!.recordCreate(makeRow("released"), { node: makeNode("released") });
+      release(false);
+      await Promise.all([undo, redo]);
+    });
+    expect(admissions).toBe(1);
+    expect(dispatchEditMock.mock.calls).toEqual([[{ kind: "delete", id: "released" }]]);
+    expect(api!.canUndo).toBe(true);
+  });
+
+  test("overlapping redo requests restore an entry once", async () => {
+    let api: UseUndoRedoResult | null = null;
+    const applyingRef = { current: false };
+    render(createElement(Probe, { captureId: "cap-1", applyingRef, onSnapshot: (a) => { api = a; } }));
+    act(() => { api!.recordCreate(makeRow("redo"), { node: makeNode("redo") }); });
+    await act(async () => { await api!.undo(); });
+    dispatchEditMock.mockClear();
+    let release!: (result: Awaited<ReturnType<UndoRedoDispatchEdit>>) => void;
+    dispatchEditMock.mockImplementationOnce(() => new Promise((done) => { release = done; }));
+    let first!: Promise<void>;
+    let second!: Promise<void>;
+    await act(async () => {
+      first = api!.redo();
+      second = api!.redo();
+    });
+    const count = dispatchEditMock.mock.calls.length;
+    await act(async () => {
+      release({ ok: true, value: { kind: "upsert", artifact: { format: 2, node: makeNode("redo") } } });
+      await Promise.all([first, second]);
+    });
+    expect(count).toBe(1);
+    expect(applyingRef.current).toBe(false);
+    await act(async () => { await api!.undo(); });
+    expect(api!.canUndo).toBe(false);
+  });
+
+  test("overlapping undo requests replay the stack top once and keep the older entry", async () => {
+    let api: UseUndoRedoResult | null = null;
+    const applyingRef = { current: false };
+    render(createElement(Probe, { captureId: "cap-1", applyingRef, onSnapshot: (a) => { api = a; } }));
+    act(() => {
+      api!.recordCreate(makeRow("older"), { node: makeNode("older") });
+      api!.recordCreate(makeRow("newer"), { node: makeNode("newer") });
+    });
+    let resolve!: (result: Awaited<ReturnType<UndoRedoDispatchEdit>>) => void;
+    dispatchEditMock.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    let first!: Promise<void>;
+    let second!: Promise<void>;
+    await act(async () => {
+      first = api!.undo();
+      second = api!.undo();
+    });
+    expect(dispatchEditMock.mock.calls).toEqual([[{ kind: "delete", id: "newer" }]]);
+    expect(applyingRef.current).toBe(true);
+    await act(async () => {
+      resolve({ ok: true, value: { kind: "delete" } });
+      await Promise.all([first, second]);
+    });
+    expect(applyingRef.current).toBe(false);
+    expect(api!.canUndo).toBe(true);
+    await act(async () => { await api!.undo(); });
+    expect(dispatchEditMock.mock.calls.at(-1)).toEqual([{ kind: "delete", id: "older" }]);
+  });
+
+  test("a failed undo remains available for retry and does not create redo history", async () => {
+    let api: UseUndoRedoResult | null = null;
+    render(createElement(Probe, { captureId: "cap-1", onSnapshot: (a) => { api = a; } }));
+    act(() => { api!.recordCreate(makeRow("retry"), { node: makeNode("retry") }); });
+    dispatchEditMock.mockResolvedValueOnce({
+      ok: false, error: { kind: "validation", code: "refused", message: "fixture failure" }
+    });
+    await act(async () => { await api!.undo(); });
+    expect(api!.canUndo).toBe(true);
+    expect(api!.canRedo).toBe(false);
+    await act(async () => { await api!.undo(); });
+    expect(dispatchEditMock.mock.calls).toEqual([
+      [{ kind: "delete", id: "retry" }], [{ kind: "delete", id: "retry" }]
+    ]);
+    expect(api!.canUndo).toBe(false);
+    expect(api!.canRedo).toBe(true);
+  });
+
   test("keeps API identity stable across unrelated renders", () => {
     const snapshots: UseUndoRedoResult[] = [];
     let rerender: (() => void) | null = null;

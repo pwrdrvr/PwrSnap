@@ -148,7 +148,7 @@ describe("startRecordingFromSelection — overlap coordinate space", () => {
       return { ok: false, error: { kind: "capture", code: "recording_start_failed", message: "Failed" } } as never;
     });
     await startRecordingFromSelection(
-      { ok: true, snappedWindowId: 42, rect: { x: 0, y: 0, w: 100, h: 100 },
+      { ok: true, selectorInvocationId: 17, snappedWindowId: 42, rect: { x: 0, y: 0, w: 100, h: 100 },
         displayId: 3,
         screenSnapshotId: "snap-failed", previousAppPid: null },
       { includeSystemAudio: false, includeMicrophone: false, videoCaptureCursor: false }
@@ -166,6 +166,7 @@ describe("startRecordingFromSelection — overlap coordinate space", () => {
     await startRecordingFromSelection(
       {
         ok: true,
+        selectorInvocationId: 17,
         snappedWindowId: 42,
         rect: { x: 0, y: 0, w: 600, h: 400 },
         displayId: SKEWED.id,
@@ -189,6 +190,7 @@ describe("startRecordingFromSelection — overlap coordinate space", () => {
     await startRecordingFromSelection(
       {
         ok: true,
+        selectorInvocationId: 17,
         rect: selectorRect,
         displayId: SKEWED.id,
         screenSnapshotId: "snap-1",
@@ -212,7 +214,7 @@ describe("startRecordingFromSelection — overlap coordinate space", () => {
 
 describe("startRecordingFromSelection — preflight feedback", () => {
   const selection = {
-    ok: true as const, snappedWindowId: 42,
+    ok: true as const, selectorInvocationId: 17, snappedWindowId: 42,
     rect: { x: 1496, y: -473, w: 600, h: 400 }, displayId: 3,
     screenSnapshotId: "preflight-snapshot", previousAppPid: null
   };
@@ -229,7 +231,7 @@ describe("startRecordingFromSelection — preflight feedback", () => {
     notificationSupported.mockReturnValue(supported);
     dispatch.mockResolvedValueOnce({ ok: false, error: microphoneError } as never);
     showMessageBox.mockImplementationOnce(async () => {
-      expect(hideSelector).toHaveBeenCalledOnce();
+      expect(hideSelector).toHaveBeenCalledExactlyOnceWith(17);
       expect(releaseSnapshot).toHaveBeenCalledWith("preflight-snapshot");
       return { response: 0 };
     });
@@ -301,6 +303,7 @@ describe("startRecordingFromSelection — which audio sources the take gets", ()
     await startRecordingFromSelection(
       {
         ok: true,
+        selectorInvocationId: 17,
         rect: RECT,
         displayId: SKEWED.id,
         screenSnapshotId: "snap-sources",
@@ -323,6 +326,7 @@ describe("startRecordingFromSelection — which audio sources the take gets", ()
     await startRecordingFromSelection(
       {
         ok: true,
+        selectorInvocationId: 17,
         rect: RECT,
         displayId: SKEWED.id,
         screenSnapshotId: "snap-silent",
@@ -345,6 +349,7 @@ describe("startRecordingFromSelection — which audio sources the take gets", ()
     await startRecordingFromSelection(
       {
         ok: true,
+        selectorInvocationId: 17,
         rect: RECT,
         displayId: SKEWED.id,
         screenSnapshotId: "snap-default",
@@ -374,6 +379,7 @@ describe("startRecordingFromSelection — holding z-order through the lead-in", 
     const running = startRecordingFromSelection(
       {
         ok: true,
+        selectorInvocationId: 17,
         snappedWindowId: 42,
         rect: { x: 0, y: 0, w: 600, h: 400 },
         displayId: SKEWED.id,

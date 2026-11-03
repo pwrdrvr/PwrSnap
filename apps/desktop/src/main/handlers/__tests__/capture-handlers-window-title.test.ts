@@ -192,6 +192,7 @@ const snapshotWindow: WindowInfo = {
 };
 
 const selection = {
+  selectorInvocationId: 23,
   ok: true as const,
   rect: { x: 100, y: 120, w: 900, h: 640 },
   displayId: 1,
@@ -265,6 +266,7 @@ describe("capture:interactive selected-window title", () => {
     );
 
     expect(result.ok).toBe(true);
+    expect(mocks.hideSelector).toHaveBeenCalledExactlyOnceWith(23);
     expect(mocks.captureWindow).toHaveBeenCalledWith(42);
     expect(mocks.listWindows).toHaveBeenCalledTimes(1);
     expect(mocks.persistCaptureFromTempV2).toHaveBeenCalledTimes(1);
@@ -293,9 +295,20 @@ describe("capture:interactive selected-window title", () => {
     );
 
     expect(result.ok).toBe(true);
+    expect(mocks.hideSelector).toHaveBeenCalledExactlyOnceWith(23);
     expect(mocks.listWindows).toHaveBeenCalledTimes(1);
     expect(
       mocks.persistCaptureFromTempV2.mock.calls[0]?.[0]?.sourceWindowTitle
     ).toBeNull();
+  });
+
+  test("cancellation cleanup carries the selector invocation token after the compositor wait", async () => {
+    mocks.pickRegion.mockResolvedValue({ ok: false, reason: "cancelled", selectorInvocationId: 24 });
+    await bus.dispatch(
+      "capture:interactive",
+      { mode: "window", invocation: createCaptureInvocation({ id: "cancel-token", origin: "global_hotkey.quick_capture", monotonicNow: () => 0 }) },
+      { principal: "ipc" }
+    );
+    expect(mocks.hideSelector).toHaveBeenCalledExactlyOnceWith(24);
   });
 });

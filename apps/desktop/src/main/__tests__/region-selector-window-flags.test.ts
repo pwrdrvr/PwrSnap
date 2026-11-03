@@ -25,6 +25,7 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { BrowserWindow, Display } from "electron";
+import type { ScreenSnapshot } from "../capture/screen-snapshot";
 import type { WindowInfo } from "../capture/window-list";
 
 type WindowSpy = {
@@ -36,6 +37,7 @@ type WindowSpy = {
   setContentBounds: ReturnType<typeof vi.fn>;
   setBounds: ReturnType<typeof vi.fn>;
   getBounds: ReturnType<typeof vi.fn>;
+  getContentBounds: ReturnType<typeof vi.fn>;
   show: ReturnType<typeof vi.fn>;
   focus: ReturnType<typeof vi.fn>;
   blur: ReturnType<typeof vi.fn>;
@@ -57,6 +59,7 @@ type WindowSpy = {
 };
 
 const constructed: WindowSpy[] = [];
+const protectedWindows = new Map<number, { isDestroyed: () => boolean; setContentProtection: ReturnType<typeof vi.fn>; getBounds: () => object }>();
 const ipcListeners = new Map<string, (event: unknown, payload: unknown) => void>();
 const ipcHandlers = new Map<string, (event: unknown, payload: unknown) => unknown>();
 const deferredLoadResolvers: (() => void)[] = [];
@@ -104,6 +107,7 @@ function makeWindowSpy(options: Record<string, unknown>): WindowSpy {
     setContentBounds: vi.fn(),
     setBounds: vi.fn(),
     getBounds: vi.fn().mockReturnValue({ x: 0, y: 0, width: 1440, height: 900 }),
+    getContentBounds: vi.fn().mockReturnValue({ x: 0, y: 0, width: 1440, height: 900 }),
     show: vi.fn(),
     focus: vi.fn(),
     blur: vi.fn(),
@@ -152,6 +156,7 @@ function makeWindowSpy(options: Record<string, unknown>): WindowSpy {
 
 vi.mock("electron", () => {
   class BrowserWindow {
+    static fromId(id: number) { return protectedWindows.get(id) ?? null; }
     constructor(options: Record<string, unknown>) {
       const spy = makeWindowSpy(options);
       constructed.push(spy);
@@ -259,6 +264,7 @@ const realPlatform = process.platform;
 
 beforeEach(() => {
   constructed.length = 0;
+  protectedWindows.clear();
   ipcListeners.clear();
   ipcHandlers.clear();
   deferredLoadResolvers.length = 0;
@@ -299,9 +305,49 @@ beforeEach(() => {
   Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  const { disposeRegionSelector } = await import("../capture/region-selector");
+  disposeRegionSelector();
   Object.defineProperty(process, "platform", { value: realPlatform, configurable: true });
 });
+
+function activeSelectorWindow(): WindowSpy {
+  return [...constructed].reverse().find((win) => win.webContents.send.mock.calls.some(([channel]) => channel === "region-selector:mode")) ?? constructed[0]!;
+}
+
+function latestMode(win = activeSelectorWindow()) {
+  return win.webContents.send.mock.calls.filter(([channel]) => channel === "region-selector:mode").at(-1)?.[1] as { screenUrl: string } | undefined;
+}
+
+function emitSelectorResult(payload: object, win = activeSelectorWindow()): void {
+  ipcListeners.get("region-selector:result")?.(selectorEvent(win), {
+    screenUrl: latestMode(win)?.screenUrl,
+    ...payload
+  });
+}
+
+function selectorEvent(win = activeSelectorWindow()) {
+  const mainFrame = { processId: 10, routingId: 20 };
+  return { sender: { id: win.webContents.id, isDestroyed: () => false, mainFrame }, senderFrame: mainFrame };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
+function snapshot(id: string): ScreenSnapshot {
+  return {
+    id, displayId: 1, transport: "png-file",
+    acquisition: { sourceBitmapBytes: 0, retainedBitmapBytes: 0, bitmapNormalizeMs: 0, mappingWriteBytes: 0, fullScreenPngEncodeCount: 1, fullScreenPngBytes: 100, fullScreenTempFileWriteBytes: 100 }
+  };
+}
+
+async function flushSelector(): Promise<void> {
+  for (let i = 0; i < 30; i++) await Promise.resolve();
+}
 
 describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () => {
   test("uses type: 'panel' so show()/focus() never activates PwrSnap and pulls the user's Space", async () => {
@@ -394,7 +440,7 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
     expect(moveTopOrder!).toBeGreaterThan(focusOrder!);
     expect(moveTopOrder!).toBeGreaterThan(webFocusOrder!);
 
-    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    emitSelectorResult({ ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
   });
 
@@ -450,7 +496,7 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
       { key: "Escape" }
     );
 
-    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    emitSelectorResult({ ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
   });
 
@@ -469,7 +515,7 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
     });
     const standby = constructed[1]!;
 
-    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    emitSelectorResult({ ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
 
     hideSelector();
@@ -524,7 +570,7 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
       expect(constructed).toHaveLength(2);
     });
 
-    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    emitSelectorResult({ ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
   });
 
@@ -540,7 +586,7 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
     });
     const standby = constructed[1]!;
 
-    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    emitSelectorResult({ ok: false });
     await expect(firstPick).resolves.toMatchObject({
       ok: false,
       reason: "cancelled"
@@ -563,7 +609,7 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
       expect(constructed[2].show).not.toHaveBeenCalled();
     }
 
-    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    emitSelectorResult({ ok: false });
     await expect(secondPick).resolves.toMatchObject({
       ok: false,
       reason: "cancelled"
@@ -588,7 +634,7 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
     expect(deferredLoadResolvers).toHaveLength(1);
     const standby = constructed[1]!;
 
-    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    emitSelectorResult({ ok: false });
     await expect(firstPick).resolves.toMatchObject({
       ok: false,
       reason: "cancelled"
@@ -618,7 +664,7 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
       expect(standby.show).toHaveBeenCalledTimes(1);
     });
 
-    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    emitSelectorResult({ ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
   });
 });
@@ -649,7 +695,7 @@ describe("region-selector — snapshot-paint gate before show()", () => {
       { timeout: 2000 }
     );
 
-    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    emitSelectorResult({ ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
   });
 
@@ -683,7 +729,7 @@ describe("region-selector — snapshot-paint gate before show()", () => {
       expect(constructed[0]?.show).toHaveBeenCalledTimes(1);
     });
 
-    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    emitSelectorResult({ ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
   });
 });
@@ -770,7 +816,7 @@ describe("region-selector — mapped snapshot IPC boundary", () => {
       "mapped-snapshot-1"
     );
 
-    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    emitSelectorResult({ ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
   });
 });
@@ -848,7 +894,7 @@ describe("region-selector — authenticated post-show presentation trace", () =>
           rendererTotalMs: null
         }
       });
-    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    emitSelectorResult({ ok: false });
     await pick;
     hideSelector();
     painted({ sender: { id: spy.webContents.id } }, payload);
@@ -940,7 +986,7 @@ describe("region-selector — authenticated post-show presentation trace", () =>
       canvas: "not_used"
     });
 
-    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    emitSelectorResult({ ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
     expect(
       entries.filter((entry) => entry.fields.event === "capture_latency_summary")
@@ -965,7 +1011,7 @@ describe("region-selector — authenticated post-show presentation trace", () =>
     const pick = pickRegion({ latencyTrace: trace });
 
     await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalledTimes(1));
-    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    emitSelectorResult({ ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
 
     const summaries = entries.filter(
@@ -1173,7 +1219,7 @@ describe("region-selector — PwrSnap chrome leaves the frame before the screen 
     expect(hideOrder).toBeLessThan(freezeOrder);
     expect(parkOrder).toBeLessThan(freezeOrder);
 
-    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    emitSelectorResult({ ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
   });
 
@@ -1205,7 +1251,7 @@ describe("region-selector — PwrSnap chrome leaves the frame before the screen 
     // starved CI runner's clock rounding can't fail a correct build.
     expect(frozenAt - hiddenAt).toBeGreaterThanOrEqual(45);
 
-    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    emitSelectorResult({ ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
   });
 
@@ -1218,7 +1264,7 @@ describe("region-selector — PwrSnap chrome leaves the frame before the screen 
     });
     expect(chromeMocks.hideTrayPopoverIfVisible).not.toHaveBeenCalled();
 
-    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    emitSelectorResult({ ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
   });
 });
@@ -1240,7 +1286,7 @@ describe("region-selector — Snap-vs-Record commit payload (issue #75)", () => 
       cursor: false
     });
 
-    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    emitSelectorResult({ ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false });
   });
 
@@ -1249,8 +1295,7 @@ describe("region-selector — Snap-vs-Record commit payload (issue #75)", () => 
     const pick = pickRegion({ quickCaptureAction: "ask" });
     await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
 
-    ipcListeners.get("region-selector:result")?.(
-      {},
+    emitSelectorResult(
       {
         ok: true,
         rect: { x: 10, y: 20, w: 300, h: 200 },
@@ -1272,8 +1317,7 @@ describe("region-selector — Snap-vs-Record commit payload (issue #75)", () => 
     const pick = pickRegion();
     await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
 
-    ipcListeners.get("region-selector:result")?.(
-      {},
+    emitSelectorResult(
       { ok: true, rect: { x: 10, y: 20, w: 300, h: 200 }, displayId: 1 }
     );
     const result = await pick;
@@ -1286,8 +1330,7 @@ describe("region-selector — Snap-vs-Record commit payload (issue #75)", () => 
     const pick = pickRegion();
     await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
 
-    ipcListeners.get("region-selector:result")?.(
-      {},
+    emitSelectorResult(
       { ok: true, rect: { x: 10, y: 20, w: 300, h: 200 }, displayId: 1, action: "video" }
     );
     // An unparseable payload is a cancel, not a partially-honored commit.
@@ -1310,8 +1353,7 @@ describe("region-selector — Snap-vs-Record commit payload (issue #75)", () => 
     const pick = pickRegion({ quickCaptureAction: "ask" });
     await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
 
-    ipcListeners.get("region-selector:result")?.(
-      {},
+    emitSelectorResult(
       {
         ok: true,
         rect: { x: 0, y: 0, w: 800, h: 600 },
@@ -1340,8 +1382,7 @@ describe("region-selector — Snap-vs-Record commit payload (issue #75)", () => 
     const pick = pickRegion({ quickCaptureAction: "ask" });
     await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
 
-    ipcListeners.get("region-selector:result")?.(
-      {},
+    emitSelectorResult(
       {
         ok: true,
         rect: { x: 0, y: 0, w: 200, h: 200 },
@@ -1372,7 +1413,7 @@ describe("region-selector — recording source chips", () => {
       sources: { microphone: true, systemAudio: false }
     });
 
-    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    emitSelectorResult({ ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false });
   });
 
@@ -1390,7 +1431,7 @@ describe("region-selector — recording source chips", () => {
     );
     expect(modeSend?.[1]).not.toHaveProperty("sources");
 
-    ipcListeners.get("region-selector:result")?.({}, { ok: false });
+    emitSelectorResult({ ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false });
   });
 
@@ -1399,8 +1440,7 @@ describe("region-selector — recording source chips", () => {
     const pick = pickRegion({ intent: "video" });
     await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
 
-    ipcListeners.get("region-selector:result")?.(
-      {},
+    emitSelectorResult(
       {
         ok: true,
         rect: { x: 10, y: 20, w: 300, h: 200 },
@@ -1422,8 +1462,7 @@ describe("region-selector — recording source chips", () => {
     const pick = pickRegion();
     await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
 
-    ipcListeners.get("region-selector:result")?.(
-      {},
+    emitSelectorResult(
       { ok: true, rect: { x: 10, y: 20, w: 300, h: 200 }, displayId: 1 }
     );
     const result = await pick;
@@ -1445,10 +1484,346 @@ describe("region-selector — recording source chips", () => {
     const pick = pickRegion({ intent: "video" });
     await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
 
-    ipcListeners.get("region-selector:result")?.(
-      {},
+    emitSelectorResult(
       { ok: true, rect: { x: 10, y: 20, w: 300, h: 200 }, displayId: 1, sources }
     );
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+  });
+});
+
+
+describe("region-selector — invocation ownership during preparation", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  test.each(["old-first", "new-first"])("supersedes a preparing capture immediately and retains the newest snapshot (%s)", async (order) => {
+    const oldFrame = deferred<ScreenSnapshot>();
+    const newFrame = deferred<ScreenSnapshot>();
+    screenSnapshotMocks.captureAndRegister.mockReturnValueOnce(oldFrame.promise).mockReturnValueOnce(newFrame.promise);
+    const { pickRegion } = await import("../capture/region-selector");
+    const oldSettled = vi.fn();
+    const oldPick = pickRegion({ keepPwrSnapChrome: true }).then(oldSettled);
+    await flushSelector();
+    expect(screenSnapshotMocks.captureAndRegister).toHaveBeenCalledTimes(1);
+    const newSettled = vi.fn();
+    const newPick = pickRegion({ keepPwrSnapChrome: true }).then(newSettled);
+    await flushSelector();
+    expect(screenSnapshotMocks.captureAndRegister).toHaveBeenCalledTimes(2);
+    expect(oldSettled).toHaveBeenCalledWith(expect.objectContaining({ ok: false, reason: "cancelled" }));
+    if (order === "old-first") {
+      oldFrame.resolve(snapshot("old"));
+      await flushSelector();
+      expect(constructed[0]!.show).not.toHaveBeenCalled();
+    }
+    newFrame.resolve(snapshot("new"));
+    await flushSelector();
+    expect(constructed[0]!.show).toHaveBeenCalledTimes(1);
+    if (order === "new-first") {
+      oldFrame.resolve(snapshot("old"));
+      await flushSelector();
+    }
+    expect(constructed[0]!.show).toHaveBeenCalledTimes(1);
+    expect(latestMode()?.screenUrl).toBe("pwrsnap-screen://r/new");
+    expect(screenSnapshotMocks.releaseSnapshot).toHaveBeenCalledExactlyOnceWith("old");
+    expect(selectorShortcutMocks.callbacks.has("Escape")).toBe(true);
+    emitSelectorResult({ ok: true, displayId: 1, rect: { x: 10, y: 20, w: 30, h: 40 } });
+    await flushSelector();
+    expect(newSettled).toHaveBeenCalledWith(expect.objectContaining({ ok: true, screenSnapshotId: "new" }));
+    expect(screenSnapshotMocks.releaseSnapshot).not.toHaveBeenCalledWith("new");
+    await Promise.all([oldPick, newPick]);
+  });
+
+  test.each(["hide", "dispose"])("%s settles a pending snapshot immediately and its late completion cannot reopen the selector", async (action) => {
+    const frame = deferred<ScreenSnapshot>();
+    screenSnapshotMocks.captureAndRegister.mockReturnValueOnce(frame.promise);
+    const { pickRegion, hideSelector, disposeRegionSelector } = await import("../capture/region-selector");
+    const settled = vi.fn();
+    const pick = pickRegion({ keepPwrSnapChrome: true }).then(settled);
+    await flushSelector();
+    if (action === "hide") hideSelector(); else disposeRegionSelector();
+    await flushSelector();
+    expect(settled).toHaveBeenCalledWith(expect.objectContaining({ ok: false, reason: action === "hide" ? "cancelled" : "destroyed" }));
+    frame.resolve(snapshot("late"));
+    await flushSelector();
+    expect(constructed[0]!.show).not.toHaveBeenCalled();
+    expect(screenSnapshotMocks.releaseSnapshot).toHaveBeenCalledExactlyOnceWith("late");
+    await pick;
+  });
+
+  test("reserves ownership before window loading and suppresses superseded preparation", async () => {
+    deferSelectorLoads = true;
+    const { pickRegion } = await import("../capture/region-selector");
+    const settled = vi.fn();
+    const oldPick = pickRegion({ keepPwrSnapChrome: true }).then(settled);
+    const newPick = pickRegion({ keepPwrSnapChrome: true });
+    await flushSelector();
+    expect(settled).toHaveBeenCalledWith(expect.objectContaining({ reason: "cancelled" }));
+    deferredLoadResolvers[0]!();
+    await flushSelector();
+    expect(screenSnapshotMocks.captureAndRegister).toHaveBeenCalledTimes(1);
+    emitSelectorResult({ ok: false });
+    await Promise.all([oldPick, newPick]);
+  });
+
+  test.each(["hide", "dispose"])("%s while loading settles immediately and prevents capture after the load completes", async (action) => {
+    deferSelectorLoads = true;
+    const { pickRegion, hideSelector, disposeRegionSelector } = await import("../capture/region-selector");
+    const settled = vi.fn();
+    const pick = pickRegion({ keepPwrSnapChrome: true }).then(settled);
+    if (action === "hide") hideSelector(); else disposeRegionSelector();
+    await flushSelector();
+    expect(settled).toHaveBeenCalledWith(expect.objectContaining({ reason: action === "hide" ? "cancelled" : "destroyed" }));
+    deferredLoadResolvers[0]!();
+    await flushSelector();
+    expect(screenSnapshotMocks.captureAndRegister).not.toHaveBeenCalled();
+    expect(constructed[0]!.show).not.toHaveBeenCalled();
+    await pick;
+  });
+
+  test("cancellation during the chrome flush lifts protection and never starts a snapshot", async () => {
+    const setContentProtection = vi.fn();
+    protectedWindows.set(99, { isDestroyed: () => false, setContentProtection, getBounds: () => ({ x: 0, y: 0, width: 100, height: 100 }) });
+    const { pickRegion, hideSelector } = await import("../capture/region-selector");
+    const settled = vi.fn();
+    const pick = pickRegion({ protectWindowIds: [99] }).then(settled);
+    await flushSelector();
+    expect(setContentProtection).toHaveBeenLastCalledWith(true);
+    hideSelector();
+    await flushSelector();
+    expect(settled).toHaveBeenCalledWith(expect.objectContaining({ reason: "cancelled" }));
+    expect(setContentProtection).toHaveBeenLastCalledWith(false);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(screenSnapshotMocks.captureAndRegister).not.toHaveBeenCalled();
+    await pick;
+  });
+
+  test("old snapshot completion cannot lift a successor's content protection", async () => {
+    const oldFrame = deferred<ScreenSnapshot>();
+    const newFrame = deferred<ScreenSnapshot>();
+    screenSnapshotMocks.captureAndRegister.mockReturnValueOnce(oldFrame.promise).mockReturnValueOnce(newFrame.promise);
+    const setContentProtection = vi.fn();
+    protectedWindows.set(99, { isDestroyed: () => false, setContentProtection, getBounds: () => ({ x: 0, y: 0, width: 100, height: 100 }) });
+    const { pickRegion } = await import("../capture/region-selector");
+    const oldPick = pickRegion({ keepPwrSnapChrome: true, protectWindowIds: [99] });
+    await vi.advanceTimersByTimeAsync(50);
+    const newPick = pickRegion({ keepPwrSnapChrome: true, protectWindowIds: [99] });
+    await vi.advanceTimersByTimeAsync(50);
+    setContentProtection.mockClear();
+    oldFrame.resolve(snapshot("old"));
+    await flushSelector();
+    expect(setContentProtection).not.toHaveBeenCalled();
+    newFrame.resolve(snapshot("new"));
+    await flushSelector();
+    expect(setContentProtection).toHaveBeenCalledExactlyOnceWith(false);
+    emitSelectorResult({ ok: false });
+    await Promise.all([oldPick, newPick]);
+  });
+
+  test("rejects stale results, wrong senders and wrong displays without releasing the latest snapshot", async () => {
+    suppressPaintAck = true;
+    screenSnapshotMocks.captureAndRegister.mockResolvedValueOnce(snapshot("old")).mockResolvedValueOnce(snapshot("new"));
+    const { pickRegion } = await import("../capture/region-selector");
+    const oldPick = pickRegion({ keepPwrSnapChrome: true });
+    await flushSelector();
+    const newSettled = vi.fn();
+    const newPick = pickRegion({ keepPwrSnapChrome: true }).then(newSettled);
+    await flushSelector();
+    const listener = ipcListeners.get("region-selector:result")!;
+    const payload = { ok: true, displayId: 1, rect: { x: 10, y: 20, w: 30, h: 40 } };
+    listener(selectorEvent(), { ...payload, screenUrl: "pwrsnap-screen://r/old" });
+    listener({ ...selectorEvent(), sender: { ...selectorEvent().sender, id: 9999 } }, { ...payload, screenUrl: "pwrsnap-screen://r/new" });
+    listener({ ...selectorEvent(), senderFrame: { processId: 10, routingId: 21 } }, { ...payload, screenUrl: "pwrsnap-screen://r/new" });
+    emitSelectorResult({ ...payload, displayId: 2 });
+    await flushSelector();
+    expect(newSettled).not.toHaveBeenCalled();
+    expect(screenSnapshotMocks.releaseSnapshot).not.toHaveBeenCalledWith("new");
+    emitSelectorResult({ ok: false });
+    await flushSelector();
+    expect(newSettled).toHaveBeenCalledWith(expect.objectContaining({ reason: "cancelled" }));
+    await Promise.all([oldPick, newPick]);
+  });
+
+  test("a stale raw read failure cannot abort the newer invocation using the same renderer", async () => {
+    suppressPaintAck = true;
+    const mapped = { ...snapshot("old"), selectorDescriptor: { id: "old", transport: "raw-rgba", version: 1, width: 2, height: 1, stride: 8, pixelFormat: 1, byteLength: 8 } };
+    screenSnapshotMocks.captureAndRegister.mockResolvedValueOnce(mapped).mockResolvedValueOnce(snapshot("new"));
+    const read = deferred<{ ok: false; code: "read_failed" }>();
+    screenSnapshotMocks.readSnapshotForRenderer.mockReturnValueOnce(read.promise);
+    const { pickRegion } = await import("../capture/region-selector");
+    const oldPick = pickRegion({ keepPwrSnapChrome: true });
+    await flushSelector();
+    const pendingRead = ipcHandlers.get("region-selector:snapshot-read")!(selectorEvent(), { id: "old" });
+    const settled = vi.fn();
+    const newPick = pickRegion({ keepPwrSnapChrome: true }).then(settled);
+    await flushSelector();
+    read.resolve({ ok: false, code: "read_failed" });
+    await pendingRead;
+    await flushSelector();
+    expect(settled).not.toHaveBeenCalled();
+    expect(screenSnapshotMocks.releaseSnapshot).not.toHaveBeenCalledWith("new");
+    emitSelectorResult({ ok: false });
+    await Promise.all([oldPick, newPick]);
+  });
+
+  test.each(["preparing", "selecting"])("old token cleanup cannot cancel a %s successor; explicit cancellation still works", async (phase) => {
+    const { pickRegion, hideSelector } = await import("../capture/region-selector");
+    const oldPick = pickRegion({ keepPwrSnapChrome: true });
+    await flushSelector();
+    emitSelectorResult({ ok: false });
+    const oldResult = await oldPick;
+    const frame = deferred<ScreenSnapshot>();
+    if (phase === "preparing") screenSnapshotMocks.captureAndRegister.mockReturnValueOnce(frame.promise);
+    const settled = vi.fn();
+    const newPick = pickRegion({ keepPwrSnapChrome: true }).then(settled);
+    await flushSelector();
+    expect(oldResult).toHaveProperty("selectorInvocationId");
+    const hideCount = constructed[0]!.hide.mock.calls.length;
+    setTimeout(() => hideSelector(oldResult.selectorInvocationId), 50);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(constructed[0]!.hide).toHaveBeenCalledTimes(hideCount);
+    expect(settled).not.toHaveBeenCalled();
+    expect(selectorShortcutMocks.callbacks.has("Escape")).toBe(phase === "selecting");
+    hideSelector();
+    await flushSelector();
+    expect(settled).toHaveBeenCalledWith(expect.objectContaining({ reason: "cancelled" }));
+    frame.resolve(snapshot("cancelled-successor"));
+    await flushSelector();
+    await newPick;
+  });
+
+  test("a stale paint ack cannot reveal the successor or release its gate", async () => {
+    suppressPaintAck = true;
+    screenSnapshotMocks.captureAndRegister.mockResolvedValueOnce(snapshot("old")).mockResolvedValueOnce(snapshot("new"));
+    const { pickRegion } = await import("../capture/region-selector");
+    const oldPick = pickRegion({ keepPwrSnapChrome: true });
+    await flushSelector();
+    const newPick = pickRegion({ keepPwrSnapChrome: true });
+    await flushSelector();
+    ipcListeners.get("region-selector:painted")!(selectorEvent(), { screenUrl: "pwrsnap-screen://r/old" });
+    await flushSelector();
+    expect(constructed[0]!.show).not.toHaveBeenCalled();
+    ipcListeners.get("region-selector:painted")!(selectorEvent(), { screenUrl: "pwrsnap-screen://r/new" });
+    await flushSelector();
+    expect(constructed[0]!.show).toHaveBeenCalledTimes(1);
+    emitSelectorResult({ ok: false });
+    await Promise.all([oldPick, newPick]);
+  });
+
+  test("late enumeration cannot replace the successor's provenance or send its window list", async () => {
+    suppressPaintAck = true;
+    const { listWindowsSnapshot } = await import("../capture/window-list");
+    const oldLayout = deferred<Awaited<ReturnType<typeof listWindowsSnapshot>>>();
+    const makeLayout = (pid: number) => ({
+      windows: [{ windowId: pid, pid, bundleId: `example.app${pid}`, appName: "Fixture", title: "Fixture", bounds: { x: 10, y: 20, width: 300, height: 200 }, layer: 0, alpha: 1, isFrontmostInApp: true }],
+      frontmostPid: pid, frontmostBundleId: `example.app${pid}`
+    });
+    vi.mocked(listWindowsSnapshot).mockReturnValueOnce(oldLayout.promise).mockResolvedValueOnce(makeLayout(222));
+    screenSnapshotMocks.captureAndRegister.mockResolvedValueOnce(snapshot("old")).mockResolvedValueOnce(snapshot("new"));
+    const { pickRegion, getLastWindowListSnapshot } = await import("../capture/region-selector");
+    const oldPick = pickRegion({ keepPwrSnapChrome: true });
+    await flushSelector();
+    const newPick = pickRegion({ keepPwrSnapChrome: true });
+    await flushSelector();
+    oldLayout.resolve(makeLayout(111));
+    await flushSelector();
+    expect(getLastWindowListSnapshot().map(({ pid }) => pid)).toEqual([222]);
+    ipcListeners.get("region-selector:painted")!(selectorEvent(), { screenUrl: "pwrsnap-screen://r/new" });
+    await flushSelector();
+    const lists = activeSelectorWindow().webContents.send.mock.calls.filter(([channel]) => channel === "region-selector:window-list");
+    expect(lists).toHaveLength(1);
+    expect(lists[0]![1].windows.map(({ pid }: { pid: number }) => pid)).toEqual([222]);
+    emitSelectorResult({ ok: true, displayId: 1, rect: { x: 10, y: 20, w: 30, h: 40 } });
+    await expect(newPick).resolves.toMatchObject({ ok: true, previousAppPid: 222, screenSnapshotId: "new" });
+    await oldPick;
+  });
+
+  test.each(["result-first", "dispose-first"])("the first terminal event wins and transferred snapshots remain consumer-owned (%s)", async (order) => {
+    const { pickRegion, disposeRegionSelector } = await import("../capture/region-selector");
+    const settled = vi.fn();
+    const pick = pickRegion({ keepPwrSnapChrome: true }).then(settled);
+    await flushSelector();
+    const win = activeSelectorWindow();
+    const resultListener = ipcListeners.get("region-selector:result")!;
+    const result = { ok: true, displayId: 1, screenUrl: latestMode(win)!.screenUrl, rect: { x: 10, y: 20, w: 30, h: 40 } };
+    if (order === "result-first") {
+      resultListener(selectorEvent(win), result);
+      disposeRegionSelector();
+    } else {
+      disposeRegionSelector();
+      resultListener(selectorEvent(win), result);
+    }
+    await flushSelector();
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(settled).toHaveBeenCalledWith(expect.objectContaining(order === "result-first" ? { ok: true } : { ok: false, reason: "destroyed" }));
+    if (order === "result-first") expect(screenSnapshotMocks.releaseSnapshot).not.toHaveBeenCalled();
+    else expect(screenSnapshotMocks.releaseSnapshot).toHaveBeenCalledExactlyOnceWith("snapshot-1");
+    expect(screenSnapshotMocks.releaseAllSnapshots).not.toHaveBeenCalled();
+    await pick;
+  });
+
+  test("snapshot rejection after supersession cannot cancel the successor, and a failed latest capture can be retried", async () => {
+    const oldFrame = deferred<ScreenSnapshot>();
+    screenSnapshotMocks.captureAndRegister.mockReturnValueOnce(oldFrame.promise).mockRejectedValueOnce(new Error("capture failed")).mockResolvedValueOnce(snapshot("retry"));
+    const { pickRegion } = await import("../capture/region-selector");
+    const oldPick = pickRegion({ keepPwrSnapChrome: true });
+    await flushSelector();
+    const failedPick = pickRegion({ keepPwrSnapChrome: true });
+    await flushSelector();
+    await expect(failedPick).resolves.toMatchObject({ reason: "destroyed" });
+    const retryPick = pickRegion({ keepPwrSnapChrome: true });
+    await flushSelector();
+    oldFrame.reject(new Error("stale failure"));
+    await flushSelector();
+    expect(latestMode()!.screenUrl).toBe("pwrsnap-screen://r/retry");
+    expect(selectorShortcutMocks.callbacks.has("Escape")).toBe(true);
+    emitSelectorResult({ ok: false });
+    await Promise.all([oldPick, retryPick]);
+  });
+
+  test("initial load navigation is allowed, but renderer loss while preparing cancels immediately", async () => {
+    deferSelectorLoads = true;
+    const frame = deferred<ScreenSnapshot>();
+    screenSnapshotMocks.captureAndRegister.mockReturnValueOnce(frame.promise);
+    const { pickRegion } = await import("../capture/region-selector");
+    const settled = vi.fn();
+    const pick = pickRegion({ keepPwrSnapChrome: true }).then(settled);
+    const win = constructed[0]!;
+    const navigate = win.webContents.on.mock.calls.find(([event]) => event === "did-start-navigation")![1];
+    navigate({}, "file:///selector", false, true);
+    await flushSelector();
+    expect(settled).not.toHaveBeenCalled();
+    deferredLoadResolvers[0]!();
+    await flushSelector();
+    expect(screenSnapshotMocks.captureAndRegister).toHaveBeenCalledTimes(1);
+    const gone = win.webContents.on.mock.calls.find(([event]) => event === "render-process-gone")![1];
+    gone();
+    await flushSelector();
+    expect(settled).toHaveBeenCalledWith(expect.objectContaining({ reason: "destroyed" }));
+    frame.resolve(snapshot("orphan"));
+    await flushSelector();
+    expect(win.show).not.toHaveBeenCalled();
+    expect(screenSnapshotMocks.releaseSnapshot).toHaveBeenCalledExactlyOnceWith("orphan");
+    await pick;
+  });
+
+  test("dispose invalidates queued standby warmup and stale preparation across a restart", async () => {
+    const frame = deferred<ScreenSnapshot>();
+    screenSnapshotMocks.captureAndRegister.mockReturnValueOnce(frame.promise).mockResolvedValueOnce(snapshot("new"));
+    const { pickRegion, disposeRegionSelector } = await import("../capture/region-selector");
+    const oldPick = pickRegion({ keepPwrSnapChrome: true });
+    await flushSelector();
+    disposeRegionSelector();
+    const newPick = pickRegion({ keepPwrSnapChrome: true });
+    await flushSelector();
+    frame.resolve(snapshot("old"));
+    await flushSelector();
+    expect(latestMode(constructed[1]!)?.screenUrl).toBe("pwrsnap-screen://r/new");
+    expect(constructed[0]!.show).not.toHaveBeenCalled();
+    emitSelectorResult({ ok: false }, constructed[1]!);
+    await Promise.all([oldPick, newPick]);
+    disposeRegionSelector();
+    const count = constructed.length;
+    await vi.runAllTimersAsync();
+    expect(constructed).toHaveLength(count);
   });
 });

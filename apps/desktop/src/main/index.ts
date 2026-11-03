@@ -1223,7 +1223,7 @@ async function runInteractiveRecord(
   if (!selection.ok) {
     setFloatOverState({ kind: "cancel" });
     await new Promise((resolve) => setTimeout(resolve, 50));
-    hideSelector();
+    hideSelector(selection.selectorInvocationId);
     // No activateApp(previousAppPid): the selector is a non-activating
     // NSPanel, so the previously-frontmost app was never deactivated —
     // it stays frontmost as the selector hides. Re-activating it was a

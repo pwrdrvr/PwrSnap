@@ -522,7 +522,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       // there's a one-frame window where the toast is visible
       // before the selector window's compositor pass is complete.
       await new Promise((resolve) => setTimeout(resolve, 50));
-      hideSelector();
+      hideSelector(selection.selectorInvocationId);
       // No activateApp(previousAppPid): the selector is a
       // non-activating NSPanel, so whatever app was frontmost before
       // the capture was never deactivated — it stays frontmost when
@@ -636,7 +636,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       // across a spread of delays to catch the async demotion — guarded,
       // so it no-ops once the Dock is back. (Full rationale on the
       // cancel branch above.)
-      hideSelector();
+      hideSelector(selection.selectorInvocationId);
       scheduleDockReclaim();
     };
     try {

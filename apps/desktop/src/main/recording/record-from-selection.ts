@@ -267,7 +267,7 @@ export async function startRecordingFromSelection(
   const tearDown = (): void => {
     if (tornDown) return;
     tornDown = true;
-    hideSelector();
+    hideSelector(selection.selectorInvocationId);
     void releaseSnapshot(screenSnapshotId);
     // Unconditional, matching the snap path's `tearDownSelector`. The
     // two reclaims further down are both branch-local: one needs

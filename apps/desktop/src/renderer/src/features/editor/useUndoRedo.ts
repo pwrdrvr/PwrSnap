@@ -145,6 +145,11 @@ export type EditOp =
 
 const MAX_DEPTH = 100;
 
+type ReplayProgress = {
+  direction: "undo" | "redo";
+  completedSteps: number;
+};
+
 /** Merge the new op's items into the existing entry's items array
  *  per the requested mergeMode. Each op produced by recordCreate /
  *  recordDelete / recordGeometry carries exactly one item (the
@@ -359,6 +364,11 @@ export function useUndoRedo(opts: {
   // `applyingRef`, we expose ours through that one too — but the
   // canonical source of truth lives here.
   const operationRef = useRef<"idle" | "reconciling" | "applying">("idle");
+  // A failed replay retains only its acknowledged-step cursor. Weak keys
+  // tie that progress to the exact stack entry, without retaining entries
+  // discarded by a new edit or the history depth bound. Separate entries
+  // keep their progress when a newer operation is undone first.
+  const replayProgressRef = useRef(new WeakMap<EditOp, ReplayProgress>());
 
   // Coalescing state — refs so it doesn't trigger renders.
   //
@@ -642,12 +652,21 @@ export function useUndoRedo(opts: {
   // between undo (inverse of the latest past op) and redo (re-apply the
   // future op = inverse of what undo just did).
   const applyInverse = useCallback(
-    async (op: EditOp, direction: "undo" | "redo"): Promise<void> => {
+    async (op: EditOp, direction: "undo" | "redo", progress: ReplayProgress): Promise<void> => {
       const dispatch = dispatchEditRef.current;
       const dispatchEdit: UndoRedoDispatchEdit = async (edit) => {
         const result = await dispatch(edit);
         if (!result.ok) throw new Error(`Editor history ${direction} failed: ${result.error.code}`);
         return result;
+      };
+      let stepIndex = 0;
+      const step = async (apply: () => Promise<void>): Promise<void> => {
+        const index = stepIndex++;
+        if (index < progress.completedSteps) return;
+        await apply();
+        // Include local id-chain updates in the acknowledged step. Never
+        // repeat a successful restore: upsert rejects an already-live id.
+        progress.completedSteps = index + 1;
       };
       // What "do" means depends on direction:
       //   undo: apply the inverse of `op`
@@ -666,7 +685,7 @@ export function useUndoRedo(opts: {
           if (isInverse) {
             // Delete the just-created layer.
             // eslint-disable-next-line no-await-in-loop
-            await dispatchEdit({ kind: "delete", id: item.row.id });
+            await step(async () => { await dispatchEdit({ kind: "delete", id: item.row.id }); });
             continue;
           }
           // redo of create — re-upsert. The node carries its z_index;
@@ -675,9 +694,10 @@ export function useUndoRedo(opts: {
           // logical position. `item.node` is always set for v2 creates;
           // the `null` fallback is dead but kept for the recorder's
           // optional-node shape.
-          if (item.node !== null) {
+          const node = item.node;
+          if (node !== null) {
             // eslint-disable-next-line no-await-in-loop
-            await dispatchEdit({ kind: "upsert", node: item.node });
+            await step(async () => { await dispatchEdit({ kind: "upsert", node }); });
           }
         }
         return;
@@ -696,15 +716,16 @@ export function useUndoRedo(opts: {
             // its original z_index so the restored layer comes back
             // where it was, not on top (layers:upsert preserves
             // node.z_index when bumpZIndexToMax isn't set).
-            if (item.node !== null) {
+            const node = item.node;
+            if (node !== null) {
               // eslint-disable-next-line no-await-in-loop
-              await dispatchEdit({ kind: "upsert", node: item.node });
+              await step(async () => { await dispatchEdit({ kind: "upsert", node }); });
             }
             continue;
           }
           // redo of delete — re-delete.
           // eslint-disable-next-line no-await-in-loop
-          await dispatchEdit({ kind: "delete", id: item.row.id });
+          await step(async () => { await dispatchEdit({ kind: "delete", id: item.row.id }); });
         }
         return;
       }
@@ -749,15 +770,17 @@ export function useUndoRedo(opts: {
           const ch = op.rect.h;
           const rectX = cw > 0 ? -op.rect.x / cw : 0;
           const rectY = ch > 0 ? -op.rect.y / ch : 0;
-          await dispatchEdit({
-            kind: "crop",
-            rect: { x: rectX, y: rectY, w: rectW, h: rectH }
+          await step(async () => {
+            await dispatchEdit({
+              kind: "crop",
+              rect: { x: rectX, y: rectY, w: rectW, h: rectH }
+            });
           });
           return;
         }
         // redo — current canvas is back at previousWidthPx/Height after
         // the prior undo. Re-apply the original normalized rect.
-        await dispatchEdit({ kind: "crop", rect: op.rect });
+        await step(async () => { await dispatchEdit({ kind: "crop", rect: op.rect }); });
         return;
       }
       if (op.kind === "geometry") {
@@ -774,14 +797,16 @@ export function useUndoRedo(opts: {
           const targetGeometry =
             direction === "undo" ? item.previousGeometry : item.nextGeometry;
           // eslint-disable-next-line no-await-in-loop
-          const result = await dispatchEdit({
-            kind: "updateGeometry",
-            layerId: item.currentIdRef.current,
-            geometry: targetGeometry
+          await step(async () => {
+            const result = await dispatchEdit({
+              kind: "updateGeometry",
+              layerId: item.currentIdRef.current,
+              geometry: targetGeometry
+            });
+            if (result.ok && result.value.kind === "update") {
+              item.currentIdRef.current = result.value.artifact.node.id;
+            }
           });
-          if (result.ok && result.value.kind === "update") {
-            item.currentIdRef.current = result.value.artifact.node.id;
-          }
         }
         return;
       }
@@ -790,14 +815,16 @@ export function useUndoRedo(opts: {
         // is updateOverlay.
         const targetPatch =
           direction === "undo" ? op.previousPatch : op.nextPatch;
-        const result = await dispatchEdit({
-          kind: "updateOverlay",
-          layerId: op.currentIdRef.current,
-          patch: targetPatch
+        await step(async () => {
+          const result = await dispatchEdit({
+            kind: "updateOverlay",
+            layerId: op.currentIdRef.current,
+            patch: targetPatch
+          });
+          if (result.ok && result.value.kind === "update") {
+            op.currentIdRef.current = result.value.artifact.node.id;
+          }
         });
-        if (result.ok && result.value.kind === "update") {
-          op.currentIdRef.current = result.value.artifact.node.id;
-        }
         return;
       }
       if (op.kind === "replace") {
@@ -807,14 +834,15 @@ export function useUndoRedo(opts: {
         const restore = direction === "undo" ? op.removed : op.added;
         const take = direction === "undo" ? op.added : op.removed;
         for (const item of restore) {
-          if (item.node !== null) {
+          const node = item.node;
+          if (node !== null) {
             // eslint-disable-next-line no-await-in-loop
-            await dispatchEdit({ kind: "upsert", node: item.node });
+            await step(async () => { await dispatchEdit({ kind: "upsert", node }); });
           }
         }
         for (const item of take) {
           // eslint-disable-next-line no-await-in-loop
-          await dispatchEdit({ kind: "delete", id: item.row.id });
+          await step(async () => { await dispatchEdit({ kind: "delete", id: item.row.id }); });
         }
         return;
       }
@@ -837,9 +865,19 @@ export function useUndoRedo(opts: {
       const source = direction === "undo" ? pastRef.current : futureRef.current;
       const op = source[source.length - 1];
       if (op === undefined) return;
+      let progress = replayProgressRef.current.get(op);
+      if (progress?.direction !== direction) {
+        progress = { direction, completedSteps: 0 };
+        replayProgressRef.current.set(op, progress);
+      }
+      // A replay attempt, including one that fails partway, disarms the
+      // bracket/grace ownership. A later push must start a new entry so
+      // it cannot merge over this operation and discard its retry cursor.
+      lastCoalesceRef.current = null;
       operationRef.current = "applying";
       if (opts.applyingRef !== undefined) opts.applyingRef.current = true;
-      await applyInverse(op, direction);
+      await applyInverse(op, direction, progress);
+      replayProgressRef.current.delete(op);
       if (direction === "undo") {
         setPast((prev) => prev.slice(0, -1));
         setFuture((prev) => [...prev, op]);
@@ -847,9 +885,6 @@ export function useUndoRedo(opts: {
         setFuture((prev) => prev.slice(0, -1));
         setPast((prev) => [...prev, op]);
       }
-      // Disarm both the grace window and an open bracket. A later push
-      // may not coalesce into the entry exposed by this replay.
-      lastCoalesceRef.current = null;
     } catch (error) {
       // A rejected dispatch leaves the entry on its original stack so the
       // operator can retry. Multi-item replays stop at the first failure.

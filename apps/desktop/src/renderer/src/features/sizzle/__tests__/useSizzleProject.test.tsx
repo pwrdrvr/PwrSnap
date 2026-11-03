@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import {
   EVENT_CHANNELS,
+  newSizzleSequenceScene,
   type PwrSnapError,
   type SizzleProject,
   type SizzleScene
@@ -22,14 +23,17 @@ beforeAll(() => {
 type Deferred<T> = {
   promise: Promise<T>;
   resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
 };
 
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((next) => {
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((next, fail) => {
     resolve = next;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function project(patch: Partial<SizzleProject> = {}): SizzleProject {
@@ -125,6 +129,414 @@ afterEach(async () => {
   window.location.hash = "";
   vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+// Deferred metadata and optional save/delete replies let each test choose
+// completion order without wall-clock sleeps or the real capture library.
+function installSceneApi(
+  initial: SizzleProject[] = [project()],
+  override: DispatchHandler = () => undefined
+) {
+  const stored = new Map(initial.map((value) => [value.id, value]));
+  const lookups = new Map<string, Deferred<unknown>>();
+  const updates: Array<{ id: string; patch: Partial<SizzleProject> }> = [];
+  const api = installApi((name, req) => {
+    if (name === "sizzle:update") {
+      updates.push(req as (typeof updates)[number]);
+    }
+    const overridden = override(name, req);
+    if (overridden !== undefined) return overridden;
+    if (name === "sizzle:list") return { ok: true, value: { projects: [...stored.values()] } };
+    if (name === "library:list" || name === "library:listByIds") {
+      return { ok: true, value: { rows: [] } };
+    }
+    if (name === "codex:enrichment") {
+      const lookup = deferred<unknown>();
+      lookups.set((req as { captureId: string }).captureId, lookup);
+      return lookup.promise;
+    }
+    if (name === "sizzle:update") {
+      const { id, patch } = req as (typeof updates)[number];
+      const saved = { ...stored.get(id)!, ...patch };
+      stored.set(id, saved);
+      return { ok: true, value: saved };
+    }
+    if (name === "sizzle:delete") {
+      stored.delete((req as { id: string }).id);
+    }
+    return { ok: true, value: undefined };
+  });
+  return { ...api, stored, lookups, updates };
+}
+
+function sceneCaptureIds(value: SizzleProject | null): string[] {
+  return value?.scenes.map((scene) => scene.captureId) ?? [];
+}
+
+function historyKey(shiftKey = false): void {
+  window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", metaKey: true, shiftKey }));
+}
+
+describe("useSizzleProject scene operations", () => {
+  test("without a destination project, scene operations admit no metadata or save work", async () => {
+    const { dispatch, updates } = installSceneApi([]);
+    await mountHook();
+
+    await act(async () => {
+      await snapshot().onAddScene("cap_a");
+      await snapshot().onAddSequenceBeat("missing", "cap_b");
+    });
+
+    expect(dispatch.mock.calls.filter(([name]) => name === "codex:enrichment")).toEqual([]);
+    expect(updates).toEqual([]);
+    expect(snapshot().saveStates).toEqual({});
+  });
+
+  test.each([
+    ["cap_a", "cap_b"],
+    ["cap_b", "cap_a"]
+  ])("concurrent additions retain both scenes when %s resolves before %s", async (first, second) => {
+    vi.useFakeTimers();
+    const { lookups, updates, stored } = installSceneApi();
+    await mountHook();
+    const adding = new Map<string, Promise<void>>();
+    act(() => {
+      adding.set("cap_a", snapshot().onAddScene("cap_a"));
+      adding.set("cap_b", snapshot().onAddScene("cap_b"));
+    });
+    expect(snapshot().saveState.phase).toBe("saved");
+    expect(lookups.size).toBe(2);
+
+    for (const captureId of [first, second]) {
+      await act(async () => {
+        lookups.get(captureId)!.resolve({
+          ok: true,
+          value: { acceptedDescription: `  Narration for ${captureId}  ` }
+        });
+        await adding.get(captureId);
+      });
+      expect(sceneCaptureIds(snapshot().active)).toEqual(
+        captureId === first ? [first] : [first, second]
+      );
+    }
+    const added = snapshot().active!.scenes;
+    expect(added.map((scene) => scene.narration)).toEqual([
+      `Narration for ${first}`, `Narration for ${second}`
+    ]);
+    expect(new Set(added.map((scene) => scene.id)).size).toBe(2);
+    expect(snapshot().saveState.phase).toBe("dirty");
+    expect(updates).toHaveLength(0);
+
+    // Additions within the existing history window remain one undo step.
+    act(() => historyKey());
+    expect(snapshot().active?.scenes).toEqual([]);
+    act(() => historyKey(true));
+    expect(snapshot().active?.scenes).toEqual(added);
+    await act(async () => { expect(await snapshot().flushPatch("sz_1")).toBe(true); });
+    expect(updates).toHaveLength(1);
+    expect(stored.get("sz_1")?.scenes).toEqual(added);
+    expect(snapshot().saveState.phase).toBe("saved");
+  });
+
+  test("metadata completions in the same React batch append to the latest scene list", async () => {
+    vi.useFakeTimers();
+    const { lookups } = installSceneApi();
+    await mountHook();
+    let additions!: Promise<void[]>;
+    act(() => {
+      additions = Promise.all([snapshot().onAddScene("cap_a"), snapshot().onAddScene("cap_b")]);
+    });
+    await act(async () => {
+      lookups.get("cap_a")!.resolve({ ok: true, value: null });
+      lookups.get("cap_b")!.resolve({ ok: true, value: null });
+      await additions;
+    });
+    expect(sceneCaptureIds(snapshot().active)).toEqual(["cap_a", "cap_b"]);
+  });
+
+  test("a pending addition preserves local scene edits, deletions, ordering, and undo", async () => {
+    vi.useFakeTimers();
+    const scenes = ["cap_a", "cap_b", "cap_c"].map((id) => newSizzleSequenceScene([id]));
+    const { lookups } = installSceneApi([project({ scenes })]);
+    await mountHook();
+    let adding!: Promise<void>;
+    act(() => { adding = snapshot().onAddScene("cap_new"); });
+    const edited = [{ ...scenes[2]!, narration: "Edited locally", scriptLine: "Edited locally" }, scenes[0]!];
+    act(() => snapshot().onUpdate("sz_1", { scenes: edited, name: "Local title" }));
+    await act(async () => { vi.advanceTimersByTime(DEBOUNCE_MS + 1); });
+
+    await act(async () => {
+      lookups.get("cap_new")!.resolve({ ok: true, value: null });
+      await adding;
+    });
+    expect(snapshot().active?.scenes.slice(0, -1)).toEqual(edited);
+    expect(sceneCaptureIds(snapshot().active)).toEqual(["cap_c", "cap_a", "cap_new"]);
+    expect(snapshot().active?.name).toBe("Local title");
+    act(() => historyKey());
+    expect(snapshot().active?.scenes).toEqual(edited);
+    act(() => historyKey(true));
+    expect(sceneCaptureIds(snapshot().active)).toEqual(["cap_c", "cap_a", "cap_new"]);
+  });
+
+  test("an agent broadcast before metadata completion becomes the addition's undo baseline", async () => {
+    vi.useFakeTimers();
+    const { emit, lookups, stored } = installSceneApi();
+    await mountHook();
+    let adding!: Promise<void>;
+    act(() => { adding = snapshot().onAddScene("cap_new"); });
+    const external = project({ scenes: [newSizzleSequenceScene(["cap_agent"])] });
+    stored.set(external.id, external);
+    await act(async () => {
+      // No render boundary between the authoritative event and completion.
+      emit(EVENT_CHANNELS.sizzleProjectsChanged, { projects: [external] });
+      lookups.get("cap_new")!.resolve({ ok: true, value: null });
+      await adding;
+    });
+    expect(sceneCaptureIds(snapshot().active)).toEqual(["cap_agent", "cap_new"]);
+    act(() => historyKey());
+    expect(snapshot().active?.scenes).toEqual(external.scenes);
+    await act(async () => { await snapshot().flushPatch("sz_1"); });
+    expect(stored.get("sz_1")?.scenes).toEqual(external.scenes);
+  });
+
+  test("switching projects keeps pending additions and their history on the original destination", async () => {
+    vi.useFakeTimers();
+    const { lookups, stored, updates } = installSceneApi([project(), project({ id: "sz_2" })]);
+    await mountHook();
+    let adding!: Promise<void>;
+    act(() => { adding = snapshot().onAddScene("cap_a"); });
+    act(() => snapshot().selectProject("sz_2"));
+    await act(async () => {
+      lookups.get("cap_a")!.resolve({ ok: true, value: null });
+      await adding;
+    });
+    expect(snapshot().active?.id).toBe("sz_2");
+    expect(snapshot().active?.scenes).toEqual([]);
+    expect(sceneCaptureIds(snapshot().projects.find((p) => p.id === "sz_1")!)).toEqual(["cap_a"]);
+    act(() => historyKey());
+    expect(sceneCaptureIds(snapshot().projects.find((p) => p.id === "sz_1")!)).toEqual(["cap_a"]);
+    await act(async () => { vi.advanceTimersByTime(DEBOUNCE_MS + 1); });
+    expect(updates.map(({ id }) => id)).toEqual(["sz_1"]);
+    expect(sceneCaptureIds(stored.get("sz_1")!)).toEqual(["cap_a"]);
+    act(() => snapshot().selectProject("sz_1"));
+    act(() => historyKey());
+    expect(snapshot().active?.scenes).toEqual([]);
+  });
+
+  test.each(["metadata-first", "delete-first"])("successful deletion cancels pending scene work: %s", async (order) => {
+    vi.useFakeTimers();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const deletion = deferred<unknown>();
+    const { lookups, updates } = installSceneApi(
+      [project(), project({ id: "sz_2" })],
+      (name) => name === "sizzle:delete" ? deletion.promise : undefined
+    );
+    await mountHook();
+    let adding!: Promise<void>;
+    let deleting!: Promise<void>;
+    act(() => {
+      adding = snapshot().onAddScene("cap_a");
+      deleting = snapshot().onDelete("sz_1");
+    });
+    const finishMetadata = async () => {
+      lookups.get("cap_a")!.resolve({ ok: true, value: null });
+      await adding;
+    };
+    const finishDelete = async () => {
+      deletion.resolve({ ok: true, value: undefined });
+      await deleting;
+    };
+    await act(async () => {
+      if (order === "metadata-first") { await finishMetadata(); await finishDelete(); }
+      else { await finishDelete(); await finishMetadata(); }
+    });
+    await act(async () => { vi.advanceTimersByTime(DEBOUNCE_MS + 1); });
+    expect(snapshot().projects.map(({ id }) => id)).toEqual(["sz_2"]);
+    expect(snapshot().saveStates["sz_1"]).toBeUndefined();
+    expect(updates).toHaveLength(0);
+  });
+
+  test("an external deletion before metadata completion cannot create an orphan save", async () => {
+    vi.useFakeTimers();
+    const { emit, lookups, updates } = installSceneApi();
+    await mountHook();
+    let adding!: Promise<void>;
+    act(() => { adding = snapshot().onAddScene("cap_a"); });
+    await act(async () => {
+      emit(EVENT_CHANNELS.sizzleProjectsChanged, { projects: [] });
+      lookups.get("cap_a")!.resolve({ ok: true, value: null });
+      await adding;
+    });
+    await act(async () => { vi.advanceTimersByTime(DEBOUNCE_MS + 1); });
+    expect(snapshot().projects).toEqual([]);
+    expect(snapshot().saveStates).toEqual({});
+    expect(updates).toHaveLength(0);
+  });
+
+  test("a failed deletion resumes the paused save containing a completed addition", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const deletion = deferred<unknown>();
+    const { lookups, updates, stored } = installSceneApi(
+      [project()], (name) => name === "sizzle:delete" ? deletion.promise : undefined
+    );
+    await mountHook();
+    let adding!: Promise<void>;
+    let deleting!: Promise<void>;
+    act(() => {
+      adding = snapshot().onAddScene("cap_a");
+      deleting = snapshot().onDelete("sz_1");
+    });
+    await act(async () => {
+      lookups.get("cap_a")!.resolve({ ok: true, value: null });
+      await adding;
+      vi.advanceTimersByTime(DEBOUNCE_MS + 1);
+    });
+    expect(updates).toHaveLength(0);
+    await act(async () => {
+      deletion.resolve({ ok: false, error: persistenceError("delete_failed", "locked") });
+      await deleting;
+    });
+    expect(snapshot().actionFailure?.action).toBe("delete");
+    await act(async () => { vi.advanceTimersByTime(DEBOUNCE_MS + 1); });
+    expect(updates).toHaveLength(1);
+    expect(sceneCaptureIds(stored.get("sz_1")!)).toEqual(["cap_a"]);
+    expect(snapshot().saveState.phase).toBe("saved");
+  });
+
+  test.each(["result-error", "transport-rejection"])("metadata failure still adds an editable scene: %s", async (mode) => {
+    vi.useFakeTimers();
+    const { lookups } = installSceneApi();
+    await mountHook();
+    let adding!: Promise<void>;
+    act(() => { adding = snapshot().onAddScene("cap_a"); });
+    let failure: unknown;
+    await act(async () => {
+      if (mode === "result-error") {
+        lookups.get("cap_a")!.resolve({ ok: false, error: persistenceError("lookup_failed", "unavailable") });
+      } else {
+        lookups.get("cap_a")!.reject(new Error("bridge disconnected"));
+      }
+      try { await adding; } catch (cause) { failure = cause; }
+    });
+    expect(failure).toBeUndefined();
+    expect(snapshot().active?.scenes[0]).toMatchObject({ captureId: "cap_a", narration: "", scriptLine: "" });
+    expect(snapshot().saveState.phase).toBe("dirty");
+    act(() => historyKey());
+    expect(snapshot().active?.scenes).toEqual([]);
+  });
+
+  test("metadata completion after unmount creates no save timer or dispatch", async () => {
+    vi.useFakeTimers();
+    const { lookups, updates } = installSceneApi();
+    await mountHook();
+    let adding!: Promise<void>;
+    act(() => { adding = snapshot().onAddScene("cap_a"); });
+    await act(async () => { root!.unmount(); });
+    root = null;
+    await act(async () => {
+      lookups.get("cap_a")!.resolve({ ok: true, value: null });
+      await adding;
+      vi.advanceTimersByTime(DEBOUNCE_MS + 1);
+    });
+    expect(updates).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("same-turn clip additions keep current edits and unique beat identities", async () => {
+    vi.useFakeTimers();
+    const scene = newSizzleSequenceScene(["cap_initial"]);
+    const { stored } = installSceneApi([project({ scenes: [scene] })]);
+    await mountHook();
+    await act(async () => {
+      snapshot().onUpdate("sz_1", { scenes: [{ ...scene, narration: "Local edit" }] });
+      await Promise.all([
+        snapshot().onAddSequenceBeat(scene.id, "cap_a"),
+        snapshot().onAddSequenceBeat(scene.id, "cap_b")
+      ]);
+    });
+    const updated = snapshot().active!.scenes[0]!;
+    expect(updated.narration).toBe("Local edit");
+    expect(updated.beats?.map((beat) => beat.captureId)).toEqual(["cap_initial", "cap_a", "cap_b"]);
+    expect(new Set(updated.beats?.map((beat) => beat.id)).size).toBe(3);
+    await act(async () => { await snapshot().flushPatch("sz_1"); });
+    expect(stored.get("sz_1")?.scenes).toEqual([updated]);
+  });
+
+  test("a stale clip callback cannot restore a removed scene or dirty a missing target", async () => {
+    vi.useFakeTimers();
+    const scene = newSizzleSequenceScene(["cap_initial"]);
+    const { updates } = installSceneApi([project({ scenes: [scene] })]);
+    await mountHook();
+    const addBeat = snapshot().onAddSequenceBeat;
+    act(() => snapshot().onUpdate("sz_1", { scenes: [] }));
+    await act(async () => { await snapshot().flushPatch("sz_1"); });
+    await act(async () => {
+      await addBeat(scene.id, "cap_a");
+      await snapshot().onAddSequenceBeat("missing", "cap_b");
+    });
+    expect(snapshot().active?.scenes).toEqual([]);
+    expect(snapshot().saveState.phase).toBe("saved");
+    await act(async () => { vi.advanceTimersByTime(DEBOUNCE_MS + 1); });
+    expect(updates).toHaveLength(1);
+  });
+
+  test("additions join the serialized save lane and survive a failed write until explicit retry", async () => {
+    vi.useFakeTimers();
+    const saves: Array<Deferred<unknown>> = [];
+    const { lookups, emit, updates } = installSceneApi([project()], (name) => {
+      if (name !== "sizzle:update") return undefined;
+      const save = deferred<unknown>();
+      saves.push(save);
+      return save.promise;
+    });
+    await mountHook();
+    let addA!: Promise<void>;
+    let addB!: Promise<void>;
+    act(() => {
+      addA = snapshot().onAddScene("cap_a");
+      addB = snapshot().onAddScene("cap_b");
+    });
+    await act(async () => {
+      lookups.get("cap_a")!.resolve({ ok: true, value: null });
+      await addA;
+    });
+    let saving!: Promise<boolean>;
+    act(() => { saving = snapshot().flushPatch("sz_1"); });
+    await flushMicrotasks();
+    await act(async () => {
+      lookups.get("cap_b")!.resolve({ ok: true, value: null });
+      await addB;
+      vi.advanceTimersByTime(DEBOUNCE_MS + 1);
+    });
+    expect(saves).toHaveLength(1);
+    expect(snapshot().saveState.phase).toBe("saving");
+    expect(sceneCaptureIds(snapshot().active)).toEqual(["cap_a", "cap_b"]);
+    await act(async () => {
+      const committed = project(updates[0]!.patch);
+      emit(EVENT_CHANNELS.sizzleProjectsChanged, { projects: [committed] });
+      saves[0]!.resolve({ ok: true, value: committed });
+    });
+    expect(saves).toHaveLength(2);
+    expect(updates[1]!.patch.scenes?.map((scene) => scene.captureId)).toEqual(["cap_a", "cap_b"]);
+    await act(async () => {
+      saves[1]!.resolve({ ok: false, error: persistenceError("save_failed", "locked") });
+      expect(await saving).toBe(false);
+    });
+    expect(snapshot().saveState.phase).toBe("error");
+    await act(async () => { vi.advanceTimersByTime(DEBOUNCE_MS + 1); });
+    expect(saves).toHaveLength(2);
+    let retry!: Promise<boolean>;
+    act(() => { retry = snapshot().retrySave("sz_1"); });
+    await flushMicrotasks();
+    expect(updates[2]!.patch.scenes?.map((scene) => scene.captureId)).toEqual(["cap_a", "cap_b"]);
+    await act(async () => {
+      saves[2]!.resolve({ ok: true, value: project(updates[2]!.patch) });
+      expect(await retry).toBe(true);
+    });
+    expect(sceneCaptureIds(snapshot().active)).toEqual(["cap_a", "cap_b"]);
+    expect(snapshot().saveState.phase).toBe("saved");
+  });
 });
 
 describe("useSizzleProject persistence state", () => {

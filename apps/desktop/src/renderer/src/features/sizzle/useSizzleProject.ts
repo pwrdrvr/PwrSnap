@@ -7,14 +7,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   EVENT_CHANNELS,
+  newSizzleSequenceBeat,
   newSizzleSequenceScene,
   normalizeSizzleSequenceBeatContinuity,
   type CaptureRecord,
   type PwrSnapError,
   type SizzleProject,
   type SizzleRenderProgressEvent,
-  type SizzleScene,
-  type SizzleSequenceBeat
+  type SizzleScene
 } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../lib/pwrsnap";
 import type { ProjectRailModel } from "./ProjectRail";
@@ -126,7 +126,7 @@ export type SizzleProjectState = {
 };
 
 export function useSizzleProject(): SizzleProjectState {
-  const [projects, setProjects] = useState<SizzleProject[]>([]);
+  const [projects, setProjectsState] = useState<SizzleProject[]>([]);
   // Seed from the hash so a window opened to a specific reel lands on it,
   // not on projects[0]. reloadProjects only defaults to projects[0] when
   // activeId is still null, so this never gets clobbered.
@@ -147,8 +147,18 @@ export function useSizzleProject(): SizzleProjectState {
   const mountedRef = useRef(true);
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
-  const projectsRef = useRef<SizzleProject[]>(projects);
-  projectsRef.current = projects;
+  const projectsRef = useRef<SizzleProject[]>([]);
+  // Every project writer (local edit, save reply, list, or broadcast) uses
+  // this boundary. Async completions and same-turn operations must observe
+  // accepted changes immediately, before React renders the next snapshot.
+  const setProjects = useCallback(
+    (update: (current: SizzleProject[]) => SizzleProject[]): void => {
+      const next = update(projectsRef.current);
+      projectsRef.current = next;
+      setProjectsState(next);
+    },
+    []
+  );
   const saveStatesRef = useRef(saveStates);
   saveStatesRef.current = saveStates;
 
@@ -262,7 +272,7 @@ export function useSizzleProject(): SizzleProjectState {
       setLoading(false);
       setLoadError(unexpectedDispatchError("sizzle_list_failed", cause));
     }
-  }, [hasLocalWork, localWorkPatch, selectProject]);
+  }, [hasLocalWork, localWorkPatch, selectProject, setProjects]);
 
   useEffect(() => {
     void reloadProjects();
@@ -414,6 +424,7 @@ export function useSizzleProject(): SizzleProjectState {
     beginActionRequest,
     clearActionFailure,
     selectProject,
+    setProjects,
     setProjectSaveState,
     showActionFailure
   ]);
@@ -549,7 +560,7 @@ export function useSizzleProject(): SizzleProjectState {
       drainPromises.current.set(id, tracked);
       return tracked;
     },
-    [clearDebounceTimer, setProjectSaveState]
+    [clearDebounceTimer, setProjects, setProjectSaveState]
   );
   flushPatchRef.current = flushPatch;
 
@@ -650,6 +661,7 @@ export function useSizzleProject(): SizzleProjectState {
       clearActionFailure,
       flushPatch,
       selectProject,
+      setProjects,
       setProjectSaveState,
       showActionFailure
     ]
@@ -709,7 +721,21 @@ export function useSizzleProject(): SizzleProjectState {
         }, DEBOUNCE_MS)
       );
     },
-    []
+    [setProjects]
+  );
+
+  const updateScenes = useCallback(
+    (id: string, update: (scenes: SizzleScene[]) => SizzleScene[]): void => {
+      if (!mountedRef.current) return;
+      const current = projectsRef.current.find((project) => project.id === id);
+      if (current === undefined) return;
+      const scenes = update(current.scenes);
+      if (scenes === current.scenes) return;
+      // Keep optimistic state, undo history, coalescing, and save recovery
+      // in the same path as every other local scene edit.
+      onUpdate(id, { scenes });
+    },
+    [onUpdate]
   );
 
   const applyHistoryScenes = useCallback(
@@ -887,7 +913,7 @@ export function useSizzleProject(): SizzleProjectState {
         ];
       });
     });
-  }, [hasLocalWork, localWorkPatch]);
+  }, [hasLocalWork, localWorkPatch, setProjects]);
 
   // Navigate when the user clicks a Sizzle Reel in the Library while this
   // composer window is already open (a new window instead gets the target
@@ -993,6 +1019,7 @@ export function useSizzleProject(): SizzleProjectState {
       clearDebounceTimer,
       clearActionFailure,
       resumePendingSave,
+      setProjects,
       showActionFailure
     ]
   );
@@ -1057,7 +1084,14 @@ export function useSizzleProject(): SizzleProjectState {
 
   const onAddScene = useCallback(
     async (captureId: string) => {
-      if (active === null) return;
+      // Capture only the destination identity across the metadata lookup.
+      // Switching reels does not retarget an already admitted addition.
+      const projectId = activeId;
+      if (
+        projectId === null ||
+        !mountedRef.current ||
+        !projectsRef.current.some((project) => project.id === projectId)
+      ) return;
       // Pre-fill the script line from the capture's existing Codex
       // enrichment (accepted description first, then suggested). Every
       // image capture gets a Codex-generated description at capture
@@ -1065,15 +1099,20 @@ export function useSizzleProject(): SizzleProjectState {
       // out of the box instead of an empty box that synthesizes to
       // a "." click on render.
       let scriptLine = "";
-      const enr = await dispatch("codex:enrichment", { captureId });
-      if (enr.ok && enr.value !== null) {
-        scriptLine =
-          enr.value.acceptedDescription ??
-          enr.value.suggestedDescription ??
-          enr.value.acceptedTitle ??
-          enr.value.suggestedTitle ??
-          "";
-        scriptLine = scriptLine.trim();
+      try {
+        const enr = await dispatch("codex:enrichment", { captureId });
+        if (enr.ok && enr.value !== null) {
+          scriptLine =
+            enr.value.acceptedDescription ??
+            enr.value.suggestedDescription ??
+            enr.value.acceptedTitle ??
+            enr.value.suggestedTitle ??
+            "";
+          scriptLine = scriptLine.trim();
+        }
+      } catch {
+        // Metadata is optional. A transport failure, like an error Result,
+        // leaves an editable empty narration rather than dropping the pick.
       }
       // A new scene is a sequence scene from the start — one voiceover
       // over N clips (this capture is clip 1; "+ Clip" adds more). The
@@ -1085,34 +1124,30 @@ export function useSizzleProject(): SizzleProjectState {
       const scene: SizzleScene = newSizzleSequenceScene([captureId], {
         narration: scriptLine
       });
-      onUpdate(active.id, { scenes: [...active.scenes, scene] });
+      updateScenes(projectId, (scenes) => [...scenes, scene]);
     },
-    [active, onUpdate]
+    [activeId, updateScenes]
   );
 
   const onAddSequenceBeat = useCallback(
     async (sceneId: string, captureId: string) => {
-      if (active === null) return;
-      const nextScenes = active.scenes.map((scene) => {
-        if (scene.id !== sceneId || scene.kind !== "sequence") return scene;
-        const beats = scene.beats ?? [];
+      if (activeId === null) return;
+      updateScenes(activeId, (scenes) => {
+        const target = scenes.find((scene) => scene.id === sceneId);
+        if (target?.kind !== "sequence") return scenes;
+        const beats = target.beats ?? [];
         // New beats default to `auto` — they slot in evenly between the
         // anchored beats and need no manual timing (R4).
         // No trim of its own: the clip follows the capture's Library
         // edit live (see onAddScene).
-        const beat: SizzleSequenceBeat = {
-          id: `bt_${Date.now().toString(36)}`,
-          captureId,
-          timing: { kind: "auto" },
-          mediaTrim: null,
-          transition: "cut",
-          videoFit: "smart-fit"
-        };
-        return { ...scene, beats: normalizeSizzleSequenceBeatContinuity([...beats, beat]) };
+        const beat = newSizzleSequenceBeat(captureId);
+        return scenes.map((scene) => scene.id === sceneId
+          ? { ...scene, beats: normalizeSizzleSequenceBeatContinuity([...beats, beat]) }
+          : scene
+        );
       });
-      onUpdate(active.id, { scenes: nextScenes });
     },
-    [active, onUpdate]
+    [activeId, updateScenes]
   );
 
   const saveState = activeId === null ? SAVED_STATE : (saveStates[activeId] ?? SAVED_STATE);

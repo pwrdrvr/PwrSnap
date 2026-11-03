@@ -332,492 +332,6 @@ describe("useCaptureModel", () => {
     expect(upsertCalls[0]?.[1]).toEqual({ captureId: "cap_2", layer });
   });
 
-  test("5f. v2 dispatchEdit: crop → bundle:updateCanvasDimensions with derived dims", async () => {
-    const record = makeRecord("cap_2", 2); // width_px=2000, height_px=1000
-    dispatchMock.mockImplementation((name: string) => {
-      if (name === "library:byId")
-        return Promise.resolve({ ok: true, value: record });
-      if (name === "layers:list") return Promise.resolve({ ok: true, value: [] });
-      if (name === "bundle:updateCanvasDimensions") {
-        return Promise.resolve({
-          ok: true,
-          value: { previousWidthPx: 2000, previousHeightPx: 1000 }
-        });
-      }
-      return Promise.resolve({ ok: true, value: null });
-    });
-
-    let model: CaptureModel | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap_2",
-        onSnapshot: (m) => {
-          model = m;
-        }
-      })
-    );
-    await flush();
-
-    const m = model!;
-    if (m.kind !== "loaded" || m.format !== 2) throw new Error("unexpected model");
-    const r = await m.dispatchEdit({
-      kind: "crop",
-      rect: { x: 0, y: 0, w: 0.5, h: 0.75 }
-    });
-    expect(r.ok).toBe(true);
-    if (!r.ok) throw new Error("unreachable");
-    expect(r.value.kind).toBe("crop");
-    if (r.value.kind !== "crop") throw new Error("unreachable");
-    expect(r.value.artifact).toEqual({
-      previousWidthPx: 2000,
-      previousHeightPx: 1000
-    });
-    // Multiply rect.w/h * record.width_px/height_px → derived dims.
-    const calls = dispatchMock.mock.calls.filter(
-      (c) => c[0] === "bundle:updateCanvasDimensions"
-    );
-    expect(calls.length).toBe(1);
-    expect(calls[0]?.[1]).toEqual({
-      captureId: "cap_2",
-      widthPx: 1000, // 2000 * 0.5
-      heightPx: 750 // 1000 * 0.75
-    });
-  });
-
-  test("5g. v2 dispatchEdit: crop re-normalizes vector layer coords (text at right edge → x>1, preserved as data outside viewport)", async () => {
-    // User bug from pwrdrvr/PwrSnap#110: text at point.x=0.95 on a
-    // 1728-px canvas (absolute pixel 1641) survived a crop to 60%
-    // width — the canvas shrunk but the text's normalized coord
-    // stayed 0.95, so the text "slid leftward" into the kept region
-    // instead of being clipped at the right edge.
-    //
-    // Follow-up from the same PR review: crop is a VIEWPORT change,
-    // not a destructive op. Overlays at absolute source pixels
-    // outside the cropped viewport must PERSIST as DATA so undoing
-    // the crop restores them. The schema's NormalizedScalar was
-    // widened to .finite() (was .min(0).max(1)) specifically to allow
-    // this. The dispatcher's "delete + reinsert" loop must always
-    // reinsert with the transformed coords; renderer (SVG overflow)
-    // and bake (sharp composite) clip at paint time.
-    //
-    // This test exercises the FULL dispatch flow (raster + text
-    // vector → crop dispatch → verify text layer was deleted-and-
-    // reinserted with the OUT-OF-CANVAS transformed coord + an
-    // upsert of a NEW crop VectorLayer happened +
-    // bundle:updateCanvasDimensions fired with derived dims).
-    const record = makeRecord("cap_2", 2); // 2000x1000
-    const rasterLayer = makeLayerNode("ly_raster");
-    const rootGroupId = "ly_root";
-    const rootGroup: BundleLayerNode = {
-      id: rootGroupId,
-      parent_id: null,
-      name: "Root",
-      visible: true,
-      locked: false,
-      opacity: 1,
-      blend_mode: "normal",
-      transform: [1, 0, 0, 1, 0, 0],
-      z_index: 0,
-      source: "user",
-      ai_run_id: null,
-      applied_at: "2026-05-23T12:00:00.000Z",
-      rejected_at: null,
-      superseded_by: null,
-      created_at: "2026-05-23T12:00:00.000Z",
-      kind: "group",
-      collapsed: false
-    };
-    // Re-parent the raster under the root group (matches the doctor's
-    // tree shape: root group → raster → user vectors).
-    const rasterUnderRoot: BundleLayerNode = {
-      ...rasterLayer,
-      parent_id: rootGroupId
-    };
-    // Text on the right edge of the source. With a crop to w=0.6,
-    // the user's expectation is that this text gets clipped at the
-    // right edge of the new (smaller) canvas because its absolute
-    // pixel position (0.95 * 2000 = 1900) is outside the new canvas
-    // (0.6 * 2000 = 1200 wide).
-    const textLayer: BundleLayerNode = {
-      id: "ly_text",
-      parent_id: rootGroupId,
-      name: "Text",
-      visible: true,
-      locked: false,
-      opacity: 1,
-      blend_mode: "normal",
-      transform: [1, 0, 0, 1, 0, 0],
-      z_index: 1,
-      source: "user",
-      ai_run_id: null,
-      applied_at: "2026-05-23T12:00:00.000Z",
-      rejected_at: null,
-      superseded_by: null,
-      created_at: "2026-05-23T12:00:00.000Z",
-      kind: "vector",
-      shape: {
-        kind: "text",
-        point: { x: 0.95, y: 0.5 },
-        body: "edge",
-        size: "small",
-        color: "auto"
-      }
-    };
-    dispatchMock.mockImplementation((name: string, req: unknown) => {
-      if (name === "library:byId")
-        return Promise.resolve({ ok: true, value: record });
-      if (name === "layers:list")
-        return Promise.resolve({
-          ok: true,
-          value: [rootGroup, rasterUnderRoot, textLayer]
-        });
-      if (name === "layers:delete") return Promise.resolve({ ok: true, value: undefined });
-      if (name === "layers:upsert") {
-        const r = req as { layer: BundleLayerNode };
-        return Promise.resolve({ ok: true, value: r.layer });
-      }
-      if (name === "bundle:updateCanvasDimensions") {
-        return Promise.resolve({
-          ok: true,
-          value: { previousWidthPx: 2000, previousHeightPx: 1000 }
-        });
-      }
-      return Promise.resolve({ ok: true, value: null });
-    });
-
-    let model: CaptureModel | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap_2",
-        onSnapshot: (m) => {
-          model = m;
-        }
-      })
-    );
-    await flush();
-    const m = model!;
-    if (m.kind !== "loaded" || m.format !== 2) throw new Error("unexpected model");
-
-    // Apply a 60% width crop. Per the user's intuition the text at
-    // point.x = 0.95 should end up with new normalized coord
-    // 0.95 / 0.6 ≈ 1.5833 (past the new canvas right edge → clipped).
-    const r = await m.dispatchEdit({
-      kind: "crop",
-      rect: { x: 0, y: 0, w: 0.6, h: 1 }
-    });
-    expect(r.ok).toBe(true);
-
-    // 1. Text layer was deleted (Step 0 of the dispatcher's "delete +
-    //    reinsert with transformed coords" loop).
-    const textDeleteCall = dispatchMock.mock.calls.find(
-      (c) => c[0] === "layers:delete" && (c[1] as { id: string }).id === "ly_text"
-    );
-    expect(
-      textDeleteCall,
-      "expected layers:delete for the text layer id"
-    ).toBeDefined();
-
-    // 2. CRITICAL: text MUST be reinserted with transformed coords
-    //    point.x = 0.95 / 0.6 ≈ 1.5833 (past the new canvas right
-    //    edge, but the schema now permits out-of-canvas coords).
-    //    Pre-#110 review: the dispatcher deleted-without-reinserting
-    //    here, which made the data loss permanent — undo of the crop
-    //    had nothing to restore. Post-fix: the overlay persists as
-    //    DATA outside the viewport; renderer clips at paint time.
-    const textUpsertCall = dispatchMock.mock.calls.find((c) => {
-      if (c[0] !== "layers:upsert") return false;
-      const layer = (c[1] as { layer: BundleLayerNode }).layer;
-      return (
-        layer.kind === "vector" &&
-        layer.shape.kind === "text" &&
-        layer.shape.body === "edge"
-      );
-    });
-    expect(
-      textUpsertCall,
-      "text outside the new canvas MUST be reinserted with transformed (out-of-canvas) coords — without it, undo cannot restore the overlay (the destructive-crop regression from PR #110)"
-    ).toBeDefined();
-    if (textUpsertCall !== undefined) {
-      const layer = (textUpsertCall[1] as { layer: BundleLayerNode }).layer;
-      if (layer.kind !== "vector" || layer.shape.kind !== "text") {
-        throw new Error("text layer shape preserved");
-      }
-      expect(layer.id).toBe("ly_text");
-      // 0.95 / 0.6 = 1.5833... — past the new canvas, but preserved.
-      expect(layer.shape.point.x).toBeCloseTo(0.95 / 0.6, 4);
-      expect(layer.shape.point.y).toBeCloseTo(0.5, 6);
-    }
-
-    // 3. A crop VectorLayer was inserted.
-    const cropUpsertCall = dispatchMock.mock.calls.find((c) => {
-      if (c[0] !== "layers:upsert") return false;
-      const layer = (c[1] as { layer: BundleLayerNode }).layer;
-      return layer.kind === "vector" && layer.shape.kind === "crop";
-    });
-    expect(cropUpsertCall, "expected a crop VectorLayer to be inserted").toBeDefined();
-
-    // 4. The canvas dim shrink happened.
-    const canvasDimCall = dispatchMock.mock.calls.find(
-      (c) => c[0] === "bundle:updateCanvasDimensions"
-    );
-    expect(canvasDimCall).toBeDefined();
-    expect(canvasDimCall?.[1]).toEqual({
-      captureId: "cap_2",
-      widthPx: 1200, // 2000 * 0.6
-      heightPx: 1000
-    });
-  });
-
-  test("5g2. v2 dispatchEdit: OFF-ORIGIN crop translates the raster layer so the new canvas shows the user's chosen region", async () => {
-    // User-reported bug from pwrdrvr/PwrSnap#110 review (diagnostic
-    // log on a real center-crop):
-    //
-    //   text at (0.89, 0.59) on 2880×1920
-    //   crop rect (0.354, 0.187, 0.6, 0.6)  ← CENTER crop, not top-left
-    //   newCanvas: 1728×1152
-    //
-    // The forward overlay transform correctly emits (0.896, 0.676) for
-    // the text in the new canvas — matches the math. BUT the canvas-
-    // dim shrink ignores rect.x/y (only uses w×h) so the new canvas
-    // implicitly shows the TOP-LEFT 60% of the source, not the middle
-    // 60% the user dragged. Net result: text lands at canvas pixel
-    // (1548, 779) which displays source pixel (1548, 779), NOT the
-    // user's chosen (2567, 1138).
-    //
-    // Fix: also translate the raster layer's transform by
-    // (-rect.x × oldW, -rect.y × oldH) so the cropped canvas shows
-    // the user's chosen region of the source. The dispatcher comment
-    // ("Off-origin crops require translating every layer's transform
-    // by (-rect.x, -rect.y) — deferred to the layer-editor UI in
-    // Phase 4-5") flagged this as a known gap; this test makes it
-    // un-deferred.
-    const record = makeRecord("cap_2", 2);
-    // 2000×1000 record (matches makeRecord default).
-    const rasterLayer = makeLayerNode("ly_raster");
-    const rootGroupId = "ly_root";
-    const rootGroup: BundleLayerNode = {
-      id: rootGroupId,
-      parent_id: null,
-      name: "Root",
-      visible: true,
-      locked: false,
-      opacity: 1,
-      blend_mode: "normal",
-      transform: [1, 0, 0, 1, 0, 0],
-      z_index: 0,
-      source: "user",
-      ai_run_id: null,
-      applied_at: "2026-05-23T12:00:00.000Z",
-      rejected_at: null,
-      superseded_by: null,
-      created_at: "2026-05-23T12:00:00.000Z",
-      kind: "group",
-      collapsed: false
-    };
-    const rasterUnderRoot: BundleLayerNode = {
-      ...rasterLayer,
-      parent_id: rootGroupId
-    };
-    dispatchMock.mockImplementation((name: string, req: unknown) => {
-      if (name === "library:byId")
-        return Promise.resolve({ ok: true, value: record });
-      if (name === "layers:list")
-        return Promise.resolve({
-          ok: true,
-          value: [rootGroup, rasterUnderRoot]
-        });
-      if (name === "layers:delete")
-        return Promise.resolve({ ok: true, value: undefined });
-      if (name === "layers:upsert") {
-        const r = req as { layer: BundleLayerNode };
-        return Promise.resolve({ ok: true, value: r.layer });
-      }
-      if (name === "bundle:updateCanvasDimensions") {
-        return Promise.resolve({
-          ok: true,
-          value: { previousWidthPx: 2000, previousHeightPx: 1000 }
-        });
-      }
-      return Promise.resolve({ ok: true, value: null });
-    });
-
-    let model: CaptureModel | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap_2",
-        onSnapshot: (m) => {
-          model = m;
-        }
-      })
-    );
-    await flush();
-    const m = model!;
-    if (m.kind !== "loaded" || m.format !== 2) throw new Error("unexpected model");
-
-    // Off-origin crop: rect.x = 0.25, rect.y = 0.1, keeping middle 50% × 50%.
-    const r = await m.dispatchEdit({
-      kind: "crop",
-      rect: { x: 0.25, y: 0.1, w: 0.5, h: 0.5 }
-    });
-    expect(r.ok).toBe(true);
-
-    // The raster must be deleted-and-reinserted with a translated
-    // transform so its visible window matches the user's crop rect.
-    // Expected new translation: (-0.25 × 2000, -0.1 × 1000) = (-500, -100).
-    const rasterUpsertCall = dispatchMock.mock.calls.find((c) => {
-      if (c[0] !== "layers:upsert") return false;
-      const layer = (c[1] as { layer: BundleLayerNode }).layer;
-      return layer.kind === "raster";
-    });
-    expect(
-      rasterUpsertCall,
-      "off-origin crop must reinsert the raster with a translated transform — without this the canvas shrink takes the TOP-LEFT W×H of the source instead of the user's chosen region"
-    ).toBeDefined();
-    if (rasterUpsertCall !== undefined) {
-      const layer = (rasterUpsertCall[1] as { layer: BundleLayerNode }).layer;
-      if (layer.kind !== "raster") throw new Error("kind preserved");
-      expect(layer.id).toBe("ly_raster");
-      // transform = [a, b, c, d, tx, ty]; the translation lives at [4]/[5].
-      expect(layer.transform[4]).toBeCloseTo(-500, 3);
-      expect(layer.transform[5]).toBeCloseTo(-100, 3);
-      // Other matrix elements untouched (identity scale + no rotation).
-      expect(layer.transform[0]).toBe(1);
-      expect(layer.transform[1]).toBe(0);
-      expect(layer.transform[2]).toBe(0);
-      expect(layer.transform[3]).toBe(1);
-    }
-
-    // Canvas dims shrink to (1000, 500) — derived from w × oldW and
-    // h × oldH; unchanged behavior. The translation in raster
-    // transform is what makes the off-origin crop show the right
-    // region.
-    const canvasDimCall = dispatchMock.mock.calls.find(
-      (c) => c[0] === "bundle:updateCanvasDimensions"
-    );
-    expect(canvasDimCall?.[1]).toEqual({
-      captureId: "cap_2",
-      widthPx: 1000, // 2000 * 0.5
-      heightPx: 500 // 1000 * 0.5
-    });
-  });
-
-  test("5g3. v2 dispatchEdit: OFF-ORIGIN crop translates blur and highlight effect clip_rects", async () => {
-    const record = makeRecord("cap_2", 2); // 2000x1000
-    const rootGroup: BundleLayerNode = {
-      id: "ly_root",
-      parent_id: null,
-      name: "Root",
-      visible: true,
-      locked: false,
-      opacity: 1,
-      blend_mode: "normal",
-      transform: [1, 0, 0, 1, 0, 0],
-      z_index: 0,
-      source: "user",
-      ai_run_id: null,
-      applied_at: "2026-05-23T12:00:00.000Z",
-      rejected_at: null,
-      superseded_by: null,
-      created_at: "2026-05-23T12:00:00.000Z",
-      kind: "group",
-      collapsed: false
-    };
-    const blurEffect: BundleLayerNode = {
-      id: "ly_blur",
-      parent_id: "ly_root",
-      name: "Blur",
-      visible: true,
-      locked: false,
-      opacity: 1,
-      blend_mode: "normal",
-      transform: [1, 0, 0, 1, 0, 0],
-      z_index: 1,
-      source: "user",
-      ai_run_id: null,
-      applied_at: "2026-05-23T12:00:00.000Z",
-      rejected_at: null,
-      superseded_by: null,
-      created_at: "2026-05-23T12:00:00.000Z",
-      kind: "effect",
-      effect: { type: "blur", radius_px: 20, style: "gaussian", rotation: Math.PI / 8 },
-      clip_rect: { x: 600, y: 300, w: 200, h: 100 }
-    };
-    const highlightEffect: BundleLayerNode = {
-      id: "ly_highlight",
-      parent_id: "ly_root",
-      name: "Highlight",
-      visible: true,
-      locked: false,
-      opacity: 1,
-      blend_mode: "normal",
-      transform: [1, 0, 0, 1, 0, 0],
-      z_index: 2,
-      source: "user",
-      ai_run_id: null,
-      applied_at: "2026-05-23T12:00:00.000Z",
-      rejected_at: null,
-      superseded_by: null,
-      created_at: "2026-05-23T12:00:00.000Z",
-      kind: "effect",
-      effect: { type: "highlight", tint_hex: "#ff8a1f", opacity: 0.3, rotation: Math.PI / 6 },
-      clip_rect: { x: 600, y: 300, w: 200, h: 100 }
-    };
-    dispatchMock.mockImplementation((name: string, req: unknown) => {
-      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
-      if (name === "layers:list")
-        return Promise.resolve({ ok: true, value: [rootGroup, blurEffect, highlightEffect] });
-      if (name === "layers:delete") return Promise.resolve({ ok: true, value: undefined });
-      if (name === "layers:upsert") {
-        const r = req as { layer: BundleLayerNode };
-        return Promise.resolve({ ok: true, value: r.layer });
-      }
-      if (name === "bundle:updateCanvasDimensions") {
-        return Promise.resolve({
-          ok: true,
-          value: { previousWidthPx: 2000, previousHeightPx: 1000 }
-        });
-      }
-      return Promise.resolve({ ok: true, value: null });
-    });
-
-    let model: CaptureModel | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap_2",
-        onSnapshot: (m) => {
-          model = m;
-        }
-      })
-    );
-    await flush();
-    const m = model!;
-    if (m.kind !== "loaded" || m.format !== 2) throw new Error("unexpected model");
-
-    const r = await m.dispatchEdit({
-      kind: "crop",
-      rect: { x: 0.25, y: 0.1, w: 0.5, h: 0.5 }
-    });
-    expect(r.ok).toBe(true);
-
-    const effectUpserts = dispatchMock.mock.calls
-      .filter((c) => c[0] === "layers:upsert")
-      .map((c) => (c[1] as { layer: BundleLayerNode }).layer)
-      .filter((layer): layer is BundleLayerNode & { kind: "effect" } => layer.kind === "effect");
-    expect(effectUpserts.length).toBe(2);
-    expect(effectUpserts.map((layer) => layer.id).sort()).toEqual([
-      "ly_blur",
-      "ly_highlight"
-    ]);
-    for (const layer of effectUpserts) {
-      expect(layer.clip_rect).toEqual({ x: 100, y: 200, w: 200, h: 100 });
-      if (layer.effect.type === "blur") {
-        expect(layer.effect.rotation).toBeCloseTo(Math.PI / 8);
-      } else {
-        expect(layer.effect.rotation).toBeCloseTo(Math.PI / 6);
-      }
-    }
-  });
-
   test("5h. v2 refetch race: stale broadcast resolution must NOT overwrite fresh record (crop undo bug)", async () => {
     // User-reported bug from PR #110 review:
     //   1. User crops a capture (1728 → 1037 wide).
@@ -1277,7 +791,7 @@ describe("useCaptureModel", () => {
     consoleWarn.mockRestore();
   });
 
-  test("13d. v2 dispatchEdit: updateGeometry → layers:delete + layers:upsert with merged vector shape", async () => {
+  test("13d. v2 dispatchEdit: updateGeometry → layers:update with merged vector shape", async () => {
     const record = makeRecord("cap_2", 2);
     const arrowOverlay = {
       kind: "arrow" as const,
@@ -1308,7 +822,7 @@ describe("useCaptureModel", () => {
       if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
       if (name === "layers:list") return Promise.resolve({ ok: true, value: [vectorLayer] });
       if (name === "layers:delete") return Promise.resolve({ ok: true, value: undefined });
-      if (name === "layers:upsert") {
+      if (name === "layers:update") {
         const r = req as { layer: BundleLayerNode };
         return Promise.resolve({ ok: true, value: r.layer });
       }
@@ -1343,9 +857,8 @@ describe("useCaptureModel", () => {
     if (r.value.kind !== "update") throw new Error("unreachable");
     expect(r.value.artifact.format).toBe(2);
     const deletes = dispatchMock.mock.calls.filter((c) => c[0] === "layers:delete");
-    expect(deletes.length).toBe(1);
-    expect(deletes[0]?.[1]).toEqual({ id: "ly_orig" });
-    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "layers:upsert");
+    expect(deletes.length).toBe(0);
+    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "layers:update");
     expect(upserts.length).toBe(1);
     const sentLayer = (upserts[0]![1] as { layer: BundleLayerNode }).layer;
     expect(sentLayer.kind).toBe("vector");
@@ -1355,7 +868,7 @@ describe("useCaptureModel", () => {
     }
     // The id is PRESERVED across the edit (same logical layer). The op
     // is still a delete-plus-insert, but reusing the id hits
-    // layers:upsert's restore path — so the layer's create undo entry
+    // layers:update's restore path — so the layer's create undo entry
     // stays valid and ⌘Z past the edit can still delete it. (Pre-fix
     // this minted a fresh nanoid, which orphaned the create entry — see
     // the "13d-text" sibling and applyGeometryToLayer's doc-block.)
@@ -1396,7 +909,6 @@ describe("useCaptureModel", () => {
         color: "auto"
       }
     };
-    const firstDelete = deferred<{ ok: true; value: undefined }>();
     const firstUpsert = deferred<{ ok: true; value: BundleLayerNode }>();
     let deleteCount = 0;
     let upsertCount = 0;
@@ -1406,11 +918,9 @@ describe("useCaptureModel", () => {
       if (name === "layers:list") return Promise.resolve({ ok: true, value: [arrowLayer] });
       if (name === "layers:delete") {
         deleteCount += 1;
-        return deleteCount === 1
-          ? firstDelete.promise
-          : Promise.resolve({ ok: true, value: undefined });
+        return Promise.resolve({ ok: true, value: undefined });
       }
-      if (name === "layers:upsert") {
+      if (name === "layers:update") {
         upsertCount += 1;
         const { layer } = req as { layer: BundleLayerNode };
         if (upsertCount === 1) {
@@ -1447,11 +957,7 @@ describe("useCaptureModel", () => {
     });
 
     await flush();
-    expect(deleteCount).toBe(1);
-    expect(upsertCount).toBe(0);
-
-    firstDelete.resolve({ ok: true, value: undefined });
-    await flush();
+    expect(deleteCount).toBe(0);
     expect(upsertCount).toBe(1);
     if (firstUpsertLayer === null) throw new Error("first update did not reach upsert");
     // TypeScript doesn't track the assignment inside the dispatch mock
@@ -1465,9 +971,9 @@ describe("useCaptureModel", () => {
     firstUpsert.resolve({ ok: true, value: firstLayer });
     await flush();
 
-    expect(deleteCount).toBe(2);
+    expect(deleteCount).toBe(0);
     expect(upsertCount).toBe(2);
-    const upserts = dispatchMock.mock.calls.filter((call) => call[0] === "layers:upsert");
+    const upserts = dispatchMock.mock.calls.filter((call) => call[0] === "layers:update");
     const secondLayer = (upserts[1]![1] as { layer: BundleLayerNode }).layer;
     expect(secondLayer.id).toBe("ly_rapid_arrow");
     if (secondLayer.kind !== "vector" || secondLayer.shape.kind !== "arrow") {
@@ -1532,7 +1038,7 @@ describe("useCaptureModel", () => {
       if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
       if (name === "layers:list") return Promise.resolve({ ok: true, value: [highlightLayer] });
       if (name === "layers:delete") return Promise.resolve({ ok: true, value: undefined });
-      if (name === "layers:upsert") {
+      if (name === "layers:update") {
         const r = req as { layer: BundleLayerNode };
         return Promise.resolve({ ok: true, value: r.layer });
       }
@@ -1566,7 +1072,7 @@ describe("useCaptureModel", () => {
     expect(result.value.kind).toBe("update");
     if (result.value.kind !== "update") throw new Error("unreachable");
 
-    const upsert = dispatchMock.mock.calls.find((c) => c[0] === "layers:upsert");
+    const upsert = dispatchMock.mock.calls.find((c) => c[0] === "layers:update");
     expect(upsert).toBeDefined();
     const sentLayer = (upsert![1] as { layer: BundleLayerNode }).layer;
     expect(sentLayer.kind).toBe("effect");
@@ -1687,7 +1193,7 @@ describe("useCaptureModel", () => {
       if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
       if (name === "layers:list") return Promise.resolve({ ok: true, value: [blurLayer] });
       if (name === "layers:delete") return Promise.resolve({ ok: true, value: undefined });
-      if (name === "layers:upsert") {
+      if (name === "layers:update") {
         const r = req as { layer: BundleLayerNode };
         return Promise.resolve({ ok: true, value: r.layer });
       }
@@ -1717,7 +1223,7 @@ describe("useCaptureModel", () => {
     expect(result.value.kind).toBe("update");
     if (result.value.kind !== "update") throw new Error("unreachable");
 
-    const upsert = dispatchMock.mock.calls.find((c) => c[0] === "layers:upsert");
+    const upsert = dispatchMock.mock.calls.find((c) => c[0] === "layers:update");
     expect(upsert).toBeDefined();
     const sentLayer = (upsert![1] as { layer: BundleLayerNode }).layer;
     expect(sentLayer.kind).toBe("effect");
@@ -1762,7 +1268,7 @@ describe("useCaptureModel", () => {
       if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
       if (name === "layers:list") return Promise.resolve({ ok: true, value: [highlightLayer] });
       if (name === "layers:delete") return Promise.resolve({ ok: true, value: undefined });
-      if (name === "layers:upsert") {
+      if (name === "layers:update") {
         const r = req as { layer: BundleLayerNode };
         return Promise.resolve({ ok: true, value: r.layer });
       }
@@ -1792,7 +1298,7 @@ describe("useCaptureModel", () => {
     expect(result.value.kind).toBe("update");
     if (result.value.kind !== "update") throw new Error("unreachable");
 
-    const upsert = dispatchMock.mock.calls.find((c) => c[0] === "layers:upsert");
+    const upsert = dispatchMock.mock.calls.find((c) => c[0] === "layers:update");
     expect(upsert).toBeDefined();
     const sentLayer = (upsert![1] as { layer: BundleLayerNode }).layer;
     expect(sentLayer.kind).toBe("effect");
@@ -1859,7 +1365,7 @@ describe("useCaptureModel", () => {
       if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
       if (name === "layers:list") return Promise.resolve({ ok: true, value: [textLayer] });
       if (name === "layers:delete") return Promise.resolve({ ok: true, value: undefined });
-      if (name === "layers:upsert") {
+      if (name === "layers:update") {
         const r = req as { layer: BundleLayerNode };
         return Promise.resolve({ ok: true, value: r.layer });
       }
@@ -1890,9 +1396,8 @@ describe("useCaptureModel", () => {
     if (r.value.kind !== "update") throw new Error("unreachable");
     // Still a delete-plus-insert of the same id.
     const deletes = dispatchMock.mock.calls.filter((c) => c[0] === "layers:delete");
-    expect(deletes.length).toBe(1);
-    expect(deletes[0]?.[1]).toEqual({ id: "ly_text" });
-    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "layers:upsert");
+    expect(deletes.length).toBe(0);
+    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "layers:update");
     expect(upserts.length).toBe(1);
     const sentLayer = (upserts[0]![1] as { layer: BundleLayerNode }).layer;
     expect(sentLayer.kind).toBe("vector");
@@ -1935,7 +1440,7 @@ describe("useCaptureModel", () => {
   // ───────────────────────────────────────────────────────────────────────
 
   test("13h. v2 dispatchEdit: updateGeometry preserves layer.z_index = 0 (Send-to-Back regression)", async () => {
-    // v2 mirror of 13e. layers:upsert receives the merged layer with
+    // v2 mirror of 13e. layers:update receives the merged layer with
     // z_index = 0; the dispatcher must NOT set `bumpZIndexToMax: true`
     // (which would tell layers-repo to auto-bump).
     const record = makeRecord("cap_2", 2);
@@ -1966,7 +1471,7 @@ describe("useCaptureModel", () => {
       if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
       if (name === "layers:list") return Promise.resolve({ ok: true, value: [vectorLayer] });
       if (name === "layers:delete") return Promise.resolve({ ok: true, value: undefined });
-      if (name === "layers:upsert") {
+      if (name === "layers:update") {
         const r = req as { layer: BundleLayerNode };
         return Promise.resolve({ ok: true, value: r.layer });
       }
@@ -1995,7 +1500,7 @@ describe("useCaptureModel", () => {
       }
     });
     expect(r.ok).toBe(true);
-    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "layers:upsert");
+    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "layers:update");
     expect(upserts.length).toBe(1);
     const sentReq = upserts[0]?.[1] as {
       layer: BundleLayerNode;
@@ -2009,7 +1514,7 @@ describe("useCaptureModel", () => {
     expect(sentReq.bumpZIndexToMax).not.toBe(true);
   });
 
-  test("13i. v2 dispatchEdit: updateGeometry preserves layer.z_index > 0 in layers:upsert payload", async () => {
+  test("13i. v2 dispatchEdit: updateGeometry preserves layer.z_index > 0 in layers:update payload", async () => {
     const record = makeRecord("cap_2", 2);
     const vectorLayer: BundleLayerNode = {
       id: "ly_mid",
@@ -2039,7 +1544,7 @@ describe("useCaptureModel", () => {
       if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
       if (name === "layers:list") return Promise.resolve({ ok: true, value: [vectorLayer] });
       if (name === "layers:delete") return Promise.resolve({ ok: true, value: undefined });
-      if (name === "layers:upsert") {
+      if (name === "layers:update") {
         const r = req as { layer: BundleLayerNode };
         return Promise.resolve({ ok: true, value: r.layer });
       }
@@ -2069,7 +1574,7 @@ describe("useCaptureModel", () => {
       }
     });
     expect(r.ok).toBe(true);
-    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "layers:upsert");
+    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "layers:update");
     const sentReq = upserts[0]?.[1] as {
       layer: BundleLayerNode;
       bumpZIndexToMax?: boolean;
@@ -2131,7 +1636,7 @@ describe("useCaptureModel", () => {
         liveLayers = liveLayers.filter((l) => l.id !== r.id);
         return Promise.resolve({ ok: true, value: undefined });
       }
-      if (name === "layers:upsert") {
+      if (name === "layers:update") {
         const r = req as { layer: BundleLayerNode };
         liveLayers = [...liveLayers, r.layer];
         return Promise.resolve({ ok: true, value: r.layer });
@@ -2169,8 +1674,8 @@ describe("useCaptureModel", () => {
       expect(r.ok).toBe(true);
     }
 
-    // Three layers:upsert calls, each carrying its OWN original z_index.
-    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "layers:upsert");
+    // Three layers:update calls, each carrying its OWN original z_index.
+    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "layers:update");
     expect(upserts.length).toBe(3);
     const sentZIndexes = upserts.map(
       (call) =>
@@ -2197,7 +1702,7 @@ describe("useCaptureModel", () => {
     //      → layers:reorder → rect's z_index becomes 0 in the live
     //      list.
     //   3. dispatchEdit({ kind: "updateGeometry", layerId, geometry })
-    //      → layers:delete + layers:upsert with merged.z_index = 0
+    //      → layers:update with merged.z_index = 0
     //      and NO bumpZIndexToMax flag → the inserted row preserves 0.
     //
     // The mock state advances after each dispatch so the dispatcher
@@ -2246,7 +1751,7 @@ describe("useCaptureModel", () => {
         liveLayers = liveLayers.filter((l) => l.id !== r.id);
         return Promise.resolve({ ok: true, value: undefined });
       }
-      if (name === "layers:upsert") {
+      if (name === "layers:update") {
         const r = req as { layer: BundleLayerNode; bumpZIndexToMax?: boolean };
         // Mirror the post-fix layers-repo behavior: when
         // bumpZIndexToMax !== true, store node.z_index verbatim.
@@ -2319,10 +1824,10 @@ describe("useCaptureModel", () => {
     if (dragResult.value.artifact.format !== 2) throw new Error("unreachable");
     expect(dragResult.value.artifact.node.z_index).toBe(0);
 
-    // The dispatched layers:upsert call must NOT have requested
+    // The dispatched layers:update call must NOT have requested
     // auto-bump (that's the load-bearing contract bit the user's
     // bug exposed).
-    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "layers:upsert");
+    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "layers:update");
     expect(upserts.length).toBe(1);
     const sentReq = upserts[0]?.[1] as {
       layer: BundleLayerNode;
@@ -2330,6 +1835,257 @@ describe("useCaptureModel", () => {
     };
     expect(sentReq.layer.z_index).toBe(0);
     expect(sentReq.bumpZIndexToMax).not.toBe(true);
+  });
+
+  test("atomic crop sends one mutation regardless of layer count and returns main's dimensions", async () => {
+    const record = makeRecord("cap_2", 2);
+    dispatchMock.mockImplementation(async (name: string, req: unknown) => {
+      if (name === "library:byId")
+        return { ok: true, value: record };
+      if (name === "layers:list")
+        return { ok: true, value: Array.from({ length: 100 }, (_, i) => makeLayerNode(`raster_${i}`)) };
+      if (name === "bundle:cropCanvas")
+        return { ok: true, value: { previousWidthPx: 2000, previousHeightPx: 1000, widthPx: 1000, heightPx: 500, record: { ...record, width_px: 1000, height_px: 500 }, layers: [] } };
+      if (name === "layers:upsert" || name === "layers:update")
+        return { ok: true, value: (req as {
+            layer: BundleLayerNode;
+          }).layer };
+      return { ok: true, value: { previousWidthPx: 2000, previousHeightPx: 1000 } };
+    });
+    let model!: CaptureModel;
+    render(createElement(Probe, { captureId: "cap_2", onSnapshot: (m) => { model = m; } }));
+    await flush();
+    if (model.kind !== "loaded")
+      throw new Error("not loaded");
+    dispatchMock.mockClear();
+    const loaded = model;
+    let result;
+    await act(async () => { result = await loaded.dispatchEdit({ kind: "crop", rect: { x: 0.1, y: 0.2, w: 0.5, h: 0.5 } }); });
+    expect(result!.ok).toBe(true);
+    expect(dispatchMock.mock.calls.map(([name]) => name)).toEqual(["bundle:cropCanvas"]);
+  });
+
+  test("geometry and style share a write lane and merge against the committed predecessor", async () => {
+    const record = makeRecord("cap_2", 2);
+    const layer: BundleLayerNode = { ...makeLayerNode("arrow"), kind: "vector", shape: { kind: "arrow", from: { x: 0, y: 0 }, to: { x: 1, y: 1 }, color: "auto" } };
+    const barrier = deferred<{
+      ok: true;
+      value: BundleLayerNode;
+    }>();
+    const updates: BundleLayerNode[] = [];
+    dispatchMock.mockImplementation(async (name: string, req: unknown) => {
+      if (name === "library:byId")
+        return { ok: true, value: record };
+      if (name === "layers:list")
+        return { ok: true, value: [layer] };
+      if (name === "layers:update") {
+        updates.push((req as {
+          layer: BundleLayerNode;
+        }).layer);
+        return updates.length === 1 ? barrier.promise : { ok: true, value: updates.at(-1) };
+      }
+      if (name === "layers:upsert")
+        return { ok: true, value: (req as {
+            layer: BundleLayerNode;
+          }).layer };
+      return { ok: true, value: undefined };
+    });
+    let model!: CaptureModel;
+    render(createElement(Probe, { captureId: "cap_2", onSnapshot: (m) => { model = m; } }));
+    await flush();
+    if (model.kind !== "loaded")
+      throw new Error("not loaded");
+    const moved = model.dispatchEdit({ kind: "updateGeometry", layerId: layer.id, geometry: { kind: "arrow", from: { x: 0.2, y: 0.3 }, to: { x: 0.7, y: 0.8 } } });
+    const styled = model.dispatchEdit({ kind: "updateOverlay", layerId: layer.id, patch: { kind: "arrow", color: "#2489ff" } });
+    await flush();
+    expect(updates).toHaveLength(1);
+    barrier.resolve({ ok: true, value: updates[0]! });
+    const [moveResult, styleResult] = await Promise.all([moved, styled]);
+    expect(moveResult.ok).toBe(true);
+    expect(styleResult.ok).toBe(true);
+    expect(updates[1]).toMatchObject({ id: layer.id, shape: { from: { x: 0.2, y: 0.3 }, color: "#2489ff" } });
+    if (!styleResult.ok || styleResult.value.kind !== "update")
+      throw new Error("not updated");
+    expect(styleResult.value.artifact.previousNode).toEqual(updates[0]);
+    expect(dispatchMock.mock.calls.some(([name]) => name === "layers:delete")).toBe(false);
+  });
+
+  test("failed style update preserves the live layer and does not poison the next update", async () => {
+    const layer: BundleLayerNode = { ...makeLayerNode("arrow"), kind: "vector", shape: { kind: "arrow", from: { x: 0, y: 0 }, to: { x: 1, y: 1 }, color: "auto" } };
+    let attempts = 0;
+    dispatchMock.mockImplementation(async (name: string, req: unknown) => {
+      if (name === "library:byId")
+        return { ok: true, value: makeRecord("cap_2", 2) };
+      if (name === "layers:list")
+        return { ok: true, value: [layer] };
+      if (name === "layers:update" || name === "layers:upsert") {
+        attempts += 1;
+        if (attempts === 1)
+          return { ok: false, error: { kind: "persistence", code: "update_failed", message: "fixture failure" } };
+        return { ok: true, value: (req as {
+            layer: BundleLayerNode;
+          }).layer };
+      }
+      return { ok: true, value: undefined };
+    });
+    let model!: CaptureModel;
+    render(createElement(Probe, { captureId: "cap_2", onSnapshot: (m) => { model = m; } }));
+    await flush();
+    if (model.kind !== "loaded")
+      throw new Error("not loaded");
+    expect((await model.dispatchEdit({ kind: "updateOverlay", layerId: layer.id, patch: { kind: "arrow", color: "#2489ff" } })).ok).toBe(false);
+    const result = await model.dispatchEdit({ kind: "updateOverlay", layerId: layer.id, patch: { kind: "arrow", thickness: "large" } });
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.value.kind !== "update")
+      throw new Error("not updated");
+    expect(result.value.artifact.node).toMatchObject({ shape: { color: "auto", thickness: "large" } });
+    expect(dispatchMock.mock.calls.filter(([name]) => name === "layers:delete")).toHaveLength(0);
+  });
+
+  test.each(["switch", "unmount"])("queued edits cancel on %s and an old response cannot seed the next capture", async (transition) => {
+    const layer: BundleLayerNode = { ...makeLayerNode("arrow"), kind: "vector", shape: { kind: "arrow", from: { x: 0, y: 0 }, to: { x: 1, y: 1 }, color: "auto" } };
+    const barrier = deferred<{
+      ok: true;
+      value: BundleLayerNode;
+    }>();
+    const updates: BundleLayerNode[] = [];
+    dispatchMock.mockImplementation(async (name: string, req: {
+      id?: string;
+      layer?: BundleLayerNode;
+    }) => {
+      if (name === "library:byId")
+        return { ok: true, value: makeRecord(req.id!, 2) };
+      if (name === "layers:list")
+        return { ok: true, value: [layer] };
+      if (name === "layers:update") {
+        updates.push(req.layer!);
+        return barrier.promise;
+      }
+      return { ok: true, value: req.layer };
+    });
+    let model!: CaptureModel;
+    const onSnapshot = (m: CaptureModel) => { model = m; };
+    render(createElement(Probe, { captureId: "cap_2", onSnapshot }));
+    await flush();
+    if (model.kind !== "loaded")
+      throw new Error("not loaded");
+    const first = model.dispatchEdit({ kind: "updateOverlay", layerId: layer.id, patch: { kind: "arrow", color: "#2489ff" } });
+    const queued = model.dispatchEdit({ kind: "updateGeometry", layerId: layer.id, geometry: { kind: "arrow", from: { x: 0.2, y: 0.3 }, to: { x: 0.7, y: 0.8 } } });
+    await flush();
+    expect(updates).toHaveLength(1);
+    if (transition === "switch")
+      rerender(createElement(Probe, { captureId: "cap_3", onSnapshot }));
+    else
+      act(() => { root!.unmount(); root = null; });
+    await flush();
+    await act(async () => { barrier.resolve({ ok: true, value: updates[0]! }); await first; });
+    expect(await queued).toMatchObject({ ok: false, error: { code: "edit_cancelled" } });
+    expect(updates).toHaveLength(1);
+    if (transition === "switch") {
+      if (model.kind !== "loaded")
+        throw new Error("not loaded");
+      expect(model.captureId).toBe("cap_3");
+      expect(model.layers).toEqual([layer]);
+    }
+  });
+
+  test("rejected transport leaves the write queue usable and preserves the predecessor", async () => {
+    const layer: BundleLayerNode = { ...makeLayerNode("arrow"), kind: "vector", shape: { kind: "arrow", from: { x: 0, y: 0 }, to: { x: 1, y: 1 }, color: "auto" } };
+    let attempts = 0;
+    dispatchMock.mockImplementation(async (name: string, req: {
+      layer?: BundleLayerNode;
+    }) => {
+      if (name === "library:byId")
+        return { ok: true, value: makeRecord("cap_2", 2) };
+      if (name === "layers:list")
+        return { ok: true, value: [layer] };
+      if (name === "layers:update") {
+        if (++attempts === 1)
+          throw new Error("fixture transport failure");
+        return { ok: true, value: req.layer };
+      }
+      return { ok: true, value: req.layer };
+    });
+    let model!: CaptureModel;
+    render(createElement(Probe, { captureId: "cap_2", onSnapshot: (m) => { model = m; } }));
+    await flush();
+    if (model.kind !== "loaded")
+      throw new Error("not loaded");
+    await expect(model.dispatchEdit({ kind: "updateOverlay", layerId: layer.id, patch: { kind: "arrow", color: "#2489ff" } })).rejects.toThrow("fixture transport failure");
+    const result = await model.dispatchEdit({ kind: "updateGeometry", layerId: layer.id, geometry: { kind: "arrow", from: { x: 0.2, y: 0.3 }, to: { x: 0.7, y: 0.8 } } });
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.value.kind !== "update")
+      throw new Error("not updated");
+    expect(result.value.artifact.previousNode).toEqual(layer);
+    expect(result.value.artifact.node).toMatchObject({ shape: { color: "auto", from: { x: 0.2, y: 0.3 } } });
+  });
+
+  test("an edit queued behind crop uses its committed layer snapshot before any broadcast", async () => {
+    const original = makeRecord("cap_2", 2);
+    const cropped = { ...original, width_px: 1000, height_px: 500, edits_version: 1 };
+    const layer: BundleLayerNode = { ...makeLayerNode("arrow"), kind: "vector", shape: { kind: "arrow", from: { x: 0.4, y: 0.4 }, to: { x: 0.8, y: 0.8 }, color: "auto" } };
+    let updated!: BundleLayerNode;
+    dispatchMock.mockImplementation(async (name: string, req: { layer?: BundleLayerNode }) => {
+      if (name === "library:byId") return { ok: true, value: original };
+      if (name === "layers:list") return { ok: true, value: [] };
+      if (name === "bundle:cropCanvas") return { ok: true, value: { previousWidthPx: 2000, previousHeightPx: 1000, widthPx: 1000, heightPx: 500, record: cropped, layers: [layer] } };
+      if (name === "layers:update") { updated = req.layer!; return { ok: true, value: updated }; }
+      throw new Error(`unexpected ${name}`);
+    });
+    let model!: CaptureModel;
+    render(createElement(Probe, { captureId: "cap_2", onSnapshot: (m) => { model = m; } }));
+    await flush();
+    if (model.kind !== "loaded") throw new Error("not loaded");
+    const loaded = model;
+    await act(async () => {
+      const crop = loaded.dispatchEdit({ kind: "crop", rect: { x: 0, y: 0, w: 0.5, h: 0.5 } });
+      const style = loaded.dispatchEdit({ kind: "updateOverlay", layerId: layer.id, patch: { kind: "arrow", color: "#2489ff" } });
+      expect((await crop).ok).toBe(true);
+      expect((await style).ok).toBe(true);
+    });
+    expect(updated).toMatchObject({ shape: { from: { x: 0.4, y: 0.4 }, to: { x: 0.8, y: 0.8 }, color: "#2489ff" } });
+  });
+
+  test("a late crop reply cannot overwrite a newer published model", async () => {
+    const original = makeRecord("cap_2", 2);
+    const committed = { ...original, width_px: 1000, height_px: 500, edits_version: 1 };
+    const external = { ...committed, width_px: 800, edits_version: 2 };
+    const reply = deferred<{
+      ok: true;
+      value: {
+        previousWidthPx: number;
+        previousHeightPx: number;
+        widthPx: number;
+        heightPx: number;
+        record: CaptureRecord;
+        layers: BundleLayerNode[];
+      };
+    }>();
+    let current = original;
+    dispatchMock.mockImplementation(async (name: string) => {
+      if (name === "library:byId")
+        return { ok: true, value: current };
+      if (name === "layers:list")
+        return { ok: true, value: [] };
+      if (name === "bundle:cropCanvas")
+        return reply.promise;
+      throw new Error(`unexpected ${name}`);
+    });
+    let model!: CaptureModel;
+    render(createElement(Probe, { captureId: "cap_2", onSnapshot: (m) => { model = m; } }));
+    await flush();
+    if (model.kind !== "loaded")
+      throw new Error("not loaded");
+    const crop = model.dispatchEdit({ kind: "crop", rect: { x: 0, y: 0, w: 0.5, h: 0.5 } });
+    await flush();
+    current = external;
+    await act(async () => { broadcast("events:captures:changed", { changedIds: ["cap_2"] }); });
+    await flush();
+    expect(model.record.edits_version).toBe(2);
+    await act(async () => { reply.resolve({ ok: true, value: { previousWidthPx: 2000, previousHeightPx: 1000, widthPx: 1000, heightPx: 500, record: committed, layers: [] } }); await crop; });
+    if (model.kind !== "loaded")
+      throw new Error("not loaded");
+    expect(model.record).toEqual(external);
   });
 
   test("12. invalid bundle_format_version (99) returns error", async () => {

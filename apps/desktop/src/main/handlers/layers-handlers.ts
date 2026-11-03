@@ -10,6 +10,7 @@
 // hit.
 
 import { nanoid } from "nanoid";
+import { z } from "zod";
 import {
   ok,
   err,
@@ -17,6 +18,8 @@ import {
   // Crop-viewport math is shared with the renderer (one copy) — see
   // packages/shared/src/crop-viewport.ts.
   inverseTransformOverlayByCrop,
+  cropRectFromCanvas,
+  selectBaseRaster,
   type BundleLayerNode
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
@@ -80,7 +83,7 @@ function validateCropRect(rect: {
   y: number;
   w: number;
   h: number;
-}): CropCanvasError | null {
+}, restore = false): CropCanvasError | null {
   for (const [key, value] of Object.entries(rect)) {
     if (!Number.isFinite(value)) {
       return new CropCanvasError(
@@ -89,6 +92,17 @@ function validateCropRect(rect: {
         `crop rect ${key} must be finite: got ${String(value)}`
       );
     }
+  }
+  if (restore) {
+    // An inverse viewport may expand on any side, but cannot cut away any
+    // part of the current canvas. Allow floating point inversion noise.
+    if (
+      rect.x > 0 || rect.y > 0 || rect.w < 1 || rect.h < 1 ||
+      rect.x + rect.w < 1 - 1e-10 || rect.y + rect.h < 1 - 1e-10
+    ) {
+      return new CropCanvasError("validation", "invalid_crop_rect", "restore rect must enclose the current canvas");
+    }
+    return null;
   }
   if (rect.x < 0 || rect.y < 0 || rect.w <= 0 || rect.h <= 0) {
     return new CropCanvasError(
@@ -138,7 +152,12 @@ function applyCropCanvasAtomic(input: {
   cropLayer: BundleLayerNode | null;
   widthPx: number;
   heightPx: number;
-}): { previousWidthPx: number; previousHeightPx: number } {
+}): {
+  previousWidthPx: number;
+  previousHeightPx: number;
+  record: NonNullable<ReturnType<typeof getCaptureById>>;
+  layers: BundleLayerNode[];
+} {
   const db = getDb();
   const tx = db.transaction(() => {
     for (const node of input.updates) {
@@ -183,7 +202,9 @@ function applyCropCanvasAtomic(input: {
     }
     return {
       previousWidthPx: previous.widthPx,
-      previousHeightPx: previous.heightPx
+      previousHeightPx: previous.heightPx,
+      record: getCaptureById(input.captureId)!,
+      layers: listLayerTree(input.captureId)
     };
   });
   return tx();
@@ -378,11 +399,26 @@ export function registerLayersHandlers(): void {
     return ok(undefined);
   });
 
-  bus.register("bundle:cropCanvas", async (req) => {
+  bus.register("bundle:cropCanvas", async (req, ctx) => {
+    const parsed = z.object({
+      captureId: z.string(),
+      rect: z.object({
+        x: z.number().finite(),
+        y: z.number().finite(),
+        w: z.number().positive().finite(),
+        h: z.number().positive().finite()
+      }),
+      source: z.enum(["user", "codex"]).optional(),
+      restore: z.literal(true).optional()
+    }).safeParse(req);
+    if (!parsed.success) return err({ kind: "validation", code: "invalid_crop_rect", message: "invalid crop request" });
+    if (req.restore === true && ctx.principal !== "ipc") {
+      return err({ kind: "permission", code: "restore_requires_ipc", message: "viewport restore is restricted to editor undo/Reset" });
+    }
+    if (ctx.signal.aborted) return err({ kind: "validation", code: "crop_cancelled", message: "crop cancelled before commit" });
     const refusal = refuseIfV1Capture(req.captureId);
     if (refusal !== null) return err(refusal);
-
-    const rectError = validateCropRect(req.rect);
+    const rectError = validateCropRect(req.rect, req.restore === true);
     if (rectError !== null) {
       return err({
         kind: rectError.kind,
@@ -390,7 +426,6 @@ export function registerLayersHandlers(): void {
         message: rectError.message
       });
     }
-
     const record = getCaptureById(req.captureId);
     if (record === null) {
       return err({
@@ -399,7 +434,6 @@ export function registerLayersHandlers(): void {
         message: `capture not found: ${req.captureId}`
       });
     }
-
     const widthPx = Math.max(1, Math.round(req.rect.w * record.width_px));
     const heightPx = Math.max(1, Math.round(req.rect.h * record.height_px));
     const MIN_CANVAS_DIM_PX = 32;
@@ -410,14 +444,15 @@ export function registerLayersHandlers(): void {
         message: `canvas dimensions ${widthPx}x${heightPx} below minimum ${MIN_CANVAS_DIM_PX}px on either axis`
       });
     }
-
     const layers = listLayerTree(req.captureId);
     let maxNaturalWidth = 0;
     let maxNaturalHeight = 0;
     for (const layer of layers) {
       if (layer.kind === "raster") {
-        if (layer.natural_width_px > maxNaturalWidth) maxNaturalWidth = layer.natural_width_px;
-        if (layer.natural_height_px > maxNaturalHeight) maxNaturalHeight = layer.natural_height_px;
+        if (layer.natural_width_px > maxNaturalWidth)
+          maxNaturalWidth = layer.natural_width_px;
+        if (layer.natural_height_px > maxNaturalHeight)
+          maxNaturalHeight = layer.natural_height_px;
       }
     }
     const maxAllowedWidth = maxNaturalWidth > 0 ? maxNaturalWidth : record.width_px;
@@ -429,7 +464,13 @@ export function registerLayersHandlers(): void {
         message: `canvas dimensions ${widthPx}x${heightPx} exceed source raster ${maxAllowedWidth}x${maxAllowedHeight}`
       });
     }
-
+    // Normalize against the actual integer canvas, so history inversion
+    // does not accumulate a subpixel scale error after rounded crops.
+    const effectiveRect = {
+      ...req.rect,
+      w: widthPx / record.width_px,
+      h: heightPx / record.height_px
+    };
     const offsetXPx = req.rect.x * record.width_px;
     const offsetYPx = req.rect.y * record.height_px;
     const updates: BundleLayerNode[] = [];
@@ -437,7 +478,7 @@ export function registerLayersHandlers(): void {
     const root = layers.find((layer) => layer.kind === "group" && layer.parent_id === null);
     for (const layer of layers) {
       if (layer.kind === "vector") {
-        const transformed = inverseTransformOverlayByCrop(layer.shape, req.rect);
+        const transformed = inverseTransformOverlayByCrop(layer.shape, effectiveRect);
         if (transformed === null) {
           deleteLayerIds.push(layer.id);
         } else {
@@ -466,18 +507,30 @@ export function registerLayersHandlers(): void {
         });
       }
     }
-
     const source = req.source ?? "user";
-    const cropLayer =
-      root === undefined
-        ? null
-        : BundleLayerNodeSchema.parse({
-            ...commonCropLayerProps(source === "codex" ? "AI crop" : "Crop", source),
-            parent_id: root.id,
-            kind: "vector",
-            shape: { kind: "crop", rect: req.rect }
-          });
-
+    const updatedById = new Map(updates.map((layer) => [layer.id, layer]));
+    const baseRaster = selectBaseRaster(layers.map((layer) => updatedById.get(layer.id) ?? layer), record.sha256);
+    const markerRect = req.restore === true && baseRaster !== undefined
+      ? cropRectFromCanvas({
+        canvasWidthPx: widthPx,
+        canvasHeightPx: heightPx,
+        sourceWidthPx: baseRaster.natural_width_px,
+        sourceHeightPx: baseRaster.natural_height_px,
+        rasterTranslateXPx: baseRaster.transform[4],
+        rasterTranslateYPx: baseRaster.transform[5]
+      })
+      : effectiveRect;
+    const fullyRestored = baseRaster !== undefined &&
+      widthPx === baseRaster.natural_width_px && heightPx === baseRaster.natural_height_px &&
+      Math.abs(baseRaster.transform[4]) < 1e-8 && Math.abs(baseRaster.transform[5]) < 1e-8;
+    const cropLayer = root === undefined || markerRect === null || fullyRestored
+      ? null
+      : BundleLayerNodeSchema.parse({
+        ...commonCropLayerProps(source === "codex" ? "AI crop" : "Crop", source),
+        parent_id: root.id,
+        kind: "vector",
+        shape: { kind: "crop", rect: markerRect }
+      });
     try {
       const previous = applyCropCanvasAtomic({
         captureId: req.captureId,
@@ -500,7 +553,9 @@ export function registerLayersHandlers(): void {
         previousWidthPx: previous.previousWidthPx,
         previousHeightPx: previous.previousHeightPx,
         widthPx,
-        heightPx
+        heightPx,
+        record: previous.record,
+        layers: previous.layers
       });
     } catch (cause) {
       if (cause instanceof CropCanvasError) {

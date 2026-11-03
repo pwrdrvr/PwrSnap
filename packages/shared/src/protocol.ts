@@ -4868,12 +4868,17 @@ export type Commands = {
       captureId: string;
       rect: { x: number; y: number; w: number; h: number };
       source?: "user" | "codex";
+      /** IPC undo/Reset only: an inverse viewport enclosing the current canvas. */
+      restore?: true;
     };
     res: {
       previousWidthPx: number;
       previousHeightPx: number;
       widthPx: number;
       heightPx: number;
+      /** Committed snapshot, read within the same transaction as the crop. */
+      record: CaptureRecord;
+      layers: BundleLayerNode[];
     };
   };
 

@@ -47,7 +47,7 @@ beforeEach(() => {
     if (op.kind === "crop") {
       return {
         ok: true,
-        value: { kind: "crop", artifact: { previousWidthPx: 0, previousHeightPx: 0 } }
+        value: { kind: "crop", artifact: { previousWidthPx: 0, previousHeightPx: 0, widthPx: 0, heightPx: 0, rect: { x: 0, y: 0, w: 1, h: 1 } } }
       };
     }
     if (op.kind === "updateGeometry" || op.kind === "updateOverlay") {
@@ -674,6 +674,44 @@ describe("useUndoRedo", () => {
     );
   });
 
+  test("failed crop replay keeps its undo entry for retry", async () => {
+    let api!: UseUndoRedoResult;
+    render(createElement(Probe, { captureId: "cap_1", onSnapshot: (a) => { api = a; } }));
+    act(() => api.recordCrop({ rect: { x: 0.1, y: 0.2, w: 0.5, h: 0.5 }, previousWidthPx: 1000, previousHeightPx: 800, newWidthPx: 500, newHeightPx: 400 }));
+    dispatchEditMock.mockResolvedValueOnce({ ok: false, error: { kind: "persistence", code: "crop_failed", message: "fixture failure" } });
+    await act(async () => { await api.undo(); });
+    expect(api.canUndo).toBe(true);
+    expect(api.canRedo).toBe(false);
+    await act(async () => { await api.undo(); });
+    expect(api.canUndo).toBe(false);
+    expect(api.canRedo).toBe(true);
+    dispatchEditMock.mockResolvedValueOnce({ ok: false, error: { kind: "persistence", code: "crop_failed", message: "fixture failure" } });
+    await act(async () => { await api.redo(); });
+    expect(api.canRedo).toBe(true);
+    expect(api.canUndo).toBe(false);
+  });
+
+  test("concurrent undo requests do not replay an entry twice and rejection keeps it retryable", async () => {
+    let api!: UseUndoRedoResult;
+    render(createElement(Probe, { captureId: "cap_1", onSnapshot: (a) => { api = a; } }));
+    act(() => api.recordCrop({ rect: { x: 0, y: 0, w: 0.5, h: 0.5 }, previousWidthPx: 1000, previousHeightPx: 800, newWidthPx: 500, newHeightPx: 400 }));
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    dispatchEditMock.mockImplementationOnce(async () => { await barrier; throw new Error("fixture transport rejection"); });
+    let first!: Promise<void>;
+    await act(async () => {
+      first = api.undo();
+      await api.undo();
+    });
+    expect(dispatchEditMock).toHaveBeenCalledTimes(1);
+    await act(async () => { release(); await first; });
+    expect(api.canUndo).toBe(true);
+    expect(api.canRedo).toBe(false);
+    await act(async () => { await api.undo(); });
+    expect(api.canUndo).toBe(false);
+    expect(api.canRedo).toBe(true);
+  });
+
   test("recordCrop + undo dispatches crop with the previous-dims-normalized rect", async () => {
     let api: UseUndoRedoResult | null = null;
     const dispatchEdit = vi.fn<UndoRedoDispatchEdit>(async (op) => {
@@ -682,7 +720,7 @@ describe("useUndoRedo", () => {
           ok: true,
           value: {
             kind: "crop",
-            artifact: { previousWidthPx: 0, previousHeightPx: 0 }
+            artifact: { previousWidthPx: 0, previousHeightPx: 0, widthPx: 0, heightPx: 0, rect: { x: 0, y: 0, w: 1, h: 1 } }
           }
         };
       }
@@ -749,7 +787,7 @@ describe("useUndoRedo", () => {
           ok: true,
           value: {
             kind: "crop",
-            artifact: { previousWidthPx: 0, previousHeightPx: 0 }
+            artifact: { previousWidthPx: 0, previousHeightPx: 0, widthPx: 0, heightPx: 0, rect: { x: 0, y: 0, w: 1, h: 1 } }
           }
         };
       }

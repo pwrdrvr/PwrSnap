@@ -63,6 +63,9 @@ const a = node("A", 1000);
 const b = node("B", 2000);
 const c = node("C", 3000);
 const d = node("D", 4000);
+function addSource(): void {
+  insertLayer({ captureId, node: { ...node("source", 0), kind: "raster", source_ref: { kind: "embedded", sha256: "0".repeat(64) }, natural_width_px: 1000, natural_height_px: 800 } });
+}
 let api: UseUndoRedoResult;
 let modelSnapshot: ReturnType<typeof useCaptureModel>;
 let root: Root;
@@ -156,6 +159,73 @@ function recordPair(kind: "create" | "delete"): void {
 }
 
 describe("grouped history with real layer persistence", () => {
+  test.each(["crop", "reorder", "visibility"] as const)("create redo restores its target after intervening %s", async (change) => {
+    act(() => api.recordCreate({ id: a.id }, { node: a }));
+    if (change === "crop") {
+      addSource();
+      if (modelSnapshot.kind !== "loaded") throw new Error("model not loaded");
+      await act(async () => {
+        if (modelSnapshot.kind !== "loaded") throw new Error("model not loaded");
+        const result = await modelSnapshot.dispatchEdit({ kind: "crop", rect: { x: 0.15, y: 0.2, w: 0.333, h: 0.517 } });
+        if (!result.ok || result.value.kind !== "crop") throw new Error("crop failed");
+        const artifact = result.value.artifact;
+        api.recordCrop({ ...artifact, newWidthPx: artifact.widthPx, newHeightPx: artifact.heightPx });
+      });
+      await act(async () => { await api.undo(); });
+      expect(api.canRedo).toBe(true);
+    } else {
+      updateLayer({ captureId, node: { ...a, ...(change === "reorder" ? { z_index: 8000 } : { visible: false }) } });
+    }
+    await act(async () => { await api.undo(); });
+    expect(listLayerTree(captureId).some((layer) => layer.id === a.id)).toBe(false);
+    await act(async () => { await api.redo(); });
+    expect(api.canUndo).toBe(true);
+    expect(listLayerTree(captureId).find((layer) => layer.id === a.id)).toEqual(a);
+  });
+
+  test("lost delete reply retains the rejected-state expectation independently of its restore target", async () => {
+    recordPair("create");
+    updateLayer({ captureId, node: { ...a, visible: false, z_index: 8000 } });
+    failNextReplay("reject-after-commit");
+    await act(async () => { await api.undo(); });
+    expect(api.canUndo).toBe(true);
+    const committed = rows();
+    await act(async () => { await api.undo(); });
+    expect(rows()).toEqual(committed);
+    await act(async () => { await api.redo(); });
+    expect(api.canRedo).toBe(false);
+    expect(listLayerTree(captureId).find((layer) => layer.id === a.id)).toEqual(a);
+  });
+
+  test("replace round trips retain separate expectations on both sides", async () => {
+    rejectLayer(a.id);
+    rejectLayer(b.id);
+    act(() => api.recordReplace({ removed: [a, b].map((layer) => ({ row: { id: layer.id }, node: layer })), added: [c, d].map((layer) => ({ row: { id: layer.id }, node: layer })) }));
+    updateLayer({ captureId, node: { ...c, visible: false, z_index: 8000 } });
+    await act(async () => { await api.undo(); });
+    updateLayer({ captureId, node: { ...a, visible: false, z_index: 9000 } });
+    await act(async () => { await api.redo(); });
+    expect(listLayerTree(captureId)).toEqual([c, d]);
+    await act(async () => { await api.undo(); });
+    expect(listLayerTree(captureId)).toEqual([a, b]);
+  });
+
+  test("lost removal reply never refreshes its expectation from a later external deletion", async () => {
+    recordPair("create");
+    updateLayer({ captureId, node: { ...a, visible: false } });
+    failNextReplay("reject-after-commit");
+    await act(async () => { await api.undo(); });
+    insertLayer({ captureId, node: { ...a, name: "external replacement" } });
+    rejectLayer(a.id);
+    const before = rows();
+    await act(async () => { await api.undo(); });
+    expect(api.canRedo).toBe(true);
+    expect(rows()).toEqual(before);
+    await act(async () => { await api.redo(); });
+    expect(api.canRedo).toBe(true);
+    expect(rows()).toEqual(before);
+  });
+
   test.each(["result", "reject-before-commit", "reject-after-commit"] as const)("delete undo retries after %s without live-row conflicts", async (failure) => {
     rejectLayer(a.id);
     rejectLayer(b.id);
@@ -254,6 +324,98 @@ describe("history acknowledgement failures", () => {
 });
 
 describe("history snapshot ordering", () => {
+  test.each(["history", "crop"] as const)("an older in-flight read cannot replace the committed %s snapshot", async (kind) => {
+    if (kind === "crop") addSource();
+    else recordPair("create");
+    const ordinaryDispatch = dispatchMock.getMockImplementation()!;
+    let allowCommit!: () => void;
+    let arrived!: () => void;
+    let releaseRead!: () => void;
+    let readStarted!: () => void;
+    const commitGate = new Promise<void>((resolve) => { allowCommit = resolve; });
+    const arrivedGate = new Promise<void>((resolve) => { arrived = resolve; });
+    const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+    const startedGate = new Promise<void>((resolve) => { readStarted = resolve; });
+    dispatchMock.mockImplementation(async (name: string, req: unknown) => {
+      if (name === "bundle:cropCanvas" || (name === "layers:replayHistory" && (req as { phase: string }).phase === "apply")) {
+        arrived();
+        await commitGate;
+      }
+      const result = await ordinaryDispatch(name, req);
+      if (name === "layers:list") { readStarted(); await readGate; }
+      return result;
+    });
+    if (modelSnapshot.kind !== "loaded") throw new Error("model not loaded");
+    const dispatchEdit = modelSnapshot.dispatchEdit;
+    let mutation!: Promise<unknown>;
+    await act(async () => {
+      mutation = kind === "history" ? api.undo() : dispatchEdit({ kind: "crop", rect: { x: 0.1, y: 0.2, w: 0.5, h: 0.5 } });
+      await arrivedGate;
+    });
+    await act(async () => {
+      for (const callback of subscribers.get("events:captures:changed") ?? []) callback({ changedIds: [captureId] });
+      await startedGate;
+    });
+    await act(async () => { allowCommit(); await mutation; });
+    const committedRecord = getCaptureById(captureId)!;
+    const committedLayers = listLayerTree(captureId);
+    await act(async () => { releaseRead(); });
+    if (modelSnapshot.kind !== "loaded") throw new Error("model not loaded");
+    expect(modelSnapshot.record.edits_version).toBe(committedRecord.edits_version);
+    expect(modelSnapshot.layers).toEqual(committedLayers);
+  });
+
+  test.each(["history", "crop"] as const)("%s reply preserves a newer refetch still in flight and the next edit", async (kind) => {
+    if (kind === "crop") addSource();
+    else recordPair("create");
+    const ordinaryDispatch = dispatchMock.getMockImplementation()!;
+    let releaseReply!: () => void;
+    let committed!: () => void;
+    let releaseRead!: () => void;
+    let readStarted!: () => void;
+    const replyGate = new Promise<void>((resolve) => { releaseReply = resolve; });
+    const committedGate = new Promise<void>((resolve) => { committed = resolve; });
+    const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+    const startedGate = new Promise<void>((resolve) => { readStarted = resolve; });
+    let holdReads = false;
+    dispatchMock.mockImplementation(async (name: string, req: unknown) => {
+      const result = await ordinaryDispatch(name, req);
+      if (name === "bundle:cropCanvas" || (name === "layers:replayHistory" && (req as { phase: string }).phase === "apply")) {
+        committed();
+        await replyGate;
+      }
+      if (name === "layers:list" && holdReads) {
+        readStarted();
+        await readGate;
+      }
+      return result;
+    });
+    if (modelSnapshot.kind !== "loaded") throw new Error("model not loaded");
+    const dispatchEdit = modelSnapshot.dispatchEdit;
+    let mutation!: Promise<unknown>;
+    await act(async () => {
+      mutation = kind === "history" ? api.undo() : dispatchEdit({ kind: "crop", rect: { x: 0.1, y: 0.2, w: 0.5, h: 0.5 } });
+      await committedGate;
+    });
+    const current = listLayerTree(captureId).find((layer) => layer.id === c.id)!;
+    updateLayer({ captureId, node: { ...current, name: "newer in-flight edit" } });
+    const newestVersion = getCaptureById(captureId)!.edits_version;
+    holdReads = true;
+    await act(async () => {
+      for (const callback of subscribers.get("events:captures:changed") ?? []) callback({ changedIds: [captureId] });
+      await startedGate;
+    });
+    await act(async () => { releaseReply(); await mutation; });
+    // The next full-node write must wait for the read already in flight.
+    let next!: ReturnType<typeof dispatchEdit>;
+    await act(async () => { next = dispatchEdit({ kind: "updateOverlay", layerId: c.id, patch: { kind: "arrow", color: "#2489ff" } }); });
+    await act(async () => { releaseRead(); await next; });
+    if (modelSnapshot.kind !== "loaded") throw new Error("model not loaded");
+    expect(modelSnapshot.record.edits_version).toBeGreaterThanOrEqual(newestVersion);
+    expect(modelSnapshot.layers.find((layer) => layer.id === c.id)?.name).toBe("newer in-flight edit");
+    expect(listLayerTree(captureId).find((layer) => layer.id === c.id)?.name).toBe("newer in-flight edit");
+  });
+
   test("lost commit reply reconciles after a later local edit and retains the next patch's committed predecessor", async () => {
     rejectLayer(a.id);
     rejectLayer(b.id);

@@ -211,10 +211,10 @@ export type EditCropArtifact = {
 
 /** Kept by the history entry until replay is confirmed; a lost response
  * retries the same main-owned reservation, never a new mutation. */
-export type HistoryReplayIdentity = { current: LayerHistoryReplayId | null };
+export type HistoryReplayIdentity = { current: LayerHistoryReplayId | null; removals?: BundleLayerNode[] };
 
 export type LayerEditOp =
-  | { kind: "historyReplay"; identity: HistoryReplayIdentity; restore: BundleLayerNode[]; removeIds: string[] }
+  | { kind: "historyReplay"; identity: HistoryReplayIdentity; restore: BundleLayerNode[]; removeIds: string[]; expectedRejected?: BundleLayerNode[] }
   | { kind: "historyAck"; replayId: LayerHistoryReplayId }
   /** v2 upsert. `bumpZIndexToMax` (optional, default false) signals
    *  that the layer is a FRESH DRAW that should land at the top of
@@ -268,7 +268,7 @@ export type CaptureModelError = {
  *  PRE-PATCH node so undo can derive its inverse from the state the
  *  write actually replaced. */
 export type EditOpResult =
-  | { kind: "historyReplay" }
+  | { kind: "historyReplay"; removals?: BundleLayerNode[] }
   | { kind: "historyAck" }
   | { kind: "upsert"; artifact: EditUpsertArtifact }
   | { kind: "delete" }
@@ -781,44 +781,57 @@ export function useCaptureModel(captureId: string): CaptureModel {
   // A later read or edit invalidates older in-flight responses. An atomic
   // crop also installs its committed snapshot before the next queued edit.
   const refetchSeqRef = useRef(0);
+  const pendingRefetchRef = useRef<Promise<void> | null>(null);
 
   // refetch is recreated when captureId changes. v2 is the only
   // bundle format — a record with `bundle_format_version < 2` is a
   // corrupt/unrenderable row, surfaced as an error (there are no v1
   // captures left to read).
   const refetch = useCallback(
-    async (isCancelled: () => boolean): Promise<void> => {
-      refetchSeqRef.current += 1;
-      const mySeq = refetchSeqRef.current;
-      const isStale = (): boolean => mySeq !== refetchSeqRef.current;
-      const recordResult = await dispatch("library:byId", { id: captureId });
-      if (isCancelled() || isStale()) return;
-      if (!recordResult.ok) {
-        setState({ kind: "error", message: recordResult.error.message });
-        return;
-      }
-      if (recordResult.value === null) {
-        setState({
-          kind: "error",
-          message: `capture not found: ${captureId}`
-        });
-        return;
-      }
-      const record = recordResult.value;
-      if (record.bundle_format_version < 2) {
-        setState({
-          kind: "error",
-          message: `unrenderable bundle_format_version: ${record.bundle_format_version}`
-        });
-        return;
-      }
-      const layersResult = await dispatch("layers:list", { captureId });
-      if (isCancelled() || isStale()) return;
-      const layers =
-        layersResult.ok && Array.isArray(layersResult.value)
-          ? layersResult.value
-          : [];
-      setState({ kind: "v2", record, layers });
+    (isCancelled: () => boolean): Promise<void> => {
+      const work = (async (): Promise<void> => {
+        refetchSeqRef.current += 1;
+        const mySeq = refetchSeqRef.current;
+        const isStale = (): boolean => mySeq !== refetchSeqRef.current;
+        const recordResult = await dispatch("library:byId", { id: captureId });
+        if (isCancelled() || isStale()) return;
+        if (!recordResult.ok) {
+          setState({ kind: "error", message: recordResult.error.message });
+          return;
+        }
+        if (recordResult.value === null) {
+          setState({
+            kind: "error",
+            message: `capture not found: ${captureId}`
+          });
+          return;
+        }
+        const record = recordResult.value;
+        if (record.bundle_format_version < 2) {
+          setState({
+            kind: "error",
+            message: `unrenderable bundle_format_version: ${record.bundle_format_version}`
+          });
+          return;
+        }
+        const layersResult = await dispatch("layers:list", { captureId });
+        if (isCancelled() || isStale()) return;
+        const layers =
+          layersResult.ok && Array.isArray(layersResult.value)
+            ? layersResult.value
+            : [];
+        // A transaction reply may have installed a newer snapshot while this
+        // read was in flight. Keep the read alive and reconcile by version.
+        if (recordRef.current?.id === captureId && record.edits_version < recordRef.current.edits_version) return;
+        recordRef.current = record;
+        layersRef.current = layers;
+        setState({ kind: "v2", record, layers });
+      })();
+      pendingRefetchRef.current = work;
+      void work.finally(() => {
+        if (pendingRefetchRef.current === work) pendingRefetchRef.current = null;
+      }).catch(() => undefined);
+      return work;
     },
     [captureId]
   );
@@ -925,31 +938,39 @@ export function useCaptureModel(captureId: string): CaptureModel {
     const isCurrentCapture = (): boolean => editQueue.active && editQueueRef.current === editQueue;
     const work = editQueue.tail.then(async (): Promise<Result<EditOpResult, PwrSnapError>> => {
       if (!isCurrentCapture()) return err({ kind: "validation", code: "edit_cancelled", message: "capture changed or editor unmounted" });
-      refetchSeqRef.current += 1;
+      // Full-node patches must incorporate a newer broadcast read already in
+      // flight, rather than invalidate it and overwrite its unseen fields.
+      if (op.kind === "updateGeometry" || op.kind === "updateOverlay") {
+        while (pendingRefetchRef.current !== null) await pendingRefetchRef.current;
+        if (!isCurrentCapture()) return err({ kind: "validation", code: "edit_cancelled", message: "capture changed or editor unmounted" });
+      }
+      if (op.kind !== "historyAck") refetchSeqRef.current += 1;
       switch (op.kind) {
         case "historyReplay": {
           if (op.identity.current === null) {
-            const reservation = await dispatch("layers:replayHistory", { phase: "reserve", captureId });
+            const reservation = await dispatch("layers:replayHistory", { phase: "reserve", captureId, removeIds: op.removeIds });
             if (!reservation.ok) return err(reservation.error);
             if (reservation.value.phase !== "reserved") return err({ kind: "validation", code: "invalid_history_reply", message: "expected history reservation" });
             op.identity.current = reservation.value.replayId;
+            op.identity.removals = reservation.value.removals;
           }
           const result = await dispatch("layers:replayHistory", {
             phase: "apply", captureId, replayId: op.identity.current,
-            restore: op.restore, removeIds: op.removeIds
+            restore: op.restore, removeIds: op.removeIds,
+            ...(op.expectedRejected === undefined ? {} : { expectedRejected: op.expectedRejected }),
+            ...(op.identity.removals === undefined ? {} : { expectedRemovals: op.identity.removals })
           });
           if (!result.ok) return err(result.error);
           if (result.value.phase !== "applied") return err({ kind: "validation", code: "invalid_history_reply", message: "expected committed history" });
           if (isCurrentCapture()) {
             committedLayersRef.current.clear();
             if ((recordRef.current?.edits_version ?? -1) <= result.value.record.edits_version) {
-              refetchSeqRef.current += 1;
               recordRef.current = result.value.record;
               layersRef.current = result.value.layers;
               setState({ kind: "v2", record: result.value.record, layers: result.value.layers });
             }
           }
-          return { ok: true, value: { kind: "historyReplay" } };
+          return { ok: true, value: { kind: "historyReplay", removals: op.identity.removals ?? [] } };
         }
         case "historyAck": {
           const result = await dispatch("layers:ackHistoryReplay", { captureId, replayId: op.replayId });
@@ -1006,7 +1027,6 @@ export function useCaptureModel(captureId: string): CaptureModel {
             if ((recordRef.current?.edits_version ?? -1) <= result.value.record.edits_version) {
               // This snapshot was read inside the crop transaction. Install it
               // before admitting another edit, even if no broadcast has landed.
-              refetchSeqRef.current += 1;
               recordRef.current = result.value.record;
               layersRef.current = result.value.layers;
               setState({ kind: "v2", record: result.value.record, layers: result.value.layers });

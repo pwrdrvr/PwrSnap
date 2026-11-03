@@ -720,6 +720,9 @@ export function useUndoRedo(opts: {
   }, []);
 
   const replayIdentitiesRef = useRef(new WeakMap<EditOp, { direction: "undo" | "redo"; identity: HistoryReplayIdentity }>());
+  // Desired restore targets need not equal the state last deleted: crops can
+  // round coordinates and visibility/z-order can change outside this history.
+  const rejectedStatesRef = useRef(new WeakMap<CreateDeleteItem, BundleLayerNode>());
 
   // Apply a single EditOp's INVERSE through the dispatcher. Shared
   // between undo (inverse of the latest past op) and redo (re-apply the
@@ -761,7 +764,15 @@ export function useUndoRedo(opts: {
           replay = { direction, identity: { current: null } };
           replayIdentitiesRef.current.set(op, replay);
         }
-        await dispatchEdit({ kind: "historyReplay", identity: replay.identity, restore: nodes, removeIds: remove.map((item) => item.row.id) });
+        const expectedRejected = restore.flatMap((item) => item.node === null ? [] : [rejectedStatesRef.current.get(item) ?? item.node]);
+        const result = await dispatchEdit({ kind: "historyReplay", identity: replay.identity, restore: nodes, removeIds: remove.map((item) => item.row.id), expectedRejected });
+        if (result.ok && result.value.kind === "historyReplay") {
+          const removedById = new Map((result.value.removals ?? []).map((node) => [node.id, node]));
+          for (const item of remove) {
+            const rejected = removedById.get(item.row.id);
+            if (rejected !== undefined) rejectedStatesRef.current.set(item, rejected);
+          }
+        }
         replayIdentitiesRef.current.delete(op);
         const replayId = replay.identity.current;
         if (replayId !== null) {

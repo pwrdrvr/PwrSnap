@@ -409,6 +409,49 @@ describe("bundle:updateCanvasDimensions handler", () => {
     expect(actual.shape.point.y).toBeCloseTo(0.9, 12);
   });
 
+  test.each(["undo", "reset"] as const)("odd-size edge crop supports %s with pixel-rounded extents", async (mode) => {
+    const captureId = "odd_edge";
+    seedV2Capture(captureId, 1001, 803, 1001, 803);
+    const before = listLayerTree(captureId);
+    const base = before.find((layer) => layer.kind === "raster")!;
+    insertLayerTreeForCapture(captureId, [
+      { ...base, id: "edge_text".padEnd(16, "x"), kind: "vector", shape: { kind: "text", point: { x: 0.95, y: 0.9 }, body: "edge", size: "small", color: "auto" } },
+      { ...base, id: "edge_blur".padEnd(16, "x"), kind: "effect", effect: { type: "blur", radius_px: 10 }, clip_rect: { x: 40, y: 80, w: 200, h: 120 } }
+    ]);
+    const original = listLayerTree(captureId);
+    const forward = await bus.dispatch("bundle:cropCanvas", { captureId, rect: { x: 0.5, y: 0.5, w: 0.5, h: 0.5 } }, { principal: "ipc" });
+    if (!forward.ok) throw new Error("edge crop failed");
+    expect([forward.value.widthPx, forward.value.heightPx]).toEqual([501, 402]);
+    let width = forward.value.widthPx;
+    let height = forward.value.heightPx;
+    if (mode === "reset") {
+      const second = await bus.dispatch("bundle:cropCanvas", { captureId, rect: { x: 0.5, y: 0.5, w: 0.5, h: 0.5 } }, { principal: "ipc" });
+      if (!second.ok) throw new Error("second edge crop failed");
+      width = second.value.widthPx;
+      height = second.value.heightPx;
+    }
+    const raster = listLayerTree(captureId).find((layer) => layer.kind === "raster")!;
+    if (raster.kind !== "raster") throw new Error("missing raster");
+    const cumulative = cropRectFromCanvas({ canvasWidthPx: width, canvasHeightPx: height, sourceWidthPx: 1001, sourceHeightPx: 803, rasterTranslateXPx: raster.transform[4], rasterTranslateYPx: raster.transform[5] })!;
+    const effective = { x: 0.5, y: 0.5, w: 501 / 1001, h: 402 / 803 };
+    const reverse = await bus.dispatch("bundle:cropCanvas", { captureId, rect: inverseCropRect(mode === "reset" ? cumulative : effective)!, restore: true }, { principal: "ipc" });
+    expect(reverse.ok).toBe(true);
+    if (!reverse.ok) throw new Error("edge restore failed");
+    expect([reverse.value.widthPx, reverse.value.heightPx]).toEqual([1001, 803]);
+    const restored = listLayerTree(captureId);
+    for (const layer of restored) expect(LayerSchema.safeParse(layer).success).toBe(true);
+    for (const layer of original) {
+      const actual = restored.find((row) => row.id === layer.id)!;
+      if (actual.kind === "vector" && actual.shape.kind === "text") {
+        expect(actual.shape.point.x).toBeCloseTo(0.95, 12);
+        expect(actual.shape.point.y).toBeCloseTo(0.9, 12);
+      } else expect(actual).toEqual(layer);
+    }
+    expect(restored).toHaveLength(original.length);
+    expect(publications).toHaveLength(mode === "reset" ? 3 : 2);
+    expect(repackCalls).toHaveLength(mode === "reset" ? 3 : 2);
+  });
+
   test("restore refuses an authenticated MCP editor grant", async () => {
     seedV2Capture("cap_mcp", 500, 400, 1000, 800);
     bus.installLocalAgentAuthorizer(async () => ({ clientId: "fixture", capabilities: ["capture.edit"] }));
@@ -440,6 +483,7 @@ describe("bundle:updateCanvasDimensions handler", () => {
     { rect: { x: 0, y: 0, w: NaN, h: 1 } },
     { rect: { x: 0, y: Infinity, w: 1, h: 1 }, restore: true },
     { rect: { x: -2, y: 0, w: 2, h: 2 }, restore: true },
+    { rect: { x: -0.1, y: 0, w: 1.0994999, h: 1 }, restore: true },
     { rect: { x: 0.1, y: 0, w: 2, h: 2 }, restore: true },
     { rect: { x: 0, y: 0, w: 1, h: 1 }, restore: "true" },
     { rect: { x: 0, y: 0, w: 1, h: 1 }, restore: false },

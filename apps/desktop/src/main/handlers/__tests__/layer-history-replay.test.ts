@@ -96,6 +96,37 @@ function rows() {
 }
 
 describe("IPC history receipt protocol", () => {
+  test("reserved removal state is a precondition, not the later restore target", async () => {
+    const changed = { ...a, visible: false, z_index: 9000 };
+    updateLayer({ captureId, node: changed });
+    const reservation = await bus.dispatch("layers:replayHistory", { phase: "reserve", captureId, removeIds: [a.id] }, context());
+    if (!reservation.ok || reservation.value.phase !== "reserved") throw new Error("reservation refused");
+    expect(reservation.value.removals).toEqual([changed]);
+    const request = { phase: "apply" as const, captureId, replayId: reservation.value.replayId, restore: [], removeIds: [a.id], expectedRemovals: reservation.value.removals };
+    updateLayer({ captureId, node: { ...changed, name: "changed after reserve" } });
+    const before = rows();
+    expect((await bus.dispatch("layers:replayHistory", request, context())).ok).toBe(false);
+    expect(rows()).toEqual(before);
+  });
+
+  test("separate rejected expectations preserve later edits and cannot target other IDs", async () => {
+    const changed = { ...a, visible: false, z_index: 9000 };
+    updateLayer({ captureId, node: changed });
+    rejectLayer(a.id);
+    const replayId = await reserve();
+    const request = { phase: "apply" as const, captureId, replayId, restore: [a], removeIds: [], expectedRejected: [changed] };
+    expect((await bus.dispatch("layers:replayHistory", request, context())).ok).toBe(true);
+    updateLayer({ captureId, node: { ...a, name: "external edit" } });
+    rejectLayer(a.id);
+    const before = rows();
+    const nextId = await reserve();
+    expect((await bus.dispatch("layers:replayHistory", { ...request, replayId: nextId }, context())).ok).toBe(false);
+    expect(rows()).toEqual(before);
+    const malformedId = await reserve();
+    expect(await bus.dispatch("layers:replayHistory", { ...request, replayId: malformedId, expectedRejected: [b] }, context())).toMatchObject({ ok: false, error: { code: "invalid_history_replay" } });
+    expect(rows()).toEqual(before);
+  });
+
   test("duplicate commits and late ACKs cannot write or erase a newer receipt", async () => {
     rejectLayer(a.id);
     rejectLayer(b.id);

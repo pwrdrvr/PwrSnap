@@ -84,7 +84,7 @@ function validateCropRect(rect: {
   y: number;
   w: number;
   h: number;
-}, restore = false): CropCanvasError | null {
+}, restore = false, slack = { x: 0, y: 0 }): CropCanvasError | null {
   for (const [key, value] of Object.entries(rect)) {
     if (!Number.isFinite(value)) {
       return new CropCanvasError(
@@ -96,10 +96,11 @@ function validateCropRect(rect: {
   }
   if (restore) {
     // An inverse viewport may expand on any side, but cannot cut away any
-    // part of the current canvas. Allow floating point inversion noise.
+    // part of the current canvas's content. Integer extents can round a
+    // viewport up by half a pixel, including just beyond the source edge.
     if (
       rect.x > 0 || rect.y > 0 || rect.w < 1 || rect.h < 1 ||
-      rect.x + rect.w < 1 - 1e-10 || rect.y + rect.h < 1 - 1e-10
+      rect.x + rect.w < 1 - slack.x - 1e-10 || rect.y + rect.h < 1 - slack.y - 1e-10
     ) {
       return new CropCanvasError("validation", "invalid_crop_rect", "restore rect must enclose the current canvas");
     }
@@ -420,14 +421,6 @@ export function registerLayersHandlers(): void {
     if (ctx.signal.aborted) return err({ kind: "validation", code: "crop_cancelled", message: "crop cancelled before commit" });
     const refusal = refuseIfV1Capture(req.captureId);
     if (refusal !== null) return err(refusal);
-    const rectError = validateCropRect(req.rect, req.restore === true);
-    if (rectError !== null) {
-      return err({
-        kind: rectError.kind,
-        code: rectError.code,
-        message: rectError.message
-      });
-    }
     const record = getCaptureById(req.captureId);
     if (record === null) {
       return err({
@@ -436,6 +429,15 @@ export function registerLayersHandlers(): void {
         message: `capture not found: ${req.captureId}`
       });
     }
+    const layers = listLayerTree(req.captureId);
+    const sourceRaster = selectBaseRaster(layers, record.sha256);
+    const rectError = validateCropRect(req.rect, req.restore === true, {
+      // Repeated edge crops may accumulate a rounded fringe outside the
+      // immutable source. Reset may discard that fringe, never source pixels.
+      x: Math.max(0.5, sourceRaster === undefined ? 0 : record.width_px - sourceRaster.transform[4] - sourceRaster.natural_width_px) / record.width_px,
+      y: Math.max(0.5, sourceRaster === undefined ? 0 : record.height_px - sourceRaster.transform[5] - sourceRaster.natural_height_px) / record.height_px
+    });
+    if (rectError !== null) return err({ kind: rectError.kind, code: rectError.code, message: rectError.message });
     const widthPx = Math.max(1, Math.round(req.rect.w * record.width_px));
     const heightPx = Math.max(1, Math.round(req.rect.h * record.height_px));
     const MIN_CANVAS_DIM_PX = 32;
@@ -446,7 +448,6 @@ export function registerLayersHandlers(): void {
         message: `canvas dimensions ${widthPx}x${heightPx} below minimum ${MIN_CANVAS_DIM_PX}px on either axis`
       });
     }
-    const layers = listLayerTree(req.captureId);
     let maxNaturalWidth = 0;
     let maxNaturalHeight = 0;
     for (const layer of layers) {

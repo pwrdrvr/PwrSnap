@@ -4836,11 +4836,15 @@ export type Commands = {
    * a history group. Committed duplicates read current state without writes;
    * acknowledged/unknown sequences fail closed, never become fresh writes. */
   "layers:replayHistory": {
-    req: { phase: "reserve"; captureId: string } | {
+    req: { phase: "reserve"; captureId: string; removeIds?: string[] } | {
       phase: "apply"; captureId: string; replayId: LayerHistoryReplayId;
       restore: BundleLayerNode[]; removeIds: string[];
+      /** Conflict preconditions are independent of the desired restore nodes.
+       * Omitted restore expectations default to the targets for first replay;
+       * removal expectations come from reserve and survive lost replies. */
+      expectedRejected?: BundleLayerNode[]; expectedRemovals?: BundleLayerNode[];
     };
-    res: { phase: "reserved"; replayId: LayerHistoryReplayId } | {
+    res: { phase: "reserved"; replayId: LayerHistoryReplayId; removals: BundleLayerNode[] } | {
       phase: "applied"; record: CaptureRecord; layers: BundleLayerNode[];
     };
   };

@@ -22,11 +22,13 @@ const MAX_HISTORY_LAYERS = 10_000;
 const replayIdSchema = z.object({ owner: z.string().length(64), sequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) }).strict();
 const captureIdSchema = z.string().min(1).max(128);
 const requestSchema = z.discriminatedUnion("phase", [
-  z.object({ phase: z.literal("reserve"), captureId: captureIdSchema }).strict(),
+  z.object({ phase: z.literal("reserve"), captureId: captureIdSchema, removeIds: z.array(z.string().regex(/^[A-Za-z0-9_-]{16}$/)).max(MAX_HISTORY_LAYERS).optional() }).strict(),
   z.object({
     phase: z.literal("apply"), captureId: captureIdSchema, replayId: replayIdSchema,
     restore: z.array(BundleLayerNode).max(MAX_HISTORY_LAYERS),
-    removeIds: z.array(z.string().regex(/^[A-Za-z0-9_-]{16}$/)).max(MAX_HISTORY_LAYERS)
+    removeIds: z.array(z.string().regex(/^[A-Za-z0-9_-]{16}$/)).max(MAX_HISTORY_LAYERS),
+    expectedRejected: z.array(BundleLayerNode).max(MAX_HISTORY_LAYERS).optional(),
+    expectedRemovals: z.array(BundleLayerNode).max(MAX_HISTORY_LAYERS).optional()
   }).strict()
 ]);
 const ackSchema = z.object({ captureId: captureIdSchema, replayId: replayIdSchema }).strict();
@@ -95,9 +97,18 @@ export function registerLayerHistoryReplayHandlers(): void {
       if (owner.receipts.size >= MAX_HISTORY_RECEIPTS_PER_DOCUMENT || owner.watermark === Number.MAX_SAFE_INTEGER) {
         return failure("history_capacity", "acknowledge outstanding history before admitting another replay");
       }
+      // Read the actual deletion pre-state, independently of history's desired
+      // restore target. The renderer retains it, including across a lost apply
+      // reply; the bounded receipt never retains layer snapshots.
+      const requestedIds = input.removeIds ?? [];
+      const live = new Map(listLayerTree(input.captureId).map((node) => [node.id, node]));
+      const removals = requestedIds.flatMap((id) => live.get(id) ?? []);
+      if (new Set(requestedIds).size !== requestedIds.length || removals.length !== requestedIds.length) {
+        return failure("invalid_history_replay", "history removal requires distinct live layers in this capture");
+      }
       const sequence = ++owner.watermark;
       owner.receipts.set(sequence, { captureId: input.captureId, fingerprint: null, committed: false });
-      return ok({ phase: "reserved", replayId: { owner: owner.token, sequence } });
+      return ok({ phase: "reserved", replayId: { owner: owner.token, sequence }, removals });
     }
     if (input.replayId.owner !== owner.token) return failure("history_owner_mismatch", "history replay belongs to another document");
     const receipt = owner.receipts.get(input.replayId.sequence);
@@ -111,6 +122,17 @@ export function registerLayerHistoryReplayHandlers(): void {
     if (ids.length === 0 || new Set(ids).size !== ids.length || input.restore.some((layer) => layer.rejected_at !== null || layer.superseded_by !== null)) {
       return failure("invalid_history_replay", "history requires distinct live restore nodes and delete IDs");
     }
+    const expectedRejected = input.expectedRejected ?? input.restore;
+    const expectationsMatch = (nodes: BundleLayerNode[], expectedIds: string[]): boolean => {
+      const ids = new Set(expectedIds);
+      return nodes.length === ids.size && new Set(nodes.map((node) => node.id)).size === nodes.length &&
+        nodes.every((node) => ids.has(node.id) && node.rejected_at === null && node.superseded_by === null);
+    };
+    if (!expectationsMatch(expectedRejected, input.restore.map((node) => node.id)) ||
+      (input.expectedRemovals !== undefined && !expectationsMatch(input.expectedRemovals, input.removeIds))) {
+      return failure("invalid_history_replay", "history conflict expectations must match their targets");
+    }
+    const rejectedById = new Map(expectedRejected.map((node) => [node.id, node]));
     try {
       const db = getDb();
       const result = db.transaction(() => {
@@ -121,9 +143,12 @@ export function registerLayerHistoryReplayHandlers(): void {
           const row = find.get(id);
           if (row === undefined || row.capture_id !== input.captureId || row.superseded_by !== null) throw new Error("history layer missing, superseded, or owned by another capture");
         }
+        for (const expected of input.expectedRemovals ?? []) {
+          if (!isDeepStrictEqual(loadLayer(expected.id), expected)) throw new Error("history delete conflicts with a changed live layer");
+        }
         for (const node of input.restore) {
           const existing = loadLayer(node.id);
-          if (existing.rejected_at !== null && !isDeepStrictEqual({ ...existing, rejected_at: null }, node)) {
+          if (existing.rejected_at !== null && !isDeepStrictEqual({ ...existing, rejected_at: null }, rejectedById.get(node.id))) {
             throw new Error("history restore conflicts with a changed rejected layer");
           }
           // A live collision still takes insertLayer's ordinary conflict path.

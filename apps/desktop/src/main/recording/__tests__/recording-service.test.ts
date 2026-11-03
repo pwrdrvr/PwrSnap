@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => {
     nextSpawnError: null as Error | null,
     binaryPath: "/fake/PwrSnapRecorder",
     binaryExists: true,
+    finishCamera: vi.fn(async (): Promise<unknown> => null),
     beginCamera: vi.fn(async () => undefined),
     cancelCamera: vi.fn(async () => undefined),
     isPackaged: false,
@@ -48,7 +49,7 @@ const mocks = vi.hoisted(() => {
 vi.mock("../camera-recording", () => ({
   beginCameraRecording: mocks.beginCamera,
   cancelCameraRecording: mocks.cancelCamera,
-  finishCameraRecording: async () => null,
+  finishCameraRecording: mocks.finishCamera,
   markCameraScreenStart: vi.fn(),
   markCameraScreenStartUtc: vi.fn(),
   prepareCameraPreview: vi.fn(),
@@ -230,6 +231,9 @@ vi.mock("../../persistence/captures-repo", () => {
 });
 
 vi.mock("../../persistence/source-store", () => ({
+  prepareExistingFileAsSource: vi.fn(async (tempPath: string) => ({
+    tempPath, sha256: "deadbeef", byteSize: 1024
+  })),
   adoptExistingFileAsSource: vi.fn(async () => ({
     id: "src-1",
     srcPath: "/fake/captures/src-1.mp4",
@@ -1168,6 +1172,88 @@ describe.each(["darwin", "win32"])("window-title retries on %s", (platform) => {
     const { insertCapture } = await import("../../persistence/captures-repo");
     expect(vi.mocked(insertCapture).mock.calls.at(-1)![0].source_window_title)
       .toBe(scenario === "reused window" ? null : "Refreshed title — 東京");
+  });
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+describe("RecordingService.stop preparation ordering", () => {
+  async function stopNative() {
+    const { __setRecordingServiceForTests, getRecordingService } = await import("../recording-service");
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+    const started = service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+    await vi.advanceTimersByTimeAsync(0);
+    const child = mocks.spawnedChildren[0]!;
+    child.emitLine({ event: "started", physicalRect: { x: 0, y: 0, w: 100, h: 100 } });
+    await started;
+    const stopped = service.stop();
+    child.emitLine({
+      event: "stopped", durationSec: 2.5, containerFormat: "mp4",
+      hasSystemAudio: false, hasMicrophoneAudio: false,
+      requestedSystemAudio: false, requestedMicrophone: false,
+      outputPath: "/tmp/pwrsnap-recording-fake/native-session.mp4"
+    });
+    return { stopped };
+  }
+
+  test("prepares the screen while the camera finishes, outside the root queue, and publishes after both adoptions", async () => {
+    const source = await import("../../persistence/source-store");
+    const captures = await import("../../persistence/captures-repo");
+    const events = await import("../../events");
+    const gate = await import("../../capture/capture-storage-gate");
+    const preparation = deferred<Awaited<ReturnType<typeof source.prepareExistingFileAsSource>>>();
+    const camera = deferred<unknown>();
+    const adoption = deferred<null>();
+    const adopt = vi.fn(() => adoption.promise);
+    mocks.finishCamera.mockReturnValueOnce(camera.promise);
+    vi.mocked(source.prepareExistingFileAsSource).mockReturnValueOnce(preparation.promise);
+    const { stopped } = await stopNative();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(source.prepareExistingFileAsSource).toHaveBeenCalled();
+    camera.resolve({ adopt });
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(gate.runExclusiveCapturesRootOperation(async () => "screenshot")).resolves.toBe("screenshot");
+    expect(source.adoptExistingFileAsSource).not.toHaveBeenCalled();
+    preparation.resolve({ tempPath: "/tmp/pwrsnap-recording-fake/native-session.mp4", sha256: "deadbeef", byteSize: 1024 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(adopt).toHaveBeenCalledWith("/fake/captures/src-1.mp4", "src-1");
+    expect(captures.insertCapture).not.toHaveBeenCalled();
+    expect(events.broadcastCapturesChanged).not.toHaveBeenCalled();
+    expect(mocks.removedRecordingDirs).toEqual([]);
+    adoption.resolve(null);
+    await expect(stopped).resolves.toEqual({ captureId: "cap-1" });
+    expect(captures.insertCapture).toHaveBeenCalled();
+    expect(events.broadcastCapturesChanged).toHaveBeenCalled();
+  });
+
+  test.each(["screen", "camera"] as const)("drains the other preparation before reporting a %s failure or cleaning up", async (failure) => {
+    const source = await import("../../persistence/source-store");
+    const captures = await import("../../persistence/captures-repo");
+    const screen = deferred<Awaited<ReturnType<typeof source.prepareExistingFileAsSource>>>();
+    const camera = deferred<unknown>();
+    mocks.finishCamera.mockReturnValueOnce(camera.promise);
+    vi.mocked(source.prepareExistingFileAsSource).mockReturnValueOnce(screen.promise);
+    const { stopped } = await stopNative();
+    let settled = false;
+    const outcome = stopped.catch((cause: unknown) => cause).finally(() => { settled = true; });
+    const error = new Error(`${failure} preparation failed`);
+    if (failure === "screen") screen.reject(error);
+    else camera.reject(error);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+    expect(mocks.removedRecordingDirs).toEqual([]);
+    if (failure === "screen") camera.resolve(null);
+    else screen.resolve({ tempPath: "/tmp/take.mp4", sha256: "sha", byteSize: 1 });
+    expect(await outcome).toBe(error);
+    expect(source.adoptExistingFileAsSource).not.toHaveBeenCalled();
+    expect(captures.insertCapture).not.toHaveBeenCalled();
+    expect(mocks.removedRecordingDirs).toEqual([]);
   });
 });
 

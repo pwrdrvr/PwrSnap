@@ -4,6 +4,7 @@
 // soft-delete + restore; this test fails loud if that regression
 // returns.
 
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,12 +12,18 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  readFile: vi.fn(),
   capturesRoot: "",
   trashRoot: "",
   cacheRoot: "",
   readSourceFromBundle: vi.fn(),
   readSourceForCapture: vi.fn()
 }));
+
+vi.mock("node:fs/promises", async (original) => {
+  const actual = await original<typeof import("node:fs/promises")>();
+  return { ...actual, readFile: mocks.readFile.mockImplementation(actual.readFile) };
+});
 
 vi.mock("../paths", () => ({
   getCapturesRoot: () => mocks.capturesRoot,
@@ -167,12 +174,47 @@ describe("source-store extension generalization", () => {
     expect(existsSync(youngPng)).toBe(true);
   });
 
+  test("adoption hashes multiple chunks without retaining a whole-file buffer", async () => {
+    const { adoptExistingFileAsSource, prepareExistingFileAsSource } = await import("../source-store");
+    const tempPath = join(tempRoot, "large-recording.mp4");
+    const bytes = Buffer.alloc(256 * 1024 + 3);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = i % 251;
+    await writeFile(tempPath, bytes);
+    mocks.readFile.mockClear();
+
+    const stored = await adoptExistingFileAsSource(await prepareExistingFileAsSource(tempPath));
+    expect(stored.sha256).toBe(createHash("sha256").update(bytes).digest("hex"));
+    expect(stored.byteSize).toBe(bytes.length);
+    expect(mocks.readFile).not.toHaveBeenCalled();
+    expect(await readFile(stored.srcPath)).toEqual(bytes);
+  });
+
+  test("preparation leaves the input owned by the recorder until commit and preserves it on a target failure", async () => {
+    const { adoptExistingFileAsSource, prepareExistingFileAsSource } = await import("../source-store");
+    const tempPath = join(tempRoot, "retry.mp4");
+    await writeFile(tempPath, "recording");
+    const prepared = await prepareExistingFileAsSource(tempPath);
+    expect(await readFile(tempPath, "utf8")).toBe("recording");
+    const blockedRoot = join(tempRoot, "not-a-directory");
+    await writeFile(blockedRoot, "block");
+    await expect(adoptExistingFileAsSource(prepared, blockedRoot)).rejects.toThrow();
+    expect(await readFile(tempPath, "utf8")).toBe("recording");
+    const stored = await adoptExistingFileAsSource(prepared);
+    expect(await readFile(stored.srcPath, "utf8")).toBe("recording");
+    expect(stored.sha256).toBe(prepared.sha256);
+  });
+
+  test("an unreadable input fails preparation before creating a capture source", async () => {
+    const { prepareExistingFileAsSource } = await import("../source-store");
+    await expect(prepareExistingFileAsSource(join(tempRoot, "missing.mp4"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   test("adoptExistingFileAsSource keeps the source extension", async () => {
-    const { adoptExistingFileAsSource } = await import("../source-store");
+    const { adoptExistingFileAsSource, prepareExistingFileAsSource } = await import("../source-store");
     const tempPath = join(tempRoot, "recorder-temp.mp4");
     await writeFile(tempPath, "video-bytes");
 
-    const stored = await adoptExistingFileAsSource(tempPath);
+    const stored = await adoptExistingFileAsSource(await prepareExistingFileAsSource(tempPath));
     expect(stored.srcPath.endsWith(".mp4")).toBe(true);
     expect(existsSync(tempPath)).toBe(false); // rename consumed it
     expect(existsSync(stored.srcPath)).toBe(true);

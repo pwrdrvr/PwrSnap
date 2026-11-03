@@ -1868,10 +1868,8 @@ async function persistAndBroadcast(
     sourceWindowTitle?: string | null | undefined;
   } = {}
 ): Promise<Result<CaptureRecord, PwrSnapError>> {
-  // New captures land as v2 layer-tree bundles. The read path in
-  // coordinator.ts still handles v1 transparently, and the v1→v2
-  // doctor (lazy on first edit-open + eager at boot) upgrades any
-  // pre-v2 captures left in the library.
+  // Prepare the immutable capture before taking the captures-root guard;
+  // persistence enters that guard only for naming and durable publication.
   //
   // devicePixelRatio threads through so the clipboard-paste flow can pass
   // the scale it inferred from the pasted image's DPI metadata (pHYs /
@@ -1879,18 +1877,18 @@ async function persistAndBroadcast(
   // source carried no density rather than defaulting to 2.
   let record: CaptureRecord;
   try {
-    ({ record } = await runWithCapturesDirFallback((outputDir) =>
-      persistCaptureFromTempV2({
+    ({ record } = await persistCaptureFromTempV2(
+      {
         tempPath,
         sourceApp:
           sourceApp === null
             ? null
             : { bundleId: sourceApp.bundleId, appName: sourceApp.appName },
         sourceWindowTitle: options.sourceWindowTitle ?? null,
-        outputDir,
         devicePixelRatio: options.devicePixelRatio,
         cursorLayer: options.cursorLayer
-      })
+      },
+      runWithCapturesDirFallback
     ));
   } catch (cause) {
     const fallbackError =

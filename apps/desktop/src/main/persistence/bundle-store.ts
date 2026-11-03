@@ -1050,7 +1050,12 @@ export function buildInitialV2Tree(args: {
 }
 
 export async function persistCaptureFromTempV2(
-  args: PersistCaptureFromTempArgs
+  args: PersistCaptureFromTempArgs,
+  // Capture handlers supply the root lock + Documents-denial retry here.
+  // Preparation runs first; only the durable commit owns the selected root.
+  withOutputDir?: (
+    operation: (outputDir: string) => Promise<PersistCaptureFromTempResult>
+  ) => Promise<PersistCaptureFromTempResult>
 ): Promise<PersistCaptureFromTempResult> {
   // Lazy-import to avoid cycle: layers-repo → captures-repo →
   // bundle-store. layers-repo only used by the v2 orchestrator.
@@ -1067,196 +1072,206 @@ export async function persistCaptureFromTempV2(
     throw new Error(`bundle-store v2: failed to read PNG dimensions from ${args.tempPath}`);
   }
 
-  // Transparency signal for the Library grid + editor checker (see
-  // source-alpha.ts for why metadata().hasAlpha isn't enough). Reuses the
-  // metadata decode above; a probe failure defaults to opaque.
-  const hasAlpha = await sourceBufferHasAlpha(buf, meta);
-
   const now = args.capturedAt ?? new Date().toISOString();
-  const outputDir = args.outputDir ?? getCapturesRoot();
-  const timestampZone = await readBundleFilenameTimestampZone();
-  const filenameStem = uniqueBundleFilenameStem(outputDir, buildCaptureBundleFilenameStem({
-    capturedAt: now,
-    sourceAppName: args.sourceApp?.appName ?? null,
-    effectiveFilenameStem: null,
-    sha256,
-    timestampZone
-  }));
-  const pairedPngFilename = `${filenameStem}.png`;
-
-  const { manifest, rootGroupId, layers: initialLayers } = buildInitialV2Tree({
-    captureId: id,
-    createdAt: now,
-    sha256,
-    widthPx,
-    heightPx,
-    pairedPngFilename,
-    lineage: args.lineage
-  });
-
-  // Optional cursor layer (cursor-capture Phase 3): embed the sampled
-  // sprite as a second content-addressed source and stack a deletable
-  // "Cursor" raster above the base Source. The transform's scale maps
-  // the sprite's natural raster onto its on-canvas draw box (Retina /
-  // enlarged-cursor sprites carry more pixels than their point size).
-  // A sprite that fails to decode is dropped — the capture itself
-  // never fails on this nicety.
-  let cursorSource: { sha256: string; bytes: Buffer } | null = null;
-  if (args.cursorLayer !== undefined) {
-    try {
-      const cursorMeta = await sharp(args.cursorLayer.pngBytes).metadata();
-      const cw = cursorMeta.width ?? 0;
-      const chh = cursorMeta.height ?? 0;
-      if (cw > 0 && chh > 0) {
-        const cursorSha = createHash("sha256")
-          .update(args.cursorLayer.pngBytes)
-          .digest("hex");
-        cursorSource = { sha256: cursorSha, bytes: args.cursorLayer.pngBytes };
-        // The sprite's on-canvas draw box — also the cursor layer's "home"
-        // transform, so Layers-panel Reset restores it to the true captured
-        // pointer position + size.
-        const cursorTransform: [number, number, number, number, number, number] = [
-          args.cursorLayer.drawWidthPx / cw,
-          0,
-          0,
-          args.cursorLayer.drawHeightPx / chh,
-          args.cursorLayer.xPx,
-          args.cursorLayer.yPx
-        ];
-        initialLayers.push({
-          id: nanoid(16),
-          parent_id: rootGroupId,
-          kind: "raster" as const,
-          source_ref: { kind: "embedded" as const, sha256: cursorSha },
-          natural_width_px: cw,
-          natural_height_px: chh,
-          name: "Cursor",
-          visible: true,
-          locked: false,
-          opacity: 1,
-          blend_mode: "normal" as const,
-          transform: cursorTransform,
-          // Independent copy — never an alias of `transform` — so a future
-          // in-place edit of one can't silently corrupt the stored home.
-          original_transform: cloneAffineTransform(cursorTransform),
-          z_index: 1,
-          source: "user" as const,
-          ai_run_id: null,
-          applied_at: now,
-          rejected_at: null,
-          superseded_by: null,
-          created_at: now
-        });
-      }
-    } catch (cause) {
-      log.warn("cursor layer dropped: sprite decode failed", {
-        message: cause instanceof Error ? cause.message : String(cause)
-      });
-    }
-  }
-
-  const document: BundleDocumentV2 = {
-    document_format_version: 1,
-    edits_version: 0,
-    layers: initialLayers,
-    tags: [],
-    description: null,
-    ai_runs: []
-  };
-
-  // Pack v2 bundle. Single source → single sources/<sha>.png entry;
-  // no rasterized layers yet. Initial composite == source bytes, so
-  // the thumbnail is built from the source PNG directly.
-  const bundlePath = join(outputDir, `${filenameStem}.pwrsnap`);
-
-  const sources = new Map<string, Buffer>([[sha256, buf]]);
-  if (cursorSource !== null) sources.set(cursorSource.sha256, cursorSource.bytes);
-
-  // Thumbnail: when a cursor layer landed, composite the sprite onto a
-  // throwaway copy of the source FIRST so the in-bundle thumbnail
-  // (Finder/QuickLook) shows the cursor from the start. This replaces
-  // an earlier scheduleRepack(id) — a full compose + whole-bundle
-  // rewrite seconds after every capture (and an iCloud re-upload for
-  // synced bundles) just to refresh a thumbnail, which also silently
-  // never happened if the app quit inside the debounce window. The
-  // composite here is a few ms of sharp work on bytes already in hand.
-  let thumbnailSourceBuf: Buffer = buf;
-  if (cursorSource !== null && args.cursorLayer !== undefined) {
-    try {
-      thumbnailSourceBuf = await compositeCursorForThumbnail(
-        buf,
+  // These preparations consume only immutable input bytes/settings. Observe
+  // every promise together, including sibling failures, before entering the
+  // captures-root guard. Cursor composition still precedes its thumbnail.
+  const [hasAlpha, timestampZone, prepared] = await Promise.all([
+    sourceBufferHasAlpha(buf, meta),
+    readBundleFilenameTimestampZone(),
+    (async () => {
+      const { manifest, rootGroupId, layers: initialLayers } = buildInitialV2Tree({
+        captureId: id,
+        createdAt: now,
+        sha256,
         widthPx,
         heightPx,
-        args.cursorLayer
-      );
-    } catch (cause) {
-      // Best-effort — a stale (cursor-less) thumbnail until the first
-      // natural repack is acceptable; failing the capture is not.
-      log.warn("cursor thumbnail composite failed — using bare source", {
-        message: cause instanceof Error ? cause.message : String(cause)
+        pairedPngFilename: `${id}.png`,
+        lineage: args.lineage
       });
+
+      // Optional cursor layer (cursor-capture Phase 3): embed the sampled
+      // sprite as a second content-addressed source and stack a deletable
+      // "Cursor" raster above the base Source. The transform's scale maps
+      // the sprite's natural raster onto its on-canvas draw box (Retina /
+      // enlarged-cursor sprites carry more pixels than their point size).
+      // A sprite that fails to decode is dropped — the capture itself
+      // never fails on this nicety.
+      let cursorSource: { sha256: string; bytes: Buffer } | null = null;
+      if (args.cursorLayer !== undefined) {
+        try {
+          const cursorMeta = await sharp(args.cursorLayer.pngBytes).metadata();
+          const cw = cursorMeta.width ?? 0;
+          const chh = cursorMeta.height ?? 0;
+          if (cw > 0 && chh > 0) {
+            const cursorSha = createHash("sha256")
+              .update(args.cursorLayer.pngBytes)
+              .digest("hex");
+            cursorSource = { sha256: cursorSha, bytes: args.cursorLayer.pngBytes };
+            // The sprite's on-canvas draw box — also the cursor layer's "home"
+            // transform, so Layers-panel Reset restores it to the true captured
+            // pointer position + size.
+            const cursorTransform: [number, number, number, number, number, number] = [
+              args.cursorLayer.drawWidthPx / cw,
+              0,
+              0,
+              args.cursorLayer.drawHeightPx / chh,
+              args.cursorLayer.xPx,
+              args.cursorLayer.yPx
+            ];
+            initialLayers.push({
+              id: nanoid(16),
+              parent_id: rootGroupId,
+              kind: "raster" as const,
+              source_ref: { kind: "embedded" as const, sha256: cursorSha },
+              natural_width_px: cw,
+              natural_height_px: chh,
+              name: "Cursor",
+              visible: true,
+              locked: false,
+              opacity: 1,
+              blend_mode: "normal" as const,
+              transform: cursorTransform,
+              // Independent copy — never an alias of `transform` — so a future
+              // in-place edit of one can't silently corrupt the stored home.
+              original_transform: cloneAffineTransform(cursorTransform),
+              z_index: 1,
+              source: "user" as const,
+              ai_run_id: null,
+              applied_at: now,
+              rejected_at: null,
+              superseded_by: null,
+              created_at: now
+            });
+          }
+        } catch (cause) {
+          log.warn("cursor layer dropped: sprite decode failed", {
+            message: cause instanceof Error ? cause.message : String(cause)
+          });
+        }
+      }
+
+      const document: BundleDocumentV2 = {
+        document_format_version: 1,
+        edits_version: 0,
+        layers: initialLayers,
+        tags: [],
+        description: null,
+        ai_runs: []
+      };
+
+      // Pack v2 bundle. Single source → single sources/<sha>.png entry;
+      // no rasterized layers yet. Initial composite == source bytes, so
+      // the thumbnail is built from the source PNG directly.
+      const sources = new Map<string, Buffer>([[sha256, buf]]);
+      if (cursorSource !== null) sources.set(cursorSource.sha256, cursorSource.bytes);
+
+      // Thumbnail: when a cursor layer landed, composite the sprite onto a
+      // throwaway copy of the source FIRST so the in-bundle thumbnail
+      // (Finder/QuickLook) shows the cursor from the start. This replaces
+      // an earlier scheduleRepack(id) — a full compose + whole-bundle
+      // rewrite seconds after every capture (and an iCloud re-upload for
+      // synced bundles) just to refresh a thumbnail, which also silently
+      // never happened if the app quit inside the debounce window. The
+      // composite here is a few ms of sharp work on bytes already in hand.
+      let thumbnailSourceBuf: Buffer = buf;
+      if (cursorSource !== null && args.cursorLayer !== undefined) {
+        try {
+          thumbnailSourceBuf = await compositeCursorForThumbnail(
+            buf,
+            widthPx,
+            heightPx,
+            args.cursorLayer
+          );
+        } catch (cause) {
+          // Best-effort — a stale (cursor-less) thumbnail until the first
+          // natural repack is acceptable; failing the capture is not.
+          log.warn("cursor thumbnail composite failed — using bare source", {
+            message: cause instanceof Error ? cause.message : String(cause)
+          });
+        }
+      }
+      const thumbnailJpg = await buildCompositeThumbnail(thumbnailSourceBuf);
+
+      return { manifest, document, initialLayers, sources, thumbnailJpg };
+    })()
+  ]);
+
+  const persist = async (outputDir: string): Promise<PersistCaptureFromTempResult> => {
+    // Choose a name against the currently guarded root on EVERY attempt.
+    // A Documents-denial retry reuses preparation but has its own filename.
+    const filenameStem = uniqueBundleFilenameStem(outputDir, buildCaptureBundleFilenameStem({
+      capturedAt: now,
+      sourceAppName: args.sourceApp?.appName ?? null,
+      effectiveFilenameStem: null,
+      sha256,
+      timestampZone
+    }));
+    const bundlePath = join(outputDir, `${filenameStem}.pwrsnap`);
+    const { document, initialLayers, sources, thumbnailJpg } = prepared;
+    const manifest = { ...prepared.manifest, paired_png_filename: `${filenameStem}.png` };
+    const bundleBuf = await packBundleV2({
+      manifest,
+      document,
+      sources,
+      layerBytes: new Map(),
+      thumbnailJpg
+    });
+
+    await atomicWriteBundle(bundlePath, bundleBuf, { durable: args.durable ?? true });
+
+    // Materialize source.png to per-capture cache.
+    const cacheSource = getCacheSourcePath(id);
+    await mkdir(dirname(cacheSource), { recursive: true });
+    await writeFile(cacheSource, buf);
+
+    try {
+      await unlink(args.tempPath);
+    } catch {
+      // best-effort
     }
-  }
-  const thumbnailJpg = await buildCompositeThumbnail(thumbnailSourceBuf);
 
-  const bundleBuf = await packBundleV2({
-    manifest,
-    document,
-    sources,
-    layerBytes: new Map(),
-    thumbnailJpg
-  });
+    const { record } = insertCapture({
+      id,
+      kind: "image",
+      captured_at: now,
+      source_app_bundle_id: args.sourceApp?.bundleId ?? null,
+      source_app_name: args.sourceApp?.appName ?? null,
+      source_window_title: args.sourceWindowTitle ?? null,
+      legacy_src_path: null,
+      bundle_path: bundlePath,
+      flat_png_path: null,
+      bundle_modified_at: now,
+      bundle_format_version: 2,
+      bundle_edits_version: 0,
+      width_px: widthPx,
+      height_px: heightPx,
+      device_pixel_ratio: args.devicePixelRatio ?? 1,
+      byte_size: buf.length,
+      sha256,
+      has_alpha: hasAlpha,
+      family_id: args.lineage?.familyId ?? null,
+      duplicated_from: args.lineage?.duplicatedFrom ?? null
+    });
 
-  await atomicWriteBundle(bundlePath, bundleBuf, { durable: args.durable ?? true });
+    // Seed the layers table so listLayerTree returns the initial tree
+    // without re-reading the bundle. The bundle's document.json is the
+    // durable record; the layers table is the cached projection.
+    insertLayerTreeForCapture(id, initialLayers);
 
-  // Materialize source.png to per-capture cache.
-  const cacheSource = getCacheSourcePath(id);
-  await mkdir(dirname(cacheSource), { recursive: true });
-  await writeFile(cacheSource, buf);
+    log.info("bundle-store: persisted new v2 capture", {
+      id,
+      bundlePath,
+      byteSize: buf.length,
+      widthPx,
+      heightPx
+    });
 
-  try {
-    await unlink(args.tempPath);
-  } catch {
-    // best-effort
-  }
-
-  const { record } = insertCapture({
-    id,
-    kind: "image",
-    captured_at: now,
-    source_app_bundle_id: args.sourceApp?.bundleId ?? null,
-    source_app_name: args.sourceApp?.appName ?? null,
-    source_window_title: args.sourceWindowTitle ?? null,
-    legacy_src_path: null,
-    bundle_path: bundlePath,
-    flat_png_path: null,
-    bundle_modified_at: now,
-    bundle_format_version: 2,
-    bundle_edits_version: 0,
-    width_px: widthPx,
-    height_px: heightPx,
-    device_pixel_ratio: args.devicePixelRatio ?? 1,
-    byte_size: buf.length,
-    sha256,
-    has_alpha: hasAlpha,
-    family_id: args.lineage?.familyId ?? null,
-    duplicated_from: args.lineage?.duplicatedFrom ?? null
-  });
-
-  // Seed the layers table so listLayerTree returns the initial tree
-  // without re-reading the bundle. The bundle's document.json is the
-  // durable record; the layers table is the cached projection.
-  insertLayerTreeForCapture(id, initialLayers);
-
-  log.info("bundle-store: persisted new v2 capture", {
-    id,
-    bundlePath,
-    byteSize: buf.length,
-    widthPx,
-    heightPx
-  });
-
-  return { record };
+    return { record };
+  };
+  return withOutputDir !== undefined
+    ? withOutputDir(persist)
+    : persist(args.outputDir ?? getCapturesRoot());
 }
 
 // ---------------------------------------------------------------------------

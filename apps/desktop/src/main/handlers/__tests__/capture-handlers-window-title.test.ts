@@ -272,7 +272,6 @@ describe("capture:interactive selected-window title", () => {
     expect(persistArgs).toEqual(
       expect.objectContaining({
         tempPath: "/tmp/captured-window.png",
-        outputDir: "/captures",
         sourceApp: {
           bundleId: "com.example.editor",
           appName: "Example Editor"
@@ -280,6 +279,8 @@ describe("capture:interactive selected-window title", () => {
       })
     );
     expect(persistArgs?.sourceWindowTitle).toBe(liveTitle);
+    // Persistence prepares bytes before invoking this root-lock/fallback guard.
+    expect(mocks.persistCaptureFromTempV2.mock.calls[0]?.[1]).toBe(mocks.runWithCapturesDirFallback);
   });
 
   test("passes null when the selected id vanished before the live lookup", async () => {

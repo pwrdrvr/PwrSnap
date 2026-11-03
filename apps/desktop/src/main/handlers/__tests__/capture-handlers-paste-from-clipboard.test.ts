@@ -342,7 +342,8 @@ describe("capture:pasteFromClipboard", () => {
       expect.objectContaining({
         tempPath: "/test/tmp/clipboard.png",
         devicePixelRatio: 2
-      })
+      }),
+      expect.any(Function)
     );
     expect(result).toEqual({ ok: true, value: persistedRecord });
   });

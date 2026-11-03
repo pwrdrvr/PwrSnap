@@ -38,6 +38,7 @@ import {
 } from "../persistence/captures-repo";
 import {
   adoptExistingFileAsSource,
+  prepareExistingFileAsSource,
   statSource
 } from "../persistence/source-store";
 import { insertVideoMetadata } from "../persistence/video-repo";
@@ -898,9 +899,18 @@ type PersistStoppedRecordingInput = {
 };
 
 async function persistStoppedRecording(stopped: PersistStoppedRecordingInput): Promise<{ captureId: string }> {
-  const camera = await finishCameraRecording();
+  // These own separate finalized inputs. Drain both even on failure before
+  // lifecycle cleanup can close the camera or release the recorder's temp dir.
+  // File-sized screen reads must not hold up screenshots or root switches.
+  const [cameraResult, sourceResult] = await Promise.allSettled([
+    finishCameraRecording(),
+    prepareExistingFileAsSource(stopped.outputPath)
+  ]);
+  if (cameraResult.status === "rejected") throw cameraResult.reason;
+  if (sourceResult.status === "rejected") throw sourceResult.reason;
+  const camera = cameraResult.value;
   const stored = await runWithCapturesDirFallback((outputDir) =>
-    adoptExistingFileAsSource(stopped.outputPath, outputDir)
+    adoptExistingFileAsSource(sourceResult.value, outputDir)
   );
   const cameraMetadata = camera ? await camera.adopt(stored.srcPath, stored.id) : null;
   await stopped.onSourceAdopted?.();

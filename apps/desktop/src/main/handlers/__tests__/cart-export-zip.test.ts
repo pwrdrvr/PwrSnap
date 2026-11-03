@@ -20,14 +20,16 @@ const mocks = vi.hoisted(() => ({
   mkdir: vi.fn<() => Promise<void>>(),
   readdir: vi.fn<() => Promise<string[]>>(),
   existsSync: vi.fn<(p: string) => boolean>(),
-  composeCartDragIcon: vi.fn<() => Promise<void>>()
+  composeCartDragIcon: vi.fn<() => Promise<void>>(),
+  createWriteStream: vi.fn<() => Writable>(),
+  send: vi.fn()
 }));
 
 vi.mock("electron", () => ({
   app: { getPath: () => "/tmp" },
   BrowserWindow: {
     getFocusedWindow: vi.fn(() => null),
-    getAllWindows: vi.fn(() => [])
+    getAllWindows: vi.fn(() => [{ isDestroyed: () => false, webContents: { send: mocks.send } }])
   },
   dialog: { showSaveDialog: mocks.showSaveDialog },
   shell: { showItemInFolder: mocks.showItemInFolder }
@@ -65,12 +67,7 @@ vi.mock("../../window", () => ({ findMainLibraryWindow: () => null }));
 // pipe ends it. A PassThrough here would never drain its readable side, so
 // it would never emit 'close' and the handler's await would hang.
 vi.mock("node:fs", () => ({
-  createWriteStream: () =>
-    new Writable({
-      write(_chunk: unknown, _enc: unknown, cb: () => void): void {
-        cb();
-      }
-    }),
+  createWriteStream: mocks.createWriteStream,
   existsSync: mocks.existsSync
 }));
 vi.mock("node:fs/promises", () => ({
@@ -156,6 +153,11 @@ beforeEach(() => {
   mocks.readdir.mockReset();
   mocks.existsSync.mockReset();
   mocks.composeCartDragIcon.mockReset();
+  mocks.send.mockReset();
+  mocks.createWriteStream.mockReset();
+  mocks.createWriteStream.mockImplementation(() => new Writable({
+    write(_chunk, _encoding, callback): void { callback(); }
+  }));
   mocks.readdir.mockResolvedValue([]); // nothing to prune by default
   mocks.existsSync.mockReturnValue(false); // no cached drag zip by default
   mocks.composeCartDragIcon.mockResolvedValue(undefined);
@@ -169,6 +171,90 @@ beforeEach(() => {
 });
 
 describe("cart:exportZip", () => {
+  test.each(["export", "drag"] as const)("%s admits two renders and applies backpressure while preserving archive and collision order", async (mode) => {
+    const releases = new Map<string, (file: { path: string }) => void>();
+    mocks.getCaptureById.mockImplementation((id) => ({ ...imageRecord(id), source_app_name: "same" }));
+    mocks.resolveImagePresetFile.mockImplementation((rec) => new Promise((resolve) => { releases.set(rec.id, resolve); }));
+    const ids = ["a", "b", "c", "d", "e"];
+    const pending = mode === "export"
+      ? callExportZip({ captureIds: ids, preset: "low" })
+      : callPrepareDrag({ captureIds: ids, preset: "low" });
+    try {
+      await vi.waitFor(() => expect(releases.size).toBeGreaterThan(0));
+      expect([...releases.keys()]).toEqual(["a", "b"]);
+      releases.get("b")!({ path: "/cache/b.png" });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect([...releases.keys()]).toEqual(["a", "b"]);
+      expect(mocks.createWriteStream).not.toHaveBeenCalled();
+      releases.get("a")!({ path: "/cache/a.png" });
+      await vi.waitFor(() => expect(releases.has("c")).toBe(true));
+      expect([...releases.keys()]).toEqual(["a", "b", "c", "d"]);
+      releases.get("d")!({ path: "/cache/d.png" });
+      releases.get("c")!({ path: "/cache/c.png" });
+      await vi.waitFor(() => expect(releases.has("e")).toBe(true));
+      releases.get("e")!({ path: "/cache/e.png" });
+      expect((await pending).ok).toBe(true);
+      expect(mocks.addFile.mock.calls).toEqual(ids.map((id, i) => [
+        `/cache/${id}.png`, `same-low${i === 0 ? "" : `-${i + 1}`}.png`
+      ]));
+      if (mode === "drag") expect(mocks.composeCartDragIcon).toHaveBeenCalledWith(
+        expect.objectContaining({ imagePath: "/cache/a.png", count: 5 })
+      );
+      else expect(mocks.send.mock.calls.map((call) => call[1]).filter((event) => event.phase === "rendering").map((event) => event.completed)).toEqual([0, 1, 2, 3, 4, 5]);
+    } finally {
+      // Also drain the serial implementation when the admission assertion fails.
+      mocks.resolveImagePresetFile.mockResolvedValue({ path: "/cache/cleanup.png" });
+      for (const release of releases.values()) release({ path: "/cache/cleanup.png" });
+      await pending;
+    }
+  });
+
+  test("cancel drains admitted renders, handles a late rejection, and never starts another batch or publishes", async () => {
+    let finishFirst!: (file: { path: string }) => void;
+    let failSecond!: (cause: Error) => void;
+    mocks.getCaptureById.mockImplementation(imageRecord);
+    mocks.resolveImagePresetFile
+      .mockImplementationOnce(() => new Promise((resolve) => { finishFirst = resolve; }))
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { failSecond = reject; }));
+    let settled = false;
+    const pending = callExportZip({ captureIds: ["a", "b", "c"], preset: "low", jobId: "drain" })
+      .finally(() => { settled = true; });
+    try {
+      await vi.waitFor(() => expect(mocks.resolveImagePresetFile).toHaveBeenCalled());
+      expect(mocks.resolveImagePresetFile).toHaveBeenCalledTimes(2);
+      await callCancel("drain");
+      finishFirst({ path: "/cache/a.png" });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(settled).toBe(false);
+      failSecond(new Error("late corrupt source"));
+      expect(await pending).toMatchObject({ ok: false, error: { code: "cancelled" } });
+      expect(mocks.resolveImagePresetFile).toHaveBeenCalledTimes(2);
+      expect(mocks.createWriteStream).not.toHaveBeenCalled();
+      expect(mocks.rename).not.toHaveBeenCalled();
+    } finally {
+      await callCancel("drain");
+      finishFirst?.({ path: "/cache/a.png" });
+      failSecond?.(new Error("cleanup"));
+      await pending;
+    }
+  });
+
+  test("cancel during ZIP output never replaces the destination", async () => {
+    mocks.getCaptureById.mockImplementation(imageRecord);
+    let finishWrite: (() => void) | undefined;
+    mocks.createWriteStream.mockImplementation(() => new Writable({
+      write(_chunk, _encoding, callback): void { callback(); },
+      final(callback): void { finishWrite = callback; }
+    }));
+    const pending = callExportZip({ captureIds: ["a"], preset: "low", jobId: "zip-cancel" });
+    await vi.waitFor(() => expect(finishWrite).toBeDefined());
+    await callCancel("zip-cancel");
+    finishWrite!();
+    expect(await pending).toMatchObject({ ok: false, error: { code: "cancelled" } });
+    expect(mocks.rename).not.toHaveBeenCalled();
+    expect(mocks.showItemInFolder).not.toHaveBeenCalled();
+  });
+
   test("zips images, skips videos/trashed/missing", async () => {
     mocks.getCaptureById.mockImplementation((id) =>
       id === "img1" ? imageRecord("img1")
@@ -202,6 +288,27 @@ describe("cart:exportZip", () => {
       expect(r.value.fileCount).toBe(1);
       expect(r.value.failed).toBe(1);
     }
+  });
+
+  test("all render failures produce no ZIP output", async () => {
+    mocks.getCaptureById.mockImplementation(imageRecord);
+    mocks.resolveImagePresetFile.mockRejectedValue(new Error("corrupt sources"));
+    expect(await callExportZip({ captureIds: ["a", "b", "c"], preset: "low" }))
+      .toMatchObject({ ok: false, error: { code: "export_failed" } });
+    expect(mocks.resolveImagePresetFile).toHaveBeenCalledTimes(3);
+    expect(mocks.createWriteStream).not.toHaveBeenCalled();
+    expect(mocks.rename).not.toHaveBeenCalled();
+  });
+
+  test("ZIP output failure closes the stream and removes staging without publication", async () => {
+    mocks.getCaptureById.mockImplementation(imageRecord);
+    const output = new Writable({ final(callback): void { callback(new Error("disk full")); } });
+    mocks.createWriteStream.mockReturnValue(output);
+    expect(await callExportZip({ captureIds: ["a", "b"], preset: "low" }))
+      .toMatchObject({ ok: false, error: { code: "export_failed" } });
+    expect(output.closed).toBe(true);
+    expect(mocks.rm).toHaveBeenCalledWith(expect.stringContaining(".tmp-"), { force: true });
+    expect(mocks.rename).not.toHaveBeenCalled();
   });
 
   test("colliding stems get a numeric suffix (no overwrite)", async () => {

@@ -12,6 +12,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream, existsSync } from "node:fs";
 import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { pipeline } from "node:stream/promises";
 import yazl from "yazl";
 import {
   EVENT_CHANNELS,
@@ -140,8 +141,10 @@ type CartZipOutcome = {
  * Render `records` at `preset` and write a flat zip to `destPath`. Each PNG is
  * stored (already compressed); entry names are re-slugified (zip-slip defense)
  * and collision-suffixed so no entry overwrites another. One unrenderable
- * image is counted in `failed`, not fatal. Honors `signal` between renders
- * (bails with `cancelled: true`, writing nothing). Fires `onProgress` per
+ * image is counted in `failed`, not fatal. Renders in batches of two, retaining
+ * only file paths (not image buffers); a slow batch stops admission of
+ * the next. Cancellation drains admitted renders and prevents ZIP publication.
+ * Fires `onProgress` per
  * render plus once for the write. When zero images render, the zip is NOT
  * written. Shared by the dialog export and the drag-out.
  */
@@ -158,47 +161,61 @@ async function writeCartZip(
   let failed = 0;
   let firstPath: string | null = null;
   opts.onProgress?.({ phase: "rendering", completed: 0, total });
-  for (const rec of records) {
+  for (let offset = 0; offset < records.length; offset += 2) {
     if (opts.signal?.aborted) return { fileCount, failed, cancelled: true, firstPath };
-    try {
-      // Renders use the default (legacy) export ladder — same mapping the
-      // renderer's cart estimate uses, so the shown ~size matches the zip.
-      // (DPI-aware-export-for-zip is a future enhancement.)
-      const file = await resolveImagePresetFile(rec, preset);
-      if (firstPath === null) firstPath = file.path;
-      const stem = slugifyFilenameStem(exportFilenameStem(rec, getCaptureEnrichment(rec.id)));
-      let entry = `${stem}-${preset}.png`;
-      let n = 2;
-      while (usedNames.has(entry)) {
-        entry = `${stem}-${preset}-${n}.png`;
-        n++;
+    // AllSettled observes every rejection and drains both non-abortable
+    // renders before returning to the caller, including after cancellation.
+    const batch = records.slice(offset, offset + 2);
+    const rendered = await Promise.allSettled(batch.map((rec) => {
+      if (opts.signal?.aborted) return Promise.resolve(null);
+      return resolveImagePresetFile(rec, preset);
+    }));
+    if (opts.signal?.aborted) return { fileCount, failed, cancelled: true, firstPath };
+    for (const [index, rec] of batch.entries()) {
+      try {
+        // Renders use the default (legacy) export ladder — same mapping the
+        // renderer's cart estimate uses, so the shown ~size matches the zip.
+        // (DPI-aware-export-for-zip is a future enhancement.)
+        const result = rendered[index]!;
+        if (result.status === "rejected") throw result.reason;
+        const file = result.value;
+        if (file === null) continue;
+        if (firstPath === null) firstPath = file.path;
+        const stem = slugifyFilenameStem(exportFilenameStem(rec, getCaptureEnrichment(rec.id)));
+        let entry = `${stem}-${preset}.png`;
+        let n = 2;
+        while (usedNames.has(entry)) {
+          entry = `${stem}-${preset}-${n}.png`;
+          n++;
+        }
+        usedNames.add(entry);
+        zip.addFile(file.path, entry, { compress: false });
+        fileCount++;
+      } catch (cause) {
+        // One unrenderable image (corrupt source, etc.) must not sink the whole
+        // export — skip it, count it, keep going.
+        failed++;
+        log.warn("cart zip: skipping unrenderable capture", {
+          id: rec.id,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
       }
-      usedNames.add(entry);
-      zip.addFile(file.path, entry, { compress: false });
-      fileCount++;
-    } catch (cause) {
-      // One unrenderable image (corrupt source, etc.) must not sink the whole
-      // export — skip it, count it, keep going.
-      failed++;
-      log.warn("cart zip: skipping unrenderable capture", {
-        id: rec.id,
-        message: cause instanceof Error ? cause.message : String(cause)
-      });
+      opts.onProgress?.({ phase: "rendering", completed: fileCount + failed, total });
     }
-    opts.onProgress?.({ phase: "rendering", completed: fileCount + failed, total });
   }
   // A cancel landing after the last render but before the write still counts.
   if (opts.signal?.aborted) return { fileCount, failed, cancelled: true, firstPath };
   if (fileCount === 0) return { fileCount, failed, cancelled: false, firstPath };
   opts.onProgress?.({ phase: "zipping", completed: total, total });
-  await new Promise<void>((resolve, reject) => {
+  try {
     const ws = createWriteStream(destPath);
-    ws.on("error", reject);
-    ws.on("close", () => resolve());
-    zip.outputStream.on("error", reject);
-    zip.outputStream.pipe(ws);
+    const writing = pipeline(zip.outputStream, ws, { signal: opts.signal });
     zip.end();
-  });
+    await writing;
+  } catch (cause) {
+    if (!opts.signal?.aborted) throw cause;
+  }
+  if (opts.signal?.aborted) return { fileCount, failed, cancelled: true, firstPath };
   return { fileCount, failed, cancelled: false, firstPath };
 }
 
@@ -436,7 +453,7 @@ export function registerCartHandlers(): void {
           });
         }
       });
-      if (result.cancelled) {
+      if (result.cancelled || signal.aborted) {
         await rm(tmpPath, { force: true }).catch(() => undefined);
         return err({ kind: "validation", code: "cancelled", message: "Export cancelled" });
       }

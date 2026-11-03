@@ -14,7 +14,7 @@ import {
   test,
   vi
 } from "vitest";
-import type { BundleLayerNode, OverlayRow } from "@pwrsnap/shared";
+import { BundleLayerNode, type OverlayRow } from "@pwrsnap/shared";
 import { registerCaptureUndoFallback, useEditMenuBridge } from "../../../lib/editMenuBridge";
 
 import {
@@ -1276,5 +1276,172 @@ describe("useUndoRedo", () => {
       { kind: "delete", id: "stroke-orig" }
     ]);
     expect(api!.canUndo).toBe(true);
+  });
+});
+
+describe("useUndoRedo partial replay retries", () => {
+  function node(label: string): BundleLayerNode {
+    return BundleLayerNode.parse(makeNode(label.padEnd(16, "_")));
+  }
+
+  /** layers-repo.insertLayer restores rejected rows, but a live id always
+   * fails with insert_failed. A transient failure has that same code: the
+   * hook must distinguish acknowledged progress, never guess from errors. */
+  function persistence(liveNodes: BundleLayerNode[]) {
+    const state = {
+      live: new Map(liveNodes.map((entry) => [entry.id, entry])),
+      calls: [] as string[],
+      conflicts: 0,
+      failOnceAt: null as string | null
+    };
+    dispatchEditMock.mockImplementation(async (op) => {
+      if (op.kind !== "upsert" && op.kind !== "delete") throw new Error("unexpected fixture operation");
+      const id = op.kind === "upsert" ? op.node.id : op.id;
+      const call = `${op.kind}:${id}`;
+      state.calls.push(call);
+      if (state.failOnceAt === call) {
+        state.failOnceAt = null;
+        return { ok: false, error: { kind: "persistence", code: "insert_failed", message: "transient fixture failure" } };
+      }
+      if (op.kind === "upsert") {
+        BundleLayerNode.parse(op.node);
+        if (state.live.has(id)) {
+          state.conflicts += 1;
+          return { ok: false, error: { kind: "persistence", code: "insert_failed", message: "UNIQUE constraint failed: layers.id" } };
+        }
+        state.live.set(id, op.node);
+        return { ok: true, value: { kind: "upsert", artifact: { format: 2, node: op.node } } };
+      }
+      state.live.delete(id);
+      return { ok: true, value: { kind: "delete" } };
+    });
+    return state;
+  }
+
+  function mountProbe() {
+    const current = { api: null as UseUndoRedoResult | null };
+    render(createElement(Probe, { captureId: "cap-1", onSnapshot: (api) => { current.api = api; } }));
+    return current;
+  }
+
+  function recordPair(api: UseUndoRedoResult, kind: "create" | "delete", nodes: BundleLayerNode[]) {
+    const token = api.beginInteraction("batch", "pair");
+    for (const entry of nodes) {
+      api[kind === "create" ? "recordCreate" : "recordDelete"]({ id: entry.id }, {
+        node: entry, opKind: "batch", layerId: "pair", mergeMode: "append"
+      });
+    }
+    api.endInteraction(token);
+  }
+
+  test.each(["undo-delete", "redo-create"] as const)("%s retries only the failed restore, then reaches earlier history", async (scenario) => {
+    const a = node("a");
+    const b = node("b");
+    const older = node("older");
+    const state = persistence(scenario === "redo-create" ? [a, b, older] : [older]);
+    const current = mountProbe();
+    act(() => {
+      current.api!.recordCreate({ id: older.id }, { node: older });
+      recordPair(current.api!, scenario === "redo-create" ? "create" : "delete", [a, b]);
+    });
+    if (scenario === "redo-create") await act(async () => { await current.api!.undo(); });
+    state.calls.length = 0;
+    state.failOnceAt = `upsert:${b.id}`;
+    const direction = scenario === "redo-create" ? "redo" : "undo";
+    await act(async () => { await current.api![direction](); });
+    expect(new Set(state.live.keys())).toEqual(new Set([a.id, older.id]));
+    await act(async () => { await current.api![direction](); });
+    expect(new Set(state.live.keys())).toEqual(new Set([a.id, b.id, older.id]));
+    expect(state.calls).toEqual([`upsert:${a.id}`, `upsert:${b.id}`, `upsert:${b.id}`]);
+    expect(state.conflicts).toBe(0);
+    expect(current.api!.canUndo).toBe(true);
+    expect(current.api!.canRedo).toBe(direction === "undo");
+    if (direction === "redo") await act(async () => { await current.api!.undo(); });
+    await act(async () => { await current.api!.undo(); });
+    expect(state.live.has(older.id)).toBe(false);
+    expect(current.api!.canUndo).toBe(false);
+  });
+
+  test.each([
+    { direction: "undo", failure: "restore" }, { direction: "redo", failure: "restore" },
+    { direction: "undo", failure: "remove" }, { direction: "redo", failure: "remove" }
+  ] as const)("replace $direction resumes after a failed second $failure without replaying successful writes", async ({ direction, failure }) => {
+    const removed = [node("a"), node("b")];
+    const added = [node("c"), node("d")];
+    const state = persistence(added);
+    const current = mountProbe();
+    act(() => {
+      current.api!.recordReplace({
+        removed: removed.map((entry) => ({ row: { id: entry.id }, node: entry })),
+        added: added.map((entry) => ({ row: { id: entry.id }, node: entry }))
+      });
+    });
+    if (direction === "redo") await act(async () => { await current.api!.undo(); });
+    state.calls.length = 0;
+    const restore = direction === "undo" ? removed : added;
+    const take = direction === "undo" ? added : removed;
+    const steps = [...restore.map((entry) => `upsert:${entry.id}`), ...take.map((entry) => `delete:${entry.id}`)];
+    const failureIndex = failure === "restore" ? 1 : 3;
+    state.failOnceAt = steps[failureIndex]!;
+    await act(async () => { await current.api![direction](); });
+    expect(current.api!.canUndo).toBe(direction === "undo");
+    expect(current.api!.canRedo).toBe(direction === "redo");
+    await act(async () => { await current.api![direction](); });
+    expect(state.calls).toEqual([...steps.slice(0, failureIndex + 1), ...steps.slice(failureIndex)]);
+    expect(new Set(state.live.keys())).toEqual(new Set(restore.map((entry) => entry.id)));
+    expect(state.conflicts).toBe(0);
+    expect(current.api!.canUndo).toBe(direction === "redo");
+    expect(current.api!.canRedo).toBe(direction === "undo");
+    // Completion retires this direction's cursor: a reverse cycle and a
+    // fresh replay of the same operation must execute every step again.
+    await act(async () => { await current.api![direction === "undo" ? "redo" : "undo"](); });
+    await act(async () => { await current.api![direction](); });
+    expect(state.calls.slice(-4)).toEqual(steps);
+    expect(new Set(state.live.keys())).toEqual(new Set(restore.map((entry) => entry.id)));
+  });
+
+  test("a later tagged push cannot coalesce into a partially restored entry or erase its retry progress", async () => {
+    const a = node("a");
+    const b = node("b");
+    const c = node("c");
+    const state = persistence([c]);
+    const current = mountProbe();
+    const tags = { opKind: "delete", layerId: "selection", mergeMode: "append" } as const;
+    let token!: ReturnType<UseUndoRedoResult["beginInteraction"]>;
+    act(() => {
+      token = current.api!.beginInteraction(tags.opKind, tags.layerId);
+      current.api!.recordDelete({ id: a.id }, { ...tags, node: a });
+      current.api!.recordDelete({ id: b.id }, { ...tags, node: b });
+    });
+    state.failOnceAt = `upsert:${b.id}`;
+    await act(async () => { await current.api!.undo(); });
+    await act(async () => {
+      await dispatchEditMock({ kind: "delete", id: c.id });
+      current.api!.recordDelete({ id: c.id }, { ...tags, node: c });
+      current.api!.endInteraction(token);
+    });
+    state.calls.length = 0;
+    await act(async () => { await current.api!.undo(); });
+    expect(state.calls).toEqual([`upsert:${c.id}`]);
+    await act(async () => { await current.api!.undo(); });
+    expect(state.calls).toEqual([`upsert:${c.id}`, `upsert:${b.id}`]);
+    expect(new Set(state.live.keys())).toEqual(new Set([a.id, b.id, c.id]));
+    expect(current.api!.canUndo).toBe(false);
+    expect(state.conflicts).toBe(0);
+  });
+
+  test("an unacknowledged live-id conflict stays a failure on every retry", async () => {
+    const a = node("a");
+    const b = node("b");
+    const state = persistence([a]);
+    const current = mountProbe();
+    act(() => { recordPair(current.api!, "delete", [a, b]); });
+    await act(async () => { await current.api!.undo(); });
+    await act(async () => { await current.api!.undo(); });
+    expect(state.calls).toEqual([`upsert:${a.id}`, `upsert:${a.id}`]);
+    expect(state.conflicts).toBe(2);
+    expect(new Set(state.live.keys())).toEqual(new Set([a.id]));
+    expect(current.api!.canUndo).toBe(true);
+    expect(current.api!.canRedo).toBe(false);
   });
 });

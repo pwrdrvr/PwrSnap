@@ -45,7 +45,7 @@
 //   bracketing keeps the original "every call → one entry" semantics
 //   except when the grace window catches a follow-up.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import type { BundleLayerNode, OverlayRow, PwrSnapError, Result } from "@pwrsnap/shared";
 import { registerEditorUndoRedo } from "../../lib/editMenuBridge";
 import type {
@@ -320,9 +320,26 @@ export function useUndoRedo(opts: {
    *  visually reverting it — which IS the undo the user asked for, so
    *  the stack must not also pop. Return false to proceed normally. */
   onBeforeHistory?: (() => Promise<boolean>) | undefined;
+  /** A live draft or released write also owns history admission when
+   * the stacks are empty. Keep the Edit-menu bridge in the editor until
+   * reconciliation has cancelled or recorded that work. */
+  hasPendingHistory?: (() => boolean) | undefined;
 }): UseUndoRedoResult {
-  const [past, setPast] = useState<EditOp[]>([]);
-  const [future, setFuture] = useState<EditOp[]>([]);
+  const [past, setPastState] = useState<EditOp[]>([]);
+  const [future, setFutureState] = useState<EditOp[]>([]);
+  // History reconciliation may await a released gesture's persistence.
+  // Its recorder must publish synchronously, before the next React paint,
+  // so the resumed history request chooses the newly recorded entry.
+  const pastRef = useRef(past);
+  const futureRef = useRef(future);
+  const setPast = useCallback((update: SetStateAction<EditOp[]>) => {
+    pastRef.current = typeof update === "function" ? update(pastRef.current) : update;
+    setPastState(pastRef.current);
+  }, []);
+  const setFuture = useCallback((update: SetStateAction<EditOp[]>) => {
+    futureRef.current = typeof update === "function" ? update(futureRef.current) : update;
+    setFutureState(futureRef.current);
+  }, []);
   // Stash the dispatchEdit in a ref so the undo/redo callbacks don't
   // re-create on every render (it changes identity whenever the model
   // refetches, which is every layer write).
@@ -330,11 +347,18 @@ export function useUndoRedo(opts: {
   dispatchEditRef.current = opts.dispatchEdit;
   const onBeforeHistoryRef = useRef(opts.onBeforeHistory);
   onBeforeHistoryRef.current = opts.onBeforeHistory;
+  const hasPendingHistoryRef = useRef(opts.hasPendingHistory);
+  hasPendingHistoryRef.current = opts.hasPendingHistory;
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   // Internal ref used to suppress recording when WE are the ones
   // re-issuing an op via undo/redo. If the caller passed an
   // `applyingRef`, we expose ours through that one too — but the
   // canonical source of truth lives here.
-  const applying = useRef(false);
+  const operationRef = useRef<"idle" | "reconciling" | "applying">("idle");
 
   // Coalescing state — refs so it doesn't trigger renders.
   //
@@ -358,26 +382,8 @@ export function useUndoRedo(opts: {
     timestamp: number;
   } | null>(null);
 
-  const wrapApplying = useCallback(
-    async (fn: () => Promise<void>): Promise<void> => {
-      applying.current = true;
-      if (opts.applyingRef !== undefined) {
-        (opts.applyingRef as React.RefObject<boolean>).current = true;
-      }
-      try {
-        await fn();
-      } finally {
-        applying.current = false;
-        if (opts.applyingRef !== undefined) {
-          (opts.applyingRef as React.RefObject<boolean>).current = false;
-        }
-      }
-    },
-    [opts.applyingRef]
-  );
-
   const push = useCallback((op: EditOp, recordOpts?: RecordOptions) => {
-    if (applying.current) return;
+    if (operationRef.current === "applying") return;
     const opKind = recordOpts?.opKind;
     const layerId = recordOpts?.layerId;
     const now = typeof performance !== "undefined" ? performance.now() : Date.now();
@@ -637,7 +643,12 @@ export function useUndoRedo(opts: {
   // future op = inverse of what undo just did).
   const applyInverse = useCallback(
     async (op: EditOp, direction: "undo" | "redo"): Promise<void> => {
-      const dispatchEdit = dispatchEditRef.current;
+      const dispatch = dispatchEditRef.current;
+      const dispatchEdit: UndoRedoDispatchEdit = async (edit) => {
+        const result = await dispatch(edit);
+        if (!result.ok) throw new Error(`Editor history ${direction} failed: ${result.error.code}`);
+        return result;
+      };
       // What "do" means depends on direction:
       //   undo: apply the inverse of `op`
       //   redo: re-apply `op`
@@ -815,43 +826,43 @@ export function useUndoRedo(opts: {
     []
   );
 
-  const undo = useCallback(async () => {
-    // Deferred-state reconciliation: a pending nudge burst is not on
-    // the stack yet — cancelling it (reverting the on-screen movement)
-    // IS the undo the user asked for, so consume the keystroke.
-    if ((await onBeforeHistoryRef.current?.()) === true) return;
-    const op = past[past.length - 1];
-    if (op === undefined) return;
-    await wrapApplying(async () => {
-      await applyInverse(op, "undo");
-    });
-    setPast((prev) => prev.slice(0, -1));
-    setFuture((prev) => [...prev, op]);
-    // After an undo, drop the grace window — a fresh edit shouldn't
-    // be coalesced into an entry that's no longer on the past stack.
-    // LOAD-BEARING for an OPEN bracket too, not just the grace
-    // window: push() derives the bracket's armed state from this ref,
-    // so clearing it here is what stops the next matching push from
-    // folding into whatever entry this pop exposed. A ⌘Z can land
-    // mid-bracket — `deleteSelected` awaits an IPC round-trip per
-    // selected row with the bracket held open.
-    lastCoalesceRef.current = null;
-  }, [past, applyInverse, wrapApplying]);
+  const replay = useCallback(async (direction: "undo" | "redo") => {
+    // Own admission BEFORE reconciliation yields: two key/menu requests
+    // must not replay the same entry or release each other's applying gate.
+    if (!mountedRef.current || operationRef.current !== "idle") return;
+    operationRef.current = "reconciling";
+    try {
+      if ((await onBeforeHistoryRef.current?.()) === true) return;
+      if (!mountedRef.current) return;
+      const source = direction === "undo" ? pastRef.current : futureRef.current;
+      const op = source[source.length - 1];
+      if (op === undefined) return;
+      operationRef.current = "applying";
+      if (opts.applyingRef !== undefined) opts.applyingRef.current = true;
+      await applyInverse(op, direction);
+      if (direction === "undo") {
+        setPast((prev) => prev.slice(0, -1));
+        setFuture((prev) => [...prev, op]);
+      } else {
+        setFuture((prev) => prev.slice(0, -1));
+        setPast((prev) => [...prev, op]);
+      }
+      // Disarm both the grace window and an open bracket. A later push
+      // may not coalesce into the entry exposed by this replay.
+      lastCoalesceRef.current = null;
+    } catch (error) {
+      // A rejected dispatch leaves the entry on its original stack so the
+      // operator can retry. Multi-item replays stop at the first failure.
+      // eslint-disable-next-line no-console
+      console.error("Editor history replay failed", error);
+    } finally {
+      if (opts.applyingRef !== undefined) opts.applyingRef.current = false;
+      operationRef.current = "idle";
+    }
+  }, [applyInverse, opts.applyingRef, setPast, setFuture]);
 
-  const redo = useCallback(async () => {
-    if ((await onBeforeHistoryRef.current?.()) === true) return;
-    const op = future[future.length - 1];
-    if (op === undefined) return;
-    await wrapApplying(async () => {
-      await applyInverse(op, "redo");
-    });
-    setFuture((prev) => prev.slice(0, -1));
-    setPast((prev) => [...prev, op]);
-    // Same reasoning as undo() above: this also disarms an open
-    // bracket, so a later matching push can't coalesce into the entry
-    // this redo just pushed.
-    lastCoalesceRef.current = null;
-  }, [future, applyInverse, wrapApplying]);
+  const undo = useCallback(() => replay("undo"), [replay]);
+  const redo = useCallback(() => replay("redo"), [replay]);
 
   // Register this stack with the app-wide Edit-menu bridge
   // (lib/editMenuBridge.ts). The bridge owns BOTH the keyboard shortcuts
@@ -866,10 +877,6 @@ export function useUndoRedo(opts: {
   // single registration sees live values — the bridge delegates to the
   // capture-level fallback (restore last-deleted snap) the moment this stack
   // runs dry, without needing to re-register on every push/pop.
-  const canUndoRef = useRef(false);
-  const canRedoRef = useRef(false);
-  canUndoRef.current = past.length > 0;
-  canRedoRef.current = future.length > 0;
   useEffect(() => {
     return registerEditorUndoRedo({
       undo: () => {
@@ -878,8 +885,8 @@ export function useUndoRedo(opts: {
       redo: () => {
         void redo();
       },
-      canUndo: () => canUndoRef.current,
-      canRedo: () => canRedoRef.current
+      canUndo: () => operationRef.current !== "idle" || pastRef.current.length > 0 || (hasPendingHistoryRef.current?.() ?? false),
+      canRedo: () => operationRef.current !== "idle" || futureRef.current.length > 0 || (hasPendingHistoryRef.current?.() ?? false)
     });
   }, [undo, redo]);
 

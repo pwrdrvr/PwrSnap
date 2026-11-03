@@ -150,19 +150,24 @@ export async function prepareEnrichmentVideoFrames(
   await mkdir(tempParent, { recursive: true });
   const workDir = await mkdtemp(join(tempParent, "pwrsnap-ai-video-"));
   const samples = getVideoFrameSamples(options.durationSec);
+  const abort = new AbortController();
+  const signal = options.abortSignal === undefined
+    ? abort.signal
+    : AbortSignal.any([abort.signal, options.abortSignal]);
+  let nextSample = 0;
+  let failure: { error: unknown } | undefined;
 
   try {
     const frames: PreparedEnrichmentVideoFrames["frames"] = [];
-    for (const [index, sample] of samples.entries()) {
+    const prepareSample = async (index: number): Promise<void> => {
+      const sample = samples[index]!;
       const outputPath = join(workDir, `frame-${index + 1}.jpg`);
       await extractVideoFrame(
         ffmpeg,
         sourcePath,
         outputPath,
         sample.timestampSec,
-        options.abortSignal === undefined
-          ? { maxEdgePx, quality }
-          : { maxEdgePx, quality, abortSignal: options.abortSignal }
+        { maxEdgePx, quality, abortSignal: signal }
       );
       const outputMetadata = await sharp(outputPath).metadata();
       const outputStat = await stat(outputPath);
@@ -171,7 +176,7 @@ export async function prepareEnrichmentVideoFrames(
           `prepared enrichment video frame exceeds ${maxBytes} byte limit (${outputStat.size})`
         );
       }
-      frames.push({
+      frames[index] = {
         ...sample,
         path: outputPath,
         sourceWidth: options.sourceWidthPx ?? null,
@@ -198,8 +203,25 @@ export async function prepareEnrichmentVideoFrames(
         cleanup: async () => {
           await rm(workDir, { force: true, recursive: true });
         }
-      });
-    }
+      };
+    };
+    // Two ffmpeg processes per admitted enrichment, never one per capture in
+    // the queue. Drain both workers before scratch cleanup: SIGTERM only asks
+    // the child to stop and it may still hold or write its output file.
+    const worker = async (): Promise<void> => {
+      while (!signal.aborted && nextSample < samples.length) {
+        const index = nextSample++;
+        try {
+          await prepareSample(index);
+        } catch (error) {
+          failure ??= { error };
+          abort.abort();
+        }
+      }
+    };
+    await Promise.all([worker(), worker()]);
+    if (failure !== undefined) throw failure.error;
+    throwIfAborted(signal);
 
     return {
       frames,
@@ -260,6 +282,7 @@ function runFfmpeg(ffmpeg: string, args: string[], abortSignal?: AbortSignal): P
     let settled = false;
     const child = spawn(ffmpeg, args, { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
+    let terminalError: Error | undefined;
 
     const settle = (error?: Error): void => {
       if (settled) return;
@@ -270,22 +293,23 @@ function runFfmpeg(ffmpeg: string, args: string[], abortSignal?: AbortSignal): P
     };
 
     const abortHandler = (): void => {
+      terminalError ??= new DOMException("video frame extraction aborted", "AbortError");
       try {
         child.kill("SIGTERM");
       } catch {
         /* process may already have exited */
       }
-      settle(new DOMException("video frame extraction aborted", "AbortError"));
     };
 
     abortSignal?.addEventListener("abort", abortHandler, { once: true });
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf8");
     });
-    child.on("error", (error) => settle(error));
-    child.on("exit", (code) => {
+    child.on("error", (error) => { terminalError ??= error; });
+    child.on("close", (code) => {
       if (settled) return;
-      if (code === 0) settle();
+      if (terminalError !== undefined) settle(terminalError);
+      else if (code === 0) settle();
       else settle(new Error(`ffmpeg exited ${code}: ${stderr.slice(-2000)}`));
     });
 

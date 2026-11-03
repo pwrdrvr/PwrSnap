@@ -824,6 +824,8 @@ class WindowsFfmpegRecorderService extends AttemptRecorderService {
       captureCursor: options.captureCursor, cameraSync: options.capabilities.camera !== undefined
     });
     await this.countdown(attempt);
+    // A starting-state observer can cancel before this continuation resumes.
+    this.assertStarting(attempt);
     log.info("starting Windows ffmpeg recorder", {
       ffmpeg, captureRect, outputPath: attempt.outputPath,
       captureCursor: capturePlan.effectiveCaptureCursor

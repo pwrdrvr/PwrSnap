@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => {
      *  reaches the HUD in display-local coords. */
     stateLogFull: [] as Array<Record<string, unknown>>,
     currentState: { phase: "idle" } as Record<string, unknown>,
+    stateObserver: null as ((next: Record<string, unknown>) => void) | null,
     infoLogs: [] as Array<{
       message: string;
       context: Record<string, unknown> | undefined;
@@ -172,6 +173,7 @@ vi.mock("../recording-state", async () => {
       mocks.currentState = next;
       mocks.stateLog.push({ phase: next.phase as string });
       mocks.stateLogFull.push(next);
+      mocks.stateObserver?.(next);
     },
     getRecordingState: () => mocks.currentState,
     isRecordingActive: () =>
@@ -283,6 +285,7 @@ beforeEach(() => {
   mocks.stateLog.length = 0;
   mocks.stateLogFull.length = 0;
   mocks.currentState = { phase: "idle" };
+  mocks.stateObserver = null;
   mocks.infoLogs.length = 0;
   mocks.pendingTimeouts.length = 0;
   mocks.liveWindows.length = 0;
@@ -1778,6 +1781,51 @@ describe("Windows FFmpeg recorder", () => {
     await vi.advanceTimersByTimeAsync(0);
     await cancelPromise;
   }
+
+  test.each([
+    { countdownSeconds: 1, delivery: "state observer" },
+    { countdownSeconds: 1, delivery: "queued microtask" },
+    { countdownSeconds: 0, delivery: "state observer" },
+    { countdownSeconds: 0, delivery: "queued microtask" }
+  ])("cancel at the Windows starting boundary with $countdownSeconds seconds via $delivery cannot spawn a retired attempt", async ({ countdownSeconds, delivery }) => {
+    const service = await loadWindowsService();
+    let cancelDone: Promise<void> | undefined;
+    mocks.stateObserver = (next) => {
+      if (next.phase !== "starting") return;
+      mocks.stateObserver = null;
+      if (delivery === "queued microtask") {
+        queueMicrotask(() => { cancelDone = service.cancel(); });
+      } else {
+        cancelDone = service.cancel();
+      }
+    };
+    const start = service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds })
+      .catch((error: Error) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    if (countdownSeconds > 0) {
+      expect(mocks.currentState.phase).toBe("countdown");
+      await vi.advanceTimersByTimeAsync(countdownSeconds * 1_000);
+    }
+    expect(cancelDone).toBeDefined();
+    await cancelDone;
+    expect(await start).toMatchObject({ message: "cancelled" });
+    expect(mocks.currentState.phase).toBe("idle");
+    expect(service.isActive()).toBe(false);
+    // Count live children separately: spawning after cleanup's kill step can
+    // leave the service idle with an untracked FFmpeg process still capturing.
+    expect(mocks.spawnedChildren.filter(child => !child.killCalled)).toHaveLength(0);
+    expect(mocks.spawnCalls).toHaveLength(0);
+    expect(mocks.removedRecordingDirs).toEqual(["/tmp/pwrsnap-recording-fake"]);
+    const phasesAfterCancel = mocks.stateLog.length;
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(mocks.stateLog).toHaveLength(phasesAfterCancel);
+
+    // The cancelled attempt must also leave admission available for a take.
+    await service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+    expect(mocks.spawnedChildren).toHaveLength(1);
+    expect(mocks.spawnedChildren[0]!.killCalled).toBe(false);
+    await cancelAndExit(service, mocks.spawnedChildren[0]!);
+  });
 
   test("restart keeps the selected camera and a later camera-off take stays off", async () => {
     const service = await loadWindowsService();

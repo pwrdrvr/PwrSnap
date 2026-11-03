@@ -1,13 +1,14 @@
 // Real exporter, presenter preparation, admission gates and process bridge.
 // Only the camera renderer and FFmpeg are faked; staging/publishing/cleanup
 // use real files. Isolated module registries model the two process owners.
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { Writable } from "node:stream";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest";
-import { DEFAULT_AVATAR_STYLE, type CaptureRecord, type CommandName } from "@pwrsnap/shared";
+import { DEFAULT_AVATAR_STYLE, type CaptureRecord, type CommandName, type VideoExportResult } from "@pwrsnap/shared";
 import { BridgeEndpoint } from "../../process-bridge/endpoint";
 import { inMemoryChannelPair } from "../../process-bridge/channel";
 import { peerOwnsCommand } from "../../process-split/command-routing";
@@ -24,6 +25,7 @@ const state = vi.hoisted(() => ({
   record: null as CaptureRecord | null,
   workers: [] as Array<{ closed: boolean; frame: ReturnType<typeof deferred<string>> }>,
   frameTimes: [] as number[],
+  legacyExport: null as { key: string; result: VideoExportResult } | null,
   spawns: [] as string[][]
 }));
 
@@ -38,7 +40,7 @@ vi.mock("../../persistence/paths", () => ({
   getLegacyCacheRoot: () => join(state.root, "legacy-cache")
 }));
 vi.mock("../../persistence/captures-repo", () => ({ getCaptureById: () => state.record }));
-vi.mock("../../persistence/video-repo", () => ({ lookupExport: () => null, recordExport: vi.fn() }));
+vi.mock("../../persistence/video-repo", () => ({ lookupExport: (req: { segmentsKey: string }) => req.segmentsKey === state.legacyExport?.key ? state.legacyExport.result : null, recordExport: vi.fn() }));
 vi.mock("../../persistence/db", () => ({ getDb: () => ({ prepare: () => ({ all: () => [] }) }) }));
 vi.mock("../../persistence/pending-source-store", () => ({ deletePendingSourcesForCapture: async () => undefined }));
 vi.mock("../../recording/recording-service", () => ({ getRecordingService: vi.fn() }));
@@ -129,6 +131,7 @@ beforeEach(async () => {
   state.workers.length = 0;
   state.spawns.length = 0;
   state.frameTimes.length = 0;
+  state.legacyExport = null;
   state.record = {
     id: "presenter-test", kind: "video", legacy_src_path: join(state.root, "screen.mp4"),
     sha256: "a".repeat(64), width_px: 640, height_px: 480, deleted_at: null,
@@ -303,10 +306,10 @@ describe("presenter export preparation bounds", () => {
   });
 
   test.each([
-    { camera: -0.4, sync: -0.6, frames: 45 },
-    { camera: 0.4, sync: 0.6, frames: 15 },
-    { camera: -0.4, sync: 0.6, frames: 27 },
-    { camera: 0.4, sync: -0.6, frames: 33 }
+    { camera: -0.4, sync: -0.6, frames: 46 },
+    { camera: 0.4, sync: 0.6, frames: 16 },
+    { camera: -0.4, sync: 0.6, frames: 28 },
+    { camera: 0.4, sync: -0.6, frames: 34 }
   ])("maps the end through camera $camera and style $sync offsets", async ({ camera, sync, frames }) => {
     const record = longTake();
     record.video!.camera!.offsetSec = camera;
@@ -325,7 +328,7 @@ describe("presenter export preparation bounds", () => {
     const pending = rangeExport(record, 0, 2);
     await releaseFrames();
     await pending;
-    expect(state.frameTimes).toHaveLength(45); // piece's effective offset -1 s
+    expect(state.frameTimes).toHaveLength(46); // piece's effective offset -1 s
     expect(composition().join(" ")).toContain("trim=start=1.000000");
   });
 
@@ -352,14 +355,39 @@ describe("presenter export preparation bounds", () => {
     });
     await releaseFrames();
     expect((await pending).durationSec).toBe(2);
-    expect(state.frameTimes).toHaveLength(120);
+    expect(state.frameTimes).toHaveLength(121);
     expect(state.frameTimes[0]).toBe(0);
-    expect(state.frameTimes.at(-1)).toBe(119 / 15);
+    expect(state.frameTimes.at(-1)).toBe(120 / 15);
     const args = composition();
     expect(args[args.indexOf("-t") + 1]).toBe("8");
     const final = state.spawns.at(-1)!;
     expect(final.join(" ")).toContain("trim=start=2.000:end=3.000");
     expect(final.join(" ")).toContain("trim=start=7.000:end=8.000");
+  });
+
+  test("old prefix compositions and final exports are not accepted after the boundary/audio fix", async () => {
+    const record = longTake();
+    // A prior pipeline fixture: its key omitted the boundary revision.
+    const oldKey = createHash("sha256").update(JSON.stringify([
+      "mediapipe-landscape-490e9ea7-v1", record.sha256, record.video!.camera,
+      record.video!.avatar, undefined, { sourceEndSec: 2 }
+    ])).digest("hex").slice(0, 24);
+    const directory = join(state.root, "cache", "video", record.id);
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, `avatar-${oldKey}.mp4`), "old truncated prefix");
+    const stale = join(state.root, "old-export.gif");
+    await writeFile(stale, "old missing-presenter export");
+    state.legacyExport = {
+      key: `:avatar:${agentAvatar.avatarCacheKey(record)}`,
+      result: { path: stale, byteSize: 29, durationSec: 2, widthPx: 640, heightPx: 480, fromCache: true }
+    };
+    const pending = rangeExport(record, 0, 2, "gif");
+    await releaseFrames();
+    const result = await pending;
+    expect(result.path).not.toBe(stale);
+    expect(result.fromCache).toBe(false);
+    expect(state.frameTimes).toHaveLength(31);
   });
 
   test("a prefix cannot satisfy a later horizon or the full-take Sizzle consumer", async () => {
@@ -372,7 +400,7 @@ describe("presenter export preparation bounds", () => {
     state.workers[1]!.frame.resolve("cG5n");
     const longerPath = await longer;
     expect(longerPath).not.toBe(shortPath);
-    expect(state.frameTimes).toHaveLength(30 + 60);
+    expect(state.frameTimes).toHaveLength(31 + 61);
     // Reuse a completed preparation of the same horizon; no new worker/spawn.
     const spawns = state.spawns.length;
     expect(await agentAvatar.prepareAvatarVideo(record, undefined, undefined, undefined, 4)).toBe(longerPath);
@@ -381,7 +409,7 @@ describe("presenter export preparation bounds", () => {
     await vi.waitFor(() => expect(state.workers).toHaveLength(3));
     state.workers[2]!.frame.resolve("cG5n");
     expect(await scene).not.toBe(shortPath);
-    expect(state.frameTimes).toHaveLength(30 + 60 + 900);
+    expect(state.frameTimes).toHaveLength(31 + 61 + 900);
   });
 
   test("a warm full-take composition safely serves a shorter export without new preparation", async () => {
@@ -433,8 +461,8 @@ describe("presenter export preparation bounds", () => {
     await agentGate.withDerivedCacheCleanup("all", async () => undefined);
     const files = await readdir(join(state.root, "cache"), { recursive: true });
     expect(files.filter((name) => name.includes("partial"))).toEqual([]);
-    expect(files.filter((name) => name.endsWith("-frames30.mp4"))).toEqual([]);
-    expect(files.filter((name) => name.endsWith("-frames60.mp4"))).toHaveLength(1);
+    expect(files.filter((name) => name.endsWith("-frames31.mp4"))).toEqual([]);
+    expect(files.filter((name) => name.endsWith("-frames61.mp4"))).toHaveLength(1);
   });
 
   test("frame rejection drains preparation without publishing, then a retry prepares the same prefix", async () => {
@@ -450,18 +478,18 @@ describe("presenter export preparation bounds", () => {
     await vi.waitFor(() => expect(state.workers).toHaveLength(2));
     state.workers[1]!.frame.resolve("cG5n");
     expect((await retry).durationSec).toBe(2);
-    expect(state.frameTimes).toHaveLength(31); // one rejected call + the complete prefix
+    expect(state.frameTimes).toHaveLength(32); // one rejected call + the complete prefix
   });
 
   test.each(["mp4", "gif"] as const)("a 2-second %s trim omits the unused tail of a 60-second take", async (format) => {
     const pending = rangeExport(longTake(), 0, 2, format);
     await releaseFrames();
     await pending;
-    expect(state.frameTimes).toHaveLength(30);
-    expect(state.frameTimes.at(-1)).toBe(29 / 15);
+    expect(state.frameTimes).toHaveLength(31);
+    expect(state.frameTimes.at(-1)).toBe(30 / 15);
     const files = await readdir(join(state.root, "cache", "video", recordId()));
-    const manifest = files.find((name) => name.endsWith("-frames30.mp4.json"))!;
-    expect(JSON.parse(await readFile(join(state.root, "cache", "video", recordId(), manifest), "utf8"))).toMatchObject({ frameCount: 30, durationSec: 2, fps: 15 });
+    const manifest = files.find((name) => name.endsWith("-frames31.mp4.json"))!;
+    expect(JSON.parse(await readFile(join(state.root, "cache", "video", recordId(), manifest), "utf8"))).toMatchObject({ frameCount: 31, durationSec: 31 / 15, fps: 15 });
     const args = composition();
     expect(args[args.indexOf("-t") + 1]).toBe("2");
   });

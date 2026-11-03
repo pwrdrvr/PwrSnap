@@ -89,7 +89,7 @@ export function avatarCacheKey(
         canvas,
         // Keep existing full-take keys, including Sizzle consumers, stable.
         ...(sourceEndSec !== undefined && sourceEndSec < record.video!.durationSec
-          ? [{ sourceEndSec }]
+          ? [{ sourceEndSec, boundaryVersion: 2 }]
           : []),
       ]),
     )
@@ -146,11 +146,11 @@ async function prepareMask(
   record: CaptureRecord,
   directory: string,
   callerSignal: AbortSignal,
-  durationSec: number = record.video!.camera!.durationSec,
+  requestedFrames: number,
 ): Promise<string> {
   const camera = record.video!.camera!;
-  const frames = Math.max(1, Math.ceil(Math.min(durationSec, camera.durationSec) * FPS));
   const fullFrames = Math.max(1, Math.ceil(camera.durationSec * FPS));
+  const frames = Math.max(1, Math.min(requestedFrames, fullFrames));
   const suffix = frames < fullFrames ? `-frames${frames}` : "";
   const fullPath = join(directory, `avatar-mask-${MODEL_REVISION}-${camera.sha256.slice(0, 16)}.mp4`);
   const path = suffix === "" ? fullPath : fullPath.replace(/\.mp4$/, `${suffix}.mp4`);
@@ -394,13 +394,20 @@ export async function prepareAvatarVideo(
     await mkdir(directory, { recursive: true });
     const needsMask = shown.some((style) => style.background === "remove");
     const needsCamera = shown.some((style) => style.background !== "remove");
-    // A negative camera/sync offset needs camera pre-roll past the screen
-    // prefix end. Include every cut-out style's offset before capping by the
-    // original camera duration; frame timestamps always remain i/FPS.
-    const maskDurationSec = Math.max(...shown
+    // `trim` drops whole camera frames before setpts resets the clock. Use
+    // the same rounded offsets as the filter, then include a sample at or
+    // beyond the prefix end. Otherwise framesync's EOF policy can remove the
+    // presenter early on a faster screen stream. Never extend the camera's
+    // natural end: prepareMask caps this at the full source frame count.
+    const maskFrames = Math.max(...shown
       .filter((style) => style.background === "remove")
-      .map((style) => durationSec - camera.offsetSec - (style.syncOffsetSec ?? 0)));
-    const maskSource = needsMask ? await prepareMask(record, directory, signal, maskDurationSec) : null;
+      .map((style) => {
+        const offset = camera.offsetSec + (style.syncOffsetSec ?? 0);
+        const first = Math.ceil(Number(Math.max(0, -offset).toFixed(6)) * FPS);
+        const start = Number(Math.max(0, offset).toFixed(6));
+        return first + Math.ceil(Math.max(0, durationSec - start) * FPS) + 1;
+      }));
+    const maskSource = needsMask ? await prepareMask(record, directory, signal, maskFrames) : null;
     const cameraSource = needsCamera ? await resolveCameraSource(source, record.id) : null;
     if (needsCamera && !cameraSource) throw new Error("The original camera track is missing.");
     const inputs = [source, ...(maskSource ? [maskSource] : []), ...(cameraSource ? [cameraSource] : [])];

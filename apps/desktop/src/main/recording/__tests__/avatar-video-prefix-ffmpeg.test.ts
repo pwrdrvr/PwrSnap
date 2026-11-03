@@ -32,6 +32,7 @@ vi.mock("../camera-worker", () => ({ CameraWorker: class {
 } }));
 import { resolveFfmpegPath } from "../ffmpeg-resolver";
 import { exportVideoRange, GIF_PRESETS } from "../recording-exporter";
+import { prepareAvatarVideo } from "../avatar-video";
 import { probeAudioStreamCount } from "../recording-audio";
 import { withDerivedCacheCleanup } from "../../persistence/derived-cache-gate";
 const ffmpeg = resolveFfmpegPath();
@@ -81,9 +82,73 @@ describe.skipIf(ffmpeg === null)("presenter prefixes through real FFmpeg", () =>
       "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=4",
       "-map", "0:v", "-map", "1:a", "-map", "2:a", "-c:v", "mpeg4", "-c:a", "aac", join(state.root, "screen.mp4")
     ]);
+    run([
+      "-f", "lavfi", "-i", "color=c=blue:s=160x90:r=60:d=4",
+      "-itsoffset", "1", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=3",
+      "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=4",
+      "-map", "0:v", "-map", "1:a", "-map", "2:a", "-c:v", "mpeg4", "-c:a", "aac", join(state.root, "delayed-system.mp4")
+    ]);
   });
   afterAll(async () => {
     await withDerivedCacheCleanup("all", async () => { if (state.root) await rm(state.root, { recursive: true, force: true }); });
+  });
+
+  test.skipIf(process.platform !== "darwin" && process.platform !== "win32").each([
+    { cut: false, mic: false }, { cut: false, mic: true },
+    { cut: true, mic: false }, { cut: true, mic: true },
+    { cut: false, mic: true, system: true }, { cut: true, mic: true, system: true },
+    { cut: false, mic: false, system: false }, { cut: true, mic: false, system: false }
+  ])("delayed system track preserves audio selection (cuts=$cut, microphone=$mic, system=$system)", async ({ cut, mic, system }) => {
+    const capture = record(`late-system-${cut}-${mic}-${system}`, 0, 0);
+    capture.legacy_src_path = join(state.root, "delayed-system.mp4");
+    const result = await exportVideoRange({
+      record: capture, video: capture.video!, format: "mp4", preset: "high",
+      range: { start: 0, end: 0.5 },
+      spans: cut ? [{ start: 0, end: 0.2 }, { start: 0.3, end: 0.5 }] : undefined,
+      audio: { includeSystemAudio: system ?? !mic, includeMicrophone: mic }
+    });
+    const streams = await probeAudioStreamCount(result.path);
+    if (!mic && system === false) expect(streams).toBe(0);
+    if (mic) {
+      expect(streams, "the microphone remains track 1 of the original source").toBe(1);
+      expect(tone(result.path, 880)).toBeGreaterThan(0.02);
+    } else if (streams > 0) {
+      expect(tone(result.path, 880), "an excluded microphone must never replace the absent system packets").toBeLessThan(0.003);
+    }
+  });
+
+  test.each([
+    { camera: 0, sync: 0, end: 2 },
+    { camera: 0.017, sync: 0.013, end: 2 },
+    { camera: -0.017, sync: -0.013, end: 1.95 },
+    { camera: 0, sync: -1 / 15, end: 2 }
+  ])("cold prefix matches warm presenter coverage through end $end (camera=$camera, sync=$sync)", async ({ camera, sync, end }) => {
+    const capture = record(`boundary-${camera}-${sync}`, camera, sync);
+    capture.legacy_src_path = join(state.root, "delayed-system.mp4");
+    const cold = await prepareAvatarVideo(capture, undefined, undefined, undefined, end);
+    const full = await prepareAvatarVideo(capture); // completed full-take cache
+    const warm = await prepareAvatarVideo(capture, undefined, undefined, undefined, end - 0.001);
+    expect(warm).toBe(full);
+    const framesBefore = Math.floor(end * 60);
+    const coldFrames = decodedFrames(cold).slice(0, framesBefore);
+    const warmFrames = decodedFrames(warm).slice(0, framesBefore);
+    expect(coldFrames).toHaveLength(framesBefore);
+    const color = (frame: Buffer) => {
+      const pixel = [...frame.subarray((30 * 160 + 100) * 3, (30 * 160 + 100) * 3 + 3)];
+      return pixel.indexOf(Math.max(...pixel));
+    };
+    expect(coldFrames.map(color), "a cold prefix must not lose the presenter before its requested end").toEqual(warmFrames.map(color));
+    expectColor(coldFrames.at(-1)!, 1);
+  });
+
+  test("lookahead never extends a camera that naturally ends before the trim", async () => {
+    const capture = record("natural-camera-end", 0, 0);
+    capture.legacy_src_path = join(state.root, "delayed-system.mp4");
+    capture.video!.camera!.durationSec = 1;
+    state.times.length = 0;
+    const path = await prepareAvatarVideo(capture, undefined, undefined, undefined, 2);
+    expect(state.times).toHaveLength(15);
+    expectColor(decodedFrames(path).at(-1)!, 2); // screen, no frozen presenter
   });
 
   const formats = process.platform === "darwin" || process.platform === "win32" ? ["mp4", "gif"] as const : ["gif"] as const;
@@ -95,7 +160,7 @@ describe.skipIf(ffmpeg === null)("presenter prefixes through real FFmpeg", () =>
       const result = await exportVideoRange({ record: capture, video: capture.video!, format, preset: "high", range: { start: 0.5, end: 2.5 }, spans, audio: { includeSystemAudio: false, includeMicrophone: true } });
       const duration = cut ? 1 : 2;
       expect(result.durationSec).toBe(duration);
-      expect(state.times).toHaveLength(negative ? 53 : 23);
+      expect(state.times).toHaveLength(negative ? 54 : 24);
       const frames = decodedFrames(result.path);
       // Cut MP4s normalize to the recorder cap (60 fps); single ranges retain 20 fps.
       const fps = format === "gif" ? GIF_PRESETS.high.fps : cut ? 60 : 20;

@@ -178,7 +178,9 @@ function multiSpans(input: ExportInput): readonly VideoRange[] | null {
 export function exportSegmentsKey(input: Pick<ExportInput, "record" | "spans">): string {
   const spans = input.spans;
   const cuts = spans !== undefined && spans.length > 1 ? videoSpansKey(spans) : "";
-  return input.record.video?.camera ? `${cuts}:avatar:${avatarCacheKey(input.record)}` : cuts;
+  // Do not accept exports made from compacted prefix audio or masks without
+  // boundary lookahead, even when their range/style cache identities match.
+  return input.record.video?.camera ? `${cuts}:avatar:${avatarCacheKey(input.record)}:prefix-v2` : cuts;
 }
 
 /** Seconds of video the export produces. */
@@ -705,6 +707,7 @@ async function encodeAndRecord(
         await encodeMp4(
           ffmpeg,
           presenterSource,
+          input.record.legacy_src_path,
           input.video,
           input.range,
           input.audio,
@@ -865,6 +868,7 @@ export function buildGifEncodeArgs(
 async function encodeMp4(
   ffmpeg: string,
   src: string,
+  audioSrc: string,
   video: VideoCaptureMetadata,
   range: VideoRange,
   audio: VideoExportAudio,
@@ -887,13 +891,18 @@ async function encodeMp4(
     "-t",
     duration,
     "-i",
-    src
+    audioSrc
   ];
+  // Audio facts describe the immutable recording, not a presenter prefix.
+  // FFmpeg can omit an empty track in that prefix and renumber the rest.
+  // Keep original audio at input 0 for the shared selection/mix machinery.
+  const separateVideo = src !== audioSrc;
+  if (separateVideo) args.push("-ss", range.start.toFixed(3), "-t", duration, "-i", src);
 
   // Video track. All MP4 presets re-encode through the controlled
   // platform H.264 encoder with per-preset bitrate + GOP settings.
   // HIGH keeps source resolution by omitting the scale filter.
-  args.push("-map", "0:v:0");
+  args.push("-map", `${separateVideo ? 1 : 0}:v:0`);
   // Scale when the preset asks for a target width, then re-encode
   // through VideoToolbox (macOS) or Media Foundation (Windows). Do
   // not use libx264; the bundled ffmpeg is an LGPL build and this
@@ -917,7 +926,7 @@ async function encodeMp4(
     // afterwards would delete a microphone that merely sat at a different
     // index. Filter labels also cannot be optional, so a multi-input graph
     // must not name a stream the file does not have.
-    const available = await probeAudioStreamCount(src, signal);
+    const available = await probeAudioStreamCount(audioSrc, signal);
     streams = selectedRecordingAudioStreams(video, audio, available).filter(
       (index) => index < available
     );
@@ -997,6 +1006,8 @@ export function buildSegmentedGifEncodeArgs(
  */
 export function buildSegmentedMp4EncodeArgs(input: {
   src: string;
+  /** Original audio stays input 0 when `src` is a presenter rendition. */
+  audioSrc?: string;
   spans: readonly VideoRange[];
   audioStreams: readonly number[];
   scale: { widthPx: number; heightPx: number } | null;
@@ -1007,8 +1018,9 @@ export function buildSegmentedMp4EncodeArgs(input: {
   const n = spans.length;
   const last = spans[n - 1]!;
   const hasAudio = audioStreams.length > 0;
+  const separateVideo = input.audioSrc !== undefined && input.audioSrc !== input.src;
   const graph: string[] = [
-    `[0:v]fps=${SEGMENTED_MP4_FPS},split=${n}${splitLabels("vs", n)}`,
+    `[${separateVideo ? 1 : 0}:v]fps=${SEGMENTED_MP4_FPS},split=${n}${splitLabels("vs", n)}`,
     ...spans.map((span, i) => `[vs${i}]trim=${spanTrim(span)},setpts=PTS-STARTPTS[v${i}]`)
   ];
   if (hasAudio) {
@@ -1038,7 +1050,8 @@ export function buildSegmentedMp4EncodeArgs(input: {
     "-t",
     last.end.toFixed(3),
     "-i",
-    input.src,
+    input.audioSrc ?? input.src,
+    ...(separateVideo ? ["-t", last.end.toFixed(3), "-i", input.src] : []),
     "-filter_complex",
     graph.join(";"),
     "-map",
@@ -1077,11 +1090,12 @@ async function encodeSegmented(
     });
     return;
   }
+  const audioSrc = input.record.legacy_src_path!;
   let streams = selectedRecordingAudioStreams(input.video, input.audio);
   if (streams.length > 0) {
     // Same reconciliation as the single-range path: a graph cannot name
     // an audio stream the file does not have.
-    const available = await probeAudioStreamCount(src, signal);
+    const available = await probeAudioStreamCount(audioSrc, signal);
     streams = selectedRecordingAudioStreams(input.video, input.audio, available).filter(
       (index) => index < available
     );
@@ -1092,6 +1106,7 @@ async function encodeSegmented(
       : null;
   const args = buildSegmentedMp4EncodeArgs({
     src,
+    audioSrc,
     spans,
     audioStreams: streams,
     scale,

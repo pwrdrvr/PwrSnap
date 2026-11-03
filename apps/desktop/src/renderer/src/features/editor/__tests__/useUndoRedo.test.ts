@@ -1430,6 +1430,97 @@ describe("useUndoRedo partial replay retries", () => {
     expect(state.conflicts).toBe(0);
   });
 
+  test.each(["create", "replace-restore", "replace-remove"] as const)("a new edit preserves the acknowledged portion of a partial %s redo as undoable history", async (scenario) => {
+    const added = [node("a"), node("b")];
+    const removed = scenario === "create" ? [] : [node("p"), node("q")];
+    const c = node("c");
+    const state = persistence(added);
+    const current = mountProbe();
+    act(() => {
+      if (scenario === "create") recordPair(current.api!, "create", added);
+      else current.api!.recordReplace({
+        removed: removed.map((entry) => ({ row: { id: entry.id }, node: entry })),
+        added: added.map((entry) => ({ row: { id: entry.id }, node: entry }))
+      });
+    });
+    await act(async () => { await current.api!.undo(); });
+    state.failOnceAt = scenario === "replace-remove" ? `delete:${removed[1]!.id}` : `upsert:${added[1]!.id}`;
+    await act(async () => { await current.api!.redo(); });
+    const partial = new Set(state.live.keys());
+    await act(async () => {
+      await dispatchEditMock({ kind: "upsert", node: c });
+      current.api!.recordCreate({ id: c.id }, { node: c, opKind: "batch", layerId: "pair", mergeMode: "append" });
+    });
+    await act(async () => { await current.api!.undo(); });
+    expect(new Set(state.live.keys())).toEqual(partial);
+    await act(async () => { await current.api!.undo(); });
+    expect(new Set(state.live.keys())).toEqual(new Set(removed.map((entry) => entry.id)));
+    expect(current.api!.canUndo).toBe(false);
+    await act(async () => { await current.api!.redo(); });
+    expect(new Set(state.live.keys())).toEqual(partial);
+    await act(async () => { await current.api!.redo(); });
+    expect(new Set(state.live.keys())).toEqual(new Set([...partial, c.id]));
+    expect(current.api!.canRedo).toBe(false);
+    expect(state.conflicts).toBe(0);
+  });
+
+  test.each(["delete", "replace"] as const)("reverse replay cannot bypass a partial %s redo and invalidate its acknowledged cursor", async (kind) => {
+    const removed = [node("a"), node("b")];
+    const added = kind === "delete" ? [] : [node("c"), node("d")];
+    const state = persistence(added);
+    const current = mountProbe();
+    act(() => {
+      current.api!.recordCreate({ id: removed[0]!.id }, { node: removed[0] });
+      if (kind === "delete") recordPair(current.api!, "delete", removed);
+      else current.api!.recordReplace({
+        removed: removed.map((entry) => ({ row: { id: entry.id }, node: entry })),
+        added: added.map((entry) => ({ row: { id: entry.id }, node: entry }))
+      });
+    });
+    await act(async () => { await current.api!.undo(); });
+    state.failOnceAt = `delete:${removed[1]!.id}`;
+    await act(async () => { await current.api!.redo(); });
+    // Previously Undo reached the older create(A), whose subsequent redo
+    // restored A behind the retained delete(A) checkpoint. Retrying then
+    // skipped A and left it persisted outside the intended final state.
+    await act(async () => { await current.api!.undo(); });
+    const reversed = new Set(state.live.keys());
+    await act(async () => { await current.api!.redo(); });
+    await act(async () => { await current.api!.redo(); });
+    expect(new Set(state.live.keys())).toEqual(new Set(added.map((entry) => entry.id)));
+    expect(reversed).toEqual(new Set(removed.map((entry) => entry.id)));
+    expect(current.api!.canRedo).toBe(false);
+    expect(state.conflicts).toBe(0);
+    // The older entry remains behind both pieces of the interrupted batch.
+    await act(async () => { await current.api!.undo(); });
+    await act(async () => { await current.api!.undo(); });
+    await act(async () => { await current.api!.undo(); });
+    expect(new Set(state.live.keys())).toEqual(new Set([removed[1]!.id]));
+    expect(current.api!.canUndo).toBe(false);
+  });
+
+  test("reverse replay cannot bypass a partial undo and invalidate its acknowledged cursor", async () => {
+    const a = node("a");
+    const b = node("b");
+    const state = persistence([b]);
+    const current = mountProbe();
+    act(() => {
+      recordPair(current.api!, "create", [a, b]);
+      current.api!.recordDelete({ id: a.id }, { node: a });
+    });
+    await act(async () => { await current.api!.undo(); });
+    state.failOnceAt = `delete:${b.id}`;
+    await act(async () => { await current.api!.undo(); });
+    await act(async () => { await current.api!.redo(); });
+    const reversed = new Set(state.live.keys());
+    await act(async () => { await current.api!.undo(); });
+    await act(async () => { await current.api!.undo(); });
+    expect(new Set(state.live.keys())).toEqual(new Set());
+    expect(reversed).toEqual(new Set([a.id, b.id]));
+    expect(current.api!.canUndo).toBe(false);
+    expect(state.conflicts).toBe(0);
+  });
+
   test("an unacknowledged live-id conflict stays a failure on every retry", async () => {
     const a = node("a");
     const b = node("b");

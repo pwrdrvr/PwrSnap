@@ -53,6 +53,9 @@ let escapeShortcutDesired = false;
 let escapeShortcutSuspended = false;
 let unsubscribe: (() => void) | null = null;
 let disposing = false;
+/** Invalidates asynchronous native fallback work across disposal. The
+ * synchronous `disposing` flag alone cannot guard a dialog response. */
+let lifecycleGeneration = 0;
 let replacingFailedWindow = false;
 let failedWindowRecreateTimer: ReturnType<typeof setTimeout> | null = null;
 let failedSessionId: string | null = null;
@@ -60,7 +63,7 @@ let failedWindowCrashCount = 0;
 let failedRendererDisabledSessionId: string | null = null;
 let failedFallbackInFlight = false;
 let resizeChannelWired = false;
-let closeCancelPending = false;
+let closeCancelPending: BrowserWindow | null = null;
 let normalWindowRecreateTimer: ReturnType<typeof setTimeout> | null = null;
 let lastRecordingDisplayId: number | null = null;
 /**
@@ -114,9 +117,10 @@ async function showFailedWindowFallback(
 ): Promise<void> {
   if (disposing || failedFallbackInFlight) return;
   failedFallbackInFlight = true;
-  let fallbackDialogFailed = false;
+  const generation = lifecycleGeneration;
+  const ownsLifecycle = (): boolean => !disposing && generation === lifecycleGeneration;
   try {
-    while (!disposing) {
+    while (ownsLifecycle()) {
       const live = getRecordingState();
       if (live.phase !== "failed" || live.sessionId !== failure.sessionId) return;
       const { response } = await dialog.showMessageBox({
@@ -130,7 +134,7 @@ async function showFailedWindowFallback(
         cancelId: 1,
         noLink: true
       });
-      if (disposing) return;
+      if (!ownsLifecycle()) return;
       const stillLive = getRecordingState();
       if (stillLive.phase !== "failed" || stillLive.sessionId !== failure.sessionId) return;
       if (response === 0) {
@@ -142,13 +146,15 @@ async function showFailedWindowFallback(
         { sessionId: failure.sessionId },
         { principal: "ipc" }
       );
+      if (!ownsLifecycle()) return;
+      const afterDismiss = getRecordingState();
+      if (afterDismiss.phase !== "failed" || afterDismiss.sessionId !== failure.sessionId) return;
       if (dismissed.ok) {
         failedRendererDisabledSessionId = null;
         return;
       }
     }
   } catch (cause) {
-    fallbackDialogFailed = true;
     log.error("recording failure native fallback failed", {
       sessionId: failure.sessionId,
       message: cause instanceof Error ? cause.message : String(cause)
@@ -157,10 +163,9 @@ async function showFailedWindowFallback(
     failedFallbackInFlight = false;
     const live = getRecordingState();
     if (
-      !fallbackDialogFailed &&
       !disposing &&
       live.phase === "failed" &&
-      live.sessionId !== failure.sessionId &&
+      (live.sessionId !== failure.sessionId || generation !== lifecycleGeneration) &&
       failedRendererDisabledSessionId === live.sessionId
     ) {
       void showFailedWindowFallback(live);
@@ -210,7 +215,7 @@ function ensureWindow(): BrowserWindow {
   normalRendererReady = false;
   const createdWindow = window;
   window.on("close", (event) => {
-    if (disposing || replacingFailedWindow) return;
+    if (disposing || replacingFailedWindow || window !== createdWindow) return;
     const state = getRecordingState();
     if (state.phase === "idle" || state.phase === "ready") return;
     event.preventDefault();
@@ -224,12 +229,12 @@ function ensureWindow(): BrowserWindow {
       state.phase === "countdown" ||
       state.phase === "starting"
     ) {
-      if (closeCancelPending) return;
-      closeCancelPending = true;
+      if (closeCancelPending === createdWindow) return;
+      closeCancelPending = createdWindow;
       void bus
         .dispatch("recording:cancel", {}, { principal: "ipc" })
         .finally(() => {
-          closeCancelPending = false;
+          if (closeCancelPending === createdWindow) closeCancelPending = null;
         });
     }
     // Recording close cannot bypass the renderer's two-click destructive
@@ -242,8 +247,11 @@ function ensureWindow(): BrowserWindow {
   // `on`, not `once`: a crash-and-reload or a dev HMR reload fires this
   // again on the same window, and the flag has to come back with it.
   window.webContents.on("did-finish-load", () => {
-    if (createdWindow.isDestroyed()) return;
+    if (window !== createdWindow || createdWindow.isDestroyed()) return;
     normalRendererReady = true;
+  });
+  window.webContents.on("did-start-loading", () => {
+    if (window === createdWindow) normalRendererReady = false;
   });
   window.webContents.on("render-process-gone", () => {
     const state = getRecordingState();
@@ -685,6 +693,21 @@ export function requestRecordingDiscardConfirmation(
  * the broadcast pipeline on every transition, branches on phase.
  */
 export function applyRecordingStateToController(state: RecordingState): void {
+  if (isControllerPhase(state)) {
+    if (state.sessionId !== normalRecreateSessionId) {
+      clearNormalWindowRecreateTimer();
+      normalRecreateSessionId = state.sessionId;
+      normalRecreateAttempts = 0;
+    }
+    // State broadcasts must respect both the retry delay and the exhausted
+    // budget. Otherwise an elapsed-time update simply reopens the HUD.
+    if (normalWindowRecreateTimer !== null || normalRecreateAttempts > NORMAL_RECREATE_MAX_ATTEMPTS) {
+      if (state.phase === "recording" || state.phase === "stopping" || state.phase === "processing") {
+        disarmLeadInEscapeShortcut();
+      }
+      return;
+    }
+  }
   switch (state.phase) {
     case "preflight":
     case "countdown":
@@ -850,6 +873,8 @@ export function applyRecordingStateToController(state: RecordingState): void {
       clearFailedWindowRecreateTimer();
       clearNormalWindowRecreateTimer();
       resetFailedWindowRecovery();
+      normalRecreateSessionId = null;
+      normalRecreateAttempts = 0;
       disarmLeadInEscapeShortcut();
       lastRecordingDisplayId = null;
       if (window !== null && !window.isDestroyed()) {
@@ -878,6 +903,8 @@ export function installRecordingController(): void {
 }
 
 export function disposeRecordingController(): void {
+  lifecycleGeneration += 1;
+  closeCancelPending = null;
   unsubscribe?.();
   unsubscribe = null;
   installed = false;
@@ -886,6 +913,8 @@ export function disposeRecordingController(): void {
   clearNormalWindowRecreateTimer();
   lastRecordingDisplayId = null;
   resetFailedWindowRecovery();
+  normalRecreateSessionId = null;
+  normalRecreateAttempts = 0;
   disarmLeadInEscapeShortcut();
   disposing = true;
   try {

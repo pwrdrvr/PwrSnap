@@ -358,7 +358,9 @@ let resizeChannelWired = false;
 function wireFloatOverResizeChannel(): void {
   if (resizeChannelWired) return;
   resizeChannelWired = true;
-  ipcMain.on(FLOAT_OVER_RESIZE_CHANNEL, (_event, payload: unknown) => {
+  ipcMain.on(FLOAT_OVER_RESIZE_CHANNEL, (event, payload: unknown) => {
+    if (singleton === null || singleton.isDestroyed()) return;
+    if (event.sender !== singleton.webContents) return;
     if (
       payload === null ||
       typeof payload !== "object" ||
@@ -368,7 +370,6 @@ function wireFloatOverResizeChannel(): void {
     }
     const heightCss = (payload as { height: number }).height;
     if (!Number.isFinite(heightCss)) return;
-    if (singleton === null || singleton.isDestroyed()) return;
     const rawWidth = (payload as { width?: unknown }).width;
     const widthCss =
       typeof rawWidth === "number" && Number.isFinite(rawWidth) && rawWidth > 0
@@ -408,12 +409,13 @@ function wireFloatOverResizeChannel(): void {
     if (current[0] === widthDip && current[1] === clamped && layoutPending !== "toast") return;
     singleton.setContentSize(widthDip, clamped, false);
     setWindowShape(singleton, "toast");
-    if (layoutPending === "toast" && state.kind === "loaded") {
+    if (layoutPending === "toast" && (state.kind === "loaded" || state.kind === "idle")) {
       // Opened from the dock: the window was parked while it was still
       // dock-shaped. Now that it holds the toast, place and show it.
       layoutPending = null;
       reanchorOnCurrentDisplay(singleton);
       restoreOnScreen(singleton);
+      ensureFloatOverTopmost();
       return;
     }
     // Re-anchor only when the toast is logically on-screen. We can't
@@ -433,6 +435,21 @@ function wireFloatOverResizeChannel(): void {
       reanchorOnCurrentDisplay(singleton);
     }
   });
+}
+
+/** Content can advance to idle or loaded while the native window still
+ * has the dock's shape. Both transitions share the same layout barrier;
+ * only a toast measurement may release it. */
+function prepareToastWindow(window: BrowserWindow): void {
+  if (windowShape === "dock") {
+    layoutPending = "toast";
+    parkOffScreen(window);
+    anchorBottomRight(window);
+  } else {
+    layoutPending = null;
+    anchorBottomRight(window);
+    restoreOnScreen(window);
+  }
 }
 
 /**
@@ -910,37 +927,20 @@ export function setFloatOverState(event: FloatOverEvent): void {
     case "show-idle": {
       const window = getOrCreate();
       state = { kind: "idle" };
-      layoutPending = null;
       setDockContentProtection(window, false);
       // Anchor BEFORE restoring opacity — the window may currently be
       // parked at (PARK_X, PARK_Y) from a previous dismiss; moving it
       // first while still at opacity 0 avoids a one-frame flash.
-      anchorBottomRight(window);
       // Selector (screen-saver level) covers this window visually
       // through the IDLE phase; user doesn't see the empty placeholder.
-      restoreOnScreen(window);
+      prepareToastWindow(window);
       break;
     }
     case "show-loaded": {
       const window = getOrCreate();
       state = { kind: "loaded", captureId: event.captureId };
       setDockContentProtection(window, false);
-      if (windowShape === "dock") {
-        // Opened from the dock, or a take saved while the dock was
-        // parked for it: the window is still dock-shaped. Park it until
-        // the renderer posts the toast's layout, then place and show it
-        // (see the resize handler) — otherwise the dock's shape flashes
-        // in the corner for a frame.
-        layoutPending = "toast";
-        parkOffScreen(window);
-        anchorBottomRight(window);
-      } else {
-        layoutPending = null;
-        // Re-anchor in case the user dragged-display between idle and
-        // commit. (Cursor moved → bottom-right of the new display.)
-        anchorBottomRight(window);
-        restoreOnScreen(window);
-      }
+      prepareToastWindow(window);
       armCopyShortcuts(event.captureId);
       break;
     }
@@ -1202,6 +1202,9 @@ export function getFloatOverState(): FloatOverState {
 function reassertFloatOverTopmost(): boolean {
   if (process.platform !== "win32") return true;
   if (state.kind !== "loaded") return true;
+  // Content being loaded does not mean the native shape is ready to
+  // show. The matching layout acknowledgement starts recovery instead.
+  if (layoutPending !== null || !takingMouse) return true;
   if (singleton === null || singleton.isDestroyed()) return true;
   singleton.setAlwaysOnTop(true);
   singleton.showInactive();

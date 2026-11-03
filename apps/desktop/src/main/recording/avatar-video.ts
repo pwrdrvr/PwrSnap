@@ -75,6 +75,7 @@ export function avatarCacheKey(
   record: CaptureRecord,
   layers: PresenterLayers = presenterLayersFor(record),
   canvas?: AvatarCanvas,
+  sourceEndSec?: number,
 ): string {
   return createHash("sha256")
     .update(
@@ -86,6 +87,10 @@ export function avatarCacheKey(
         // so its cached composition is still found.
         layers.spans.length === 0 ? layers.base : layers,
         canvas,
+        // Keep existing full-take keys, including Sizzle consumers, stable.
+        ...(sourceEndSec !== undefined && sourceEndSec < record.video!.durationSec
+          ? [{ sourceEndSec }]
+          : []),
       ]),
     )
     .digest("hex")
@@ -141,18 +146,23 @@ async function prepareMask(
   record: CaptureRecord,
   directory: string,
   callerSignal: AbortSignal,
+  durationSec: number = record.video!.camera!.durationSec,
 ): Promise<string> {
   const camera = record.video!.camera!;
-  const path = join(
-    directory,
-    `avatar-mask-${MODEL_REVISION}-${camera.sha256.slice(0, 16)}.mp4`,
-  );
+  const frames = Math.max(1, Math.ceil(Math.min(durationSec, camera.durationSec) * FPS));
+  const fullFrames = Math.max(1, Math.ceil(camera.durationSec * FPS));
+  const suffix = frames < fullFrames ? `-frames${frames}` : "";
+  const fullPath = join(directory, `avatar-mask-${MODEL_REVISION}-${camera.sha256.slice(0, 16)}.mp4`);
+  const path = suffix === "" ? fullPath : fullPath.replace(/\.mp4$/, `${suffix}.mp4`);
   return runGatedCacheWrite(
     record.id,
-    `mask-${camera.sha256}-${MODEL_REVISION}`,
+    `mask-${camera.sha256}-${MODEL_REVISION}${suffix}`,
     async (signal) => {
       signal.throwIfAborted();
       if (await exists(path)) return path;
+      // A completed full mask has the same i/FPS timestamps. Prefixes may
+      // consume it, but never publish a shorter mask at the full pathname.
+      if (suffix !== "" && await exists(fullPath)) return fullPath;
       const worker = new CameraWorker();
       const staging = `${path}.partial.mp4`;
       const width = Math.min(640, Math.floor(camera.width / 2) * 2);
@@ -187,7 +197,6 @@ async function prepareMask(
           ],
           signal,
         );
-        const frames = Math.max(1, Math.ceil(camera.durationSec * FPS));
         for (let i = 0; i < frames; i++) {
           signal.throwIfAborted();
           const png = await worker.call<string>(
@@ -214,6 +223,8 @@ async function prepareMask(
             licenseId: "Apache-2.0",
             cameraSha256: camera.sha256,
             fps: FPS,
+            frameCount: frames,
+            durationSec: frames / FPS,
             width,
             height,
             format: "rgb-left-confidence-right",
@@ -342,12 +353,15 @@ export function presenterShapeFilter(style: AvatarStyle): string {
   return `,format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='${alpha}'`;
 }
 
-/** Compose in source time, before the existing trim/cut/speed machinery. */
+/** Compose in source time, before trim/cut/speed. A bounded prefix omits
+ *  unused tail work without seeking the shared camera decoder ahead or
+ *  changing any input timestamps. Omitted bounds retain full-take consumers. */
 export async function prepareAvatarVideo(
   record: CaptureRecord,
   override?: AvatarStyle,
   callerSignal?: AbortSignal,
   canvas?: AvatarCanvas,
+  sourceEndSec?: number,
 ): Promise<string> {
   if (getRuntimeProcessRole() === "library") {
     throw new Error("Presenter preparation must run in the video cache owner.");
@@ -360,21 +374,33 @@ export async function prepareAvatarVideo(
   const base = AvatarStyleSchema.parse(layers.base);
   const shown = [base, ...layers.spans.map((span) => span.style)].filter((style) => style.visible);
   if (!camera || shown.length === 0) return source;
+  const durationSec = Math.min(sourceEndSec ?? record.video!.durationSec, record.video!.durationSec);
+  if (!Number.isFinite(durationSec) || durationSec <= 0) throw new Error("Invalid presenter preparation end time.");
   // Nothing to draw when no visible presenter's camera overlaps the take.
   const overlaps = shown.some((style) => {
     const offset = camera.offsetSec + (style.syncOffsetSec ?? 0);
-    return offset + camera.durationSec > 0 && offset < record.video!.durationSec;
+    return offset + camera.durationSec > 0 && offset < durationSec;
   });
   if (!overlaps) return source;
-  const key = avatarCacheKey(record, layers, canvas);
+  const key = avatarCacheKey(record, layers, canvas, durationSec);
   return runGatedCacheWrite(record.id, `avatar-${key}`, async (signal) => {
     const directory = join(getCacheRoot(), "video", record.id);
     const path = join(directory, `avatar-${key}.mp4`);
     if (await exists(path)) return path;
+    if (durationSec < record.video!.durationSec) {
+      const fullPath = join(directory, `avatar-${avatarCacheKey(record, layers, canvas)}.mp4`);
+      if (await exists(fullPath)) return fullPath;
+    }
     await mkdir(directory, { recursive: true });
     const needsMask = shown.some((style) => style.background === "remove");
     const needsCamera = shown.some((style) => style.background !== "remove");
-    const maskSource = needsMask ? await prepareMask(record, directory, signal) : null;
+    // A negative camera/sync offset needs camera pre-roll past the screen
+    // prefix end. Include every cut-out style's offset before capping by the
+    // original camera duration; frame timestamps always remain i/FPS.
+    const maskDurationSec = Math.max(...shown
+      .filter((style) => style.background === "remove")
+      .map((style) => durationSec - camera.offsetSec - (style.syncOffsetSec ?? 0)));
+    const maskSource = needsMask ? await prepareMask(record, directory, signal, maskDurationSec) : null;
     const cameraSource = needsCamera ? await resolveCameraSource(source, record.id) : null;
     if (needsCamera && !cameraSource) throw new Error("The original camera track is missing.");
     const inputs = [source, ...(maskSource ? [maskSource] : []), ...(cameraSource ? [cameraSource] : [])];
@@ -407,7 +433,7 @@ export async function prepareAvatarVideo(
           "-b:v",
           "12M",
           "-t",
-          String(record.video!.durationSec),
+          String(durationSec),
           "-movflags",
           "+faststart",
           staging,

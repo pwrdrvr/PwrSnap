@@ -665,7 +665,7 @@ async function encodeAndRecord(
       `recording-exporter: capture ${input.record.id} has no legacy_src_path`
     );
   }
-  const presenterSource = await prepareAvatarVideo(input.record, undefined, signal);
+  const presenterSource = await prepareAvatarVideo(input.record, undefined, signal, undefined, input.range.end);
 
   const spans = multiSpans(input);
   const durationSec = exportDurationSec(input);

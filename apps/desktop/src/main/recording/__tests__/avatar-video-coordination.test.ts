@@ -23,6 +23,7 @@ const state = vi.hoisted(() => ({
   root: "",
   record: null as CaptureRecord | null,
   workers: [] as Array<{ closed: boolean; frame: ReturnType<typeof deferred<string>> }>,
+  frameTimes: [] as number[],
   spawns: [] as string[][]
 }));
 
@@ -52,7 +53,11 @@ vi.mock("../camera-worker", () => ({
     frame = deferred<string>();
     constructor() { state.workers.push(this); }
     async load() {}
-    async call(name: string) { return name === "frame" ? this.frame.promise : undefined; }
+    async call(name: string, time?: number) {
+      if (name !== "frame") return undefined;
+      state.frameTimes.push(time!);
+      return this.frame.promise;
+    }
     close() {
       this.closed = true;
       this.frame.reject(new DOMException("Camera worker closed", "AbortError"));
@@ -123,6 +128,7 @@ beforeEach(async () => {
   state.root = await mkdtemp(join(tmpdir(), "pwrsnap-avatar-coordination-"));
   state.workers.length = 0;
   state.spawns.length = 0;
+  state.frameTimes.length = 0;
   state.record = {
     id: "presenter-test", kind: "video", legacy_src_path: join(state.root, "screen.mp4"),
     sha256: "a".repeat(64), width_px: 640, height_px: 480, deleted_at: null,
@@ -257,5 +263,206 @@ describe("presenter cache process ownership", () => {
     expect(await agentBus.dispatch("video:prepareAvatar", { captureId: state.record!.id }, { principal: "ipc" })).toMatchObject({ ok: false, error: { code: "internal_command" } });
     expect(await agentBus.dispatch("video:prepareAvatar", { captureId: state.record!.id, canvas: { width: 0, height: 720 } }, { principal: "bridge" })).toMatchObject({ ok: false, error: { code: "invalid_canvas" } });
     expect(state.spawns).toEqual([]);
+  });
+});
+
+
+describe("presenter export preparation bounds", () => {
+  function longTake() {
+    const record = state.record!;
+    record.video!.durationSec = 60;
+    record.video!.defaultRange = { start: 0, end: 60 };
+    record.video!.segments = [{ start: 0, end: 60 }];
+    record.video!.camera!.durationSec = 60;
+    return record;
+  }
+  function rangeExport(record: CaptureRecord, start: number, end: number, format: "mp4" | "gif" = "mp4") {
+    return exportVideoRange({
+      record, video: record.video!, preset: "high", format, range: { start, end },
+      audio: { includeSystemAudio: false, includeMicrophone: false }
+    });
+  }
+  async function releaseFrames() {
+    await vi.waitFor(() => expect(state.workers).toHaveLength(1));
+    state.workers[0]!.frame.resolve("cG5n");
+  }
+  const recordId = () => state.record!.id;
+  function composition() {
+    return state.spawns.find((args) => args.includes("-filter_complex") && !args.includes("-progress"))!;
+  }
+
+  test("full-take fixture prepares 900 sequential frames and 60 seconds of composition", async () => {
+    const pending = rangeExport(longTake(), 0, 60);
+    await releaseFrames();
+    await pending;
+    expect(state.frameTimes).toHaveLength(900);
+    expect(state.frameTimes[0]).toBe(0);
+    expect(state.frameTimes.at(-1)).toBe(899 / 15);
+    const args = composition();
+    expect(args[args.indexOf("-t") + 1]).toBe("60");
+  });
+
+  test.each([
+    { camera: -0.4, sync: -0.6, frames: 45 },
+    { camera: 0.4, sync: 0.6, frames: 15 },
+    { camera: -0.4, sync: 0.6, frames: 27 },
+    { camera: 0.4, sync: -0.6, frames: 33 }
+  ])("maps the end through camera $camera and style $sync offsets", async ({ camera, sync, frames }) => {
+    const record = longTake();
+    record.video!.camera!.offsetSec = camera;
+    record.video!.avatar!.syncOffsetSec = sync;
+    const pending = rangeExport(record, 0, 2);
+    await releaseFrames();
+    await pending;
+    expect(state.frameTimes).toHaveLength(frames);
+    expect(state.frameTimes).toEqual(Array.from({ length: frames }, (_, i) => i / 15));
+  });
+
+  test("the prefix includes pre-roll required by a kept piece's presenter sync", async () => {
+    const record = longTake();
+    record.video!.camera!.offsetSec = 0.5;
+    record.video!.avatarSpans = [{ start: 0.5, end: 1.5, avatar: { ...DEFAULT_AVATAR_STYLE, syncOffsetSec: -1.5 } }];
+    const pending = rangeExport(record, 0, 2);
+    await releaseFrames();
+    await pending;
+    expect(state.frameTimes).toHaveLength(45); // piece's effective offset -1 s
+    expect(composition().join(" ")).toContain("trim=start=1.000000");
+  });
+
+  test("cleanup aborts and drains a prefix before deletion and rejects admission during cleanup", async () => {
+    const record = longTake();
+    const pending = rangeExport(record, 0, 2).catch((cause: unknown) => cause);
+    await vi.waitFor(() => expect(state.frameTimes).toHaveLength(1));
+    await agentGate.withDerivedCacheCleanup({ captureId: record.id }, async () => {
+      expect(state.workers[0]!.closed).toBe(true);
+      await expect(agentAvatar.prepareAvatarVideo(record, undefined, undefined, undefined, 2)).rejects.toMatchObject({ name: "AbortError" });
+      await rm(join(state.root, "cache", "video", record.id), { recursive: true, force: true });
+    });
+    expect(await pending).toMatchObject({ name: "AbortError" });
+    expect(await readdir(join(state.root, "cache", "video"))).toEqual([]);
+  });
+
+  test("a late trim preserves time-zero preparation, and cuts do not ripple preparation timestamps", async () => {
+    const record = longTake();
+    const spans = [{ start: 2, end: 3 }, { start: 7, end: 8 }];
+    const pending = exportVideoRange({
+      record, video: record.video!, preset: "high", format: "mp4",
+      range: { start: 2, end: 8 }, spans,
+      audio: { includeSystemAudio: false, includeMicrophone: false }
+    });
+    await releaseFrames();
+    expect((await pending).durationSec).toBe(2);
+    expect(state.frameTimes).toHaveLength(120);
+    expect(state.frameTimes[0]).toBe(0);
+    expect(state.frameTimes.at(-1)).toBe(119 / 15);
+    const args = composition();
+    expect(args[args.indexOf("-t") + 1]).toBe("8");
+    const final = state.spawns.at(-1)!;
+    expect(final.join(" ")).toContain("trim=start=2.000:end=3.000");
+    expect(final.join(" ")).toContain("trim=start=7.000:end=8.000");
+  });
+
+  test("a prefix cannot satisfy a later horizon or the full-take Sizzle consumer", async () => {
+    const record = longTake();
+    const short = agentAvatar.prepareAvatarVideo(record, undefined, undefined, undefined, 2);
+    await releaseFrames();
+    const shortPath = await short;
+    const longer = agentAvatar.prepareAvatarVideo(record, undefined, undefined, undefined, 4);
+    await vi.waitFor(() => expect(state.workers).toHaveLength(2));
+    state.workers[1]!.frame.resolve("cG5n");
+    const longerPath = await longer;
+    expect(longerPath).not.toBe(shortPath);
+    expect(state.frameTimes).toHaveLength(30 + 60);
+    // Reuse a completed preparation of the same horizon; no new worker/spawn.
+    const spawns = state.spawns.length;
+    expect(await agentAvatar.prepareAvatarVideo(record, undefined, undefined, undefined, 4)).toBe(longerPath);
+    expect(state.spawns).toHaveLength(spawns);
+    const scene = prepareSceneAvatar(record, undefined, undefined, { width: 640, height: 480 });
+    await vi.waitFor(() => expect(state.workers).toHaveLength(3));
+    state.workers[2]!.frame.resolve("cG5n");
+    expect(await scene).not.toBe(shortPath);
+    expect(state.frameTimes).toHaveLength(30 + 60 + 900);
+  });
+
+  test("a warm full-take composition safely serves a shorter export without new preparation", async () => {
+    const record = longTake();
+    const full = agentAvatar.prepareAvatarVideo(record);
+    await releaseFrames();
+    await full;
+    expect(state.frameTimes).toHaveLength(900);
+    const spawns = state.spawns.length;
+    const result = await rangeExport(record, 2, 4);
+    expect(result.durationSec).toBe(2);
+    expect(state.workers).toHaveLength(1);
+    expect(state.spawns).toHaveLength(spawns + 1); // the requested final encode only
+  });
+
+  test("a warm full mask serves a new placement's prefix without another segmentation pass", async () => {
+    const record = longTake();
+    const full = agentAvatar.prepareAvatarVideo(record);
+    await releaseFrames();
+    const fullPath = await full;
+    const spawns = state.spawns.length;
+    const prefix = await agentAvatar.prepareAvatarVideo(record, { ...DEFAULT_AVATAR_STYLE, x: 0.1 }, undefined, undefined, 2);
+    expect(prefix).not.toBe(fullPath);
+    expect(state.frameTimes).toHaveLength(900);
+    expect(state.workers).toHaveLength(1);
+    expect(state.spawns).toHaveLength(spawns + 1); // new composition only
+  });
+
+  test("a presenter that begins after the prefix skips preparation", async () => {
+    const record = longTake();
+    record.video!.camera!.offsetSec = 3;
+    const result = await rangeExport(record, 0, 2);
+    expect(result.durationSec).toBe(2);
+    expect(state.workers).toEqual([]);
+    expect(state.spawns).toHaveLength(1); // final encode only
+  });
+
+  test("concurrent different horizons do not adopt or cancel each other's prefix", async () => {
+    const record = longTake();
+    const controller = new AbortController();
+    const short = agentAvatar.prepareAvatarVideo(record, undefined, controller.signal, undefined, 2).catch((cause: unknown) => cause);
+    const long = agentAvatar.prepareAvatarVideo(record, undefined, undefined, undefined, 4);
+    await vi.waitFor(() => expect(state.workers).toHaveLength(2));
+    controller.abort();
+    expect(await short).toMatchObject({ name: "AbortError" });
+    await vi.waitFor(() => expect(state.workers.filter((worker) => !worker.closed)).toHaveLength(1));
+    state.workers.find((worker) => !worker.closed)!.frame.resolve("cG5n");
+    await long;
+    await agentGate.withDerivedCacheCleanup("all", async () => undefined);
+    const files = await readdir(join(state.root, "cache"), { recursive: true });
+    expect(files.filter((name) => name.includes("partial"))).toEqual([]);
+    expect(files.filter((name) => name.endsWith("-frames30.mp4"))).toEqual([]);
+    expect(files.filter((name) => name.endsWith("-frames60.mp4"))).toHaveLength(1);
+  });
+
+  test("frame rejection drains preparation without publishing, then a retry prepares the same prefix", async () => {
+    const record = longTake();
+    const pending = rangeExport(record, 0, 2).catch((cause: unknown) => cause);
+    await vi.waitFor(() => expect(state.frameTimes).toHaveLength(1));
+    state.workers[0]!.frame.reject(new Error("fixture decode failed"));
+    expect(await pending).toMatchObject({ message: "fixture decode failed" });
+    expect(state.workers[0]!.closed).toBe(true);
+    const files = await readdir(join(state.root, "cache"), { recursive: true });
+    expect(files.filter((name) => /avatar-|partial/.test(name))).toEqual([]);
+    const retry = rangeExport(record, 0, 2);
+    await vi.waitFor(() => expect(state.workers).toHaveLength(2));
+    state.workers[1]!.frame.resolve("cG5n");
+    expect((await retry).durationSec).toBe(2);
+    expect(state.frameTimes).toHaveLength(31); // one rejected call + the complete prefix
+  });
+
+  test.each(["mp4", "gif"] as const)("a 2-second %s trim omits the unused tail of a 60-second take", async (format) => {
+    const pending = rangeExport(longTake(), 0, 2, format);
+    await releaseFrames();
+    await pending;
+    expect(state.frameTimes).toHaveLength(30);
+    expect(state.frameTimes.at(-1)).toBe(29 / 15);
+    const files = await readdir(join(state.root, "cache", "video", recordId()));
+    const manifest = files.find((name) => name.endsWith("-frames30.mp4.json"))!;
+    expect(JSON.parse(await readFile(join(state.root, "cache", "video", recordId(), manifest), "utf8"))).toMatchObject({ frameCount: 30, durationSec: 2, fps: 15 });
+    const args = composition();
+    expect(args[args.indexOf("-t") + 1]).toBe("2");
   });
 });

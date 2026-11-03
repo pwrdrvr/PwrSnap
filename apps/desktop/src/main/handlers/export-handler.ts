@@ -17,9 +17,9 @@
 // encryption key is bound to the user's login keychain and isn't
 // portable. Document in the manifest.
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { copyFile, link, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, link, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { ok, err } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
@@ -34,12 +34,12 @@ export function registerExportHandler(): void {
   // library-handlers.ts. The bus throws on duplicate, so we
   // unregister first.
   bus.unregister("library:export");
-  bus.register("library:export", async (req) => {
+  bus.register("library:export", async (req, ctx) => {
     if (typeof req.destDir !== "string" || req.destDir.length === 0) {
       return err({ kind: "validation", code: "invalid_dest", message: "destDir required" });
     }
     try {
-      const result = await exportLibrary(req.destDir);
+      const result = await exportLibrary(req.destDir, ctx.signal);
       return ok(result);
     } catch (cause) {
       log.error("export failed", {
@@ -57,16 +57,22 @@ export function registerExportHandler(): void {
 }
 
 export async function exportLibrary(
-  destDir: string
+  destDir: string,
+  signal?: AbortSignal
 ): Promise<{ destDir: string; manifestPath: string }> {
+  signal?.throwIfAborted();
   await mkdir(destDir, { recursive: true });
+  // A re-export replaces the snapshot before transferring files. Its old
+  // completion marker must not describe a failed or cancelled new backup.
+  const manifestPath = join(destDir, "manifest.json");
+  await rm(manifestPath, { force: true });
+  signal?.throwIfAborted();
 
   // 1. VACUUM INTO — consistent snapshot of the DB.
   const dbDest = join(destDir, "pwrsnap.db");
   const db = getDb();
   // VACUUM INTO requires the destination not exist.
   if (existsSync(dbDest)) {
-    const { rm } = await import("node:fs/promises");
     await rm(dbDest, { force: true });
   }
   db.exec(`VACUUM INTO '${dbDest.replace(/'/g, "''")}'`);
@@ -83,9 +89,10 @@ export async function exportLibrary(
     files: number;
   }> = [];
   for (const capturesRoot of capturesRoots) {
+    signal?.throwIfAborted();
     const backupDirectory = capturesRoot.kind === "home" ? "captures-home" : "captures";
     const files = existsSync(capturesRoot.path)
-      ? await mirrorTree(capturesRoot.path, join(destDir, backupDirectory))
+      ? await mirrorTree(capturesRoot.path, join(destDir, backupDirectory), signal)
       : 0;
     captureFileCount += files;
     exportedCaptureRoots.push({
@@ -96,7 +103,7 @@ export async function exportLibrary(
     });
   }
   if (existsSync(cacheRoot)) {
-    cacheFileCount = await mirrorTree(cacheRoot, join(destDir, "render-cache"));
+    cacheFileCount = await mirrorTree(cacheRoot, join(destDir, "render-cache"), signal);
   }
 
   // 4. Manifest with sha256 of the snapshot DB.
@@ -115,8 +122,15 @@ export async function exportLibrary(
       "safeStorage-encrypted secrets (OAuth tokens etc.) are not exported — they're bound to the user's login keychain and won't decrypt on another machine. Reconnect destinations after restoring."
     ]
   };
-  const manifestPath = join(destDir, "manifest.json");
-  await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+  signal?.throwIfAborted();
+  const manifestTempPath = join(destDir, `.manifest-${randomUUID()}.tmp`);
+  try {
+    await writeFile(manifestTempPath, JSON.stringify(manifest, null, 2));
+    signal?.throwIfAborted();
+    await rename(manifestTempPath, manifestPath);
+  } finally {
+    await rm(manifestTempPath, { force: true });
+  }
 
   log.info("library exported", {
     destDir,
@@ -131,14 +145,55 @@ export async function exportLibrary(
  * possible (same volume) and falling back to copies cross-volume.
  * Returns the number of files written.
  */
-async function mirrorTree(src: string, dest: string): Promise<number> {
-  await mkdir(dest, { recursive: true });
+async function mirrorTree(src: string, dest: string, signal?: AbortSignal): Promise<number> {
+  const files = filesToMirror(src, dest, signal);
   let count = 0;
+  let failure: { cause: unknown } | undefined;
+  // Root and directory enumeration stays serial. Two file transfers plus
+  // at most one enumeration/mkdir leave a libuv thread available if Documents
+  // access is awaiting TCC consent. No promise is created per file in the tree.
+  const worker = async (): Promise<void> => {
+    try {
+      while (failure === undefined) {
+        signal?.throwIfAborted();
+        const next = await files.next();
+        if (next.done || failure !== undefined) return;
+        signal?.throwIfAborted();
+        try {
+          await link(next.value.srcPath, next.value.destPath);
+        } catch {
+          signal?.throwIfAborted();
+          await copyFile(next.value.srcPath, next.value.destPath);
+        }
+        count++;
+      }
+    } catch (cause) {
+      failure ??= { cause };
+    }
+  };
+  // A failed copy or cancellation stops admission, but already-started fs
+  // operations must settle before the caller observes failure or completion.
+  await Promise.all([worker(), worker()]);
+  await files.return(undefined);
+  if (failure !== undefined) throw failure.cause;
+  signal?.throwIfAborted();
+  return count;
+}
+
+async function* filesToMirror(
+  src: string,
+  dest: string,
+  signal?: AbortSignal
+): AsyncGenerator<{ srcPath: string; destPath: string }, void> {
+  signal?.throwIfAborted();
+  await mkdir(dest, { recursive: true });
   const stack: string[] = [src];
   while (stack.length > 0) {
+    signal?.throwIfAborted();
     const dir = stack.pop()!;
     const entries = await readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
+      signal?.throwIfAborted();
       const srcPath = join(dir, entry.name);
       const relPath = relative(src, srcPath);
       const destPath = join(dest, relPath);
@@ -148,13 +203,7 @@ async function mirrorTree(src: string, dest: string): Promise<number> {
         continue;
       }
       if (!entry.isFile()) continue;
-      try {
-        await link(srcPath, destPath);
-      } catch {
-        await copyFile(srcPath, destPath);
-      }
-      count += 1;
+      yield { srcPath, destPath };
     }
   }
-  return count;
 }

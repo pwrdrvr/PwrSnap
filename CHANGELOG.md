@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.2.3 - 2026-11-03
+
+This release improves capture responsiveness, reel editing, and update reliability.
+
+- Captures and Recordings - Improved responsiveness by preparing captures
+  and stopped recordings outside the shared storage queue, so unrelated
+  capture work does not have to wait for that preparation to finish.
+- Save As - Improved responsiveness by opening the destination picker while
+  the image renders, rather than waiting for rendering before showing it.
+- Reels - Fixed concurrent scene additions overwriting each other or
+  undoing edits and removals made while capture details were loading.
+- Windows Updates - Improved installation to run silently and relaunch
+  PwrSnap afterward, without walking through the setup wizard again.
+- App Reliability - Fixed stale Library and recording HUD recovery actions,
+  and kept repeated quit requests behind pending recording cleanup and saves.
+
 ## v1.2.2 - 2026-10-28
 
 This maintenance update improves automatic update downloads.

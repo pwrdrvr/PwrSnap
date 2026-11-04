@@ -1,11 +1,14 @@
 import type { BrowserWindow } from "electron";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import { ElectronQuitModel } from "../../__tests__/electron-quit-model";
 import {
   completeSizzleCloseRequest,
   installSizzleQuitBarrier,
   isSizzleQuitDeferred,
   markSizzleCloseRendererReady,
+  onSizzleCloseCancelled,
+  onSizzleQuitCancelled,
   wireSizzleCloseBarrier
 } from "../sizzle-close-barrier";
 
@@ -15,6 +18,7 @@ function makeWindow(id: number): {
   window: BrowserWindow;
   send: ReturnType<typeof vi.fn>;
   close: () => void;
+  destroy: () => void;
   lastCloseEvent: () => CloseEvent;
   isDestroyed: () => boolean;
   emitWebContents: (event: string) => void;
@@ -55,6 +59,10 @@ function makeWindow(id: number): {
     window: fake as unknown as BrowserWindow,
     send,
     close: fake.close,
+    destroy: () => {
+      destroyed = true;
+      for (const listener of listeners.get("closed") ?? []) listener(latestEvent);
+    },
     lastCloseEvent: () => latestEvent,
     isDestroyed: () => destroyed,
     emitWebContents: (event) => {
@@ -64,6 +72,34 @@ function makeWindow(id: number): {
 }
 
 describe("Sizzle close barrier", () => {
+  test("notifies close cancellation only for an accepted matching response and supports unsubscribe", () => {
+    const fake = makeWindow(44);
+    wireSizzleCloseBarrier(fake.window);
+    markSizzleCloseRendererReady(44);
+    const closeCancelled = vi.fn();
+    const quitCancelled = vi.fn();
+    const unsubscribeClose = onSizzleCloseCancelled(closeCancelled);
+    const unsubscribeQuit = onSizzleQuitCancelled(quitCancelled);
+    fake.close();
+    expect(closeCancelled).not.toHaveBeenCalled();
+    expect(completeSizzleCloseRequest(999, 1, "cancel")).toBe(false);
+    expect(completeSizzleCloseRequest(44, 0, "cancel")).toBe(false);
+    expect(closeCancelled).not.toHaveBeenCalled();
+    expect(completeSizzleCloseRequest(44, 1, "cancel")).toBe(true);
+    expect(completeSizzleCloseRequest(44, 1, "cancel")).toBe(false);
+    expect(closeCancelled).toHaveBeenCalledOnce();
+    // Native update quit closes windows before before-quit. An ordinary
+    // window cancellation must not become the system-shutdown quit signal.
+    expect(quitCancelled).not.toHaveBeenCalled();
+    unsubscribeClose();
+    unsubscribeQuit();
+    fake.close();
+    expect(completeSizzleCloseRequest(44, 2, "cancel")).toBe(true);
+    expect(closeCancelled).toHaveBeenCalledOnce();
+    fake.close();
+    expect(completeSizzleCloseRequest(44, 3, "close")).toBe(true);
+  });
+
   test("blocks native close until the matching renderer response closes or cancels", () => {
     const fake = makeWindow(41);
     wireSizzleCloseBarrier(fake.window);
@@ -120,7 +156,7 @@ describe("Sizzle close barrier", () => {
     expect(completeSizzleCloseRequest(42, 2, "close")).toBe(true);
   });
 
-  test("resumes app.quit after the deferred renderer save succeeds", () => {
+  test("resumes app.quit after the deferred renderer save succeeds", async () => {
     const fake = makeWindow(43);
     wireSizzleCloseBarrier(fake.window);
     markSizzleCloseRendererReady(43);
@@ -148,8 +184,131 @@ describe("Sizzle close barrier", () => {
     expect(fake.isDestroyed()).toBe(false);
 
     expect(completeSizzleCloseRequest(43, 1, "close")).toBe(true);
+    expect(app.quit).toHaveBeenCalledOnce();
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(app.quit).toHaveBeenCalledTimes(2);
     expect(isSizzleQuitDeferred()).toBe(false);
     expect(fake.isDestroyed()).toBe(true);
+  });
+});
+
+describe("Sizzle quit ownership", () => {
+  let barrier: typeof import("../sizzle-close-barrier");
+  beforeEach(async () => {
+    vi.resetModules();
+    barrier = await import("../sizzle-close-barrier");
+  });
+  afterEach(() => vi.useRealTimers());
+
+  test("releases a deferred quit when its window is destroyed before the save response", async () => {
+    vi.useFakeTimers();
+    const fake = makeWindow(44);
+    barrier.wireSizzleCloseBarrier(fake.window);
+    barrier.markSizzleCloseRendererReady(44);
+    let beforeQuit!: (event: CloseEvent) => void;
+    const app = {
+      on: vi.fn((_event: string, listener: typeof beforeQuit) => { beforeQuit = listener; }),
+      quit: vi.fn()
+    };
+    barrier.installSizzleQuitBarrier(app as unknown as Parameters<typeof installSizzleQuitBarrier>[0]);
+    beforeQuit({ preventDefault: vi.fn() });
+    expect(barrier.isSizzleQuitDeferred()).toBe(true);
+
+    fake.destroy();
+    expect(barrier.isSizzleQuitDeferred()).toBe(false);
+    expect(barrier.completeSizzleCloseRequest(44, 1, "close")).toBe(false);
+    expect(app.quit).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(app.quit).toHaveBeenCalledOnce();
+  });
+
+  test("resumes a native quit when the save acknowledgement settles inside its dispatch", async () => {
+    const model = new ElectronQuitModel(["sizzle"]);
+    const fake = makeWindow(45);
+    barrier.wireSizzleCloseBarrier(fake.window);
+    barrier.markSizzleCloseRendererReady(45);
+    barrier.installSizzleQuitBarrier(model as unknown as Parameters<typeof installSizzleQuitBarrier>[0]);
+    fake.send.mockImplementation(() => {
+      void Promise.resolve().then(() => barrier.completeSizzleCloseRequest(45, 1, "close"));
+    });
+    await model.quitFromNativeTask();
+    await model.settle();
+    expect(model.hasQuit).toBe(true);
+    expect(model.emitted).not.toContain("window-all-closed");
+    fake.destroy();
+  });
+
+  test("repeated quit and a cancelled save preserve the window and reject stale responses", () => {
+    const fake = makeWindow(46);
+    barrier.wireSizzleCloseBarrier(fake.window);
+    barrier.markSizzleCloseRendererReady(46);
+    let beforeQuit!: (event: CloseEvent) => void;
+    const app = {
+      on: vi.fn((_event: string, listener: typeof beforeQuit) => { beforeQuit = listener; }),
+      quit: vi.fn()
+    };
+    barrier.installSizzleQuitBarrier(app as unknown as Parameters<typeof installSizzleQuitBarrier>[0]);
+    const cancelled = vi.fn();
+    const unsubscribe = barrier.onSizzleQuitCancelled(cancelled);
+    beforeQuit({ preventDefault: vi.fn() });
+    beforeQuit({ preventDefault: vi.fn() });
+    expect(fake.send).toHaveBeenCalledOnce();
+    expect(barrier.completeSizzleCloseRequest(46, 99, "cancel")).toBe(false);
+    expect(cancelled).not.toHaveBeenCalled();
+    expect(barrier.completeSizzleCloseRequest(46, 1, "cancel")).toBe(true);
+    expect(cancelled).toHaveBeenCalledOnce();
+    expect(barrier.isSizzleQuitDeferred()).toBe(false);
+    expect(app.quit).not.toHaveBeenCalled();
+    expect(fake.isDestroyed()).toBe(false);
+    beforeQuit({ preventDefault: vi.fn() });
+    expect(fake.send).toHaveBeenLastCalledWith(EVENT_CHANNELS.sizzleCloseRequested, { requestId: 2 });
+    expect(barrier.completeSizzleCloseRequest(46, 1, "close")).toBe(false);
+    barrier.completeSizzleCloseRequest(46, 2, "cancel");
+    unsubscribe();
+    fake.destroy();
+  });
+
+  test("keeps a save queued across a renderer crash and reload until its ready handshake", () => {
+    const fake = makeWindow(47);
+    barrier.wireSizzleCloseBarrier(fake.window);
+    barrier.markSizzleCloseRendererReady(47);
+    fake.close();
+    fake.emitWebContents("render-process-gone");
+    fake.emitWebContents("did-start-loading");
+    expect(fake.send).toHaveBeenCalledOnce();
+    expect(fake.isDestroyed()).toBe(false);
+    barrier.markSizzleCloseRendererReady(47);
+    expect(fake.send).toHaveBeenLastCalledWith(EVENT_CHANNELS.sizzleCloseRequested, { requestId: 1 });
+    expect(fake.send).toHaveBeenCalledTimes(2);
+    barrier.completeSizzleCloseRequest(47, 1, "cancel");
+    fake.destroy();
+  });
+
+  test("honors cancellation from a replacement window before a queued retry dispatches", async () => {
+    vi.useFakeTimers();
+    const first = makeWindow(48);
+    const second = makeWindow(49);
+    barrier.wireSizzleCloseBarrier(first.window);
+    barrier.markSizzleCloseRendererReady(first.window.id);
+    let beforeQuit!: (event: CloseEvent) => void;
+    const app = {
+      on: vi.fn((_event: string, listener: typeof beforeQuit) => { beforeQuit = listener; }),
+      quit: vi.fn()
+    };
+    barrier.installSizzleQuitBarrier(app as unknown as Parameters<typeof installSizzleQuitBarrier>[0]);
+    beforeQuit({ preventDefault: vi.fn() });
+    barrier.completeSizzleCloseRequest(48, 1, "close");
+    expect(app.quit).not.toHaveBeenCalled();
+    // A destroyed window is replaced and another quit is cancelled before
+    // the old save's deferred retry gets its macrotask.
+    first.destroy();
+    barrier.wireSizzleCloseBarrier(second.window);
+    barrier.markSizzleCloseRendererReady(second.window.id);
+    beforeQuit({ preventDefault: vi.fn() });
+    barrier.completeSizzleCloseRequest(49, 1, "cancel");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(app.quit).not.toHaveBeenCalled();
+    expect(barrier.isSizzleQuitDeferred()).toBe(false);
+    second.destroy();
   });
 });

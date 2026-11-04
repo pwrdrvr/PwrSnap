@@ -91,9 +91,9 @@ MIT
 - @pwrdrvr/codex-app-server-protocol@0.144.0 | https://github.com/pwrdrvr/codex-app-server-protocol
 - @pwrdrvr/codex-app-server-protocol@0.159.2 | https://github.com/pwrdrvr/codex-app-server-protocol
 - @pwrdrvr/codex-discovery@0.4.0 | https://github.com/pwrdrvr/agent-kit
-- @shutterstock/p-map-iterable@1.1.2 | https://github.com/shutterstock/p-map-iterable
-- @tanstack/react-virtual@3.14.21 | https://github.com/TanStack/virtual
-- @tanstack/virtual-core@3.19.6 | https://github.com/TanStack/virtual
+- @shutterstock/p-map-iterable@1.2.0 | https://github.com/shutterstock/p-map-iterable
+- @tanstack/react-virtual@3.14.22 | https://github.com/TanStack/virtual
+- @tanstack/virtual-core@3.19.7 | https://github.com/TanStack/virtual
 - accepts@2.0.0 | jshttp/accepts
 - aggregate-error@3.1.0 | sindresorhus/aggregate-error
 - ajv@8.20.0 | ajv-validator/ajv
@@ -119,7 +119,7 @@ MIT
 - ee-first@1.1.1 | jonathanong/ee-first
 - electron@44.9.3 | https://github.com/electron/electron
 - electron-log@5.4.4 | megahertz/electron-log
-- electron-updater@6.8.10 | https://github.com/electron-userland/electron-builder
+- electron-updater@6.8.11 | https://github.com/electron-userland/electron-builder
 - encodeurl@2.0.0 | pillarjs/encodeurl
 - es-define-property@1.0.1 | https://github.com/ljharb/es-define-property
 - es-errors@1.3.0 | https://github.com/ljharb/es-errors
@@ -200,7 +200,7 @@ MIT
 - vary@1.1.2 | jshttp/vary
 - yauzl@3.4.0 | https://github.com/thejoshwolfe/yauzl
 - yazl@3.3.1 | https://github.com/thejoshwolfe/yazl
-- zod@4.6.5 | https://github.com/colinhacks/zod
+- zod@4.6.7 | https://github.com/colinhacks/zod
 
 OFL-1.1
 ~~~~~~~
@@ -1254,13 +1254,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-@shutterstock/p-map-iterable@1.1.2 (MIT)
+@shutterstock/p-map-iterable@1.2.0 (MIT)
 ----------------------------------------
 
 Applies to:
-- @shutterstock/p-map-iterable@1.1.2 (MIT)
+- @shutterstock/p-map-iterable@1.2.0 (MIT)
 
-Representative file: @shutterstock/p-map-iterable@1.1.2/LICENSE.md
+Representative file: @shutterstock/p-map-iterable@1.2.0/LICENSE.md
 
 The MIT License (MIT)
 =====================
@@ -1284,14 +1284,14 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-@tanstack/react-virtual@3.14.21 (MIT)
+@tanstack/react-virtual@3.14.22 (MIT)
 -------------------------------------
 
 Applies to:
-- @tanstack/react-virtual@3.14.21 (MIT)
-- @tanstack/virtual-core@3.19.6 (MIT)
+- @tanstack/react-virtual@3.14.22 (MIT)
+- @tanstack/virtual-core@3.19.7 (MIT)
 
-Representative file: @tanstack/react-virtual@3.14.21/LICENSE
+Representative file: @tanstack/react-virtual@3.14.22/LICENSE
 
 MIT License
 
@@ -2019,7 +2019,7 @@ builder-util-runtime@9.7.0 (MIT)
 
 Applies to:
 - builder-util-runtime@9.7.0 (MIT)
-- electron-updater@6.8.10 (MIT)
+- electron-updater@6.8.11 (MIT)
 
 Representative file: builder-util-runtime@9.7.0/LICENSE
 
@@ -4877,13 +4877,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-zod@4.6.5 (MIT)
+zod@4.6.7 (MIT)
 ---------------
 
 Applies to:
-- zod@4.6.5 (MIT)
+- zod@4.6.7 (MIT)
 
-Representative file: zod@4.6.5/LICENSE
+Representative file: zod@4.6.7/LICENSE
 
 MIT License
 

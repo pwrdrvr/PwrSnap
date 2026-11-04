@@ -25,7 +25,11 @@
 import { type RenderRequest, type RenderResult } from "./compose";
 import { composeV2 } from "./compose-tree";
 import { getCaptureById } from "../persistence/captures-repo";
-import { ensureEffectiveSrcPath } from "../persistence/source-store";
+
+// Legacy callers may still supply source-file hints; v2 only needs these
+// three inputs. Optional hints keep those callers source-compatible.
+type CoordinatorRenderRequest = Pick<RenderRequest, "captureId" | "width" | "format"> &
+  Partial<Pick<RenderRequest, "srcPath" | "imageWidthPx" | "imageHeightPx">>;
 
 const inFlight = new Map<string, Promise<RenderResult>>();
 
@@ -61,7 +65,7 @@ function keyForV2(
  * tolerant "render or null" (e.g. the Trash view's previews) should
  * pre-check with `getCaptureById` and bail before calling.
  */
-export async function renderViaCoordinator(req: RenderRequest): Promise<RenderResult> {
+export async function renderViaCoordinator(req: CoordinatorRenderRequest): Promise<RenderResult> {
   const record = getCaptureById(req.captureId);
   if (record === null || record.bundle_format_version < 2 || record.bundle_path === null) {
     throw new Error(
@@ -109,18 +113,14 @@ export async function renderViaCoordinator(req: RenderRequest): Promise<RenderRe
 
 /**
  * Resolve `(captureId, width, format)` to a cache file path. Looks up
- * the capture's source path, then composes (or hits the cache).
+ * the capture's bundle, then composes (or hits the cache).
  * Returns null only if the capture row doesn't exist; soft-deleted
  * records still resolve, against the trash file — the Trash view
  * needs working thumbnails + a working Focus image so the user can
  * see what they're about to restore or permanently delete.
  *
  * This is the function `protocols.ts` calls from its `pwrsnap-cache://`
- * resolver — wires the protocol to the render pipeline. Post-fix
- * this is a thin wrapper around `renderViaCoordinator` (which now
- * handles the v1/v2 branch internally). Pre-fix the v1/v2 branch
- * lived HERE, which is why the Library worked but every other
- * render path returned bare source for v2 captures.
+ * resolver — wires the protocol to the v2 render pipeline.
  */
 export async function resolveCacheFile(req: {
   captureId: string;
@@ -131,13 +131,6 @@ export async function resolveCacheFile(req: {
   if (record === null) return null;
   const result = await renderViaCoordinator({
     captureId: req.captureId,
-    // srcPath + image dims are only consumed by the v1 compose() path;
-    // renderViaCoordinator ignores them for v2. Computing srcPath for
-    // a v2 row is wasted work but harmless — it triggers the source-
-    // store's lazy hash check, which is idempotent.
-    srcPath: await ensureEffectiveSrcPath(record),
-    imageWidthPx: record.width_px,
-    imageHeightPx: record.height_px,
     width: req.width,
     format: req.format
   });

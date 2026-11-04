@@ -173,11 +173,16 @@ skills and gates. Do not bypass the controller to inspect or repair the guest.
 
 Product and CI contracts, verifiable in this repository:
 
-- The macOS CI lane is `runs-on: [self-hosted, macOS, ARM64, pwrdrvr-macos]`,
-  runs the whole suite with `PWRSNAP_E2E_DISABLE_GPU=1`, and is guarded against
-  fork-head pull requests — all three in `.github/workflows/ci.yml`, which is
-  the thing to check, not this list.
-- The script adapter sets that same variable; MCP jobs must set it
+- macOS CI uses standard GitHub-hosted `macos-26` runners and runs the whole
+  suite with `PWRSNAP_E2E_DISABLE_GPU=1`, including fork-head pull requests.
+  Release, preview and benchmark jobs use the same hosted image. PwrSnap CI
+  does not use lab runners; do not move CI onto self-hosted machines. Verify
+  the current contracts in `.github/workflows/`.
+- macOS visual goldens must match the GitHub-hosted CI renderer. The E2E
+  fixture opts unpackaged launches into `PWRSNAP_E2E_LARGER_THAN_SCREEN=1`
+  so a small hosted display does not shrink fixed visual viewports. Specs
+  checking normal work-area fitting can unset it in their launch options.
+- The script adapter sets `PWRSNAP_E2E_DISABLE_GPU=1`; MCP jobs must set it
   explicitly. Note the caveat AGENTS.md already records: rasterization-sensitive
   suites pin the env *themselves*, and
   `visual-regression.spec.ts` does, so the variable does not explain a local

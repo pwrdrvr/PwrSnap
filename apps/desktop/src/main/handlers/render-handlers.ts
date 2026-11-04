@@ -16,7 +16,6 @@ import { err, ok } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import { getCaptureById } from "../persistence/captures-repo";
-import { ensureEffectiveSrcPath } from "../persistence/source-store";
 import { renderViaCoordinator } from "../render/coordinator";
 import {
   CaptureExportError,
@@ -92,9 +91,6 @@ export function registerRenderHandlers(): void {
     try {
       const result = await renderViaCoordinator({
         captureId: record.id,
-        srcPath: await ensureEffectiveSrcPath(record),
-        imageWidthPx: record.width_px,
-        imageHeightPx: record.height_px,
         width: targetWidth,
         format: "png"
       });

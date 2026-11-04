@@ -3,7 +3,7 @@
 // mocked; the real handler and source-app resolver decide what crosses the
 // `persistCaptureFromTempV2` boundary.
 
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { CaptureRecord } from "@pwrsnap/shared";
 import { createCaptureInvocation } from "@pwrsnap/shared";
 import type { WindowInfo } from "../../capture/window-list";
@@ -12,6 +12,9 @@ const mocks = vi.hoisted(() => ({
   pickRegion: vi.fn(),
   getLastWindowListSnapshot: vi.fn(),
   hideSelector: vi.fn(),
+  isSelectorInvocationCurrent: vi.fn(),
+  findMainLibraryWindow: vi.fn(),
+  scheduleDockReclaim: vi.fn(),
   listWindows: vi.fn(),
   captureWindow: vi.fn(),
   releaseSnapshot: vi.fn(async () => undefined),
@@ -62,7 +65,8 @@ vi.mock("node:fs/promises", () => ({
 vi.mock("../../capture/region-selector", () => ({
   pickRegion: mocks.pickRegion,
   getLastWindowListSnapshot: mocks.getLastWindowListSnapshot,
-  hideSelector: mocks.hideSelector
+  hideSelector: mocks.hideSelector,
+  isSelectorInvocationCurrent: mocks.isSelectorInvocationCurrent
 }));
 
 vi.mock("../../capture/screencapture", () => ({
@@ -129,8 +133,8 @@ vi.mock("../../tray", () => ({
 }));
 
 vi.mock("../../window", () => ({
-  findMainLibraryWindow: () => null,
-  scheduleDockReclaim: () => undefined
+  findMainLibraryWindow: mocks.findMainLibraryWindow,
+  scheduleDockReclaim: mocks.scheduleDockReclaim
 }));
 
 vi.mock("../codex-handlers", () => ({
@@ -192,6 +196,8 @@ const snapshotWindow: WindowInfo = {
 };
 
 const selection = {
+  windowListSnapshot: [snapshotWindow],
+  selectorInvocationId: 23,
   ok: true as const,
   rect: { x: 100, y: 120, w: 900, h: 640 },
   displayId: 1,
@@ -228,6 +234,8 @@ const persistedRecord: CaptureRecord = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.isSelectorInvocationCurrent.mockReturnValue(true);
+  mocks.findMainLibraryWindow.mockReturnValue(null);
   mocks.guardScreenCapture.mockResolvedValue(null);
   mocks.ensureCapturesDirReady.mockResolvedValue(null);
   mocks.pickRegion.mockResolvedValue(selection);
@@ -265,6 +273,7 @@ describe("capture:interactive selected-window title", () => {
     );
 
     expect(result.ok).toBe(true);
+    expect(mocks.hideSelector).toHaveBeenCalledExactlyOnceWith(23);
     expect(mocks.captureWindow).toHaveBeenCalledWith(42);
     expect(mocks.listWindows).toHaveBeenCalledTimes(1);
     expect(mocks.persistCaptureFromTempV2).toHaveBeenCalledTimes(1);
@@ -272,7 +281,6 @@ describe("capture:interactive selected-window title", () => {
     expect(persistArgs).toEqual(
       expect.objectContaining({
         tempPath: "/tmp/captured-window.png",
-        outputDir: "/captures",
         sourceApp: {
           bundleId: "com.example.editor",
           appName: "Example Editor"
@@ -280,6 +288,8 @@ describe("capture:interactive selected-window title", () => {
       })
     );
     expect(persistArgs?.sourceWindowTitle).toBe(liveTitle);
+    // Persistence prepares bytes before invoking this root-lock/fallback guard.
+    expect(mocks.persistCaptureFromTempV2.mock.calls[0]?.[1]).toBe(mocks.runWithCapturesDirFallback);
   });
 
   test("passes null when the selected id vanished before the live lookup", async () => {
@@ -292,9 +302,109 @@ describe("capture:interactive selected-window title", () => {
     );
 
     expect(result.ok).toBe(true);
+    expect(mocks.hideSelector).toHaveBeenCalledExactlyOnceWith(23);
     expect(mocks.listWindows).toHaveBeenCalledTimes(1);
     expect(
       mocks.persistCaptureFromTempV2.mock.calls[0]?.[0]?.sourceWindowTitle
     ).toBeNull();
+  });
+
+  test("a committed image keeps its original source and title provenance after the shared window list changes", async () => {
+    mocks.getLastWindowListSnapshot.mockReturnValue([{ ...snapshotWindow, pid: 9999, appName: "Newer App", bundleId: "example.newer" }]);
+    mocks.listWindows.mockResolvedValue([{ ...snapshotWindow, title: "Original window — live title" }]);
+    const result = await bus.dispatch(
+      "capture:interactive",
+      { mode: "window", invocation: createCaptureInvocation({ id: "image-provenance", origin: "global_hotkey.quick_capture", monotonicNow: () => 0 }) },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    expect(mocks.persistCaptureFromTempV2.mock.calls[0]?.[0]).toMatchObject({
+      sourceApp: { appName: "Example Editor", bundleId: "com.example.editor" },
+      sourceWindowTitle: "Original window — live title"
+    });
+  });
+
+  test("cancellation cleanup carries the selector invocation token after the compositor wait", async () => {
+    mocks.pickRegion.mockResolvedValue({ ok: false, reason: "cancelled", selectorInvocationId: 24 });
+    await bus.dispatch(
+      "capture:interactive",
+      { mode: "window", invocation: createCaptureInvocation({ id: "cancel-token", origin: "global_hotkey.quick_capture", monotonicNow: () => 0 }) },
+      { principal: "ipc" }
+    );
+    expect(mocks.hideSelector).toHaveBeenCalledExactlyOnceWith(24);
+  });
+});
+
+
+describe("cancelled selector continuation ownership", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function cancellation() {
+    return bus.dispatch(
+      "capture:interactive",
+      { mode: "window", invocation: createCaptureInvocation({ id: "cancel-ownership", origin: "global_hotkey.quick_capture", monotonicNow: () => 0 }) },
+      { principal: "ipc" }
+    );
+  }
+
+  function library() {
+    const win = { isDestroyed: () => false, isMinimized: () => true, isVisible: () => false, restore: vi.fn(), show: vi.fn(), focus: vi.fn() };
+    mocks.findMainLibraryWindow.mockReturnValue(win);
+    return win;
+  }
+
+  async function flush(): Promise<void> {
+    for (let i = 0; i < 40; i++) await Promise.resolve();
+  }
+
+  test("a superseded cancellation cannot restore the dock or focus the Library during the successor's snapshot", async () => {
+    mocks.pickRegion.mockResolvedValue({ ok: false, reason: "cancelled", selectorInvocationId: 24 });
+    mocks.isSelectorInvocationCurrent.mockReturnValue(false);
+    const win = library();
+    const result = cancellation();
+    await flush();
+    await vi.advanceTimersByTimeAsync(50);
+    await result;
+    expect(mocks.setFloatOverState).not.toHaveBeenCalled();
+    expect(mocks.hideSelector).not.toHaveBeenCalled();
+    expect(win.restore).not.toHaveBeenCalled();
+    expect(win.show).not.toHaveBeenCalled();
+    expect(win.focus).not.toHaveBeenCalled();
+    expect(mocks.scheduleDockReclaim).not.toHaveBeenCalled();
+  });
+
+  test("supersession during the compositor wait suppresses every remaining cancellation effect", async () => {
+    mocks.pickRegion.mockResolvedValue({ ok: false, reason: "cancelled", selectorInvocationId: 24 });
+    const win = library();
+    const result = cancellation();
+    await flush();
+    expect(mocks.setFloatOverState).toHaveBeenCalledExactlyOnceWith({ kind: "cancel" });
+    mocks.isSelectorInvocationCurrent.mockReturnValue(false);
+    await vi.advanceTimersByTimeAsync(50);
+    await result;
+    expect(mocks.hideSelector).not.toHaveBeenCalled();
+    expect(win.restore).not.toHaveBeenCalled();
+    expect(win.show).not.toHaveBeenCalled();
+    expect(win.focus).not.toHaveBeenCalled();
+    expect(mocks.scheduleDockReclaim).not.toHaveBeenCalled();
+  });
+
+  test("a current cancellation parks chrome before the wait and restores focus only after hiding its selector", async () => {
+    mocks.pickRegion.mockResolvedValue({ ok: false, reason: "cancelled", selectorInvocationId: 24 });
+    const win = library();
+    const result = cancellation();
+    await flush();
+    expect(mocks.setFloatOverState).toHaveBeenCalledExactlyOnceWith({ kind: "cancel" });
+    expect(mocks.hideSelector).not.toHaveBeenCalled();
+    expect(win.focus).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(50);
+    await result;
+    expect(mocks.hideSelector).toHaveBeenCalledExactlyOnceWith(24);
+    expect(win.restore).toHaveBeenCalledOnce();
+    expect(win.show).toHaveBeenCalledOnce();
+    expect(win.focus).toHaveBeenCalledOnce();
+    expect(win.focus.mock.invocationCallOrder[0]).toBeGreaterThan(mocks.hideSelector.mock.invocationCallOrder[0]!);
+    expect(mocks.scheduleDockReclaim).toHaveBeenCalledOnce();
   });
 });

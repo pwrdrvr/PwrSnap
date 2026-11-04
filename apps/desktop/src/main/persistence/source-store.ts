@@ -11,8 +11,8 @@ import { cameraDirectory, moveCameraDirectory } from "../recording/camera-track-
 // removes from .trash/ after 30d.
 
 import { createHash } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
-import { lstat, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createReadStream, existsSync, statSync } from "node:fs";
+import { lstat, mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, extname, join } from "node:path";
 import { nanoid } from "nanoid";
@@ -46,33 +46,39 @@ export type StoredSource = {
   heightPx: number;
 };
 
-/**
- * Take an existing file (a video container the recorder wrote, a copy
- * of an imported asset, …) and adopt it as a capture source. Image
- * captures do not come through here: they are packed into v2 bundles by
- * `persistCaptureFromTempV2` (bundle-store.ts). This is for any source
- * whose dimensions are known upstream (the recorder reports the
- * recording rect; importers read their own metadata).
- *
- * Extension is taken from `tempPath` so the on-disk name reflects
- * the actual container — `<id>.mp4` for video, `<id>.png` for image
- * fallback paths. The trash + render-cache machinery reads
- * `extname(src_path)` to find the right file later; we do NOT
- * hardcode `.png` anywhere downstream.
- */
+/** A recorder-owned, finalized file. The caller keeps it immutable and owns
+ *  its temp directory until adoption succeeds. Preparation never moves it. */
+export type PreparedSource = {
+  tempPath: string;
+  sha256: string;
+  byteSize: number;
+};
+
+/** Hash bounded chunks before entering the shared captures-root queue. */
+export async function prepareExistingFileAsSource(tempPath: string): Promise<PreparedSource> {
+  const hash = createHash("sha256");
+  let byteSize = 0;
+  for await (const chunk of createReadStream(tempPath)) {
+    hash.update(chunk);
+    byteSize += chunk.length;
+  }
+  return { tempPath, sha256: hash.digest("hex"), byteSize };
+}
+
+/** Commit a prepared, immutable source at the root selected by the storage
+ *  guard. Keep the durable EXDEV move inside that guard; a fallback retry
+ *  reuses the digest without reading the recording again. */
 export async function adoptExistingFileAsSource(
-  tempPath: string,
+  prepared: PreparedSource,
   outputDir: string = getCapturesRoot()
 ): Promise<StoredSource> {
+  const { tempPath, sha256, byteSize } = prepared;
   const id = nanoid(16);
-  const buf = await readFile(tempPath);
-  const sha256 = createHash("sha256").update(buf).digest("hex");
 
   // Width/height are video-context-only here. For adopted files
   // (video, future imports) the caller passes the right values when
   // persisting the metadata row. Returning 0/0 makes any downstream code that
   // requires real dims fail loud.
-  const byteSize = buf.length;
   const ext = extname(tempPath).toLowerCase() || ".bin";
 
   const dir = outputDir;

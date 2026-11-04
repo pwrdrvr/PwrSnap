@@ -1,5 +1,7 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
@@ -7,10 +9,11 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 const read = (name) => readFileSync(resolve(root, name), "utf8");
 const ci = read(".github/workflows/ci.yml");
 const actionSha = "d416c1c78119b25fe03ee3ef78b75af0d69b10a7";
-const jobs = Object.fromEntries(
-  [...ci.matchAll(/^  ([\w-]+):\n([\s\S]*?)(?=^  [\w-]+:\n|$(?![\s\S]))/gm)]
+const workflowJobs = (workflow) => Object.fromEntries(
+  [...workflow.matchAll(/^  ([\w-]+):\n([\s\S]*?)(?=^  [\w-]+:\n|$(?![\s\S]))/gm)]
     .map((match) => [match[1], match[2]])
 );
+const jobs = workflowJobs(ci);
 
 describe("CI dependency cache contract", () => {
   test("the lockfile's package-manager document matches the integrity-pinned pnpm version", () => {
@@ -80,22 +83,73 @@ describe("CI dependency cache contract", () => {
     expect(jobs["windows-e2e"]).toContain("run: pnpm rebuild:electron-native");
   });
 
-  test("persistent macOS stores stay runner-scoped and guarded from forks", () => {
+  test("macOS jobs use standard hosted runners and Actions-backed stores", () => {
     const mac = jobs["desktop-e2e-macos"];
-    const benchmark = read(".github/workflows/check-performance.yml");
-    for (const job of [mac, benchmark]) {
-      expect(job).toContain("github.event.pull_request.head.repo.full_name == github.repository");
-      expect(job).toContain("persistent-store-dir: ~/Library/Caches/pwrsnap-ci/${{ runner.name }}");
+    const benchmark = workflowJobs(read(".github/workflows/check-performance.yml"))["paired-compilers"];
+    const preview = workflowJobs(read(".github/workflows/preview-build.yml")).preview;
+    const release = workflowJobs(read(".github/workflows/release.yml"));
+    for (const job of [mac, benchmark, preview, release.prepare, release.sign]) {
+      expect(job).toContain("runs-on: macos-26\n");
+      expect(job).not.toContain("persistent-store-dir:");
+    }
+    for (const job of [mac, benchmark, preview, release.prepare]) {
       expect(job).toContain('cache-electron: "true"');
       expect(job).not.toMatch(/dependency-cache:|cache-mode:|lookup-only:/);
     }
+    for (const job of [mac, benchmark, preview]) {
+      expect(job).not.toContain("github.event.pull_request.head.repo.full_name");
+    }
+    expect(mac).toContain("if: needs.changes.outputs.code_impacting == 'true'");
     expect(mac).toContain("needs: changes");
     expect(mac).toContain("run: pnpm rebuild:electron-native");
+    expect(mac).toContain("lfs: true");
+    expect(mac).toContain('PWRSNAP_E2E_DISABLE_GPU: "1"');
+    for (const name of readdirSync(resolve(root, ".github/workflows"))) {
+      if (!name.endsWith(".yml")) continue;
+      expect(read(`.github/workflows/${name}`)).not.toMatch(/^\s*runs-on:.*self-hosted/m);
+    }
   });
 
   test("privileged metadata installation remains uncached with scripts disabled", () => {
     const bot = read(".github/workflows/dependabot-licenses.yml");
     expect(bot).toContain("pnpm install --frozen-lockfile --ignore-scripts");
     expect(bot).not.toMatch(/uses: pwrdrvr\/configure-nodejs@|uses: actions\/cache/);
+  });
+});
+
+// The aggregate job executes on Ubuntu; this exercises its Bash directly.
+describe.skipIf(process.platform === "win32")("Desktop E2E aggregate gate", () => {
+  const script = jobs["desktop-e2e-result"].match(/        run: \|\n([\s\S]*)$/)[1]
+    .replace(/^          /gm, "");
+  const scenarios = [
+    ["all platforms pass", {}, 0],
+    ...["LINUX_RESULT", "MACOS_RESULT", "WINDOWS_RESULT"].flatMap((platform) =>
+      ["failure", "skipped", "cancelled", ""].map((result) => [
+        `${platform} is ${result || "missing"}`, { [platform]: result }, 1
+      ])
+    )
+  ];
+
+  test.each(scenarios)("%s", (_label, results, expectedStatus) => {
+    const directory = mkdtempSync(join(tmpdir(), "pwrsnap-e2e-gate-"));
+    try {
+      const result = spawnSync("bash", ["-c", script], {
+        env: {
+          ...process.env,
+          LINUX_RESULT: "success",
+          MACOS_RESULT: "success",
+          WINDOWS_RESULT: "success",
+          // Fork PRs now require the same macOS coverage as every other PR.
+          IS_FORK_PR: "true",
+          GITHUB_STEP_SUMMARY: join(directory, "summary.md"),
+          ...results
+        },
+        encoding: "utf8"
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stdout + result.stderr).toBe(expectedStatus);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

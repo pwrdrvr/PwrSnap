@@ -7,6 +7,7 @@
 
 import { describe, expect, test, vi } from "vitest";
 import type { Settings } from "@pwrsnap/shared";
+import { ChatApprovalBroker } from "../chat-approval-broker";
 import {
   createChatControllerCache,
   createKeyedChatControllerCache,
@@ -133,6 +134,49 @@ describe("createKeyedChatControllerCache", () => {
     reasoning
   });
   const settings = () => ({ codex: { mode: "auto", pinnedPath: "", profile: "" } }) as unknown as Settings;
+
+  test("settings rebuild retires the old approval owner while its submission is unsettled", async () => {
+    const resolved = vi.fn();
+    const superseded = vi.fn();
+    const broker = new ChatApprovalBroker({
+      surface: "library", loggerScope: "test:chat-cache-approval",
+      emitResolved: resolved, emitSuperseded: superseded
+    });
+    let completeSubmission!: () => void;
+    const gate = new Promise<void>((resolve) => { completeSubmission = resolve; });
+    let signature = "initial";
+    const build = vi.fn(async () => {
+      const owner = {};
+      return {
+        controller: owner,
+        dispose: async () => { broker.closeOwner(owner); }
+      };
+    });
+    const cache = createKeyedChatControllerCache({
+      readSettings: async () => settings(), settingsSignature: () => signature, build
+    });
+    const first = await cache.get(cfg("codex"));
+    const request = { threadId: "t1", turnId: "turn-1", approvalId: "approval-1", summary: "Run?" };
+    const oldResolver = vi.fn(() => gate);
+    broker.register(request, first, oldResolver);
+    const submission = broker.resolve({ ...request, decision: "approve" });
+    signature = "changed";
+    const next = await cache.get(cfg("codex"));
+    expect(next).not.toBe(first);
+    expect(broker.pendingForThread("t1")).toBeNull();
+    expect(superseded).toHaveBeenCalledWith(expect.objectContaining({ reason: "controller_disposed" }));
+    broker.openThread("t1");
+    const nextRequest = { ...request, turnId: "turn-2", approvalId: "approval-2" };
+    const nextResolver = vi.fn(async () => undefined);
+    expect(broker.register(nextRequest, next, nextResolver)).toBe(true);
+    completeSubmission();
+    await submission;
+    expect(broker.pendingForThread("t1")).toBe(nextRequest);
+    expect(oldResolver.mock.calls).toEqual([["approve"]]);
+    expect(nextResolver).not.toHaveBeenCalled();
+    expect(resolved).not.toHaveBeenCalled();
+    await cache.reset();
+  });
 
   test("builds ONE controller per distinct config and reuses by key", async () => {
     const build = vi

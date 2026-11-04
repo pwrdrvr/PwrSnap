@@ -14,7 +14,8 @@ import {
   test,
   vi
 } from "vitest";
-import type { BundleLayerNode, OverlayRow } from "@pwrsnap/shared";
+import { BundleLayerNode, type OverlayRow } from "@pwrsnap/shared";
+import { registerCaptureUndoFallback, useEditMenuBridge } from "../../../lib/editMenuBridge";
 
 import {
   useUndoRedo,
@@ -110,6 +111,7 @@ type ProbeProps = {
   readonly captureId: string;
   readonly applyingRef?: React.RefObject<boolean>;
   readonly onSnapshot: (api: UseUndoRedoResult) => void;
+  readonly onBeforeHistory?: () => Promise<boolean>;
 };
 
 function Probe(props: ProbeProps): null {
@@ -117,12 +119,18 @@ function Probe(props: ProbeProps): null {
   const api = useUndoRedo({
     captureId: props.captureId,
     applyingRef: props.applyingRef ?? internal,
-    dispatchEdit: dispatchEditMock
+    dispatchEdit: dispatchEditMock,
+    onBeforeHistory: props.onBeforeHistory
   });
   useEffect(() => {
     props.onSnapshot(api);
   });
   return null;
+}
+
+function BridgeProbe(props: ProbeProps) {
+  useEditMenuBridge();
+  return createElement(Probe, props);
 }
 
 type RerenderProbeProps = {
@@ -171,6 +179,145 @@ afterEach(() => {
 });
 
 describe("useUndoRedo", () => {
+  test("a busy undo owns opposite-direction menu admission instead of invoking the capture fallback", async () => {
+    let api: UseUndoRedoResult | null = null;
+    render(createElement(BridgeProbe, { captureId: "cap-1", onSnapshot: (a) => { api = a; } }));
+    const fallback = { undo: vi.fn(), redo: vi.fn() };
+    const unregister = registerCaptureUndoFallback(fallback);
+    act(() => { api!.recordCreate(makeRow("pending"), { node: makeNode("pending") }); });
+    let release!: (result: Awaited<ReturnType<UndoRedoDispatchEdit>>) => void;
+    dispatchEditMock.mockImplementationOnce(() => new Promise((done) => { release = done; }));
+    let pending!: Promise<void>;
+    try {
+      await act(async () => { pending = api!.undo(); });
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, shiftKey: true, bubbles: true }));
+      });
+      await act(async () => {
+        release({ ok: true, value: { kind: "delete" } });
+        await pending;
+      });
+      expect(fallback.redo).not.toHaveBeenCalled();
+    } finally {
+      unregister();
+    }
+  });
+
+  test("unmount during reconciliation prevents a stale history dispatch", async () => {
+    let api: UseUndoRedoResult | null = null;
+    let release!: (value: boolean) => void;
+    const gate = new Promise<boolean>((done) => { release = done; });
+    render(createElement(Probe, {
+      captureId: "cap-1", onBeforeHistory: () => gate, onSnapshot: (a) => { api = a; }
+    }));
+    act(() => { api!.recordCreate(makeRow("old-session"), { node: makeNode("old-session") }); });
+    let pending!: Promise<void>;
+    await act(async () => { pending = api!.undo(); });
+    await act(async () => { root!.render(null); });
+    await act(async () => { release(false); await pending; });
+    expect(dispatchEditMock).not.toHaveBeenCalled();
+  });
+
+  test("history admits one request while reconciliation waits, and reads the entry recorded during that wait", async () => {
+    let api: UseUndoRedoResult | null = null;
+    let release!: (value: boolean) => void;
+    const gate = new Promise<boolean>((done) => { release = done; });
+    const before = vi.fn(() => gate);
+    render(createElement(Probe, {
+      captureId: "cap-1", onBeforeHistory: before, onSnapshot: (a) => { api = a; }
+    }));
+    act(() => { api!.recordCreate(makeRow("older"), { node: makeNode("older") }); });
+    let undo!: Promise<void>;
+    let redo!: Promise<void>;
+    await act(async () => {
+      undo = api!.undo();
+      redo = api!.redo();
+    });
+    const admissions = before.mock.calls.length;
+    await act(async () => {
+      // Model the released gesture's record and completion in one task,
+      // before React has republished a new API snapshot.
+      api!.recordCreate(makeRow("released"), { node: makeNode("released") });
+      release(false);
+      await Promise.all([undo, redo]);
+    });
+    expect(admissions).toBe(1);
+    expect(dispatchEditMock.mock.calls).toEqual([[{ kind: "delete", id: "released" }]]);
+    expect(api!.canUndo).toBe(true);
+  });
+
+  test("overlapping redo requests restore an entry once", async () => {
+    let api: UseUndoRedoResult | null = null;
+    const applyingRef = { current: false };
+    render(createElement(Probe, { captureId: "cap-1", applyingRef, onSnapshot: (a) => { api = a; } }));
+    act(() => { api!.recordCreate(makeRow("redo"), { node: makeNode("redo") }); });
+    await act(async () => { await api!.undo(); });
+    dispatchEditMock.mockClear();
+    let release!: (result: Awaited<ReturnType<UndoRedoDispatchEdit>>) => void;
+    dispatchEditMock.mockImplementationOnce(() => new Promise((done) => { release = done; }));
+    let first!: Promise<void>;
+    let second!: Promise<void>;
+    await act(async () => {
+      first = api!.redo();
+      second = api!.redo();
+    });
+    const count = dispatchEditMock.mock.calls.length;
+    await act(async () => {
+      release({ ok: true, value: { kind: "upsert", artifact: { format: 2, node: makeNode("redo") } } });
+      await Promise.all([first, second]);
+    });
+    expect(count).toBe(1);
+    expect(applyingRef.current).toBe(false);
+    await act(async () => { await api!.undo(); });
+    expect(api!.canUndo).toBe(false);
+  });
+
+  test("overlapping undo requests replay the stack top once and keep the older entry", async () => {
+    let api: UseUndoRedoResult | null = null;
+    const applyingRef = { current: false };
+    render(createElement(Probe, { captureId: "cap-1", applyingRef, onSnapshot: (a) => { api = a; } }));
+    act(() => {
+      api!.recordCreate(makeRow("older"), { node: makeNode("older") });
+      api!.recordCreate(makeRow("newer"), { node: makeNode("newer") });
+    });
+    let resolve!: (result: Awaited<ReturnType<UndoRedoDispatchEdit>>) => void;
+    dispatchEditMock.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    let first!: Promise<void>;
+    let second!: Promise<void>;
+    await act(async () => {
+      first = api!.undo();
+      second = api!.undo();
+    });
+    expect(dispatchEditMock.mock.calls).toEqual([[{ kind: "delete", id: "newer" }]]);
+    expect(applyingRef.current).toBe(true);
+    await act(async () => {
+      resolve({ ok: true, value: { kind: "delete" } });
+      await Promise.all([first, second]);
+    });
+    expect(applyingRef.current).toBe(false);
+    expect(api!.canUndo).toBe(true);
+    await act(async () => { await api!.undo(); });
+    expect(dispatchEditMock.mock.calls.at(-1)).toEqual([{ kind: "delete", id: "older" }]);
+  });
+
+  test("a failed undo remains available for retry and does not create redo history", async () => {
+    let api: UseUndoRedoResult | null = null;
+    render(createElement(Probe, { captureId: "cap-1", onSnapshot: (a) => { api = a; } }));
+    act(() => { api!.recordCreate(makeRow("retry"), { node: makeNode("retry") }); });
+    dispatchEditMock.mockResolvedValueOnce({
+      ok: false, error: { kind: "validation", code: "refused", message: "fixture failure" }
+    });
+    await act(async () => { await api!.undo(); });
+    expect(api!.canUndo).toBe(true);
+    expect(api!.canRedo).toBe(false);
+    await act(async () => { await api!.undo(); });
+    expect(dispatchEditMock.mock.calls).toEqual([
+      [{ kind: "delete", id: "retry" }], [{ kind: "delete", id: "retry" }]
+    ]);
+    expect(api!.canUndo).toBe(false);
+    expect(api!.canRedo).toBe(true);
+  });
+
   test("keeps API identity stable across unrelated renders", () => {
     const snapshots: UseUndoRedoResult[] = [];
     let rerender: (() => void) | null = null;
@@ -1129,5 +1276,355 @@ describe("useUndoRedo", () => {
       { kind: "delete", id: "stroke-orig" }
     ]);
     expect(api!.canUndo).toBe(true);
+  });
+});
+
+describe("useUndoRedo partial replay retries", () => {
+  function node(label: string): BundleLayerNode {
+    return BundleLayerNode.parse(makeNode(label.padEnd(16, "_")));
+  }
+
+  /** layers-repo.insertLayer restores rejected rows, but a live id always
+   * fails with insert_failed. A transient failure has that same code: the
+   * hook must distinguish acknowledged progress, never guess from errors. */
+  function persistence(liveNodes: BundleLayerNode[]) {
+    const state = {
+      live: new Map(liveNodes.map((entry) => [entry.id, entry])),
+      calls: [] as string[],
+      conflicts: 0,
+      failOnceAt: null as string | null
+    };
+    dispatchEditMock.mockImplementation(async (op) => {
+      if (op.kind !== "upsert" && op.kind !== "delete") throw new Error("unexpected fixture operation");
+      const id = op.kind === "upsert" ? op.node.id : op.id;
+      const call = `${op.kind}:${id}`;
+      state.calls.push(call);
+      if (state.failOnceAt === call) {
+        state.failOnceAt = null;
+        return { ok: false, error: { kind: "persistence", code: "insert_failed", message: "transient fixture failure" } };
+      }
+      if (op.kind === "upsert") {
+        BundleLayerNode.parse(op.node);
+        if (state.live.has(id)) {
+          state.conflicts += 1;
+          return { ok: false, error: { kind: "persistence", code: "insert_failed", message: "UNIQUE constraint failed: layers.id" } };
+        }
+        state.live.set(id, op.node);
+        return { ok: true, value: { kind: "upsert", artifact: { format: 2, node: op.node } } };
+      }
+      state.live.delete(id);
+      return { ok: true, value: { kind: "delete" } };
+    });
+    return state;
+  }
+
+  function mountProbe() {
+    const current = { api: null as UseUndoRedoResult | null };
+    render(createElement(Probe, { captureId: "cap-1", onSnapshot: (api) => { current.api = api; } }));
+    return current;
+  }
+
+  function recordPair(api: UseUndoRedoResult, kind: "create" | "delete", nodes: BundleLayerNode[]) {
+    const token = api.beginInteraction("batch", "pair");
+    for (const entry of nodes) {
+      api[kind === "create" ? "recordCreate" : "recordDelete"]({ id: entry.id }, {
+        node: entry, opKind: "batch", layerId: "pair", mergeMode: "append"
+      });
+    }
+    api.endInteraction(token);
+  }
+
+  test.each(["undo-delete", "redo-create"] as const)("%s retries only the failed restore, then reaches earlier history", async (scenario) => {
+    const a = node("a");
+    const b = node("b");
+    const older = node("older");
+    const state = persistence(scenario === "redo-create" ? [a, b, older] : [older]);
+    const current = mountProbe();
+    act(() => {
+      current.api!.recordCreate({ id: older.id }, { node: older });
+      recordPair(current.api!, scenario === "redo-create" ? "create" : "delete", [a, b]);
+    });
+    if (scenario === "redo-create") await act(async () => { await current.api!.undo(); });
+    state.calls.length = 0;
+    state.failOnceAt = `upsert:${b.id}`;
+    const direction = scenario === "redo-create" ? "redo" : "undo";
+    await act(async () => { await current.api![direction](); });
+    expect(new Set(state.live.keys())).toEqual(new Set([a.id, older.id]));
+    await act(async () => { await current.api![direction](); });
+    expect(new Set(state.live.keys())).toEqual(new Set([a.id, b.id, older.id]));
+    expect(state.calls).toEqual([`upsert:${a.id}`, `upsert:${b.id}`, `upsert:${b.id}`]);
+    expect(state.conflicts).toBe(0);
+    expect(current.api!.canUndo).toBe(true);
+    expect(current.api!.canRedo).toBe(direction === "undo");
+    if (direction === "redo") await act(async () => { await current.api!.undo(); });
+    await act(async () => { await current.api!.undo(); });
+    expect(state.live.has(older.id)).toBe(false);
+    expect(current.api!.canUndo).toBe(false);
+  });
+
+  test.each([
+    { direction: "undo", failure: "restore" }, { direction: "redo", failure: "restore" },
+    { direction: "undo", failure: "remove" }, { direction: "redo", failure: "remove" }
+  ] as const)("replace $direction resumes after a failed second $failure without replaying successful writes", async ({ direction, failure }) => {
+    const removed = [node("a"), node("b")];
+    const added = [node("c"), node("d")];
+    const state = persistence(added);
+    const current = mountProbe();
+    act(() => {
+      current.api!.recordReplace({
+        removed: removed.map((entry) => ({ row: { id: entry.id }, node: entry })),
+        added: added.map((entry) => ({ row: { id: entry.id }, node: entry }))
+      });
+    });
+    if (direction === "redo") await act(async () => { await current.api!.undo(); });
+    state.calls.length = 0;
+    const restore = direction === "undo" ? removed : added;
+    const take = direction === "undo" ? added : removed;
+    const steps = [...restore.map((entry) => `upsert:${entry.id}`), ...take.map((entry) => `delete:${entry.id}`)];
+    const failureIndex = failure === "restore" ? 1 : 3;
+    state.failOnceAt = steps[failureIndex]!;
+    await act(async () => { await current.api![direction](); });
+    // The unfinished piece can be retried and the acknowledged piece reversed.
+    expect(current.api!.canUndo).toBe(true);
+    expect(current.api!.canRedo).toBe(true);
+    await act(async () => { await current.api![direction](); });
+    expect(state.calls).toEqual([...steps.slice(0, failureIndex + 1), ...steps.slice(failureIndex)]);
+    expect(new Set(state.live.keys())).toEqual(new Set(restore.map((entry) => entry.id)));
+    expect(state.conflicts).toBe(0);
+    expect(current.api!.canUndo).toBe(direction === "redo");
+    expect(current.api!.canRedo).toBe(direction === "undo");
+    // Completion retires this direction's cursor: a reverse cycle and a
+    // fresh replay of the same operation must execute every step again.
+    await act(async () => { await current.api![direction === "undo" ? "redo" : "undo"](); });
+    await act(async () => { await current.api![direction](); });
+    expect(state.calls.slice(-4)).toEqual(steps);
+    expect(new Set(state.live.keys())).toEqual(new Set(restore.map((entry) => entry.id)));
+  });
+
+  test("a later tagged push cannot coalesce into a partially restored entry or erase its retry progress", async () => {
+    const a = node("a");
+    const b = node("b");
+    const c = node("c");
+    const state = persistence([c]);
+    const current = mountProbe();
+    const tags = { opKind: "delete", layerId: "selection", mergeMode: "append" } as const;
+    let token!: ReturnType<UseUndoRedoResult["beginInteraction"]>;
+    act(() => {
+      token = current.api!.beginInteraction(tags.opKind, tags.layerId);
+      current.api!.recordDelete({ id: a.id }, { ...tags, node: a });
+      current.api!.recordDelete({ id: b.id }, { ...tags, node: b });
+    });
+    state.failOnceAt = `upsert:${b.id}`;
+    await act(async () => { await current.api!.undo(); });
+    await act(async () => {
+      await dispatchEditMock({ kind: "delete", id: c.id });
+      current.api!.recordDelete({ id: c.id }, { ...tags, node: c });
+      current.api!.endInteraction(token);
+    });
+    state.calls.length = 0;
+    await act(async () => { await current.api!.undo(); });
+    expect(state.calls).toEqual([`upsert:${c.id}`]);
+    await act(async () => { await current.api!.undo(); });
+    expect(state.calls).toEqual([`upsert:${c.id}`, `upsert:${b.id}`]);
+    expect(new Set(state.live.keys())).toEqual(new Set([a.id, b.id, c.id]));
+    expect(current.api!.canUndo).toBe(false);
+    expect(state.conflicts).toBe(0);
+  });
+
+  test.each(["create", "replace-restore", "replace-remove"] as const)("a new edit preserves the acknowledged portion of a partial %s redo as undoable history", async (scenario) => {
+    const added = [node("a"), node("b")];
+    const removed = scenario === "create" ? [] : [node("p"), node("q")];
+    const c = node("c");
+    const state = persistence(added);
+    const current = mountProbe();
+    act(() => {
+      if (scenario === "create") recordPair(current.api!, "create", added);
+      else current.api!.recordReplace({
+        removed: removed.map((entry) => ({ row: { id: entry.id }, node: entry })),
+        added: added.map((entry) => ({ row: { id: entry.id }, node: entry }))
+      });
+    });
+    await act(async () => { await current.api!.undo(); });
+    state.failOnceAt = scenario === "replace-remove" ? `delete:${removed[1]!.id}` : `upsert:${added[1]!.id}`;
+    await act(async () => { await current.api!.redo(); });
+    const partial = new Set(state.live.keys());
+    await act(async () => {
+      await dispatchEditMock({ kind: "upsert", node: c });
+      current.api!.recordCreate({ id: c.id }, { node: c, opKind: "batch", layerId: "pair", mergeMode: "append" });
+    });
+    await act(async () => { await current.api!.undo(); });
+    expect(new Set(state.live.keys())).toEqual(partial);
+    await act(async () => { await current.api!.undo(); });
+    expect(new Set(state.live.keys())).toEqual(new Set(removed.map((entry) => entry.id)));
+    expect(current.api!.canUndo).toBe(false);
+    await act(async () => { await current.api!.redo(); });
+    expect(new Set(state.live.keys())).toEqual(partial);
+    await act(async () => { await current.api!.redo(); });
+    expect(new Set(state.live.keys())).toEqual(new Set([...partial, c.id]));
+    expect(current.api!.canRedo).toBe(false);
+    expect(state.conflicts).toBe(0);
+  });
+
+  test.each(["delete", "replace"] as const)("reverse replay cannot bypass a partial %s redo and invalidate its acknowledged cursor", async (kind) => {
+    const removed = [node("a"), node("b")];
+    const added = kind === "delete" ? [] : [node("c"), node("d")];
+    const state = persistence(added);
+    const current = mountProbe();
+    act(() => {
+      current.api!.recordCreate({ id: removed[0]!.id }, { node: removed[0] });
+      if (kind === "delete") recordPair(current.api!, "delete", removed);
+      else current.api!.recordReplace({
+        removed: removed.map((entry) => ({ row: { id: entry.id }, node: entry })),
+        added: added.map((entry) => ({ row: { id: entry.id }, node: entry }))
+      });
+    });
+    await act(async () => { await current.api!.undo(); });
+    state.failOnceAt = `delete:${removed[1]!.id}`;
+    await act(async () => { await current.api!.redo(); });
+    // Previously Undo reached the older create(A), whose subsequent redo
+    // restored A behind the retained delete(A) checkpoint. Retrying then
+    // skipped A and left it persisted outside the intended final state.
+    await act(async () => { await current.api!.undo(); });
+    const reversed = new Set(state.live.keys());
+    await act(async () => { await current.api!.redo(); });
+    await act(async () => { await current.api!.redo(); });
+    expect(new Set(state.live.keys())).toEqual(new Set(added.map((entry) => entry.id)));
+    expect(reversed).toEqual(new Set(removed.map((entry) => entry.id)));
+    expect(current.api!.canRedo).toBe(false);
+    expect(state.conflicts).toBe(0);
+    // The older entry remains behind both pieces of the interrupted batch.
+    await act(async () => { await current.api!.undo(); });
+    await act(async () => { await current.api!.undo(); });
+    await act(async () => { await current.api!.undo(); });
+    expect(new Set(state.live.keys())).toEqual(new Set([removed[1]!.id]));
+    expect(current.api!.canUndo).toBe(false);
+  });
+
+  test("reverse replay cannot bypass a partial undo and invalidate its acknowledged cursor", async () => {
+    const a = node("a");
+    const b = node("b");
+    const state = persistence([b]);
+    const current = mountProbe();
+    act(() => {
+      recordPair(current.api!, "create", [a, b]);
+      current.api!.recordDelete({ id: a.id }, { node: a });
+    });
+    await act(async () => { await current.api!.undo(); });
+    state.failOnceAt = `delete:${b.id}`;
+    await act(async () => { await current.api!.undo(); });
+    await act(async () => { await current.api!.redo(); });
+    const reversed = new Set(state.live.keys());
+    await act(async () => { await current.api!.undo(); });
+    await act(async () => { await current.api!.undo(); });
+    expect(new Set(state.live.keys())).toEqual(new Set());
+    expect(reversed).toEqual(new Set([a.id, b.id]));
+    expect(current.api!.canUndo).toBe(false);
+    expect(state.conflicts).toBe(0);
+  });
+
+  test.each(["undo", "redo"] as const)("partial %s exposes reverse history to the keyboard bridge even when its destination stack was empty", async (direction) => {
+    const a = node("a");
+    const b = node("b");
+    const state = persistence([a, b]);
+    let api!: UseUndoRedoResult;
+    render(createElement(BridgeProbe, { captureId: "cap-1", onSnapshot: (snapshot) => { api = snapshot; } }));
+    const fallback = { undo: vi.fn(), redo: vi.fn() };
+    const unregister = registerCaptureUndoFallback(fallback);
+    try {
+      act(() => { recordPair(api, "create", [a, b]); });
+      if (direction === "redo") await act(async () => { await api.undo(); });
+      state.failOnceAt = `${direction === "redo" ? "upsert" : "delete"}:${b.id}`;
+      await act(async () => { await api[direction](); });
+      const canReverse = direction === "redo" ? api.canUndo : api.canRedo;
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, shiftKey: direction === "undo", bubbles: true }));
+      });
+      expect(new Set(state.live.keys())).toEqual(new Set(direction === "redo" ? [] : [a.id, b.id]));
+      expect(canReverse).toBe(true);
+      expect(fallback.undo).not.toHaveBeenCalled();
+      expect(fallback.redo).not.toHaveBeenCalled();
+      expect(state.conflicts).toBe(0);
+    } finally {
+      unregister();
+    }
+  });
+
+  test.each(["reverse", "new-edit"] as const)("partial geometry redo preserves live ID chains across %s admission", async (scenario) => {
+    const a = node("a");
+    const b = node("b");
+    const c = node("c");
+    const state = persistence([a, b]);
+    const layerDispatch = dispatchEditMock.getMockImplementation()!;
+    const previousGeometry = { kind: "arrow", from: { x: 0, y: 0 }, to: { x: 0.5, y: 0.5 } } as const;
+    const nextGeometry = { ...previousGeometry, to: { x: 1, y: 1 } };
+    const refs = [{ current: a.id }, { current: b.id }];
+    let updates = 0;
+    let failNextB = false;
+    dispatchEditMock.mockImplementation(async (op) => {
+      if (op.kind !== "updateGeometry") return layerDispatch(op);
+      const previous = state.live.get(op.layerId);
+      if (previous === undefined) throw new Error("update targeted a stale layer id");
+      if (failNextB && op.layerId === refs[1]!.current) {
+        failNextB = false;
+        return { ok: false, error: { kind: "persistence", code: "insert_failed", message: "transient geometry failure" } };
+      }
+      if (op.geometry.kind !== "arrow") throw new Error("unexpected fixture geometry");
+      const freshBase = node(`fresh-${++updates}`);
+      if (freshBase.kind !== "vector") throw new Error("unexpected fixture layer");
+      const fresh = { ...freshBase, shape: { ...op.geometry, color: "auto" as const } };
+      state.live.delete(op.layerId);
+      state.live.set(fresh.id, fresh);
+      return { ok: true, value: { kind: "update", artifact: { format: 2, node: fresh, previousNode: previous } } };
+    });
+    const geometries = () => refs.map((ref) => {
+      const live = state.live.get(ref.current);
+      if (live?.kind !== "vector") throw new Error("geometry chain has no live vector");
+      return live.shape;
+    });
+    const current = mountProbe();
+    act(() => {
+      const token = current.api!.beginInteraction("drag", "pair");
+      for (const currentIdRef of refs) current.api!.recordGeometry({ currentIdRef, previousGeometry, nextGeometry }, {
+        opKind: "drag", layerId: "pair", mergeMode: "append"
+      });
+      current.api!.endInteraction(token);
+    });
+    await act(async () => { await current.api!.undo(); });
+    failNextB = true;
+    await act(async () => { await current.api!.redo(); });
+    if (scenario === "new-edit") {
+      await act(async () => {
+        await dispatchEditMock({ kind: "upsert", node: c });
+        current.api!.recordCreate({ id: c.id }, { node: c });
+      });
+      await act(async () => { await current.api!.undo(); });
+    }
+    await act(async () => { await current.api!.undo(); });
+    expect(geometries()).toEqual([
+      expect.objectContaining(previousGeometry), expect.objectContaining(previousGeometry)
+    ]);
+    if (scenario === "reverse") {
+      await act(async () => { await current.api!.redo(); });
+      await act(async () => { await current.api!.redo(); });
+      expect(geometries()).toEqual([
+        expect.objectContaining(nextGeometry), expect.objectContaining(nextGeometry)
+      ]);
+    }
+    expect(state.conflicts).toBe(0);
+  });
+
+  test("an unacknowledged live-id conflict stays a failure on every retry", async () => {
+    const a = node("a");
+    const b = node("b");
+    const state = persistence([a]);
+    const current = mountProbe();
+    act(() => { recordPair(current.api!, "delete", [a, b]); });
+    await act(async () => { await current.api!.undo(); });
+    await act(async () => { await current.api!.undo(); });
+    expect(state.calls).toEqual([`upsert:${a.id}`, `upsert:${a.id}`]);
+    expect(state.conflicts).toBe(2);
+    expect(new Set(state.live.keys())).toEqual(new Set([a.id]));
+    expect(current.api!.canUndo).toBe(true);
+    expect(current.api!.canRedo).toBe(false);
   });
 });

@@ -172,6 +172,7 @@ import {
   type Draft,
   type DraftStroke
 } from "./editor-types";
+import type { CanvasGesture } from "./canvas-gesture";
 import type { PasteImagePosition } from "./usePasteImage";
 import { useDropImage } from "./useDropImage";
 import { formatDropProgress, formatDropSummary } from "./drop-image-status";
@@ -1716,7 +1717,11 @@ export function hitTestOverlays(
   return null;
 }
 
-export function Editor({
+export function Editor(props: React.ComponentProps<typeof EditorSession>) {
+  return <EditorSession key={props.captureId} {...props} />;
+}
+
+function EditorSession({
   captureId,
   chrome = "full",
   tool: toolProp,
@@ -1942,20 +1947,10 @@ export function Editor({
   }, [effectiveToolState.activeStyle]);
 
   const [draft, setDraft] = useState<Draft | null>(null);
-  // The live Draw stroke. Pointer samples land here synchronously and the
-  // draft state is a render copy: pointermove is a continuous event, so a
-  // release can arrive before React has rendered the last move, and a
-  // commit that read `draft` would drop the stroke's final points.
-  const strokeDraftRef = useRef<DraftStroke | null>(null);
-  // An eraser drag's cuts so far. Each move tests only its own new
-  // samples (see `StrokeEraseSession`); the draft shows the session's
-  // pieces and the release commits them, so the two cannot disagree.
-  const eraseSessionRef = useRef<StrokeEraseSession | null>(null);
-  // When the current Draw drag started, and when the last committed
-  // stroke ended and which layer it landed in — the gap between them
-  // decides whether the new stroke joins that layer
-  // (`STROKE_BURST_GAP_MS`).
-  const strokeStartedAtRef = useRef(0);
+  const canvasGestureRef = useRef<CanvasGesture | null>(null);
+  // Released gestures may persist concurrently; history waits for their
+  // records before choosing its stack entry. Pointermove never dispatches.
+  const canvasCommitsRef = useRef(new Set<Promise<void>>());
   const lastStrokeRef = useRef<{ endedAt: number; layerId: string } | null>(null);
   // Multi-select model. Tracks the ids of all currently-selected
   // overlays/layers; empty array means nothing selected.
@@ -1996,10 +1991,15 @@ export function Editor({
   // the user saw the layer move 1px and the grippers vanish.
   // Subsequent arrow keys fell through to the Library reel.
   const inFlightSelectionIdsRef = useRef<Set<string>>(new Set());
-  // Canvas presses so far. An async draw commit snapshots it and only
-  // selects the layer it wrote if no newer press happened meanwhile
-  // (see `selectPlacedLayer`).
-  const canvasGestureSeqRef = useRef(0);
+  // Explicit selection choices (canvas presses, panel selection, keyboard
+  // clear/select-all). A delayed commit cannot select over a newer choice.
+  const selectionIntentRef = useRef(0);
+  const setSelectionFromIntent = useCallback<React.Dispatch<React.SetStateAction<readonly string[]>>>(
+    (update) => {
+      selectionIntentRef.current += 1;
+      setSelectedLayerIds(update);
+    }, []
+  );
   /** Replace selection with ids that just came back from a successful
    *  dispatch. The ids exist in the DB but may not be in
    *  `overlaysForRender` yet — the in-flight set keeps the cleanup
@@ -2016,14 +2016,14 @@ export function Editor({
   // readonly-array dance. Stable identity isn't required since they
   // call setState directly.
   const replaceSelection = (id: string | null): void => {
-    setSelectedLayerIds(id === null ? [] : [id]);
+    setSelectionFromIntent(id === null ? [] : [id]);
   };
   const toggleSelection = (id: string): void => {
-    setSelectedLayerIds((prev) =>
+    setSelectionFromIntent((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
     );
   };
-  const clearSelection = (): void => setSelectedLayerIds([]);
+  const clearSelection = (): void => setSelectionFromIntent([]);
   // Primary id for single-selection-only features. Null when nothing
   // is selected OR when multiple are selected — both cases hide the
   // transform handles and the per-layer style popover surface.
@@ -2046,27 +2046,6 @@ export function Editor({
   // stays non-clickable + non-deletable; it's only ever added to the
   // select-all set for copy.
   const sourceRasterIdRef = useRef<string | null>(null);
-  // Multi-select drag state. Populated by `onPointerDown` when the
-  // user clicks a layer already in a multi-selection (= the
-  // `decideClickSelection` "keep" action with selection size > 1).
-  // Holds the pre-drag pointer position plus per-layer geometry
-  // snapshots; `onPointerUp` reads it back to compute the cursor
-  // delta and dispatch one updateGeometry per layer. Cleared on
-  // pointerup OR if the user releases outside the canvas. No live
-  // preview during the drag for v1 — the layers jump to the final
-  // position on pointerup; a follow-up can add a multi-id
-  // liveOverride for the in-flight preview if desired.
-  const multiDragStartRef = useRef<{
-    startXn: number;
-    startYn: number;
-    pointerId: number;
-    snapshots: { id: string; data: OverlayRow["data"] }[];
-    /** Selected non-base rasters riding the same group drag. Their
-     *  transforms translate by the same normalized delta (converted to
-     *  canvas px) and commit through the same undo bracket, so a mixed
-     *  selection moves — and undoes — as one unit. */
-    rasterSnapshots: { id: string; transform: AffineTransform }[];
-  } | null>(null);
   // EditorLoaded populates this with a closure over `dispatchEdit` +
   // `undo` so the outer onPointerUp (which doesn't have direct access
   // to either) can commit the multi-drag. Same ref pattern as
@@ -2080,30 +2059,6 @@ export function Editor({
       ) => Promise<void>)
     | null
   >(null);
-  // Raster canvas drag-to-move. Non-base rasters (pasted images, the
-  // captured cursor) live outside the OverlayRow / TransformHandles
-  // system, so a SOLO raster click gets a dedicated gesture:
-  // `rasterDragRef` holds the in-flight drag; `rasterDrafts` is the
-  // live-preview override map the RasterLayers <img>s follow (shared
-  // with the group drag, which writes an entry per selected raster);
-  // `commitRasterDragRef` is the inner-component closure the outer
-  // onPointerUp calls to persist + undo-record the move — same
-  // ref-handoff pattern as `commitMultiDragRef`.
-  const rasterDragRef = useRef<{
-    id: string;
-    startXn: number;
-    startYn: number;
-    startTransform: AffineTransform;
-    current: AffineTransform;
-    pointerId: number;
-    moved: boolean;
-    // For the drag-back-to-home-position detent: the raster's stored home
-    // transform (null if none) + the canvas's on-screen size at drag start,
-    // used to convert the screen-px capture radius to canvas px.
-    homeTransform: AffineTransform | null;
-    canvasScreenW: number;
-    canvasScreenH: number;
-  } | null>(null);
   const [rasterDrafts, setRasterDrafts] = useState<ReadonlyMap<
     string,
     AffineTransform
@@ -2354,7 +2309,6 @@ export function Editor({
   const endInteractionRef = useRef<((token: InteractionToken) => void) | null>(
     null
   );
-  const activeInteractionTokenRef = useRef<InteractionToken | null>(null);
 
   // Auto-focus the text input when entering text-draft state.
   useEffect(() => {
@@ -2580,7 +2534,8 @@ export function Editor({
         transform: rasterDrafts?.get(r.id) ?? r.transform
       }));
     if (snapshots.length > 0 || rasterSnapshots.length > 0) {
-      multiDragStartRef.current = {
+      canvasGestureRef.current = {
+        kind: "selection",
         startXn: start.xn,
         startYn: start.yn,
         pointerId: event.pointerId,
@@ -2644,7 +2599,8 @@ export function Editor({
         // would snap the raster back by the pending delta.
         const startTransform = rasterDrafts?.get(node.id) ?? node.transform;
         const canvasRect = canvasRef.current?.getBoundingClientRect() ?? null;
-        rasterDragRef.current = {
+        canvasGestureRef.current = {
+          kind: "raster",
           id: node.id,
           startXn: start.xn,
           startYn: start.yn,
@@ -2684,25 +2640,9 @@ export function Editor({
   }
 
   function onPointerDown(event: React.PointerEvent<HTMLDivElement>): void {
-    if (event.button !== 0) return;
-    canvasGestureSeqRef.current += 1;
+    if (event.button !== 0 || canvasGestureRef.current !== null || undoApplyingRef.current) return;
+    selectionIntentRef.current += 1;
     releaseOutsideControlFocus();
-    // Defensive clear of any stale multi-drag state. The arming path
-    // below stores snapshots in `multiDragStartRef.current` and
-    // relies on `onPointerUp` / `onPointerCancel` to clear it; if
-    // either of those was skipped (OS cancellation, window blur
-    // mid-drag, hot-reload during dev) the next pointerdown would
-    // see a stale ref. Without this reset, the next pointerup would
-    // commit a translation against the OLD snapshots using the NEW
-    // cursor delta — totally unrelated layers would jump. Cheap
-    // unconditional reset is the right discipline. Same treatment for
-    // the solo raster gesture: a stale rasterDragRef would resume a
-    // ghost drag on the next click AND commit it onto the undo stack.
-    multiDragStartRef.current = null;
-    if (rasterDragRef.current !== null) {
-      rasterDragRef.current = null;
-      setRasterDrafts(null);
-    }
     // SETTLE any pending arrow-key nudge burst before arming a new
     // gesture. Without this, a drag started inside the nudge's idle
     // window armed from pre-nudge snapshots (visible jump-back) and
@@ -2752,18 +2692,18 @@ export function Editor({
       if (selectedLayerIds.length > 0) clearSelection();
       event.preventDefault();
       (canvasRef.current ?? (event.target as HTMLElement)).setPointerCapture(event.pointerId);
-      if (beginInteractionRef.current !== null) {
-        activeInteractionTokenRef.current = beginInteractionRef.current("drag", "draft-draw");
-      }
       const active = effectiveToolState.activeStyle;
       const stroke: DraftStroke = {
         kind: "stroke",
         mode: active.tool === "draw" ? active.style.mode : "pen",
         points: [{ x: start.xn, y: start.yn }]
       };
-      strokeDraftRef.current = stroke;
-      strokeStartedAtRef.current = performance.now();
-      eraseSessionRef.current = null;
+      const gesture: Extract<CanvasGesture, { kind: "draw" }> = {
+        kind: "draw", pointerId: event.pointerId, stroke, session: null,
+        startedAt: performance.now(),
+        token: beginInteractionRef.current?.("drag", "draft-draw") ?? null
+      };
+      canvasGestureRef.current = gesture;
       const dims = textHitDimsRef.current;
       if (stroke.mode === "eraser" && dims !== null) {
         const { canvasWidthPx: cw, canvasHeightPx: ch } = dims;
@@ -2773,9 +2713,9 @@ export function Editor({
         const thickness = active.tool === "draw" ? active.style.thickness : undefined;
         const session = new StrokeEraseSession(eraserRadiusPx(thickness, basis), cw, ch, basis);
         session.extend([{ x: start.xn * cw, y: start.yn * ch }], strokeTargets(overlaysRef.current));
-        eraseSessionRef.current = session;
+        gesture.session = session;
       }
-      setDraft(liveStrokeDraft(stroke, eraseSessionRef.current));
+      setDraft(liveStrokeDraft(stroke, gesture.session));
       return;
     }
 
@@ -2813,21 +2753,16 @@ export function Editor({
     event.preventDefault();
     (canvasRef.current ?? (event.target as HTMLElement)).setPointerCapture(event.pointerId);
 
-    // Open a coalescing bracket for the drag. layerId uses the tool
-    // name as a sentinel since the actual layer doesn't exist yet
-    // (it's created at pointerup via persistOverlay). For Phase 2's
-    // one-write-per-drag flow this bracket is a no-op for coalescing;
-    // it's wired here so Phase 4+'s drag-existing-overlay path
-    // automatically picks up the coalescing semantics.
-    if (tool !== "text" && beginInteractionRef.current !== null) {
-      activeInteractionTokenRef.current = beginInteractionRef.current(
-        "drag",
-        `draft-${tool}`
-      );
-    }
+    const startDraftGesture = (next: Extract<Draft, { kind: "arrow" | "shape-drag" }>): void => {
+      canvasGestureRef.current = {
+        kind: "draft", pointerId: event.pointerId, draft: next,
+        token: beginInteractionRef.current?.("drag", `draft-${tool}`) ?? null
+      };
+      setDraft(next);
+    };
 
     if (tool === "arrow") {
-      setDraft({
+      startDraftGesture({
         kind: "arrow",
         fromXn: start.xn,
         fromYn: start.yn,
@@ -2846,7 +2781,7 @@ export function Editor({
         effectiveToolState.activeStyle.tool === "shape"
           ? effectiveToolState.activeStyle.style.shape
           : undefined;
-      setDraft({
+      startDraftGesture({
         kind: "shape-drag",
         tool,
         startXn: start.xn,
@@ -2966,12 +2901,14 @@ export function Editor({
   }
 
   function onPointerMove(event: React.PointerEvent<HTMLDivElement>): void {
+    const gesture = canvasGestureRef.current;
+    if (gesture !== null && gesture.pointerId !== event.pointerId) return;
     // Raster canvas drag live preview — runs first, mutually exclusive
     // with the multi-select drag (a raster never enters the overlay
     // snapshot set). Translate the raster's start transform by the cursor
     // delta (normalized → canvas pixels) and stash it in `rasterDrafts`;
     // RasterLayers paints the <img> at the override until commit.
-    const rasterDrag = rasterDragRef.current;
+    const rasterDrag = gesture?.kind === "raster" ? gesture : null;
     if (rasterDrag !== null) {
       const cur = clientToNormalizedUnclamped(event.clientX, event.clientY);
       if (cur === null) return;
@@ -3018,7 +2955,7 @@ export function Editor({
     // Runs BEFORE the draft branch — the multi-drag gesture is
     // unrelated to drafts (which only fire when a drawing tool was
     // selected and the user is mid-shape).
-    const multiDrag = multiDragStartRef.current;
+    const multiDrag = gesture?.kind === "selection" ? gesture : null;
     if (multiDrag !== null) {
       // Unclamped: the preview must follow the cursor past the canvas
       // edge so the user can drag a layer (partially) off the viewport.
@@ -3068,7 +3005,7 @@ export function Editor({
     // Draw: take every coalesced sample, not just the one this event
     // reports — at 60Hz a fast flick would otherwise come out as a few
     // straight segments. Unclamped, so a stroke can run off the edge.
-    const stroke = strokeDraftRef.current;
+    const stroke = gesture?.kind === "draw" ? gesture.stroke : null;
     if (stroke !== null) {
       const native = event.nativeEvent;
       const coalesced =
@@ -3079,7 +3016,7 @@ export function Editor({
         if (p !== null) stroke.points.push({ x: p.xn, y: p.yn });
       }
       if (stroke.points.length === from) return;
-      const session = eraseSessionRef.current;
+      const session = gesture?.kind === "draw" ? gesture.session : null;
       const dims = textHitDimsRef.current;
       if (session !== null && dims !== null) {
         session.extend(
@@ -3092,7 +3029,7 @@ export function Editor({
     }
     // No gesture in progress (or only an idle text draft): this move
     // is a HOVER — update the cursor affordance and stop.
-    if (draft === null || draft.kind === "text") {
+    if (gesture === null) {
       // Any button held means some gesture owns the pointer (a pan, a
       // TransformHandles drag bubbling through, a captured drag) —
       // hover is a button-up affordance, and running the hit-test at
@@ -3108,16 +3045,14 @@ export function Editor({
       updateHoverHit(event.clientX, event.clientY);
       return;
     }
+    if (gesture?.kind !== "draft") return;
     const cur = clientToNormalized(event.clientX, event.clientY);
     if (cur === null) return;
-    if (draft.kind === "arrow") {
-      setDraft({ ...draft, toXn: cur.xn, toYn: cur.yn });
-      return;
-    }
-    if (draft.kind === "shape-drag") {
-      setDraft({ ...draft, curXn: cur.xn, curYn: cur.yn });
-      return;
-    }
+    const current = gesture.draft;
+    gesture.draft = current.kind === "arrow"
+      ? { ...current, toXn: cur.xn, toYn: cur.yn }
+      : { ...current, curXn: cur.xn, curYn: cur.yn };
+    setDraft(gesture.draft);
   }
 
   function onContextMenu(event: React.MouseEvent<HTMLDivElement>): void {
@@ -3158,10 +3093,10 @@ export function Editor({
         nextSelection = selectedLayerIds.includes(hit)
           ? selectedLayerIds.filter((id) => id !== hit)
           : [...selectedLayerIds, hit];
-        setSelectedLayerIds(nextSelection);
+        setSelectionFromIntent(nextSelection);
       } else if (!selectedLayerIds.includes(hit)) {
         nextSelection = [hit];
-        setSelectedLayerIds(nextSelection);
+        setSelectionFromIntent(nextSelection);
       }
     }
     // Anchor the menu at the click position in CANVAS-WRAP-LOCAL
@@ -3180,62 +3115,70 @@ export function Editor({
     });
   }
 
-  function onPointerCancel(event: React.PointerEvent<HTMLDivElement>): void {
-    // A cancelled Draw gesture commits nothing: an OS-cancelled scribble
-    // is not one the user finished.
-    if (strokeDraftRef.current !== null) {
-      strokeDraftRef.current = null;
-      eraseSessionRef.current = null;
-      setDraft(null);
-      const token = activeInteractionTokenRef.current;
-      activeInteractionTokenRef.current = null;
-      if (token !== null) endInteractionRef.current?.(token);
-      return;
-    }
-    // Raster drag cancelled mid-gesture — drop the armed gesture + live
-    // override; no commit, so the <img> snaps back to its persisted
-    // transform.
-    if (rasterDragRef.current !== null) {
-      try {
-        (event.target as HTMLElement).releasePointerCapture(
-          rasterDragRef.current.pointerId
-        );
-      } catch {
-        // Best-effort release.
-      }
-      rasterDragRef.current = null;
-      setRasterDrafts(null);
-      return;
-    }
-    // OS-level pointer cancellation (window blur during a drag,
-    // Mission Control, three-finger swipe, etc.) — drop any armed
-    // multi-drag state so the next pointerdown doesn't see stale
-    // snapshots. The pointerup path also does this in its `try/finally`
-    // shape, but pointerup never fires if the OS cancels first, so
-    // this handler is the second leg of the cleanup pair. Releasing
-    // capture is a no-op if it was already released by the cancel
-    // itself; wrap in try/catch defensively.
-    const multiDrag = multiDragStartRef.current;
-    if (multiDrag !== null) {
-      multiDragStartRef.current = null;
-      try {
-        (event.target as HTMLElement).releasePointerCapture(multiDrag.pointerId);
-      } catch {
-        // Best-effort release; capture may already be gone.
-      }
-      // Clear any in-flight live preview so layers snap back to their
-      // persisted positions (the cancel means "no commit", so the
-      // override should evaporate immediately). Cleared only when WE
-      // armed the override via multi-drag — leaving a single-select
-      // drag's override alone (TransformHandles owns that lifecycle
-      // and may still be mid-drag through its own capture).
-      setDraftGeometry(null);
-      setRasterDrafts(null);
+  function releaseCanvasPointer(pointerId: number): void {
+    try {
+      canvasRef.current?.releasePointerCapture(pointerId);
+    } catch {
+      // Cancellation or removal may already have released capture.
     }
   }
 
+  const cancelCanvasGesture = useCallback((): boolean => {
+    const gesture = canvasGestureRef.current;
+    if (gesture === null) return false;
+    canvasGestureRef.current = null;
+    releaseCanvasPointer(gesture.pointerId);
+    if (gesture.kind === "draw" || gesture.kind === "draft") {
+      if (gesture.token !== null) endInteractionRef.current?.(gesture.token);
+      setDraft(null);
+    } else {
+      setDraftGeometry(null);
+      setRasterDrafts(null);
+    }
+    return true;
+  }, []);
+
+  useEffect(() => {
+    const onBlur = (): void => { cancelCanvasGesture(); };
+    window.addEventListener("blur", onBlur);
+    return () => window.removeEventListener("blur", onBlur);
+  }, [cancelCanvasGesture]);
+
+  function onPointerCancel(event: React.PointerEvent<HTMLDivElement>): void {
+    if (canvasGestureRef.current?.pointerId === event.pointerId) cancelCanvasGesture();
+  }
+
+  async function beforeCanvasHistory(): Promise<boolean> {
+    if (cancelCanvasGesture()) return true;
+    const selectionIntent = selectionIntentRef.current;
+    await Promise.all([...canvasCommitsRef.current]);
+    // A later interaction supersedes the waiting history request. It may
+    // already own a new draft or released write; leave that work intact.
+    return selectionIntentRef.current !== selectionIntent;
+  }
+
   async function onPointerUp(event: React.PointerEvent<HTMLDivElement>): Promise<void> {
-    const gestureSeq = canvasGestureSeqRef.current;
+    const gesture = canvasGestureRef.current;
+    if (gesture === null || gesture.pointerId !== event.pointerId) return;
+    canvasGestureRef.current = null;
+    releaseCanvasPointer(gesture.pointerId);
+    const endInteraction = endInteractionRef.current;
+    const commit = finishCanvasGesture(event, gesture);
+    canvasCommitsRef.current.add(commit);
+    try {
+      await commit;
+    } finally {
+      canvasCommitsRef.current.delete(commit);
+      if ((gesture.kind === "draw" || gesture.kind === "draft") && gesture.token !== null) {
+        endInteraction?.(gesture.token);
+      }
+    }
+  }
+
+  async function finishCanvasGesture(
+    event: React.PointerEvent<HTMLDivElement>, gesture: CanvasGesture
+  ): Promise<void> {
+    const gestureSeq = selectionIntentRef.current;
     // Re-aim the hover affordance at the release point. A captured
     // gesture suppresses pointerleave, so a drag released outside the
     // canvas (or over a different layer) would otherwise strand a
@@ -3247,14 +3190,8 @@ export function Editor({
     // transform via the inner-component closure; keep the override until
     // the dispatch resolves (the refetched model then carries the new
     // transform) so the <img> doesn't snap back to the old spot.
-    const rasterDrag = rasterDragRef.current;
+    const rasterDrag = gesture?.kind === "raster" ? gesture : null;
     if (rasterDrag !== null) {
-      rasterDragRef.current = null;
-      try {
-        (event.target as HTMLElement).releasePointerCapture(rasterDrag.pointerId);
-      } catch {
-        // Best-effort release; capture may already be gone.
-      }
       if (rasterDrag.moved) {
         const committed =
           (await commitRasterDragRef.current?.(
@@ -3266,26 +3203,30 @@ export function Editor({
         // once the refetched model carries the new transform, so the
         // <img> never snaps back to the pre-drag spot. Failure: clear
         // now (snap-back is the honest state).
-        if (!committed) setRasterDrafts(null);
+        if (!committed) {
+          setRasterDrafts((current) => {
+            const active = canvasGestureRef.current;
+            // A new press may already have adopted this preview as its
+            // starting position, before it has produced a new transform.
+            if (active?.kind === "raster" && active.id === rasterDrag.id) return current;
+            if (active?.kind === "selection" && active.rasterSnapshots.some((s) => s.id === rasterDrag.id)) return current;
+            if (current?.get(rasterDrag.id) !== rasterDrag.current) return current;
+            const next = new Map(current);
+            next.delete(rasterDrag.id);
+            return next.size > 0 ? next : null;
+          });
+        }
       } else {
         setRasterDrafts(null);
       }
       return;
     }
-    // Multi-select drag commit runs BEFORE the draft branch. If
-    // `multiDragStartRef` is set the user dragged a group; compute
+    // A selection gesture holds the snapshots of the dragged group; compute
     // the cursor delta in normalized coords and call into the
     // EditorLoaded-populated `commitMultiDragRef` to translate every
     // selected layer by that delta in one coalesced undo entry.
-    const multiDrag = multiDragStartRef.current;
+    const multiDrag = gesture?.kind === "selection" ? gesture : null;
     if (multiDrag !== null) {
-      multiDragStartRef.current = null;
-      try {
-        (event.target as HTMLElement).releasePointerCapture(multiDrag.pointerId);
-      } catch {
-        // Capture may have already been lost (window blur, etc.) —
-        // best-effort release.
-      }
       // Unclamped so a release OUTSIDE the canvas (the natural end of a
       // drag-off-the-viewport gesture) still computes a delta and
       // commits. With the clamped variant this returned null → the
@@ -3343,46 +3284,18 @@ export function Editor({
       }
       return;
     }
-    const strokeDraft = strokeDraftRef.current;
-    if (strokeDraft !== null) {
-      strokeDraftRef.current = null;
-      try {
-        (event.target as HTMLElement).releasePointerCapture(event.pointerId);
-      } catch {
-        // Best-effort release; capture may already be gone.
-      }
-      const token = activeInteractionTokenRef.current;
-      activeInteractionTokenRef.current = null;
-      try {
-        await commitStroke(strokeDraft);
-      } finally {
-        if (token !== null) endInteractionRef.current?.(token);
-      }
+    if (gesture.kind === "draw") {
+      await commitStroke(gesture);
       return;
     }
-    if (draft === null) return;
-    if (draft.kind === "text") return;
-    (event.target as HTMLElement).releasePointerCapture(event.pointerId);
-
-    // Grab the coalescing bracket token. We close it AFTER persistOverlay
-    // resolves so the recordCreate fires inside the bracket — that way
-    // Phase 4+ drag-existing-overlay flows that emit multiple intermediate
-    // writes will coalesce correctly. endInteraction tolerates mismatched
-    // / null tokens silently.
-    const interactionToken = activeInteractionTokenRef.current;
-    activeInteractionTokenRef.current = null;
-    const closeInteraction = (): void => {
-      if (interactionToken !== null && endInteractionRef.current !== null) {
-        endInteractionRef.current(interactionToken);
-      }
-    };
+    if (gesture.kind !== "draft") return;
+    const draft = gesture.draft;
 
     if (draft.kind === "arrow") {
       const dx = draft.toXn - draft.fromXn;
       const dy = draft.toYn - draft.fromYn;
       if (Math.hypot(dx, dy) < MIN_DRAG_LENGTH) {
         setDraft(null);
-        closeInteraction();
         return;
       }
       // Capture everything the commit needs from the draft, then clear
@@ -3435,7 +3348,6 @@ export function Editor({
         if (sampled !== null) arrowOverlay.outlineAuto = sampled;
       }
       const wrote = await persistOverlay(arrowOverlay);
-      closeInteraction();
       if (wrote.ok) selectPlacedLayer(wrote.newId, gestureSeq);
       if (wrote.ok && !isControlled) {
         effectiveToolState.onAnnotationPlaced({ tool: "arrow" });
@@ -3465,7 +3377,6 @@ export function Editor({
       const rect = rectFromDrag(draft, canvasAspect);
       if (rect === null) {
         setDraft(null);
-        closeInteraction();
         return;
       }
       const placedKind = draft.tool;
@@ -3533,27 +3444,22 @@ export function Editor({
         };
       }
       const wrote = await persistOverlay(overlay);
-      closeInteraction();
       if (wrote.ok) selectPlacedLayer(wrote.newId, gestureSeq);
       if (wrote.ok && !isControlled) {
         effectiveToolState.onAnnotationPlaced({ tool: placedKind });
       }
       return;
     }
-    // Fallthrough: close interaction even if no draft branch matched.
-    closeInteraction();
   }
 
   /** Commit a finished Draw gesture: a pen / marker / airbrush stroke, or
    *  an eraser pass. Clears the draft before the first await, like every
    *  other commit, so a second stroke started while this one writes is
    *  not wiped when it resumes. */
-  async function commitStroke(stroke: DraftStroke): Promise<void> {
+  async function commitStroke(gesture: Extract<CanvasGesture, { kind: "draw" }>): Promise<void> {
     setDraft(null);
+    const { stroke, session, startedAt } = gesture;
     const releasedAt = performance.now();
-    const startedAt = strokeStartedAtRef.current;
-    const session = eraseSessionRef.current;
-    eraseSessionRef.current = null;
     if (stroke.mode === "eraser") {
       // The session the drag built IS the commit: the pieces the preview
       // showed, not a second pass over the whole drag. Strokes only —
@@ -3715,7 +3621,7 @@ export function Editor({
 
   async function commitText(measure?: { widthFrac: number }): Promise<void> {
     if (draft?.kind !== "text") return;
-    const gestureSeq = canvasGestureSeqRef.current;
+    const gestureSeq = selectionIntentRef.current;
     const body = draft.body.trim();
     if (body.length === 0) {
       setDraft(null);
@@ -3910,15 +3816,11 @@ export function Editor({
   /** A freshly drawn annotation becomes the selection, so the property
    *  bar shows what was just drawn and ⇧1–9 restyles it without a
    *  second click. The drawing tool stays armed — the next drag on
-   *  empty canvas clears this selection and draws again (see
-   *  onPointerDown). Skipped if the user pressed on the canvas again
-   *  while the write was in flight (`gestureSeq` is the canvas press
-   *  count when this commit began): that press already decided the
-   *  selection, and selecting now would yank the outline back onto
-   *  the old layer mid-gesture. */
+   *  empty canvas clears this selection and draws again. A newer canvas,
+   *  panel or keyboard selection choice supersedes this commit's intent. */
   function selectPlacedLayer(newId: string, gestureSeq: number): void {
     if (newId === "") return;
-    if (canvasGestureSeqRef.current !== gestureSeq) return;
+    if (selectionIntentRef.current !== gestureSeq) return;
     setSelectionTrustingDispatch([newId]);
   }
 
@@ -4455,15 +4357,7 @@ export function Editor({
       if (event.key === "Escape" && draft !== null) {
         event.preventDefault();
         setDraft(null);
-        // A Draw drag in progress is abandoned, not committed: the
-        // release that follows finds no stroke to write.
-        if (strokeDraftRef.current !== null) {
-          strokeDraftRef.current = null;
-          eraseSessionRef.current = null;
-          const token = activeInteractionTokenRef.current;
-          activeInteractionTokenRef.current = null;
-          if (token !== null) endInteractionRef.current?.(token);
-        }
+        cancelCanvasGesture();
         return;
       }
       // Escape on the open right-click context menu closes the menu
@@ -4566,7 +4460,7 @@ export function Editor({
         // they aren't click-selectable (hitTestOverlays skips them) and a
         // crop is a no-op canvas-level viewport that can't transfer to
         // another capture; selecting it would also paint a phantom outline.
-        setSelectedLayerIds([
+        setSelectionFromIntent([
           ...overlaysRef.current
             .filter((o) => o.data.kind !== "crop" && o.data.kind !== "step")
             .map((o) => o.id),
@@ -4690,7 +4584,7 @@ export function Editor({
         // the drag's live overrides and later commit an absolute write
         // that fights the drag's commit (two writers, independent
         // bases). Swallow the key; the drag owns the gesture.
-        if (rasterDragRef.current !== null || multiDragStartRef.current !== null) {
+        if (canvasGestureRef.current !== null) {
           return;
         }
         const stepPx = event.shiftKey ? 10 : 1;
@@ -5057,6 +4951,8 @@ export function Editor({
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
       onPointerLeave={onPointerLeave}
+      beforeCanvasHistory={beforeCanvasHistory}
+      hasPendingCanvasHistory={() => canvasGestureRef.current !== null || canvasCommitsRef.current.size > 0}
       hitTestTopmostLayerId={hitTestTopmostLayerId}
       onContextMenu={onContextMenu}
       contextMenuState={contextMenuState}
@@ -5076,7 +4972,8 @@ export function Editor({
       toolState={effectiveToolState}
       openActivePopoverRef={openActivePopoverRef}
       selectedLayerIds={selectedLayerIds}
-      setSelectedLayerIds={setSelectedLayerIds}
+      setSelectedLayerIds={setSelectionFromIntent}
+      selectionIntentRef={selectionIntentRef}
       setSelectionTrustingDispatch={setSelectionTrustingDispatch}
       primarySelectedLayerId={primarySelectedLayerId}
       deleteSelectedRef={deleteSelectedRef}
@@ -5146,6 +5043,9 @@ function EditorLoaded({
   onPointerUp,
   onPointerCancel,
   onPointerLeave,
+  beforeCanvasHistory,
+  hasPendingCanvasHistory,
+  selectionIntentRef,
   hitTestTopmostLayerId,
   onContextMenu,
   contextMenuState,
@@ -5205,6 +5105,9 @@ function EditorLoaded({
   /** Mirrors the outer `setTool` signature so the ⌥-click single-shot
    *  option passes through the toolbar wrapper into useEditorToolState. */
   setTool: (t: Tool, options?: { singleShot?: boolean }) => void;
+  beforeCanvasHistory: () => Promise<boolean>;
+  hasPendingCanvasHistory: () => boolean;
+  selectionIntentRef: React.RefObject<number>;
   draft: Draft | null;
   setDraft: (d: Draft | null) => void;
   canvasRef: React.RefObject<HTMLDivElement | null>;
@@ -5692,7 +5595,9 @@ function EditorLoaded({
     // nudge, which IS the undo the user asked for, so consume the
     // keystroke (true). No pending movement → no-op false → the stack
     // pops normally.
-    onBeforeHistory: async () => cancelNudgeBurstRef.current?.() ?? false,
+    onBeforeHistory: async () =>
+      (await beforeCanvasHistory()) || (cancelNudgeBurstRef.current?.() ?? false),
+    hasPendingHistory: hasPendingCanvasHistory,
     // Thread the format-aware dispatcher in so undo/redo route through
     // the same v1-or-v2 logic as create writes. Without this, the
     // hook would fall back to the legacy direct `overlays:*` dispatch
@@ -6521,7 +6426,7 @@ function EditorLoaded({
   ]);
 
   // Multi-select drag commit — wired to the outer Editor's
-  // `multiDragStartRef` via `commitMultiDragRef`. The OUTER pointer
+  // selection gesture via `commitMultiDragRef`. The OUTER pointer
   // handlers initiate the gesture (snapshot + setPointerCapture on
   // pointerdown over an already-multi-selected layer; compute delta
   // on pointerup) and call this closure with the snapshots + delta.
@@ -6541,6 +6446,7 @@ function EditorLoaded({
       // handler uses. Every recordGeometry inside the loop tags with
       // the same { opKind, layerId } so push()'s `insideInteraction`
       // check fires and all N entries collapse into 1 undo step.
+      const selectionIntent = selectionIntentRef.current;
       const begin = beginInteractionRef.current;
       const end = endInteractionRef.current;
       const token =
@@ -6639,7 +6545,7 @@ function EditorLoaded({
         // so the original ids in `snapshots` are gone after the
         // burst. setSelectionTrustingDispatch holds them in the
         // in-flight set until the broadcast confirms they landed.
-        setSelectionTrustingDispatch(newIds);
+        if (selectionIntentRef.current === selectionIntent) setSelectionTrustingDispatch(newIds);
       } finally {
         if (token !== null && end !== null) end(token);
       }
@@ -6649,6 +6555,7 @@ function EditorLoaded({
     };
   }, [
     commitMultiDragRef,
+    selectionIntentRef,
     dispatchEdit,
     setSelectionTrustingDispatch,
     recordStoredGeometry,
@@ -6673,6 +6580,7 @@ function EditorLoaded({
       startTransform,
       nextTransform
     ): Promise<boolean> => {
+      const selectionIntent = selectionIntentRef.current;
       const result = await dispatchEdit({
         kind: "updateGeometry",
         layerId: id,
@@ -6687,7 +6595,7 @@ function EditorLoaded({
       }
       const newId =
         result.value.kind === "update" ? result.value.artifact.node.id : id;
-      setSelectionTrustingDispatch([newId]);
+      if (selectionIntentRef.current === selectionIntent) setSelectionTrustingDispatch([newId]);
       if (!undoApplyingRef.current) {
         recordStoredGeometry({
           currentIdRef: { current: newId },
@@ -6702,6 +6610,7 @@ function EditorLoaded({
     };
   }, [
     commitRasterDragRef,
+    selectionIntentRef,
     dispatchEdit,
     setSelectionTrustingDispatch,
     recordStoredGeometry,
@@ -7632,6 +7541,7 @@ function EditorLoaded({
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerCancel}
+          onLostPointerCapture={onPointerCancel}
           onPointerLeave={onPointerLeave}
           onContextMenu={wantPan ? undefined : onContextMenu}
           data-tool={tool}

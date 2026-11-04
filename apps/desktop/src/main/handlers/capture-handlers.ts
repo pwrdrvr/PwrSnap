@@ -44,6 +44,7 @@ import {
   getLastWindowListSnapshot,
   hideSelector
 } from "../capture/region-selector";
+import { finishSelectorCancellation } from "../capture/selector-cancellation";
 import {
   regionSelectorUnsupported,
   WAYLAND_SELECTOR_ERROR_CODE,
@@ -99,7 +100,6 @@ import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
 import { findMainLibraryWindow, scheduleDockReclaim } from "../window";
 import { maybeEnqueueCaptureEnrichment } from "./codex-handlers";
 import { getCaptureById } from "../persistence/captures-repo";
-import { ensureEffectiveSrcPath } from "../persistence/source-store";
 import { persistCaptureFromTempV2 } from "../persistence/bundle-store";
 import { ingestSyntheticCapture } from "../capture/synthetic-ingest";
 import {
@@ -112,6 +112,7 @@ import { recordingBackendCapabilities } from "../recording/recording-capabilitie
 import { getMainLogger } from "../log";
 import { renderViaCoordinator } from "../render/coordinator";
 import { prepareRenderedFileAlias } from "../render/file-alias";
+import { publishRenderedFile } from "../render/publish-rendered-file";
 import { buildPresetExportDisplayName } from "../render/export-filename";
 import { resolveImagePresetFile, targetWidthForImagePreset } from "../render/image-presets";
 import { getActiveExportStrategy, readDesktopSettings } from "./settings-handlers";
@@ -193,11 +194,6 @@ export function registerCaptureSaveAsHandler(): void {
 
     try {
       const strategy = await getActiveExportStrategy();
-      // Render (or hit the cache for) the preset the user asked for
-      // BEFORE showing the sheet, so the file is ready the instant they
-      // click Save and a slow render can't strand a half-written file
-      // at the chosen path.
-      const presetFile = await renderPresetFile(record, req.preset, strategy);
       const displayName = buildPresetExportDisplayName({
         record,
         enrichment: getCaptureEnrichment(record.id),
@@ -215,6 +211,13 @@ export function registerCaptureSaveAsHandler(): void {
         defaultPath: displayName,
         filters: [{ name: "PNG Image", extensions: ["png"] }]
       };
+      // Render while the user chooses a destination. Observe rejection at
+      // creation: cancel/sheet failure may return before the render settles.
+      // Renders are shared cache work and continue after a cancelled sheet.
+      const presetFile = renderPresetFile(record, req.preset, strategy).then(
+        (value) => ({ ok: true as const, value }),
+        (cause: unknown) => ({ ok: false as const, cause })
+      );
       const dialogResult =
         win !== null
           ? await dialog.showSaveDialog(win, saveOpts)
@@ -226,8 +229,9 @@ export function registerCaptureSaveAsHandler(): void {
       ) {
         return ok({ path: null });
       }
-      const { copyFile } = await import("node:fs/promises");
-      await copyFile(presetFile.path, dialogResult.filePath);
+      const rendered = await presetFile;
+      if (!rendered.ok) throw rendered.cause;
+      await publishRenderedFile(rendered.value.path, dialogResult.filePath);
       return ok({ path: dialogResult.filePath });
     } catch (cause) {
       log.error("save as failed", {
@@ -513,39 +517,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       trace.finish(selection.reason === "destroyed" ? "destroy" : "cancel", {
         reason: selection.reason
       });
-      setFloatOverState({ kind: "cancel" });
-      // Compositor flush — the float-over hide must reach the
-      // window server before we lower the selector, otherwise
-      // there's a one-frame window where the toast is visible
-      // before the selector window's compositor pass is complete.
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      hideSelector();
-      // No activateApp(previousAppPid): the selector is a
-      // non-activating NSPanel, so whatever app was frontmost before
-      // the capture was never deactivated — it stays frontmost when
-      // the selector hides. Re-activating it (the old behavior) was
-      // the main trigger for AppKit demoting PwrSnap to Accessory,
-      // which is what made the Dock icon flash and the Library appear
-      // to hide. We only intervene when PwrSnap's OWN window was
-      // frontmost (previousAppPid null): there the selector-hide
-      // key-window cascade would let the floating focus-sink steal key
-      // from the Library, so restore it explicitly.
-      if (selection.previousAppPid === null || selection.previousAppPid === undefined) {
-        const library = findMainLibraryWindow();
-        if (library !== null && !library.isDestroyed()) {
-          if (library.isMinimized()) library.restore();
-          if (!library.isVisible()) library.show();
-          library.focus();
-        }
-      }
-      // The Accessory demotion that strips the Library's Dock icon
-      // lands asynchronously — and when PwrSnap was a background app
-      // (capture triggered from another app), WITHOUT a
-      // did-resign-active to drive the app-level safety net. A single
-      // synchronous reclaim races it and loses. Re-assert Regular at a
-      // spread of delays — guarded, so it no-ops once the Dock is back,
-      // and never steals focus from the app the user's now in.
-      scheduleDockReclaim();
+      await finishSelectorCancellation(selection);
       return err({
         kind: "capture",
         code: selection.reason,
@@ -633,7 +605,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       // across a spread of delays to catch the async demotion — guarded,
       // so it no-ops once the Dock is back. (Full rationale on the
       // cancel branch above.)
-      hideSelector();
+      hideSelector(selection.selectorInvocationId);
       scheduleDockReclaim();
     };
     try {
@@ -654,7 +626,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       //     redraws after the user committed don't bleed into the
       //     capture — by definition, the snapshot is frozen-in-
       //     time.
-      const snapshot = getLastWindowListSnapshot();
+      const snapshot = selection.windowListSnapshot;
       // Third path, for a multi-window pick in WINDOWS output mode:
       // crop the union box out of the same frozen snapshot, but keep
       // only the pixels inside the picked extents. `rect` is the union
@@ -1235,9 +1207,6 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       const presetFile = await renderPresetFile(record, req.preset, strategy);
       const icon = await renderViaCoordinator({
         captureId: record.id,
-        srcPath: await ensureEffectiveSrcPath(record),
-        imageWidthPx: record.width_px,
-        imageHeightPx: record.height_px,
         width: Math.min(DRAG_ICON_WIDTH, record.width_px),
         format: "png"
       });
@@ -1868,10 +1837,8 @@ async function persistAndBroadcast(
     sourceWindowTitle?: string | null | undefined;
   } = {}
 ): Promise<Result<CaptureRecord, PwrSnapError>> {
-  // New captures land as v2 layer-tree bundles. The read path in
-  // coordinator.ts still handles v1 transparently, and the v1→v2
-  // doctor (lazy on first edit-open + eager at boot) upgrades any
-  // pre-v2 captures left in the library.
+  // Prepare the immutable capture before taking the captures-root guard;
+  // persistence enters that guard only for naming and durable publication.
   //
   // devicePixelRatio threads through so the clipboard-paste flow can pass
   // the scale it inferred from the pasted image's DPI metadata (pHYs /
@@ -1879,18 +1846,18 @@ async function persistAndBroadcast(
   // source carried no density rather than defaulting to 2.
   let record: CaptureRecord;
   try {
-    ({ record } = await runWithCapturesDirFallback((outputDir) =>
-      persistCaptureFromTempV2({
+    ({ record } = await persistCaptureFromTempV2(
+      {
         tempPath,
         sourceApp:
           sourceApp === null
             ? null
             : { bundleId: sourceApp.bundleId, appName: sourceApp.appName },
         sourceWindowTitle: options.sourceWindowTitle ?? null,
-        outputDir,
         devicePixelRatio: options.devicePixelRatio,
         cursorLayer: options.cursorLayer
-      })
+      },
+      runWithCapturesDirFallback
     ));
   } catch (cause) {
     const fallbackError =

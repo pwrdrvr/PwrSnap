@@ -43,6 +43,7 @@ export function createDiagnosticsShutdown(options: {
   let complete = false;
   let resumingQuit = false;
   let updateOwnsQuit = false;
+  let quitAttempt = 0;
   let pending: Promise<void> | null = null;
   let installing: Promise<void> | null = null;
   let startedAt: number | undefined;
@@ -96,27 +97,44 @@ export function createDiagnosticsShutdown(options: {
       event.preventDefault();
       if (!resumingQuit) {
         resumingQuit = true;
+        const attempt = quitAttempt;
         // Not from this chain directly: with nothing to flush it settles in
         // microtasks, which run INSIDE the native quit pass being deferred,
         // and that pass then cancels the retry. See quit-retry.ts.
         // An update that took over decides at settle time, as before; one
         // that takes over during the hop wins too.
         void flush().then(() => {
-          if (updateOwnsQuit) return;
+          if (updateOwnsQuit || attempt !== quitAttempt) return;
           retryQuitAfterDispatch(() => {
-            if (!updateOwnsQuit) options.resumeQuit();
+            if (!updateOwnsQuit && attempt === quitAttempt) options.resumeQuit();
           });
         });
       }
       return true;
     },
-    quitAndInstall(install: () => void): Promise<void> {
+    quitAndInstall(install: (onInstallFailed?: () => void) => void): Promise<void> {
+      if (installing !== null) return installing;
+      // The updater can replace/dispose a completed native handoff without
+      // reporting failure. A later install owns a new clock; only the first
+      // takeover shares elapsed time with an already pending normal quit.
+      if (quitAttempt > 0) startedAt = undefined;
       updateOwnsQuit = true;
-      // Claim ownership before awaiting, including takeover of a normal quit.
-      installing ??= flush().then(install).catch((error: unknown) => {
-        // Abandon only this quit attempt's clock. Diagnostics are already
-        // stopped (or timed out), so retain their shared completion state.
+      // Permanently revoke a normal retry already queued before takeover.
+      // A failed install releases update ownership before that macrotask runs.
+      const attempt = ++quitAttempt;
+      let abandoned = false;
+      const abandon = (): void => {
+        if (abandoned || attempt !== quitAttempt) return;
+        abandoned = true;
+        // Native install may emit an error after returning normally. Abandon
+        // only its quit clock, retaining completed diagnostics and revocation
+        // of the earlier normal retry. Duplicate/stale signals cannot reset
+        // a later normal or update quit's budget.
         startedAt = undefined;
+      };
+      // Claim ownership before awaiting, including takeover of a normal quit.
+      installing = flush().then(() => install(abandon)).catch((error: unknown) => {
+        abandon();
         throw error;
       }).finally(() => {
         updateOwnsQuit = false;

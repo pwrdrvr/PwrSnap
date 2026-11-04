@@ -76,7 +76,12 @@
   or "just this machine". Suites sensitive to rasterization should pin the env
   themselves and assert the pin rather than trust the caller —
   `visual-regression.spec.ts` does both.
-- **Headed desktop E2E belongs in the lab VM, not on the operator's
+- **macOS CI, release, preview and benchmark jobs use standard GitHub-hosted
+  `macos-26` runners.** Icon Composer needs the macOS 26 host frameworks as
+  well as actool 26+. Do not use a paid larger size or `macos-26-intel`, and
+  do not move CI onto self-hosted machines. Fork pull requests run macOS E2E
+  too, and the required Desktop E2E gate requires every platform to pass.
+- **Local headed desktop E2E belongs in the lab VM, not on the operator's
   machine.** It takes over the screen — opens windows, steals focus, drives
   the selector and global hotkeys — and the operator's real windows can leak
   into a capture. For macOS Tart, self-hosted runner, or headed E2E work,
@@ -1709,6 +1714,17 @@ Rules the surface keeps, and where each one lives:
   production sources so `createGrant` has no caller and `issueOAuthGrant`
   is reached only from the authorization-code exchange.
 
+## A bug fix ships a property, model or oracle test
+
+**A bug fix states the rule it broke as a property, model or oracle test, and
+confirms that test fails on the pre-fix code.** Do the same for new
+rule-heavy logic, state machines, concurrency, and code that reads or writes
+persisted state (settings, secrets, SQLite, `.pwrsnap` bundles). Example tests
+alone check only what their author expected. Here they have asserted the bug
+as correct (#604, #715).
+[docs/property-model-oracle-testing.md](docs/property-model-oracle-testing.md)
+says what each kind is and how to write one.
+
 ## React act warnings fail renderer tests
 
 The renderer Vitest project uses `act-warning-runner.ts` and
@@ -3191,7 +3207,7 @@ Rules:
 - **Every job that packages the mac app needs an actool 26 or newer.**
   electron-builder hard-fails below that, and its Icon Composer
   `AssetCatalogAgent` also requires the macOS 26 host frameworks. The macOS
-  packaging jobs therefore use the restricted self-hosted macOS 26 runners.
+  packaging jobs therefore use standard GitHub-hosted `macos-26` runners.
   Pointing Xcode 26 at a macOS 15 host crashes the agent with missing
   CoreMedia/MediaToolbox symbols.
   [select-xcode-for-actool](.github/actions/select-xcode-for-actool/action.yml)

@@ -513,6 +513,38 @@ const VARIANTS: readonly Variant[] = [
 // ---------------------------------------------------------------------
 
 describe("export-surface-matrix: every surface composites the v2 layer set", () => {
+  test("after cache clear an unedited bundle renders Med without extraction and extracts High for reuse", async () => {
+    const { getCacheSourcePath } = await import("../persistence/paths");
+    const { access } = await import("node:fs/promises");
+    const { persistCaptureFromTempV2 } = await import("../persistence/bundle-store");
+    const id = "cold-source-reuse";
+    const tempPath = join(workDir, "cold-source-input.png");
+    await sharp(await makeSourcePng()).resize(2400, 1800).png().toFile(tempPath);
+    await persistCaptureFromTempV2({ captureId: id, tempPath, sourceApp: null,
+      outputDir: join(workDir, "captures") });
+    const sourcePath = getCacheSourcePath(id);
+    await rm(sourcePath);
+    await expect(access(sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
+    const med = await bus.dispatch("clipboard:copy", { captureId: id, preset: "med" }, { principal: "ipc" });
+    expect(med.ok).toBe(true);
+    await expect(access(sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
+    const high = await bus.dispatch("clipboard:copy", { captureId: id, preset: "high" }, { principal: "ipc" });
+    expect(high.ok).toBe(true);
+    await expect(access(sourcePath)).resolves.toBeUndefined();
+  });
+
+  test("prepareDrag renders an annotated cold bundle without populating source.png", async () => {
+    const { getCacheSourcePath } = await import("../persistence/paths");
+    const { access } = await import("node:fs/promises");
+    const id = "cold-drag";
+    await seedV2Capture({ id, annotated: true });
+    const sourcePath = getCacheSourcePath(id);
+    await expect(access(sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
+    const surface = SURFACES.find((entry) => entry.name === "capture:prepareDrag")!;
+    expect(await pngHasRedInOverlayRegion(await surface.run(id))).toBe(true);
+    await expect(access(sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   for (const surface of SURFACES) {
     for (const variant of VARIANTS) {
       if (surface.appliesTo !== undefined && !surface.appliesTo(variant.name)) {

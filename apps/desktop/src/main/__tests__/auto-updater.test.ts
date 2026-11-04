@@ -39,6 +39,9 @@ const mocks = vi.hoisted(() => {
         handlers.set(event, eventHandlers);
         return mocks.autoUpdater;
       }),
+      removeListener: (event: string, handler: UpdateEventHandler) => {
+        handlers.get(event)?.delete(handler);
+      },
       quitAndInstall: vi.fn(),
       requestHeaders: { authorization: "must-be-cleared" } as Record<string, string> | null,
       setFeedURL: vi.fn()
@@ -759,9 +762,17 @@ describe("auto updater selection", () => {
     });
     mocks.emit("update-downloaded", { version: targetVersion });
 
-    await expect(updater.installDownloadedWindowsUpdateSmoke()).resolves.toEqual({
+    const install = updater.installDownloadedWindowsUpdateSmoke();
+    expect(updater.installDownloadedWindowsUpdateSmoke()).toBe(install);
+    await expect(updater.installDownloadedAppUpdate()).resolves.toMatchObject({
+      status: "error",
+      message: expect.stringContaining("dedicated silent install path")
+    });
+    await expect(install).resolves.toEqual({
       status: "restarting"
     });
+    expect(updater.installDownloadedWindowsUpdateSmoke()).toBe(install);
+    expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledOnce();
     expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledWith(true, false);
   });
 

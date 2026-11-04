@@ -143,6 +143,7 @@ vi.mock("../../log", () => ({
 vi.mock("../../capture/region-selector", () => ({
   pickRegion: async () => ({ ok: false, reason: "cancelled" }),
   getLastWindowListSnapshot: () => [],
+  isSelectorInvocationCurrent: () => true,
   hideSelector: () => undefined
 }));
 
@@ -342,7 +343,8 @@ describe("capture:pasteFromClipboard", () => {
       expect.objectContaining({
         tempPath: "/test/tmp/clipboard.png",
         devicePixelRatio: 2
-      })
+      }),
+      expect.any(Function)
     );
     expect(result).toEqual({ ok: true, value: persistedRecord });
   });

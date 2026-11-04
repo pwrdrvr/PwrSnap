@@ -12,11 +12,12 @@ export type BridgeChannel = {
   send(message: BridgeMessage): boolean;
   /** Subscribe to raw incoming messages. Returns an unsubscribe. */
   onMessage(listener: (message: unknown) => void): () => void;
-  /** Subscribe to channel close (peer exit/disconnect). Fires at most once. */
+  /** Subscribe to close (peer exit/disconnect or async send failure).
+   * Fires once, immediately if the channel is already closed. */
   onClose(listener: () => void): () => void;
 };
 
-/** De-dup guard: `disconnect` and `exit` both fire on a dying child. */
+/** De-dup guard for in-memory close subscriptions. */
 function once(listener: () => void): () => void {
   let fired = false;
   return () => {
@@ -26,17 +27,66 @@ function once(listener: () => void): () => void {
   };
 }
 
-/** Agent-side channel wrapping a supervised library child process. */
-export function channelForChildProcess(child: ChildProcess): BridgeChannel {
+/** Node's send boolean reports backpressure as well as failure: false can
+ * still mean the command is queued. Only a disconnected pipe, a throw, or
+ * the send callback's error establishes failure. Never replay the frame. */
+function nodeIpcChannel(input: {
+  connected: () => boolean;
+  send: (message: BridgeMessage, callback: (error: Error | null) => void) => void;
+  onMessage: BridgeChannel["onMessage"];
+  onClose: BridgeChannel["onClose"];
+}): BridgeChannel {
+  let closed = false;
+  let detachClose: (() => void) | null = null;
+  const listeners = new Set<() => void>();
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+    detachClose?.();
+    detachClose = null;
+    const pending = [...listeners];
+    listeners.clear();
+    for (const listener of pending) listener();
+  };
   return {
     send(message) {
-      if (child.connected !== true) return false;
+      if (closed) return false;
+      if (!input.connected()) {
+        close();
+        return false;
+      }
       try {
-        return child.send(message);
+        input.send(message, (error) => { if (error) close(); });
+        return true;
       } catch {
         return false;
       }
     },
+    onMessage: input.onMessage,
+    onClose(listener) {
+      if (!input.connected()) close();
+      if (closed) {
+        listener();
+        return () => undefined;
+      }
+      listeners.add(listener);
+      detachClose ??= input.onClose(close);
+      return () => {
+        listeners.delete(listener);
+        if (listeners.size === 0) {
+          detachClose?.();
+          detachClose = null;
+        }
+      };
+    }
+  };
+}
+
+/** Agent-side channel wrapping a supervised library child process. */
+export function channelForChildProcess(child: ChildProcess): BridgeChannel {
+  return nodeIpcChannel({
+    connected: () => child.connected === true,
+    send: (message, callback) => { child.send(message, callback); },
     onMessage(listener) {
       child.on("message", listener);
       return () => {
@@ -44,28 +94,21 @@ export function channelForChildProcess(child: ChildProcess): BridgeChannel {
       };
     },
     onClose(listener) {
-      const fire = once(listener);
-      child.once("disconnect", fire);
-      child.once("exit", fire);
+      child.once("disconnect", listener);
+      child.once("exit", listener);
       return () => {
-        child.off("disconnect", fire);
-        child.off("exit", fire);
+        child.off("disconnect", listener);
+        child.off("exit", listener);
       };
     }
-  };
+  });
 }
 
 /** Library-side channel wrapping this process's pipe to the agent. */
 export function channelForParentProcess(proc: NodeJS.Process = process): BridgeChannel {
-  return {
-    send(message) {
-      if (typeof proc.send !== "function" || proc.connected !== true) return false;
-      try {
-        return proc.send(message);
-      } catch {
-        return false;
-      }
-    },
+  return nodeIpcChannel({
+    connected: () => typeof proc.send === "function" && proc.connected === true,
+    send: (message, callback) => { proc.send!(message, callback); },
     onMessage(listener) {
       proc.on("message", listener);
       return () => {
@@ -73,13 +116,12 @@ export function channelForParentProcess(proc: NodeJS.Process = process): BridgeC
       };
     },
     onClose(listener) {
-      const fire = once(listener);
-      proc.once("disconnect", fire);
+      proc.once("disconnect", listener);
       return () => {
-        proc.off("disconnect", fire);
+        proc.off("disconnect", listener);
       };
     }
-  };
+  });
 }
 
 export type InMemoryBridgeChannel = BridgeChannel & {
@@ -127,6 +169,10 @@ export function inMemoryChannelPair(): [InMemoryBridgeChannel, InMemoryBridgeCha
         };
       },
       onClose(listener) {
+        if (closed) {
+          listener();
+          return () => undefined;
+        }
         const fire = once(listener);
         closeListeners.push(fire);
         return () => {

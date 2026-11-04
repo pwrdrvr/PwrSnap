@@ -150,9 +150,11 @@ export async function migrateLegacyRenderCache(): Promise<LegacyRenderCacheMigra
   // before startup exposes handlers, drain existing derived writers, and order
   // any subsequent Clear/Trim/purge after the migration. Otherwise a late
   // migration can restore files after the user's cleanup has completed.
+  // Video requests wait here instead of receiving a terminal AbortError:
+  // their views do not retry just because startup maintenance has finished.
   await withDerivedCacheCleanup("all", async () => {
     result = await migrateLegacyRenderCacheFiles();
-  });
+  }, { writeAdmission: "wait" });
   return result;
 }
 

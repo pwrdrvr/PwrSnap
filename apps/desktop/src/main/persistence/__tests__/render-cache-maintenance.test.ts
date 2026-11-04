@@ -161,14 +161,17 @@ describe("migrateLegacyRenderCache", () => {
       // No await between starting maintenance and testing the admission gate.
       expect(writerSignal.aborted).toBe(true);
       const newWork = vi.fn(async () => undefined);
-      await expect(runGatedCacheWrite("capture-b", "new-fixture", newWork))
-        .rejects.toMatchObject({ name: "AbortError" });
+      const queued = runGatedCacheWrite("capture-b", "new-fixture", newWork)
+        .catch((cause: unknown) => cause);
       expect(newWork).not.toHaveBeenCalled();
       // The active writer deliberately ignores abort until its barrier opens.
       await new Promise<void>((resolve) => setImmediate(resolve));
       await expect(readFile(join(mocks.legacyRoot, "capture-a", "hash.webp"), "utf8"))
         .resolves.toBe("legacy render");
       clearing = clearRenderCache();
+      // Explicit cleanup still cancels a request queued behind migration;
+      // it must not recreate files after Clear has emptied the root.
+      await expect(queued).resolves.toMatchObject({ name: "AbortError" });
       releaseWrite();
       expect(await migration).toEqual({ movedDirs: 1, skippedDirs: 0 });
       expect(await writing).toMatchObject({ name: "AbortError" });
@@ -182,6 +185,58 @@ describe("migrateLegacyRenderCache", () => {
       await writing;
       await migration;
       await clearing;
+    }
+  });
+
+  test.each([false, true])("video cache hits and misses wait for migration without failing (copy failure: %s)", async (failCopy) => {
+    mocks.captureRows = [{ id: "capture-a" }];
+    await mkdir(join(mocks.legacyRoot, "capture-a"), { recursive: true });
+    await mkdir(join(mocks.currentRoot, "capture-a"), { recursive: true });
+    await writeFile(join(mocks.legacyRoot, "capture-a", "hash.webp"), "legacy render");
+    const videoDir = join(mocks.currentRoot, "video", "unrelated-video");
+    await mkdir(videoDir, { recursive: true });
+    await writeFile(join(videoDir, "playback.mp4"), "mixed playback");
+    let started!: () => void;
+    const copying = new Promise<void>((resolve) => { started = resolve; });
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    mocks.cp.mockImplementation(async (from: string, to: string) => {
+      started();
+      await barrier;
+      if (failCopy) throw new Error("copy failed");
+      await actual.cp(from, to, { recursive: true });
+    });
+    const { migrateLegacyRenderCache } = await import("../render-cache-maintenance");
+    const { runGatedCacheWrite } = await import("../derived-cache-gate");
+    const migration = migrateLegacyRenderCache();
+    await copying;
+    const hit = vi.fn(async () => readFile(join(videoDir, "playback.mp4"), "utf8"));
+    const miss = vi.fn(async () => {
+      await writeFile(join(videoDir, "frames.jpg"), "filmstrip");
+      return "filmstrip";
+    });
+    const results: unknown[] = [];
+    const requests = [hit, miss].map((work, index) =>
+      runGatedCacheWrite("unrelated-video", String(index), work)
+        .then((value) => { results.push(value); return value; }, (cause: unknown) => {
+          results.push(cause);
+          return cause;
+        })
+    );
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(results).toEqual([]);
+      expect(hit).not.toHaveBeenCalled();
+      expect(miss).not.toHaveBeenCalled();
+      release();
+      expect(await migration).toEqual({ movedDirs: failCopy ? 0 : 1, skippedDirs: failCopy ? 1 : 0 });
+      expect(await Promise.all(requests)).toEqual(["mixed playback", "filmstrip"]);
+      expect(await readFile(join(videoDir, "frames.jpg"), "utf8")).toBe("filmstrip");
+    } finally {
+      release();
+      await migration;
+      await Promise.allSettled(requests);
     }
   });
 

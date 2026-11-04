@@ -178,9 +178,9 @@ function multiSpans(input: ExportInput): readonly VideoRange[] | null {
 export function exportSegmentsKey(input: Pick<ExportInput, "record" | "spans">): string {
   const spans = input.spans;
   const cuts = spans !== undefined && spans.length > 1 ? videoSpansKey(spans) : "";
-  // Do not accept exports made from compacted prefix audio or masks without
-  // boundary lookahead, even when their range/style cache identities match.
-  return input.record.video?.camera ? `${cuts}:avatar:${avatarCacheKey(input.record)}:prefix-v2` : cuts;
+  // Reject older prefixes that compacted audio, missed mask lookahead or
+  // ended at the last real VFR frame before the requested horizon.
+  return input.record.video?.camera ? `${cuts}:avatar:${avatarCacheKey(input.record)}:prefix-v3` : cuts;
 }
 
 /** Seconds of video the export produces. */

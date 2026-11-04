@@ -88,6 +88,17 @@ describe.skipIf(ffmpeg === null)("presenter prefixes through real FFmpeg", () =>
       "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=4",
       "-map", "0:v", "-map", "1:a", "-map", "2:a", "-c:v", "mpeg4", "-c:a", "aac", join(state.root, "delayed-system.mp4")
     ]);
+    run([
+      "-f", "lavfi", "-i", "color=c=blue:s=160x90:r=60:d=4",
+      "-vf", "drawbox=x=0:y=0:w=iw:h=ih:color=yellow:t=fill:enable='gte(t,3)',select='lt(t,0.2)+gte(t,3)'",
+      "-fps_mode", "passthrough", "-c:v", "mpeg4", join(state.root, "vfr-idle.mp4")
+    ]);
+    run([
+      "-f", "lavfi", "-i", "color=c=blue:s=160x90:r=60:d=4",
+      "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=4",
+      "-vf", "select='lt(t,0.2)'", "-fps_mode", "passthrough",
+      "-map", "0:v", "-map", "1:a", "-c:v", "mpeg4", "-c:a", "aac", join(state.root, "vfr-tail.mp4")
+    ]);
   });
   afterAll(async () => {
     await withDerivedCacheCleanup("all", async () => { if (state.root) await rm(state.root, { recursive: true, force: true }); });
@@ -141,9 +152,9 @@ describe.skipIf(ffmpeg === null)("presenter prefixes through real FFmpeg", () =>
     expectColor(coldFrames.at(-1)!, 1);
   });
 
-  test("lookahead never extends a camera that naturally ends before the trim", async () => {
-    const capture = record("natural-camera-end", 0, 0);
-    capture.legacy_src_path = join(state.root, "delayed-system.mp4");
+  test.each(["delayed-system.mp4", "vfr-idle.mp4"])("lookahead never extends a camera that naturally ends before the trim (%s)", async (fixture) => {
+    const capture = record(`natural-camera-end-${fixture}`, 0, 0);
+    capture.legacy_src_path = join(state.root, fixture);
     capture.video!.camera!.durationSec = 1;
     state.times.length = 0;
     const path = await prepareAvatarVideo(capture, undefined, undefined, undefined, 2);
@@ -152,6 +163,52 @@ describe.skipIf(ffmpeg === null)("presenter prefixes through real FFmpeg", () =>
   });
 
   const formats = process.platform === "darwin" || process.platform === "win32" ? ["mp4", "gif"] as const : ["gif"] as const;
+  test.each([
+    { fixture: "vfr-idle.mp4", count: 72 }, { fixture: "vfr-tail.mp4", count: 12 }
+  ])("the VFR prefix retains held footage through a horizon inside the idle gap ($fixture)", async ({ fixture, count }) => {
+    const capture = record(`vfr-prefix-${fixture}`, 0, 0);
+    capture.legacy_src_path = join(state.root, fixture);
+    // Twelve frames through 0.183 s; only the first fixture changes at 3 s.
+    expect(decodedFrames(capture.legacy_src_path)).toHaveLength(count);
+    const prefix = await prepareAvatarVideo(capture, undefined, undefined, undefined, 2);
+    const frames = decodedFrames(prefix);
+    expect(frames, "the two-second video must cover the entire requested horizon").toHaveLength(120);
+    expectColor(frames[90]!, 1); // camera advances to green while the screen is held
+    // The screen still shows blue; the future yellow frame must not leak back.
+    expect(frames.at(-1)![(20 * 160 + 20) * 3 + 2]).toBeGreaterThan(180);
+  });
+
+  test.each(formats.flatMap((format) => [true, false].map((cut) => ({ format, cut }))))(
+    "VFR $format export preserves kept footage within an idle gap (cuts=$cut)", async ({ format, cut }) => {
+      const capture = record(`vfr-export-${format}-${cut}`, 0, 0);
+      capture.legacy_src_path = join(state.root, "vfr-idle.mp4");
+      capture.video!.hasSystemAudio = false;
+      capture.video!.hasMicrophoneAudio = false;
+      const spans = cut ? [{ start: 0, end: 0.1 }, { start: 1.5, end: 2 }] : undefined;
+      const range = { start: cut ? 0 : 1.5, end: 2 };
+      const duration = cut ? 0.6 : 0.5;
+      const audio = { includeSystemAudio: false, includeMicrophone: false };
+      const result = await exportVideoRange({ record: capture, video: capture.video!, format, preset: "high", range, spans, audio });
+      expect(result.durationSec).toBeCloseTo(duration, 6);
+      const frames = decodedFrames(result.path);
+      const fps = format === "gif" ? GIF_PRESETS.high.fps : 60;
+      expect(frames, "decoded playback must agree with the claimed kept duration").toHaveLength(Math.round(duration * fps));
+      const warmRecord = { ...capture, id: `${capture.id}-warm` };
+      await prepareAvatarVideo(warmRecord); // full-take path, without a cold prefix
+      const warm = await exportVideoRange({ record: warmRecord, video: warmRecord.video!, format, preset: "high", range, spans, audio });
+      const warmFrames = decodedFrames(warm.path);
+      expect(warmFrames).toHaveLength(frames.length);
+      const presenterColor = (frame: Buffer) => {
+        const pixel = [...frame.subarray((30 * 160 + 100) * 3, (30 * 160 + 100) * 3 + 3)];
+        return pixel.indexOf(Math.max(...pixel));
+      };
+      expect(frames.map(presenterColor)).toEqual(warmFrames.map(presenterColor));
+      for (const frame of [frames[0]!, frames.at(-1)!]) {
+        expect(frame[(20 * 160 + 20) * 3 + 2]).toBeGreaterThan(180);
+      }
+    }, 30_000
+  );
+
   test.each(formats)("%s prefix preserves playable duration, offset timing, cuts and audio selection", async (format) => {
     for (const negative of [false, true]) for (const cut of [false, true]) {
       const capture = record(`${format}-${negative}-${cut}`, negative ? -0.5 : 0.5, negative ? -0.5 : 0.5);
@@ -162,8 +219,8 @@ describe.skipIf(ffmpeg === null)("presenter prefixes through real FFmpeg", () =>
       expect(result.durationSec).toBe(duration);
       expect(state.times).toHaveLength(negative ? 54 : 24);
       const frames = decodedFrames(result.path);
-      // Cut MP4s normalize to the recorder cap (60 fps); single ranges retain 20 fps.
-      const fps = format === "gif" ? GIF_PRESETS.high.fps : cut ? 60 : 20;
+      // Bounded presenter compositions replay held screen frames at 60 fps.
+      const fps = format === "gif" ? GIF_PRESETS.high.fps : 60;
       // Every frame decodes, and frame count / known output rate is the
       // playable duration, independently of the result metadata.
       expect(frames).toHaveLength(duration * fps);

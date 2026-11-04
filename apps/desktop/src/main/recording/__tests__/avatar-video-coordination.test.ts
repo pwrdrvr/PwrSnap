@@ -365,12 +365,12 @@ describe("presenter export preparation bounds", () => {
     expect(final.join(" ")).toContain("trim=start=7.000:end=8.000");
   });
 
-  test("old prefix compositions and final exports are not accepted after the boundary/audio fix", async () => {
+  test.each([undefined, 2])("old prefix compositions and final exports are not accepted (revision %s)", async (revision) => {
     const record = longTake();
-    // A prior pipeline fixture: its key omitted the boundary revision.
+    // Prior pipeline fixtures, including the pre-VFR boundary revision.
     const oldKey = createHash("sha256").update(JSON.stringify([
       "mediapipe-landscape-490e9ea7-v1", record.sha256, record.video!.camera,
-      record.video!.avatar, undefined, { sourceEndSec: 2 }
+      record.video!.avatar, undefined, { sourceEndSec: 2, ...(revision === undefined ? {} : { boundaryVersion: revision }) }
     ])).digest("hex").slice(0, 24);
     const directory = join(state.root, "cache", "video", record.id);
     const { mkdir } = await import("node:fs/promises");
@@ -379,7 +379,7 @@ describe("presenter export preparation bounds", () => {
     const stale = join(state.root, "old-export.gif");
     await writeFile(stale, "old missing-presenter export");
     state.legacyExport = {
-      key: `:avatar:${agentAvatar.avatarCacheKey(record)}`,
+      key: `:avatar:${agentAvatar.avatarCacheKey(record)}${revision === undefined ? "" : ":prefix-v2"}`,
       result: { path: stale, byteSize: 29, durationSec: 2, widthPx: 640, heightPx: 480, fromCache: true }
     };
     const pending = rangeExport(record, 0, 2, "gif");
@@ -388,6 +388,22 @@ describe("presenter export preparation bounds", () => {
     expect(result.path).not.toBe(stale);
     expect(result.fromCache).toBe(false);
     expect(state.frameTimes).toHaveLength(31);
+  });
+
+  test("an earlier full composition cannot bypass the screen clock correction for a prefix", async () => {
+    const record = longTake();
+    const oldFullKey = createHash("sha256").update(JSON.stringify([
+      "mediapipe-landscape-490e9ea7-v1", record.sha256, record.video!.camera,
+      record.video!.avatar, undefined
+    ])).digest("hex").slice(0, 24);
+    const directory = join(state.root, "cache", "video", record.id);
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, `avatar-${oldFullKey}.mp4`), "old VFR composition");
+    const pending = agentAvatar.prepareAvatarVideo(record, undefined, undefined, undefined, 2);
+    await releaseFrames();
+    expect(await readFile(await pending, "utf8")).toBe("encoded fixture");
+    expect(composition().join(" ")).toContain("tpad=stop_mode=clone:stop_duration=2.000000,trim=end=2.000000[screen]");
   });
 
   test("a prefix cannot satisfy a later horizon or the full-take Sizzle consumer", async () => {

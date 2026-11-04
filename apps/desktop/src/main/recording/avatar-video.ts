@@ -22,6 +22,7 @@ import { getRuntimeProcessRole } from "../process-role";
 
 const MODEL_REVISION = "mediapipe-landscape-490e9ea7-v1";
 const FPS = 15;
+const COMPOSITION_REVISION = "screen-clock-v3";
 export type AvatarCanvas = { width: number; height: number };
 
 /** The presenter a recording renders with on `canvas` (the recording's own
@@ -81,15 +82,16 @@ export function avatarCacheKey(
     .update(
       JSON.stringify([
         MODEL_REVISION,
+        COMPOSITION_REVISION,
         record.sha256,
         record.video?.camera,
-        // A recording with no spans hashes exactly as before spans existed,
-        // so its cached composition is still found.
+        // Keep the compact style form for recordings without spans.
         layers.spans.length === 0 ? layers.base : layers,
         canvas,
-        // Keep existing full-take keys, including Sizzle consumers, stable.
+        // Earlier full compositions also need the clock revision: reusing
+        // one for a prefix would bypass held-screen replay before overlay.
         ...(sourceEndSec !== undefined && sourceEndSec < record.video!.durationSec
-          ? [{ sourceEndSec, boundaryVersion: 2 }]
+          ? [{ sourceEndSec }]
           : []),
       ]),
     )
@@ -253,6 +255,8 @@ export function avatarCompositionFilter(input: {
   width: number;
   height: number;
   normalizeScreen?: boolean;
+  /** Replay held screen frames before overlay, through this source-time horizon. */
+  sourceEndSec?: number;
   /** Stretches with their own presenter; `style` shows everywhere else. */
   spans?: readonly PresenterLayerSpan[];
   /** Input indexes of the cut-out mask video and the original camera.
@@ -271,10 +275,25 @@ export function avatarCompositionFilter(input: {
     },
     ...spans.map((span) => ({ style: span.style, trim: span, enable: window(span) })),
   ].filter((layer) => layer.style.visible);
-  const screenIn = input.normalizeScreen ? "[screen]" : "[0:v]";
-  const screen = input.normalizeScreen
-    ? `[0:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[screen];`
-    : "";
+  // Normalize the held SCREEN before overlay, as cut export does. Output
+  // -t alone can end at the last real VFR frame before an idle gap; padding
+  // the composed result instead would freeze the presenter through that gap.
+  // A tail with no later screen packet needs padding too (audio may continue
+  // after video EOF); trim caps it at the declared recording/prefix horizon.
+  const screenSteps = [
+    ...(input.sourceEndSec === undefined ? [] : [
+      "fps=60",
+      `tpad=stop_mode=clone:stop_duration=${input.sourceEndSec.toFixed(6)}`,
+      `trim=end=${input.sourceEndSec.toFixed(6)}`,
+    ]),
+    ...(input.normalizeScreen ? [
+      `scale=${width}:${height}:force_original_aspect_ratio=decrease`,
+      `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black`,
+      "setsar=1",
+    ] : []),
+  ];
+  const screenIn = screenSteps.length > 0 ? "[screen]" : "[0:v]";
+  const screen = screenSteps.length > 0 ? `[0:v]${screenSteps.join(",")}[screen];` : "";
   if (layers.length === 0) return `${screen}${screenIn}format=yuv420p[out]`;
 
   const needsMask = layers.some((layer) => layer.style.background === "remove");
@@ -424,6 +443,7 @@ export async function prepareAvatarVideo(
             width: canvas?.width ?? record.width_px,
             height: canvas?.height ?? record.height_px,
             normalizeScreen: canvas !== undefined,
+            sourceEndSec: durationSec,
             inputs: {
               ...(maskSource ? { mask: 1 } : {}),
               ...(cameraSource ? { camera: maskSource ? 2 : 1 } : {}),

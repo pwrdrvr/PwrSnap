@@ -14,6 +14,10 @@
 // job is one string predicate, and into every test of it.
 
 import { APPLE_FM_LINK_URLS } from "@pwrsnap/shared";
+import { CHATGPT_PLAN_HELP_URL, CHATGPT_USAGE_URL } from "@pwrsnap/shared";
+
+/** Links the Sign in with ChatGPT surfaces open, compared whole. */
+const CHATGPT_URLS: ReadonlySet<string> = new Set([CHATGPT_USAGE_URL, CHATGPT_PLAN_HELP_URL]);
 
 /** URLs PwrSnap is allowed to open in the user's default browser. Keeps
  *  `shell.openExternal` from becoming an arbitrary-navigation gadget: a
@@ -22,6 +26,10 @@ import { APPLE_FM_LINK_URLS } from "@pwrsnap/shared";
  *  Apple pages about the on-device model. https-only. GitHub is scoped to
  *  the `/pwrdrvr/*` path so an attacker can't bounce the user to an
  *  arbitrary repo/gist/profile under the (trusted) github.com host. */
+ *  site, PwrDrvr's own GitHub org, the Codex release index, and the two
+ *  ChatGPT plan pages (usage settings, help article). https-only. GitHub
+ *  is scoped to the `/pwrdrvr/*` path so an attacker can't bounce the user
+ *  to an arbitrary repo/gist/profile under the (trusted) github.com host. */
 export function isAllowedExternalUrl(raw: string): boolean {
   let url: URL;
   try {
@@ -36,6 +44,10 @@ export function isAllowedExternalUrl(raw: string): boolean {
   // Providers → Apple Intelligence. Exact URLs only: neither Apple host is
   // opened for anything else.
   if (APPLE_FM_LINK_URLS.includes(raw)) return true;
+  // Sign in with ChatGPT: OpenAI's UI guidelines require "Manage usage" to
+  // open ChatGPT's usage settings, plus the plan help article. Exact URLs
+  // only, the same shape as the Codex release index below.
+  if (CHATGPT_URLS.has(url.href)) return true;
   if (host === "github.com") {
     // Codex upgrade help links to this one upstream release index only.
     if (url.pathname === "/openai/codex/releases" && !url.search && !url.hash) return true;

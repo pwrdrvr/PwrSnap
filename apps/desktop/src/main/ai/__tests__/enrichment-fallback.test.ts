@@ -23,7 +23,7 @@ function settings(primary: string | undefined, fallback: Settings["ai"]["enrichm
 
 describe("isEnrichmentBackendUnavailable", () => {
   test.each([
-    ["connection refused", new DirectApiError("x", undefined, true), true],
+    ["connection refused", new DirectApiError("x", undefined, undefined, true), true],
     ["404 (no model loaded)", new DirectApiError("x", 404), true],
     ["502 (proxy, stopped upstream)", new DirectApiError("x", 502), true],
     ["503", new DirectApiError("x", 503), true],

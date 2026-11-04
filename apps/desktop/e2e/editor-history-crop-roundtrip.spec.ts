@@ -138,8 +138,10 @@ test("history roundtrip: destroying the editor window releases history without e
     await drawArrow(win, app, captureId);
     await win.keyboard.press(`${accel()}+Z`);
     await expect.poll(async () => (await arrows(app, captureId)).length).toBe(0);
-    await win.keyboard.press(`${accel()}+Shift+Z`);
-    await expect.poll(async () => (await arrows(app, captureId)).length).toBe(1);
+    // The committed undo has allocated main-owned history state. Destroy the
+    // window even if its reply/ACK is still in flight: those owners must be
+    // released safely too. SQLite visibility does not mean the renderer has
+    // finished undoing, so issuing Redo here would race that unfinished undo.
     const errors = await app.electronApp.evaluate(async ({ BrowserWindow }) => {
       const failures: string[] = [];
       const monitor = (error: Error): void => { failures.push(error.message); };

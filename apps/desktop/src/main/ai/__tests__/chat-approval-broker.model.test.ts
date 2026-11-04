@@ -102,7 +102,8 @@ type Operation =
   | { kind: "respond"; index: number; decision: Decision }
   | { kind: "settle"; index: number; fail: boolean }
   | { kind: "close-owner"; owner: number }
-  | { kind: "close-thread" | "open-thread"; thread: string };
+  | { kind: "close-thread"; thread: string }
+  | { kind: "open-thread"; thread: string };
 
 class Command implements fc.AsyncCommand<Model, Real> {
   constructor(readonly op: Operation) {}

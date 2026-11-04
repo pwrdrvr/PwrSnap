@@ -1,8 +1,8 @@
 // Session-memory undo/redo stack for editor layer edits.
 //
-// The DB doesn't track an edit history per se — every layer change
-// goes through `layers:upsert` / `layers:delete` (via the dispatcher)
-// and bumps the capture's `edits_version`. We don't need persistent
+// The DB doesn't track an edit history per se — layer changes go
+// through the model's dispatcher and the main command bus, and writes
+// bump the capture's `edits_version`. We don't need persistent
 // time-travel; we just need the user to be able to walk back the
 // operations they did in *this* editor session.
 //
@@ -117,12 +117,10 @@ export type EditOp =
       newHeightPx: number;
     }
   /** Phase 3.5 — drag of an existing overlay's transform handle, or
-   *  edit of its style via the popover. The update IPC is implemented
-   *  as delete-plus-insert (the overlays/layers surface is INSERT-only
-   *  + id-collision-on-upsert respectively), so each undo/redo cycle
-   *  also lands a fresh id. We track that via `currentIdRef` — a
-   *  mutable id pointer kept inside the EditOp so the next undo/redo
-   *  call targets the latest live row in the chain.
+   *  edit of its style via the popover. The dispatcher updates the
+   *  existing layer in place, preserving identity through undo/redo.
+   *  `currentIdRef` retains the identity accepted by the dispatcher
+   *  for callers and the next replay.
    *
    *  `previousGeometry` / `nextGeometry` carry the pre/post-edit
    *  geometry; undo replays the previous, redo replays the next. Same
@@ -274,12 +272,10 @@ export type UseUndoRedoResult = {
   }) => void;
   /** Phase 3.5 — record a geometry change (transform-handle drag).
    *  `previousGeometry` is the PRE-DRAG geometry, `nextGeometry` is
-   *  the POST-DRAG geometry. `currentIdRef` is a mutable id pointer
-   *  the hook updates after each undo/redo cycle (the update IPC mints
-   *  a fresh id on every replay). Caller initializes it with the
-   *  post-edit layer id (typically `result.value.artifact.node.id`).
-   *  The caller is responsible for updating the selection model to
-   *  follow `currentIdRef.current` on undo/redo. */
+   *  the POST-DRAG geometry. Caller initializes `currentIdRef` with
+   *  the post-edit layer id (typically `result.value.artifact.node.id`).
+   *  The hook refreshes it from dispatcher replies; in-place v2
+   *  updates preserve that id and the caller's selection. */
   recordGeometry: (
     entry: {
       currentIdRef: { current: string };
@@ -838,11 +834,8 @@ export function useUndoRedo(opts: {
         return;
       }
       if (op.kind === "geometry") {
-        // Phase 3.5 — dispatch updateGeometry against the chain's
-        // CURRENT id (the post-edit id from the last cycle). The
-        // dispatcher delete-plus-inserts a new row; we capture the
-        // fresh id and write it back onto currentIdRef so the next
-        // undo/redo targets the latest live row.
+        // Dispatch against the accepted layer identity and retain it
+        // for the next replay. The v2 update preserves the row's id.
         //
         // Loop over EVERY item so multi-drag undo restores every
         // layer's geometry, not just the first. Same items[]

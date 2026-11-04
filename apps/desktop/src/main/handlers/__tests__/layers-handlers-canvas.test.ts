@@ -409,9 +409,15 @@ describe("bundle:updateCanvasDimensions handler", () => {
     expect(actual.shape.point.y).toBeCloseTo(0.9, 12);
   });
 
-  test.each(["undo", "reset"] as const)("odd-size edge crop supports %s with pixel-rounded extents", async (mode) => {
+  test.each([
+    { mode: "undo", sourceWidth: 1001, sourceHeight: 803, y: 0.5 },
+    { mode: "reset", sourceWidth: 1001, sourceHeight: 803, y: 0.5 },
+    // Shrunk property counterexample: one right/top half-crop of 513×513.
+    { mode: "undo", sourceWidth: 513, sourceHeight: 513, y: 0 },
+    { mode: "reset", sourceWidth: 513, sourceHeight: 513, y: 0 }
+  ])("odd-size $sourceWidth×$sourceHeight edge crop supports $mode with pixel-rounded extents", async ({ mode, sourceWidth, sourceHeight, y }) => {
     const captureId = "odd_edge";
-    seedV2Capture(captureId, 1001, 803, 1001, 803);
+    seedV2Capture(captureId, sourceWidth, sourceHeight, sourceWidth, sourceHeight);
     const before = listLayerTree(captureId);
     const base = before.find((layer) => layer.kind === "raster")!;
     insertLayerTreeForCapture(captureId, [
@@ -419,25 +425,28 @@ describe("bundle:updateCanvasDimensions handler", () => {
       { ...base, id: "edge_blur".padEnd(16, "x"), kind: "effect", effect: { type: "blur", radius_px: 10 }, clip_rect: { x: 40, y: 80, w: 200, h: 120 } }
     ]);
     const original = listLayerTree(captureId);
-    const forward = await bus.dispatch("bundle:cropCanvas", { captureId, rect: { x: 0.5, y: 0.5, w: 0.5, h: 0.5 } }, { principal: "ipc" });
+    const rect = { x: 0.5, y, w: 0.5, h: 0.5 };
+    const forward = await bus.dispatch("bundle:cropCanvas", { captureId, rect }, { principal: "ipc" });
     if (!forward.ok) throw new Error("edge crop failed");
-    expect([forward.value.widthPx, forward.value.heightPx]).toEqual([501, 402]);
+    const halfWidth = Math.round(sourceWidth / 2);
+    const halfHeight = Math.round(sourceHeight / 2);
+    expect([forward.value.widthPx, forward.value.heightPx]).toEqual([halfWidth, halfHeight]);
     let width = forward.value.widthPx;
     let height = forward.value.heightPx;
     if (mode === "reset") {
-      const second = await bus.dispatch("bundle:cropCanvas", { captureId, rect: { x: 0.5, y: 0.5, w: 0.5, h: 0.5 } }, { principal: "ipc" });
+      const second = await bus.dispatch("bundle:cropCanvas", { captureId, rect }, { principal: "ipc" });
       if (!second.ok) throw new Error("second edge crop failed");
       width = second.value.widthPx;
       height = second.value.heightPx;
     }
     const raster = listLayerTree(captureId).find((layer) => layer.kind === "raster")!;
     if (raster.kind !== "raster") throw new Error("missing raster");
-    const cumulative = cropRectFromCanvas({ canvasWidthPx: width, canvasHeightPx: height, sourceWidthPx: 1001, sourceHeightPx: 803, rasterTranslateXPx: raster.transform[4], rasterTranslateYPx: raster.transform[5] })!;
-    const effective = { x: 0.5, y: 0.5, w: 501 / 1001, h: 402 / 803 };
+    const cumulative = cropRectFromCanvas({ canvasWidthPx: width, canvasHeightPx: height, sourceWidthPx: sourceWidth, sourceHeightPx: sourceHeight, rasterTranslateXPx: raster.transform[4], rasterTranslateYPx: raster.transform[5] })!;
+    const effective = { ...rect, w: halfWidth / sourceWidth, h: halfHeight / sourceHeight };
     const reverse = await bus.dispatch("bundle:cropCanvas", { captureId, rect: inverseCropRect(mode === "reset" ? cumulative : effective)!, restore: true }, { principal: "ipc" });
     expect(reverse.ok).toBe(true);
     if (!reverse.ok) throw new Error("edge restore failed");
-    expect([reverse.value.widthPx, reverse.value.heightPx]).toEqual([1001, 803]);
+    expect([reverse.value.widthPx, reverse.value.heightPx]).toEqual([sourceWidth, sourceHeight]);
     const restored = listLayerTree(captureId);
     for (const layer of restored) expect(LayerSchema.safeParse(layer).success).toBe(true);
     for (const layer of original) {
@@ -445,6 +454,17 @@ describe("bundle:updateCanvasDimensions handler", () => {
       if (actual.kind === "vector" && actual.shape.kind === "text") {
         expect(actual.shape.point.x).toBeCloseTo(0.95, 12);
         expect(actual.shape.point.y).toBeCloseTo(0.9, 12);
+      } else if (actual.kind === "raster" && layer.kind === "raster") {
+        // Inverting odd fractional origins may leave floating-point noise;
+        // source identity, metadata and the linear transform stay exact.
+        expect({ ...actual, transform: layer.transform }).toEqual(layer);
+        actual.transform.forEach((value, index) => expect(value).toBeCloseTo(layer.transform[index]!, 12));
+      } else if (actual.kind === "effect" && layer.kind === "effect") {
+        expect({ ...actual, clip_rect: layer.clip_rect }).toEqual(layer);
+        expect(actual.clip_rect?.w).toBe(layer.clip_rect?.w);
+        expect(actual.clip_rect?.h).toBe(layer.clip_rect?.h);
+        expect(actual.clip_rect!.x).toBeCloseTo(layer.clip_rect!.x, 12);
+        expect(actual.clip_rect!.y).toBeCloseTo(layer.clip_rect!.y, 12);
       } else expect(actual).toEqual(layer);
     }
     expect(restored).toHaveLength(original.length);

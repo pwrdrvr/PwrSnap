@@ -104,7 +104,7 @@ type SelectorPresentationRaf = {
 // via the forwarded globalShortcut IPC. handleEscape() ignores a second
 // Escape within this window so one press can't both step back AND
 // cancel. Comfortably longer than the IPC hop, far shorter than a
-// deliberate second press. Timer-only — NOT re-armed on mousemove (a
+// deliberate second press. NOT re-armed on mousemove (a
 // stray cursor move must not be able to defeat the de-dupe).
 const ESCAPE_DEDUPE_MS = 50;
 
@@ -458,12 +458,11 @@ export function RegionSelector() {
   const vLineRef = useRef<HTMLDivElement | null>(null);
   // Guards handleEscape against a double-delivered single Esc press
   // (focused-renderer keydown + forwarded globalShortcut IPC). Armed on
-  // the first Escape, auto-disarmed after ESCAPE_DEDUPE_MS — long enough
+  // the first Escape, expires after ESCAPE_DEDUPE_MS — long enough
   // to swallow the near-simultaneous duplicate, far shorter than any
-  // deliberate second press. escapeTimerRef holds the disarm timer so it
-  // can be cleared on unmount / rescheduled.
-  const escapeGuardRef = useRef(false);
-  const escapeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // deliberate second press. Compare the monotonic clock at delivery:
+  // forwarded IPC can run ahead of an overdue renderer timer.
+  const lastEscapeRef = useRef(Number.NEGATIVE_INFINITY);
   // True while an interior mousedown is staging a discard of the
   // committed pick. The branch leaves rect + snapTarget untouched, so a
   // click-without-drag "keep" just stays put (no re-derivation); a drag
@@ -1613,19 +1612,15 @@ export function RegionSelector() {
   // keydown path and the forwarded-IPC path so they can't drift:
   //   - committed pick (anything but snap) → step back to snap, no submit
   //   - already in snap (nothing picked)   → exit (cancel → submit)
-  // The escapeGuard swallows a second Escape within ESCAPE_DEDUPE_MS so a
+  // The time guard swallows a second Escape within ESCAPE_DEDUPE_MS so a
   // single physical press delivered via both paths can't step-back-then-
   // cancel. The window is far shorter than any deliberate second press,
   // so "Esc, Esc to exit" still works; it is NOT re-armed on mousemove —
   // a stray cursor move must not be able to defeat the de-dupe.
   function handleEscape(): void {
-    if (escapeGuardRef.current) return;
-    escapeGuardRef.current = true;
-    if (escapeTimerRef.current !== null) clearTimeout(escapeTimerRef.current);
-    escapeTimerRef.current = setTimeout(() => {
-      escapeGuardRef.current = false;
-      escapeTimerRef.current = null;
-    }, ESCAPE_DEDUPE_MS);
+    const now = performance.now();
+    if (now - lastEscapeRef.current < ESCAPE_DEDUPE_MS) return;
+    lastEscapeRef.current = now;
     // A pick set is a committed selection, exactly like an adjusting
     // rect: the first Escape drops it, a second one exits. Checked
     // before the interaction kind because togglePick parks the
@@ -2427,7 +2422,6 @@ export function RegionSelector() {
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
       unsubKey?.();
-      if (escapeTimerRef.current !== null) clearTimeout(escapeTimerRef.current);
     };
     // commit/cancel close over refs only; safe to leave deps empty.
     // eslint-disable-next-line react-hooks/exhaustive-deps

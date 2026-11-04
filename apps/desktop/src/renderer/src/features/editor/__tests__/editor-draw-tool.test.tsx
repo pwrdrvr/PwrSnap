@@ -634,6 +634,20 @@ describe("Editor — canvas gestures and Draw tool", () => {
     expect(ops.filter((op) => op.kind === "upsert")).toHaveLength(1);
   });
 
+  test("a second pointer press cannot replace the active arrow's origin", async () => {
+    const canvas = await mountWithDrawTool();
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true })); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointerdown", 100, 100)); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointermove", 300, 200)); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointerdown", 900, 900, 2)); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointermove", 500, 200)); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointerup", 500, 200)); });
+    expect(ops).toHaveLength(1);
+    expect(ops[0]).toMatchObject({ kind: "upsert", node: {
+      kind: "vector", shape: { kind: "arrow", from: { x: 0.1, y: 0.1 }, to: { x: 0.5, y: 0.2 } }
+    } });
+  });
+
   test("a second pointer cannot replace, move, cancel or finish the active stroke", async () => {
     const canvas = await mountWithDrawTool();
     await act(async () => { canvas.dispatchEvent(pointer("pointerdown", 100, 100)); });

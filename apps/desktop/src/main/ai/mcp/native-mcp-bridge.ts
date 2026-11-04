@@ -103,12 +103,14 @@ export class McpByteTransport implements Transport {
   receive(bytes: Buffer): void {
     if (this.closed) return;
     this.buffer += this.decoder.write(bytes);
-    if (Buffer.byteLength(this.buffer) > MAX_MESSAGE)
-      return this.fail(new Error("MCP message exceeds 1 MiB"));
     let newline: number;
     while ((newline = this.buffer.indexOf("\n")) >= 0) {
       const line = this.buffer.slice(0, newline);
       this.buffer = this.buffer.slice(newline + 1);
+      // A control-pipe chunk can coalesce several complete MCP frames. Limit
+      // each frame, rather than making admission depend on OS read boundaries.
+      if (Buffer.byteLength(line) > MAX_MESSAGE)
+        return this.fail(new Error("MCP message exceeds 1 MiB"));
       if (line.trim() === "") continue;
       try {
         const message = JSON.parse(line) as JSONRPCMessage;
@@ -124,6 +126,8 @@ export class McpByteTransport implements Transport {
         return;
       }
     }
+    if (Buffer.byteLength(this.buffer) > MAX_MESSAGE)
+      this.fail(new Error("MCP message exceeds 1 MiB"));
   }
   private drain(): void {
     if (!this.started || this.closed || this.preparing || this.pending.length === 0) return;

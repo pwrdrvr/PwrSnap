@@ -1,4 +1,4 @@
-import { parseCustomAi, RecordingDevicePreferenceSchema, type RecordingDevicePreference } from "@pwrsnap/shared";
+import { isValidLocalAgentBudgets, parseCustomAi, RecordingDevicePreferenceSchema, type RecordingDevicePreference } from "@pwrsnap/shared";
 // Internal settings persistence adapter. DesktopSettingsStore is the sole
 // production owner. The first read hydrates an immutable snapshot from disk;
 // subsequent reads stay in memory for the process lifetime. Reads
@@ -1605,7 +1605,7 @@ function parseLocalAgentGrant(raw: unknown): LocalAgentClientGrant | null {
     const maxAge=value.maxCaptureAgeDays;
     if (maxAge !== null && (typeof maxAge !== "number" || !Number.isInteger(maxAge) || maxAge < 1 || maxAge > 36500)) return null;
     const budgets=parseLocalAgentBudgets(value.budgets);
-    if (budgets === null) return null;
+    if (budgets === null || !isValidLocalAgentBudgets(budgets)) return null;
     nativeConsent={capabilities:parseLocalAgentCapabilities(value.capabilities), maxCaptureAgeDays:maxAge, budgets};
   }
   return {

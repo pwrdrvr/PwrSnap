@@ -347,6 +347,13 @@ export class IpcHttpMcp {
       this.reply(res, 410, "Session revoked");
       return;
     }
+    // Node may emit several pipelined requests before any body read settles.
+    // Another request can bind this socket during the await above. Recheck
+    // before consuming a credential or dispatching on the approved transport.
+    if (this.bound.has(socket) && this.bound.get(socket) !== ticket) {
+      this.reply(res, 403, "This IPC connection belongs to another Session");
+      return;
+    }
     if (!ticket.used) {
       if (!InitializeRequestSchema.safeParse(body).success) {
         this.reply(res, 400, "Initialize MCP first");

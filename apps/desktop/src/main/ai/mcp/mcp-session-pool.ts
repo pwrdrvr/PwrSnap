@@ -24,7 +24,8 @@ export class McpSessionPool<T> {
   admit(id: number, value: T): Promise<boolean> {
     return this.serialize(async () => {
       await this.pruneNow();
-      if (this.sessions.size >= this.limit || !(await this.valid(value))) return false;
+      if (this.sessions.has(id) || this.sessions.size >= this.limit || !(await this.valid(value)))
+        return false;
       this.sessions.set(id, value);
       return true;
     });

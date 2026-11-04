@@ -213,7 +213,7 @@ export function isValidRole(role: LocalAgentRoleProfile): boolean {
       (Number.isInteger(role.maxCaptureAgeDays) &&
         role.maxCaptureAgeDays >= 1 &&
         role.maxCaptureAgeDays <= 36_500)) &&
-    isValidBudgets(role.budgets)
+    isValidLocalAgentBudgets(role.budgets)
   );
 }
 
@@ -254,7 +254,7 @@ function budgets(
   };
 }
 
-function isValidBudgets(value: LocalAgentRoleBudgets): boolean {
+export function isValidLocalAgentBudgets(value: LocalAgentRoleBudgets): boolean {
   if (typeof value !== "object" || value === null) return false;
   return USAGE_ACTIONS.every((action) => {
     const budget = value[action];

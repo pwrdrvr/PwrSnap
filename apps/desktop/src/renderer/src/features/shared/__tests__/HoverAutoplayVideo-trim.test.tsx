@@ -55,6 +55,7 @@ beforeEach(() => {
 
 afterEach(() => {
   act(() => root.unmount());
+  vi.useRealTimers();
   host.remove();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -135,6 +136,59 @@ describe("trimmed hover preview", () => {
     expect(clock()).toBe("0:00.0 / 0:01.6");
     act(() => host.querySelector("button")!.click());
     expect(video.currentTime).toBe(1.81);
+  });
+
+  test("paused recovery crosses a VFR gap when seeks do not deliver new frame callbacks", async () => {
+    vi.useFakeTimers();
+    const video = await render({ start: 1.81, end: 3.41 });
+    // Chromium need not submit a new picture when a paused seek resolves
+    // to the same VFR frame. Only seeked is guaranteed for these probes.
+    for (let attempt = 0; attempt < 8 && video.currentTime < 2.4; attempt++) {
+      emit(video, "seeked");
+      await act(async () => vi.advanceTimersByTime(100));
+    }
+    expect(video.currentTime).toBeGreaterThanOrEqual(2.4);
+    expect(video.currentTime).toBeLessThan(3.41);
+    expect(draw).not.toHaveBeenCalled();
+    decoded(2.4);
+    expect(draw).toHaveBeenCalledTimes(1);
+    expect(video.paused).toBe(true);
+    expect(video.play).not.toHaveBeenCalled();
+    expect(clock()).toBe("0:00.0 / 0:01.6");
+
+    emit(video, "seeked");
+    const settled = video.currentTime;
+    await act(async () => vi.advanceTimersByTime(1000));
+    expect(video.currentTime).toBe(settled);
+  });
+
+  test("seeked-only recovery is bounded when the trim contains no encoded frame", async () => {
+    vi.useFakeTimers();
+    const video = await render({ start: 1.81, end: 1.91 });
+    for (let attempt = 0; attempt < 25; attempt++) {
+      emit(video, "seeked");
+      await act(async () => vi.advanceTimersByTime(100));
+    }
+    const settled = video.currentTime;
+    expect(settled).toBeGreaterThan(1.81);
+    expect(settled).toBeLessThan(1.91);
+    emit(video, "seeked");
+    await act(async () => vi.advanceTimersByTime(1000));
+    expect(video.currentTime).toBe(settled);
+    expect(draw).not.toHaveBeenCalled();
+    expect(video.play).not.toHaveBeenCalled();
+    expect(clock()).toBe("0:00.0 / 0:00.1");
+  });
+
+  test("starting playback cancels pending paused recovery", async () => {
+    vi.useFakeTimers();
+    const video = await render({ start: 1.81, end: 3.41 });
+    emit(video, "seeked");
+    act(() => host.querySelector("button")!.click());
+    const position = video.currentTime;
+    await act(async () => vi.advanceTimersByTime(1000));
+    expect(video.currentTime).toBe(position);
+    expect(video.paused).toBe(false);
   });
 
   test("a new trim clamps the requested paused position rather than the decoder's probe position", async () => {

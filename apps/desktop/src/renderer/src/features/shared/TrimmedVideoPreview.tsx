@@ -121,7 +121,39 @@ export function TrimmedVideoPreview({
     if (el === null) return;
     let raf = 0;
     let vfc = 0;
+    let probeTimer: ReturnType<typeof setTimeout> | undefined;
     let disposed = false;
+    const clearProbeTimer = (): void => {
+      clearTimeout(probeTimer);
+      probeTimer = undefined;
+    };
+    const advancePausedProbe = (): void => {
+      clearProbeTimer();
+      const probe = pausedProbe.current;
+      if (disposed || !el.paused || el.seeking || probe === null) return;
+      const r = rangeRef.current;
+      // Widen for sparse/VFR gaps, bounded by the exclusive out-point.
+      const next = Math.min(r.end - 0.00001, el.currentTime + probe.step);
+      if (probe.attempts >= 24 || next <= el.currentTime) {
+        pausedProbe.current = null;
+      } else {
+        recoveredPosition.current = probe.requested;
+        probe.attempts += 1;
+        probe.step *= 2;
+        lastSeek.current = next;
+        el.currentTime = next;
+      }
+    };
+    const onSeeked = (): void => {
+      clearProbeTimer();
+      // A paused seek within the same VFR picture may emit seeked but
+      // no new frame callback. Give the compositor time to report a kept
+      // picture, then continue probing even if it submits nothing new.
+      // This only moves the decoder: onFrame still verifies every paint.
+      if (pausedProbe.current !== null && el.paused && typeof el.requestVideoFrameCallback === "function") {
+        probeTimer = setTimeout(advancePausedProbe, 100);
+      }
+    };
     const checkTime = (): void => {
       const r = rangeRef.current;
       if (el.currentTime >= r.end) {
@@ -140,6 +172,7 @@ export function TrimmedVideoPreview({
       if (!el.paused) raf = requestAnimationFrame(tick);
     };
     const onPlay = (): void => {
+      clearProbeTimer();
       pausedProbe.current = null;
       recoveredPosition.current = null;
       setPlaying(true);
@@ -160,6 +193,7 @@ export function TrimmedVideoPreview({
       if (saved?.playing === true) void el.play().catch(() => setPlaying(false));
     };
     const onSeeking = (): void => {
+      clearProbeTimer();
       const r = rangeRef.current;
       // Chromium quantizes currentTime to the media clock. An internal
       // out-point seek must survive that rounding without losing its
@@ -192,30 +226,17 @@ export function TrimmedVideoPreview({
           canvas.getContext("2d")?.drawImage(el, 0, 0, width, height);
           paintedTime.current = metadata.mediaTime;
           pausedProbe.current = null;
+          clearProbeTimer();
         }
       } else if (!el.seeking && el.paused && metadata.mediaTime < r.start) {
-        const probe = pausedProbe.current;
-        if (probe !== null) {
-          // Start with one frame step, then widen for sparse/VFR gaps.
-          // The final probe approaches the exclusive out-point so an
-          // unknown frame rate cannot hide a kept frame near the end.
-          const next = Math.min(r.end - 0.00001, el.currentTime + probe.step);
-          if (probe.attempts >= 24 || next <= el.currentTime) {
-            pausedProbe.current = null;
-          } else {
-            recoveredPosition.current = probe.requested;
-            probe.attempts += 1;
-            probe.step *= 2;
-            lastSeek.current = next;
-            el.currentTime = next;
-          }
-        }
+        advancePausedProbe();
       }
       if (!el.seeking) checkTime();
       vfc = el.requestVideoFrameCallback(onFrame);
     };
     el.addEventListener("loadedmetadata", onLoaded);
     el.addEventListener("seeking", onSeeking);
+    el.addEventListener("seeked", onSeeked);
     el.addEventListener("timeupdate", checkTime);
     el.addEventListener("play", onPlay);
     el.addEventListener("pause", onPause);
@@ -226,10 +247,12 @@ export function TrimmedVideoPreview({
     if (el.readyState >= 1) onLoaded();
     return () => {
       disposed = true;
+      clearProbeTimer();
       cancelAnimationFrame(raf);
       if (typeof el.cancelVideoFrameCallback === "function") el.cancelVideoFrameCallback(vfc);
       el.removeEventListener("loadedmetadata", onLoaded);
       el.removeEventListener("seeking", onSeeking);
+      el.removeEventListener("seeked", onSeeked);
       el.removeEventListener("timeupdate", checkTime);
       el.removeEventListener("play", onPlay);
       el.removeEventListener("pause", onPause);

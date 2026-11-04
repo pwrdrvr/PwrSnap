@@ -151,6 +151,7 @@ afterEach(async () => {
   ]) {
     delete document.body.dataset[k];
   }
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -242,8 +243,8 @@ async function emitKey(key: string): Promise<void> {
   });
 }
 
-// Real-time delay, used to let the Escape de-dupe guard (a ~50ms timer)
-// disarm between a step-back and a deliberate second Escape. Kept just
+// Real-time delay, used to let the Escape de-dupe window (~50ms)
+// expire between a step-back and a deliberate second Escape. Kept just
 // above ESCAPE_DEDUPE_MS so the second press is honored.
 const ESC_GUARD_WAIT_MS = 70;
 function delay(ms: number): Promise<void> {
@@ -675,6 +676,23 @@ describe("U2 — multi-step Escape", () => {
     await emitKey("Escape");
     expect(submitRegion).not.toHaveBeenCalled();
     expect(document.body.dataset.interaction).toBe("snap");
+  });
+
+  test("a deliberate forwarded Esc exits even when renderer timers have not run", async () => {
+    await mount();
+    await drawRect();
+    vi.useFakeTimers();
+    const now = vi.spyOn(performance, "now").mockReturnValue(1000);
+    await emitKey("Escape");
+    expect(document.body.dataset.interaction).toBe("snap");
+    expect(submitRegion).not.toHaveBeenCalled();
+
+    // IPC can run before an overdue renderer timer. Elapsed time, rather
+    // than execution of that timer, must decide whether this is a new press.
+    now.mockReturnValue(1080);
+    await emitKey("Escape");
+    expect(submitRegion).toHaveBeenCalledExactlyOnceWith({ ok: false });
+    now.mockRestore();
   });
 
   test("hint copy: 'esc back' while adjusting, 'esc cancel' in snap", async () => {

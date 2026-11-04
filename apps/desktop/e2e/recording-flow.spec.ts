@@ -165,6 +165,18 @@ test.describe("video float-over", () => {
         await expect(page.getByTestId("preview-timecode")).toHaveText("0:00.0 / 0:01.2");
         await expect.poll(pixel, { timeout: 5000 }).toBe("green");
         expect(await page.locator("video").evaluate((v) => (v as HTMLVideoElement).paused)).toBe(true);
+
+        // A VFR seek within the already-painted green picture may finish
+        // without another frame callback. Recovery must leave this valid
+        // paused scrub at its requested position, rather than probing on
+        // toward the next (blue) picture while the clock stays behind.
+        await page.locator("video").evaluate((v) => { (v as HTMLVideoElement).currentTime = 2.6; });
+        await expect.poll(() => page.locator("video").evaluate((v) => (v as HTMLVideoElement).seeking)).toBe(false);
+        await expect(page.getByTestId("preview-timecode")).toHaveText("0:00.3 / 0:01.2");
+        await page.waitForTimeout(600); // outlast the 100 ms recovery timer
+        expect(await page.locator("video").evaluate((v) => (v as HTMLVideoElement).currentTime)).toBeCloseTo(2.6, 3);
+        await expect.poll(pixel, { timeout: 5000 }).toBe("green");
+        expect(await page.locator("video").evaluate((v) => (v as HTMLVideoElement).paused)).toBe(true);
       } finally {
         await app.close();
       }

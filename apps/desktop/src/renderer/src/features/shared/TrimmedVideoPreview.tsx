@@ -127,6 +127,15 @@ export function TrimmedVideoPreview({
       clearTimeout(probeTimer);
       probeTimer = undefined;
     };
+    const needsBoundaryRecovery = (): boolean => {
+      const probe = pausedProbe.current;
+      const r = rangeRef.current;
+      // A missing picture at a trimmed in-point, or an excluded decoded
+      // frame that already started probing, needs a replacement. Ordinary
+      // same-picture seeks can finish without a callback and must stay put.
+      return probe !== null && (probe.attempts > 0 ||
+        (paintedTime.current === null && r.start > 0 && probe.requested === r.start));
+    };
     const advancePausedProbe = (): void => {
       clearProbeTimer();
       const probe = pausedProbe.current;
@@ -146,12 +155,16 @@ export function TrimmedVideoPreview({
     };
     const onSeeked = (): void => {
       clearProbeTimer();
-      // A paused seek within the same VFR picture may emit seeked but
-      // no new frame callback. Give the compositor time to report a kept
-      // picture, then continue probing even if it submits nothing new.
+      // Boundary recovery can seek within the same excluded VFR picture
+      // without a new frame callback. Give the compositor time to report
+      // a kept picture, then continue only that unresolved recovery.
       // This only moves the decoder: onFrame still verifies every paint.
-      if (pausedProbe.current !== null && el.paused && typeof el.requestVideoFrameCallback === "function") {
-        probeTimer = setTimeout(advancePausedProbe, 100);
+      if (needsBoundaryRecovery() && el.paused && typeof el.requestVideoFrameCallback === "function") {
+        probeTimer = setTimeout(() => {
+          // A later seek can supersede this recovery before its seeking
+          // event arrives. Recheck the current request before advancing it.
+          if (needsBoundaryRecovery()) advancePausedProbe();
+        }, 100);
       }
     };
     const checkTime = (): void => {

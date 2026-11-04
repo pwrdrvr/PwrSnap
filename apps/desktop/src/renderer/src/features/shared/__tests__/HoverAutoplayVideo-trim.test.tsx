@@ -162,6 +162,67 @@ describe("trimmed hover preview", () => {
     expect(video.currentTime).toBe(settled);
   });
 
+  test.each(["timeline", "slider"] as const)("a paused %s same-picture seek does not probe away from the requested position", async (control) => {
+    vi.useFakeTimers();
+    const video = await render({ start: 1.81, end: 3.41 });
+    video.currentTime = 2.5;
+    decoded(2.4);
+    expect(draw).toHaveBeenCalledTimes(1);
+
+    // Both positions resolve to the already-painted picture at 2.4 s.
+    // Chromium can finish these seeks without another frame callback.
+    for (const target of [2.6, 2.45]) {
+      if (control === "timeline") video.currentTime = target;
+      else {
+        const slider = host.querySelector("input")!;
+        act(() => {
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(slider, String(target - 1.81));
+          slider.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+        expect(video.currentTime).toBe(target);
+      }
+      emit(video, "seeking");
+      emit(video, "seeked");
+      await act(async () => vi.advanceTimersByTime(1000));
+      expect(video.currentTime).toBe(target);
+      expect(draw).toHaveBeenCalledTimes(1);
+      expect(video.paused).toBe(true);
+      expect(video.play).not.toHaveBeenCalled();
+      expect(clock()).toBe(target === 2.6 ? "0:00.7 / 0:01.6" : "0:00.6 / 0:01.6");
+    }
+  });
+
+  test("an excluded decoded picture still starts recovery when a kept picture was painted", async () => {
+    vi.useFakeTimers();
+    const video = await render({ start: 1.81, end: 3.41 });
+    video.currentTime = 2.5;
+    decoded(2.4);
+    video.currentTime = 2.1;
+    emit(video, "seeking");
+    // The backward seek resolves to the excluded frame at 0. That
+    // callback establishes the need for recovery despite the old canvas.
+    decoded(0);
+    for (let attempt = 0; attempt < 8 && video.currentTime < 2.4; attempt++) {
+      emit(video, "seeked");
+      await act(async () => vi.advanceTimersByTime(100));
+    }
+    expect(video.currentTime).toBeGreaterThanOrEqual(2.4);
+    expect(video.currentTime).toBeLessThan(3.41);
+    decoded(2.4);
+    expect(draw).toHaveBeenCalledTimes(2);
+    expect(clock()).toBe("0:00.2 / 0:01.6");
+    expect(video.paused).toBe(true);
+  });
+
+  test("a missing initial picture without an excluded in-point does not trigger probing", async () => {
+    vi.useFakeTimers();
+    const video = await render({ start: 0, end: 4 });
+    emit(video, "seeked");
+    await act(async () => vi.advanceTimersByTime(1000));
+    expect(video.currentTime).toBe(0);
+    expect(draw).not.toHaveBeenCalled();
+  });
+
   test("seeked-only recovery is bounded when the trim contains no encoded frame", async () => {
     vi.useFakeTimers();
     const video = await render({ start: 1.81, end: 1.91 });

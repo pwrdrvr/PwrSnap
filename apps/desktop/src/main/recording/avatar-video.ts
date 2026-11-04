@@ -22,6 +22,7 @@ import { getRuntimeProcessRole } from "../process-role";
 
 const MODEL_REVISION = "mediapipe-landscape-490e9ea7-v1";
 const FPS = 15;
+const COMPOSITION_REVISION = "screen-clock-v3";
 export type AvatarCanvas = { width: number; height: number };
 
 /** The presenter a recording renders with on `canvas` (the recording's own
@@ -75,17 +76,23 @@ export function avatarCacheKey(
   record: CaptureRecord,
   layers: PresenterLayers = presenterLayersFor(record),
   canvas?: AvatarCanvas,
+  sourceEndSec?: number,
 ): string {
   return createHash("sha256")
     .update(
       JSON.stringify([
         MODEL_REVISION,
+        COMPOSITION_REVISION,
         record.sha256,
         record.video?.camera,
-        // A recording with no spans hashes exactly as before spans existed,
-        // so its cached composition is still found.
+        // Keep the compact style form for recordings without spans.
         layers.spans.length === 0 ? layers.base : layers,
         canvas,
+        // Earlier full compositions also need the clock revision: reusing
+        // one for a prefix would bypass held-screen replay before overlay.
+        ...(sourceEndSec !== undefined && sourceEndSec < record.video!.durationSec
+          ? [{ sourceEndSec }]
+          : []),
       ]),
     )
     .digest("hex")
@@ -141,18 +148,23 @@ async function prepareMask(
   record: CaptureRecord,
   directory: string,
   callerSignal: AbortSignal,
+  requestedFrames: number,
 ): Promise<string> {
   const camera = record.video!.camera!;
-  const path = join(
-    directory,
-    `avatar-mask-${MODEL_REVISION}-${camera.sha256.slice(0, 16)}.mp4`,
-  );
+  const fullFrames = Math.max(1, Math.ceil(camera.durationSec * FPS));
+  const frames = Math.max(1, Math.min(requestedFrames, fullFrames));
+  const suffix = frames < fullFrames ? `-frames${frames}` : "";
+  const fullPath = join(directory, `avatar-mask-${MODEL_REVISION}-${camera.sha256.slice(0, 16)}.mp4`);
+  const path = suffix === "" ? fullPath : fullPath.replace(/\.mp4$/, `${suffix}.mp4`);
   return runGatedCacheWrite(
     record.id,
-    `mask-${camera.sha256}-${MODEL_REVISION}`,
+    `mask-${camera.sha256}-${MODEL_REVISION}${suffix}`,
     async (signal) => {
       signal.throwIfAborted();
       if (await exists(path)) return path;
+      // A completed full mask has the same i/FPS timestamps. Prefixes may
+      // consume it, but never publish a shorter mask at the full pathname.
+      if (suffix !== "" && await exists(fullPath)) return fullPath;
       const worker = new CameraWorker();
       const staging = `${path}.partial.mp4`;
       const width = Math.min(640, Math.floor(camera.width / 2) * 2);
@@ -187,7 +199,6 @@ async function prepareMask(
           ],
           signal,
         );
-        const frames = Math.max(1, Math.ceil(camera.durationSec * FPS));
         for (let i = 0; i < frames; i++) {
           signal.throwIfAborted();
           const png = await worker.call<string>(
@@ -214,6 +225,8 @@ async function prepareMask(
             licenseId: "Apache-2.0",
             cameraSha256: camera.sha256,
             fps: FPS,
+            frameCount: frames,
+            durationSec: frames / FPS,
             width,
             height,
             format: "rgb-left-confidence-right",
@@ -242,6 +255,8 @@ export function avatarCompositionFilter(input: {
   width: number;
   height: number;
   normalizeScreen?: boolean;
+  /** Replay held screen frames before overlay, through this source-time horizon. */
+  sourceEndSec?: number;
   /** Stretches with their own presenter; `style` shows everywhere else. */
   spans?: readonly PresenterLayerSpan[];
   /** Input indexes of the cut-out mask video and the original camera.
@@ -260,10 +275,25 @@ export function avatarCompositionFilter(input: {
     },
     ...spans.map((span) => ({ style: span.style, trim: span, enable: window(span) })),
   ].filter((layer) => layer.style.visible);
-  const screenIn = input.normalizeScreen ? "[screen]" : "[0:v]";
-  const screen = input.normalizeScreen
-    ? `[0:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[screen];`
-    : "";
+  // Normalize the held SCREEN before overlay, as cut export does. Output
+  // -t alone can end at the last real VFR frame before an idle gap; padding
+  // the composed result instead would freeze the presenter through that gap.
+  // A tail with no later screen packet needs padding too (audio may continue
+  // after video EOF); trim caps it at the declared recording/prefix horizon.
+  const screenSteps = [
+    ...(input.sourceEndSec === undefined ? [] : [
+      "fps=60",
+      `tpad=stop_mode=clone:stop_duration=${input.sourceEndSec.toFixed(6)}`,
+      `trim=end=${input.sourceEndSec.toFixed(6)}`,
+    ]),
+    ...(input.normalizeScreen ? [
+      `scale=${width}:${height}:force_original_aspect_ratio=decrease`,
+      `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black`,
+      "setsar=1",
+    ] : []),
+  ];
+  const screenIn = screenSteps.length > 0 ? "[screen]" : "[0:v]";
+  const screen = screenSteps.length > 0 ? `[0:v]${screenSteps.join(",")}[screen];` : "";
   if (layers.length === 0) return `${screen}${screenIn}format=yuv420p[out]`;
 
   const needsMask = layers.some((layer) => layer.style.background === "remove");
@@ -342,12 +372,15 @@ export function presenterShapeFilter(style: AvatarStyle): string {
   return `,format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='${alpha}'`;
 }
 
-/** Compose in source time, before the existing trim/cut/speed machinery. */
+/** Compose in source time, before trim/cut/speed. A bounded prefix omits
+ *  unused tail work without seeking the shared camera decoder ahead or
+ *  changing any input timestamps. Omitted bounds retain full-take consumers. */
 export async function prepareAvatarVideo(
   record: CaptureRecord,
   override?: AvatarStyle,
   callerSignal?: AbortSignal,
   canvas?: AvatarCanvas,
+  sourceEndSec?: number,
 ): Promise<string> {
   if (getRuntimeProcessRole() === "library") {
     throw new Error("Presenter preparation must run in the video cache owner.");
@@ -360,21 +393,40 @@ export async function prepareAvatarVideo(
   const base = AvatarStyleSchema.parse(layers.base);
   const shown = [base, ...layers.spans.map((span) => span.style)].filter((style) => style.visible);
   if (!camera || shown.length === 0) return source;
+  const durationSec = Math.min(sourceEndSec ?? record.video!.durationSec, record.video!.durationSec);
+  if (!Number.isFinite(durationSec) || durationSec <= 0) throw new Error("Invalid presenter preparation end time.");
   // Nothing to draw when no visible presenter's camera overlaps the take.
   const overlaps = shown.some((style) => {
     const offset = camera.offsetSec + (style.syncOffsetSec ?? 0);
-    return offset + camera.durationSec > 0 && offset < record.video!.durationSec;
+    return offset + camera.durationSec > 0 && offset < durationSec;
   });
   if (!overlaps) return source;
-  const key = avatarCacheKey(record, layers, canvas);
+  const key = avatarCacheKey(record, layers, canvas, durationSec);
   return runGatedCacheWrite(record.id, `avatar-${key}`, async (signal) => {
     const directory = join(getCacheRoot(), "video", record.id);
     const path = join(directory, `avatar-${key}.mp4`);
     if (await exists(path)) return path;
+    if (durationSec < record.video!.durationSec) {
+      const fullPath = join(directory, `avatar-${avatarCacheKey(record, layers, canvas)}.mp4`);
+      if (await exists(fullPath)) return fullPath;
+    }
     await mkdir(directory, { recursive: true });
     const needsMask = shown.some((style) => style.background === "remove");
     const needsCamera = shown.some((style) => style.background !== "remove");
-    const maskSource = needsMask ? await prepareMask(record, directory, signal) : null;
+    // `trim` drops whole camera frames before setpts resets the clock. Use
+    // the same rounded offsets as the filter, then include a sample at or
+    // beyond the prefix end. Otherwise framesync's EOF policy can remove the
+    // presenter early on a faster screen stream. Never extend the camera's
+    // natural end: prepareMask caps this at the full source frame count.
+    const maskFrames = Math.max(...shown
+      .filter((style) => style.background === "remove")
+      .map((style) => {
+        const offset = camera.offsetSec + (style.syncOffsetSec ?? 0);
+        const first = Math.ceil(Number(Math.max(0, -offset).toFixed(6)) * FPS);
+        const start = Number(Math.max(0, offset).toFixed(6));
+        return first + Math.ceil(Math.max(0, durationSec - start) * FPS) + 1;
+      }));
+    const maskSource = needsMask ? await prepareMask(record, directory, signal, maskFrames) : null;
     const cameraSource = needsCamera ? await resolveCameraSource(source, record.id) : null;
     if (needsCamera && !cameraSource) throw new Error("The original camera track is missing.");
     const inputs = [source, ...(maskSource ? [maskSource] : []), ...(cameraSource ? [cameraSource] : [])];
@@ -391,6 +443,7 @@ export async function prepareAvatarVideo(
             width: canvas?.width ?? record.width_px,
             height: canvas?.height ?? record.height_px,
             normalizeScreen: canvas !== undefined,
+            sourceEndSec: durationSec,
             inputs: {
               ...(maskSource ? { mask: 1 } : {}),
               ...(cameraSource ? { camera: maskSource ? 2 : 1 } : {}),
@@ -407,7 +460,7 @@ export async function prepareAvatarVideo(
           "-b:v",
           "12M",
           "-t",
-          String(record.video!.durationSec),
+          String(durationSec),
           "-movflags",
           "+faststart",
           staging,

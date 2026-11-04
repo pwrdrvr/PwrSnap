@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
-import { access, cp, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { access, cp, link, mkdir, mkdtemp, readdir, rename, rm, stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 import { getMainLogger } from "../log";
 import { computeTreeRenderHash } from "../render/compose-tree";
@@ -145,6 +145,20 @@ async function pruneRenderCacheDir(
  * render-cache root and leave Chromium's Cache_Data alone.
  */
 export async function migrateLegacyRenderCache(): Promise<LegacyRenderCacheMigrationResult> {
+  let result: LegacyRenderCacheMigrationResult = { movedDirs: 0, skippedDirs: 0 };
+  // Boot no longer waits for this rebuildable cache. Register synchronously
+  // before startup exposes handlers, drain existing derived writers, and order
+  // any subsequent Clear/Trim/purge after the migration. Otherwise a late
+  // migration can restore files after the user's cleanup has completed.
+  // Video requests wait here instead of receiving a terminal AbortError:
+  // their views do not retry just because startup maintenance has finished.
+  await withDerivedCacheCleanup("all", async () => {
+    result = await migrateLegacyRenderCacheFiles();
+  }, { writeAdmission: "wait" });
+  return result;
+}
+
+async function migrateLegacyRenderCacheFiles(): Promise<LegacyRenderCacheMigrationResult> {
   const legacyRoot = getLegacyCacheRoot();
   const currentRoot = getCacheRoot();
   if (legacyRoot === currentRoot) return { movedDirs: 0, skippedDirs: 0 };
@@ -204,13 +218,38 @@ async function moveOrMergeDir(from: string, to: string): Promise<void> {
     }
   }
 
-  await mkdir(to, { recursive: true });
-  await cp(from, to, {
-    recursive: true,
-    force: false,
-    errorOnExist: false
-  });
+  // Render readers and bakes intentionally bypass the derived-video gate.
+  // Copy outside the live capture directory, then atomically install each
+  // complete file without replacing a derivative rebuilt in the meantime.
+  const staging = await mkdtemp(join(dirname(to), ".legacy-render-cache-"));
+  try {
+    await cp(from, staging, { recursive: true, force: false, errorOnExist: false });
+    await publishMigratedCacheFiles(staging, to);
+  } finally {
+    await rm(staging, { recursive: true, force: true });
+  }
   await rm(from, { recursive: true, force: true });
+}
+
+async function publishMigratedCacheFiles(staging: string, to: string): Promise<void> {
+  await mkdir(to, { recursive: true });
+  for (const entry of await readdir(staging, { withFileTypes: true })) {
+    const stagedPath = join(staging, entry.name);
+    const destination = join(to, entry.name);
+    if (entry.isDirectory()) {
+      await publishMigratedCacheFiles(stagedPath, destination);
+    } else if (entry.isFile()) {
+      try {
+        // Staging is on the destination filesystem. A hardlink publishes all
+        // bytes atomically and EEXIST preserves a concurrent rebuild. A volume
+        // without hardlink support leaves the legacy copy for a later retry;
+        // rebuilding a cache miss is safer than publishing a partial file.
+        await link(stagedPath, destination);
+      } catch (cause) {
+        if ((cause as NodeJS.ErrnoException | null)?.code !== "EEXIST") throw cause;
+      }
+    }
+  }
 }
 
 async function pathExists(path: string): Promise<boolean> {

@@ -132,8 +132,23 @@ const captureCleanups = new Map<string, number>();
 let globalCleanups = 0;
 let cleanupTail: Promise<void> = Promise.resolve();
 
+// Rebuildable-cache migration must serialize with deletion, but receiving a
+// video request during it is not a cancellation. Hold those requests without
+// starting their work, then re-check admission when maintenance finishes.
+type WaitingCleanup = {
+  captureId: string | null;
+  finished: Promise<void>;
+  release: () => void;
+};
+const waitingCleanups = new Set<WaitingCleanup>();
+const queuedWrites = new Set<{ captureId: string; cancel: (cause: unknown) => void }>();
+
 function cleanupInProgressFor(captureId: string): boolean {
   return globalCleanups > 0 || captureCleanups.has(captureId);
+}
+
+function cleanupAbortError(captureId: string): DOMException {
+  return new DOMException(`derived cache cleanup in progress for ${captureId}`, "AbortError");
 }
 
 /**
@@ -147,6 +162,9 @@ function cleanupInProgressFor(captureId: string): boolean {
  * underway. That is the correct answer, not a failure: the caller is asking
  * to derive something from a capture that is being deleted, or into a cache
  * that is being emptied. Callers that can fall back to the original should.
+ * Background maintenance can instead request waiting admission: requests
+ * remain pending until it finishes (even if it fails), unless their caller
+ * cancels or a destructive cleanup covering them arrives in the meantime.
  *
  * The `AbortSignal` handed to `work` fires when a cleanup arrives mid-flight
  * or the last consumer cancels. A caller's signal cancels only its own wait;
@@ -164,7 +182,19 @@ export async function runGatedCacheWrite<T>(
   // Synchronous, before any await: a cleanup cannot slip in behind this
   // check and find no write registered.
   if (cleanupInProgressFor(captureId)) {
-    throw new DOMException(`derived cache cleanup in progress for ${captureId}`, "AbortError");
+    throw cleanupAbortError(captureId);
+  }
+  const maintenance = [...waitingCleanups].filter(
+    (cleanup) => cleanup.captureId === null || cleanup.captureId === captureId
+  );
+  if (maintenance.length > 0) {
+    if (runningCleanup.getStore() === true) {
+      throw new Error("derived cache write re-entered from inside maintenance; this would deadlock on admission");
+    }
+    await waitForMaintenance(captureId, maintenance, callerSignal);
+    // Another cleanup may have registered while this request was waiting.
+    // Re-check AND register synchronously before starting any filesystem work.
+    return runGatedCacheWrite(captureId, key, work, callerSignal);
   }
   const mapKey = writeKey(captureId, key);
   const existing = writes.get(mapKey);
@@ -194,6 +224,35 @@ export async function runGatedCacheWrite<T>(
   const write = { captureId, controller, pending, consumers: 0 };
   writes.set(mapKey, write);
   return consumeWrite<T>(write, callerSignal);
+}
+
+function waitForMaintenance(
+  captureId: string,
+  maintenance: WaitingCleanup[],
+  signal?: AbortSignal
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const release = (): boolean => {
+      if (settled) return false;
+      settled = true;
+      signal?.removeEventListener("abort", abort);
+      queuedWrites.delete(queued);
+      return true;
+    };
+    const queued = { captureId, cancel: (cause: unknown): void => {
+      if (release()) reject(cause);
+    } };
+    const abort = (): void => queued.cancel(signal!.reason);
+    // Register before the first await, including cancellation while queued.
+    // A later purge must cancel this request even if it finishes before the
+    // maintenance continuation gets to re-check admission.
+    queuedWrites.add(queued);
+    signal?.addEventListener("abort", abort, { once: true });
+    void Promise.all(maintenance.map((cleanup) => cleanup.finished)).then(() => {
+      if (release()) resolve();
+    });
+  });
 }
 
 function consumeWrite<T>(write: GatedWrite, signal?: AbortSignal): Promise<T> {
@@ -228,10 +287,14 @@ function consumeWrite<T>(write: GatedWrite, signal?: AbortSignal): Promise<T> {
  *
  * `scope` of `"all"` covers every in-flight write (Clear/Trim, which empty
  * the whole root); a `{ captureId }` scope covers only that capture's.
+ * `writeAdmission: "wait"` is reserved for background maintenance that
+ * preserves captures. Destructive operations keep the default rejection
+ * behavior, including cancellation of requests queued behind maintenance.
  */
 export async function withDerivedCacheCleanup(
   scope: DerivedCacheCleanupScope,
-  cleanup: () => Promise<void>
+  cleanup: () => Promise<void>,
+  options: { writeAdmission?: "reject" | "wait" } = {}
 ): Promise<void> {
   // Before the counters move, so a refused re-entry leaks no admission.
   if (runningCleanup.getStore() === true) {
@@ -240,8 +303,21 @@ export async function withDerivedCacheCleanup(
     );
   }
   const captureId = scope === "all" ? null : scope.captureId;
-  if (captureId === null) globalCleanups += 1;
-  else captureCleanups.set(captureId, (captureCleanups.get(captureId) ?? 0) + 1);
+  let waiting: WaitingCleanup | undefined;
+  if (options.writeAdmission === "wait") {
+    let release!: () => void;
+    const finished = new Promise<void>((resolve) => { release = resolve; });
+    waiting = { captureId, finished, release };
+    waitingCleanups.add(waiting);
+  } else {
+    if (captureId === null) globalCleanups += 1;
+    else captureCleanups.set(captureId, (captureCleanups.get(captureId) ?? 0) + 1);
+    for (const queued of queuedWrites) {
+      if (captureId === null || queued.captureId === captureId) {
+        queued.cancel(cleanupAbortError(queued.captureId));
+      }
+    }
+  }
 
   const cancelled = [...writes.values()].filter(
     (write) => captureId === null || write.captureId === captureId
@@ -259,6 +335,11 @@ export async function withDerivedCacheCleanup(
       await runningCleanup.run(true, cleanup);
     })
     .finally(() => {
+      if (waiting !== undefined) {
+        waitingCleanups.delete(waiting);
+        waiting.release();
+        return;
+      }
       // Clamped: `resetDerivedCacheGateForTests` can zero these while this
       // cleanup is still queued, and a negative `globalCleanups` would make
       // `cleanupInProgressFor` report admission OPEN during a later cleanup.
@@ -373,15 +454,19 @@ export function resetDerivedCacheCleanupForwarderForTests(): void {
  * still runs after this, which is why the decrement above is clamped.
  */
 export function resetDerivedCacheGateForTests(): void {
-  if (writes.size > 0 || captureCleanups.size > 0 || globalCleanups > 0) {
+  if (writes.size > 0 || queuedWrites.size > 0 || waitingCleanups.size > 0 || captureCleanups.size > 0 || globalCleanups > 0) {
     log.warn("derived cache gate reset with work outstanding", {
       writes: writes.size,
+      queuedWrites: queuedWrites.size,
+      waitingCleanups: waitingCleanups.size,
       captureCleanups: captureCleanups.size,
       globalCleanups
     });
   }
   for (const write of writes.values()) write.controller.abort();
+  for (const queued of queuedWrites) queued.cancel(cleanupAbortError(queued.captureId));
   writes.clear();
+  waitingCleanups.clear();
   captureCleanups.clear();
   globalCleanups = 0;
   cleanupTail = Promise.resolve();

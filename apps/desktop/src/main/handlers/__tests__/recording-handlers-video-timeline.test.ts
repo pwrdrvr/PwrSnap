@@ -135,7 +135,7 @@ vi.mock("../../render/file-alias", () => ({
 }));
 
 const { bus } = await import("../../command-bus");
-const { resetDerivedCacheGateForTests } = await import("../../persistence/derived-cache-gate");
+const { resetDerivedCacheGateForTests, withDerivedCacheCleanup } = await import("../../persistence/derived-cache-gate");
 const { registerRecordingHandlers } = await import("../recording-handlers");
 
 registerRecordingHandlers();
@@ -307,6 +307,68 @@ describe("video:playback rendition sweep", () => {
     expect(result).toMatchObject({ ok: true, value: { prepared: false } });
     expect(mocks.prepareVideoPlayback).not.toHaveBeenCalled();
     expect(await present(dir)).toEqual([...BYSTANDERS, ...STALE].sort());
+  });
+});
+
+describe("video requests during background cache migration", () => {
+  test.each([false, true])("playback and waveform finish without reselection (cache hit: %s)", async (cacheHit) => {
+    // System audio was armed but silent; the good microphone occupies track
+    // 1. Serving the original while maintenance runs would leave it silent.
+    const audio = {
+      hasSystemAudio: false, hasMicrophoneAudio: true,
+      requestedSystemAudio: true, requestedMicrophone: true
+    };
+    mocks.capture = videoCapture(audio);
+    const dir = videoDir();
+    const playback = `playback-mixed-audio-v2-${PLAYBACK_KEY}.mp4`;
+    await mkdir(dir, { recursive: true });
+    if (cacheHit) {
+      await writeFile(joinPath(dir, playback), "audible playback");
+      await writeFile(joinPath(dir, "mixed-audio-v2.m4a"), "waveform audio");
+    }
+    mocks.prepareVideoPlayback.mockImplementation(async (target: string) => {
+      await writeFile(target, "audible playback");
+      return target;
+    });
+    mocks.extractVideoAudio.mockImplementation(async () => {
+      const extracted = joinPath(dir, "extracted.m4a");
+      await writeFile(extracted, "waveform audio");
+      return extracted;
+    });
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    const migration = withDerivedCacheCleanup("all", () => barrier, { writeAdmission: "wait" });
+    const responses: unknown[] = [];
+    const requests = ["video:playback", "video:audio"].map((verb) =>
+      bus.dispatch(verb as "video:playback" | "video:audio", { captureId: "vid_Timeline1" }, { principal: "ipc" })
+        .then((response) => { responses.push(response); return response; })
+    );
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(responses).toEqual([]);
+      expect(mocks.prepareVideoPlayback).not.toHaveBeenCalled();
+      expect(mocks.extractVideoAudio).not.toHaveBeenCalled();
+      release();
+      await migration;
+      const [played, waveform] = await Promise.all(requests);
+      expect(played).toEqual({ ok: true, value: {
+        url: `pwrsnap-cache://v/vid_Timeline1/${playback}`, prepared: true
+      } });
+      expect(waveform).toEqual({ ok: true, value: {
+        hasAudio: true, url: "pwrsnap-cache://v/vid_Timeline1/mixed-audio-v2.m4a", mimeType: "audio/mp4"
+      } });
+      expect(await readFile(joinPath(dir, playback), "utf8")).toBe("audible playback");
+      expect(await readFile(joinPath(dir, "mixed-audio-v2.m4a"), "utf8")).toBe("waveform audio");
+      expect(mocks.prepareVideoPlayback).toHaveBeenCalledTimes(cacheHit ? 0 : 1);
+      expect(mocks.extractVideoAudio).toHaveBeenCalledTimes(cacheHit ? 0 : 1);
+      if (!cacheHit) expect(mocks.extractVideoAudio).toHaveBeenCalledWith(
+        expect.objectContaining(audio), expect.any(AbortSignal)
+      );
+    } finally {
+      release();
+      await migration;
+      await Promise.allSettled(requests);
+    }
   });
 });
 

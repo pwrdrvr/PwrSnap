@@ -1344,7 +1344,7 @@ clear, reporting a `clearedBytes` short by a whole recording.
 The in-flight maps are not a substitute. They coalesce DUPLICATE WORK
 and have no idea a deletion happened.
 
-Five things that bite:
+Six things that bite:
 
 - **Both sides must register SYNCHRONOUSLY, before their first `await`.**
   A write registered in the gap after a cleanup's check runs against a
@@ -1359,6 +1359,12 @@ Five things that bite:
   and a purge walks part of it, so two at once race an `rm -rf` against
   a `readdir` that already listed the entries. The chain is a
   `.catch`-ed tail so one failure does not poison every later cleanup.
+- **Background migration queues new video requests.** It takes the same
+  gate with `writeAdmission: "wait"`, so requests resume after migration
+  settles instead of returning a terminal cancellation to a view that will
+  not retry. Caller cancellation still removes the wait. Clear/Trim/purge
+  retain default rejection and cancel matching queued requests as well as
+  active writes; a queued request must never replay after deletion.
 - **The drain is bounded, and re-entry is refused.** Without a bound, one
   write that never settles leaves admission closed and `cleanupTail`
   pending for the life of the process — every later write rejected, every

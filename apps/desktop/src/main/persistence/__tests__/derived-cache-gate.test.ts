@@ -101,6 +101,152 @@ describe("admission", () => {
   });
 });
 
+describe("background maintenance admission", () => {
+  test("migration followed by a playback request waits and then completes", async () => {
+    // The generated model's minimal counterexample: migration(all), request.
+    // Maintenance preserves the capture, so it cannot cancel this request.
+    const blocked = deferred<void>();
+    const maintenance = withDerivedCacheCleanup("all", () => blocked.promise, { writeAdmission: "wait" });
+    const work = vi.fn(async () => "prepared playback");
+    let state = "waiting";
+    const request = runGatedCacheWrite("cap-a", "playback", work).then(
+      (value) => { state = "completed"; return value; },
+      (cause: unknown) => { state = "cancelled"; return cause; }
+    );
+    try {
+      await Promise.resolve();
+      expect(state).toBe("waiting");
+      expect(work).not.toHaveBeenCalled();
+      blocked.resolve();
+      await maintenance;
+      expect(await request).toBe("prepared playback");
+      expect(work).toHaveBeenCalledOnce();
+    } finally {
+      blocked.resolve();
+      await Promise.allSettled([maintenance, request]);
+    }
+  });
+
+  test("queued consumers can cancel independently and surviving consumers coalesce after maintenance", async () => {
+    const blocked = deferred<void>();
+    const maintenance = withDerivedCacheCleanup("all", () => blocked.promise, { writeAdmission: "wait" });
+    const cancelled = new AbortController();
+    const unused = vi.fn(async () => "cancelled work");
+    const work = vi.fn(async () => "mixed playback");
+    const results: unknown[] = [];
+    const a = runGatedCacheWrite("cap-a", "playback", unused, cancelled.signal)
+      .catch((cause: unknown) => { results.push(cause); return cause; });
+    const b = runGatedCacheWrite("cap-a", "playback", work)
+      .then((value) => { results.push(value); return value; }, (cause: unknown) => {
+        results.push(cause); return cause;
+      });
+    const c = runGatedCacheWrite("cap-a", "playback", work).catch((cause: unknown) => cause);
+    try {
+      await settle();
+      expect(results).toEqual([]);
+      cancelled.abort();
+      expect(await a).toMatchObject({ name: "AbortError" });
+      expect(unused).not.toHaveBeenCalled();
+      expect(work).not.toHaveBeenCalled();
+      blocked.resolve();
+      await maintenance;
+      expect(await Promise.all([b, c])).toEqual(["mixed playback", "mixed playback"]);
+      expect(work).toHaveBeenCalledOnce();
+    } finally {
+      blocked.resolve();
+      await maintenance;
+      await Promise.allSettled([a, b, c]);
+    }
+  });
+
+  test("failed maintenance releases queued requests without inheriting its rejection", async () => {
+    const blocked = deferred<void>();
+    const failure = new Error("migration failed");
+    const maintenance = withDerivedCacheCleanup("all", () => blocked.promise, { writeAdmission: "wait" })
+      .catch((cause: unknown) => cause);
+    const work = vi.fn(async () => "waveform");
+    const queued = runGatedCacheWrite("cap-a", "audio", work).catch((cause: unknown) => cause);
+    try {
+      await settle();
+      expect(work).not.toHaveBeenCalled();
+      blocked.reject(failure);
+      expect(await maintenance).toBe(failure);
+      expect(await queued).toBe("waveform");
+      await expect(withDerivedCacheCleanup("all", async () => undefined)).resolves.toBeUndefined();
+    } finally {
+      blocked.resolve();
+      await maintenance;
+      await queued;
+    }
+  });
+
+  test.each(["all", { captureId: "cap-a" }] as const)("a later destructive cleanup cancels queued requests in its scope: %j", async (scope) => {
+    const blocked = deferred<void>();
+    const cleaning = deferred<void>();
+    const maintenance = withDerivedCacheCleanup("all", () => blocked.promise, { writeAdmission: "wait" });
+    const workA = vi.fn(async () => "a");
+    const workB = vi.fn(async () => "b");
+    const a = runGatedCacheWrite("cap-a", "frames", workA).catch((cause: unknown) => cause);
+    const b = runGatedCacheWrite("cap-b", "frames", workB).catch((cause: unknown) => cause);
+    const cleanupBody = vi.fn(() => cleaning.promise);
+    const cleanup = withDerivedCacheCleanup(scope, cleanupBody);
+    try {
+      expect(await a).toMatchObject({ name: "AbortError" });
+      await settle();
+      expect(workA).not.toHaveBeenCalled();
+      expect(workB).not.toHaveBeenCalled();
+      expect(cleanupBody).not.toHaveBeenCalled();
+      blocked.resolve();
+      await maintenance;
+      await settle();
+      expect(cleanupBody).toHaveBeenCalledOnce();
+      expect(await b).toEqual(scope === "all" ? expect.objectContaining({ name: "AbortError" }) : "b");
+      await expect(runGatedCacheWrite("cap-a", "poster", workA)).rejects.toMatchObject({ name: "AbortError" });
+      cleaning.resolve();
+      await cleanup;
+      expect(workA).not.toHaveBeenCalled();
+    } finally {
+      blocked.resolve();
+      cleaning.resolve();
+      await Promise.allSettled([maintenance, cleanup, a, b]);
+    }
+  });
+
+  test("overlapping maintenance keeps requests queued until the last operation finishes", async () => {
+    const first = deferred<void>();
+    const second = deferred<void>();
+    const a = withDerivedCacheCleanup("all", () => first.promise, { writeAdmission: "wait" });
+    const b = withDerivedCacheCleanup({ captureId: "cap-a" }, () => second.promise, { writeAdmission: "wait" });
+    const work = vi.fn(async () => "filmstrip");
+    const queued = runGatedCacheWrite("cap-a", "frames", work).catch((cause: unknown) => cause);
+    try {
+      first.resolve();
+      await a;
+      await settle();
+      expect(work).not.toHaveBeenCalled();
+      // Only cap-a is still held by the second maintenance operation.
+      expect(await runGatedCacheWrite("cap-b", "frames", async () => "unrelated")).toBe("unrelated");
+      second.resolve();
+      await b;
+      expect(await queued).toBe("filmstrip");
+    } finally {
+      first.resolve();
+      second.resolve();
+      await Promise.allSettled([a, b, queued]);
+    }
+  });
+
+  test("a maintenance callback cannot await its own admission barrier", async () => {
+    let result: unknown;
+    await withDerivedCacheCleanup("all", async () => {
+      result = await runGatedCacheWrite("cap-a", "frames", async () => "deadlock")
+        .catch((cause: unknown) => cause);
+    }, { writeAdmission: "wait" });
+    expect(result).toBeInstanceOf(Error);
+    expect((result as Error).message).toMatch(/re-entered/);
+  });
+});
+
 describe("draining", () => {
   test("the filesystem cleanup does not start until in-flight writes have drained", async () => {
     const order: string[] = [];

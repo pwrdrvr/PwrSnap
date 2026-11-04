@@ -205,46 +205,106 @@ type RecorderStoppedEvent = {
 type RecorderErrorEvent = { event: "error"; code: string; message: string };
 type RecorderEvent = RecorderStartedEvent | RecorderStoppedEvent | RecorderErrorEvent | { event: "timeline"; utcTimeMs?: number } | { event: "cameraPreview"; excluded: boolean };
 
-/**
- * Real recorder backed by the Swift binary. Single session lifetime
- * is enforced via `isActive()` checks; the binary itself exits after
- * `stopped` so re-using a single recorder process across sessions is
- * not supported (and not necessary — the spawn cost is dominated by
- * the first-time TCC handshake, not by the binary launch).
- */
-class NativeRecorderService implements RecordingService {
-  private child: ChildProcessWithoutNullStreams | null = null;
-  private sessionId: string | null = null;
-  private subject: RecordingSubject | null = null;
-  private capabilities: RecordingCapabilities | null = null;
-  /** Snapshotted alongside subject/capabilities so restart() can
-   *  preserve the cursor choice across the cancel→start round-trip.
-   *  `undefined` lets the recorder apply its own default. */
-  private captureCursor: boolean | undefined = undefined;
-  private tempDir: string | null = null;
-  private startedPromise: Promise<void> | null = null;
-  private stoppedPromise: Promise<RecorderStoppedEvent> | null = null;
-  private startResolve: (() => void) | null = null;
-  private startReject: ((err: Error) => void) | null = null;
-  private stopResolve: ((evt: RecorderStoppedEvent) => void) | null = null;
-  private stopReject: ((err: Error) => void) | null = null;
-  private inboundBuffer = "";
-  private stopRequested = false;
-  private retryOptions: StartOptions | null = null;
-  // Survives failure cleanup with retryOptions; never stores a stale title.
-  private retryWindowIdentity: TrustedRecordingWindowIdentity | null = null;
-  private retryInFlight = false;
-  private trustedWindowIdentity: TrustedRecordingWindowIdentity | null = null;
-  private sourceWindowTitlePromise: Promise<string | null> | null = null;
+// Resources and waiters belong to one admitted attempt, including the period
+// before a child exists. Never look up a child/temp directory through mutable
+// service fields after an await or in a process callback.
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (cause: Error) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  void promise.catch(() => undefined);
+  return { promise, resolve, reject };
+}
 
-  isActive(): boolean {
-    return this.child !== null && this.sessionId !== null;
+type RecorderExit = { code: number | null; signal: NodeJS.Signals | null };
+type AttemptPhase = "starting" | "recording" | "stopping" | "processing" | "cancelling" | "retired";
+
+class RecordingAttempt {
+  readonly sessionId = nanoid(12);
+  readonly displayId: number;
+  readonly rect: ReturnType<typeof subjectToPhysicalRect>;
+  readonly aborted = deferred<never>();
+  readonly started = deferred<void>();
+  readonly stopped = deferred<RecorderStoppedEvent>();
+  readonly exited = deferred<RecorderExit>();
+  phase: AttemptPhase = "starting";
+  cancelled = false;
+  child: ChildProcessWithoutNullStreams | null = null;
+  tempDir: string | null = null;
+  allocation: Promise<string> | null = null;
+  outputPath = "";
+  startedAtMs = 0;
+  startAcknowledged = false;
+  stopAcknowledged = false;
+  exit: RecorderExit | null = null;
+  inboundBuffer = "";
+  stderrTail: string[] = [];
+  startFailureCode: RecordingFailureCode = "recorder_start_failed";
+  trustedWindowIdentity: TrustedRecordingWindowIdentity | null = null;
+  sourceWindowTitlePromise: Promise<string | null> | null = null;
+  stopOperation: Promise<{ captureId: string }> | null = null;
+  cancelOperation: Promise<void> | null = null;
+  cleanupOperation: Promise<void> | null = null;
+  restarting = false;
+
+  constructor(readonly options: StartOptions) {
+    this.displayId = subjectDisplayId(options.subject);
+    this.rect = subjectToPhysicalRect(options.subject);
   }
 
-  attachTrustedWindowIdentity(
-    sessionId: string,
-    identity: TrustedRecordingWindowIdentity
-  ): boolean {
+  abort(): void {
+    this.cancelled = true;
+    this.aborted.reject(new Error("cancelled"));
+  }
+
+  wait<T>(operation: Promise<T>): Promise<T> {
+    return Promise.race([operation, this.aborted.promise]);
+  }
+}
+
+async function withDeadline<T>(operation: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Shared admission/control boundary. Backends only operate on the captured
+ * attempt. Admission is reserved synchronously and released after retirement,
+ * so cleanup (including the process-global camera) cannot overlap a successor. */
+abstract class AttemptRecorderService implements RecordingService {
+  protected attempt: RecordingAttempt | null = null;
+  private retryOptions: StartOptions | null = null;
+  private retryWindowIdentity: TrustedRecordingWindowIdentity | null = null;
+  private retryInFlight = false;
+
+  protected abstract resolveBinary(): string | null;
+  protected abstract unavailableMessage(): string;
+  protected abstract startRecorder(attempt: RecordingAttempt, binary: string): Promise<void>;
+  protected abstract stopRecorder(attempt: RecordingAttempt): Promise<RecorderStoppedEvent>;
+  protected abstract requestStop(attempt: RecordingAttempt): void;
+  protected abstract cancelAcknowledgement(attempt: RecordingAttempt): Promise<unknown>;
+
+  isActive(): boolean {
+    return this.attempt !== null;
+  }
+
+  protected owns(attempt: RecordingAttempt): boolean {
+    return this.attempt === attempt && attempt.phase !== "retired";
+  }
+
+  protected assertStarting(attempt: RecordingAttempt): void {
+    if (!this.owns(attempt) || attempt.cancelled) throw new Error("cancelled");
+  }
+
+  attachTrustedWindowIdentity(sessionId: string, identity: TrustedRecordingWindowIdentity): boolean {
     const state = getRecordingState();
     const failedSubject = state.phase === "failed" && state.sessionId === sessionId
       && state.canRetry ? this.retryOptions?.subject : null;
@@ -252,16 +312,12 @@ class NativeRecorderService implements RecordingService {
       this.retryWindowIdentity = { ...identity };
       return true;
     }
-    if (
-      this.sessionId !== sessionId ||
-      this.subject?.kind !== "window" ||
-      this.subject.windowId !== identity.windowId
-    ) {
-      return false;
-    }
+    const attempt = this.attempt;
+    if (!attempt || attempt.sessionId !== sessionId || attempt.options.subject.kind !== "window"
+      || attempt.options.subject.windowId !== identity.windowId) return false;
     this.retryWindowIdentity = { ...identity };
-    this.trustedWindowIdentity = { ...identity };
-    this.sourceWindowTitlePromise = resolveTrustedRecordingWindowTitle(identity);
+    attempt.trustedWindowIdentity = { ...identity };
+    attempt.sourceWindowTitlePromise = resolveTrustedRecordingWindowTitle(identity);
     return true;
   }
 
@@ -269,620 +325,406 @@ class NativeRecorderService implements RecordingService {
     return this.startAttempt(opts, false);
   }
 
-  private async startAttempt(
-    opts: StartOptions,
-    retryingFailure: boolean
-  ): Promise<{ sessionId: string }> {
-    if (getRecordingState().phase === "failed" && !retryingFailure) {
-      throw new Error("failure_action_required");
-    }
-    if (isRecordingActive() || this.child !== null) {
-      throw new Error("already_recording");
-    }
-    const sessionId = nanoid(12);
-    const options = snapshotStartOptions(opts);
-    const physicalRect = subjectToPhysicalRect(options.subject);
-    const displayId = subjectDisplayId(options.subject);
-    this.retryOptions = options;
+  private async startAttempt(opts: StartOptions, retryingFailure: boolean): Promise<{ sessionId: string }> {
+    if (this.attempt !== null || isRecordingActive()) throw new Error("already_recording");
+    if (getRecordingState().phase === "failed" && !retryingFailure) throw new Error("failure_action_required");
+    const attempt = new RecordingAttempt(snapshotStartOptions(opts));
+    this.attempt = attempt;
+    this.retryOptions = attempt.options;
     if (!retryingFailure) this.retryWindowIdentity = null;
-    const binary = resolveRecorderBinary();
-    if (binary === null) {
-      const cause = new Error(
-        "native recorder binary not available — Fast Video Capture requires macOS 13+ and the bundled PwrSnapRecorder helper"
-      );
-      publishRecordingFailure({
-        sessionId,
-        code: "recorder_unavailable",
-        displayId,
-        cause,
-        canRetry: !app.isPackaged
-      });
-      throw cause;
-    }
-    // Log the binary path + mtime + size on every spawn so we can
-    // tell from a user's session log whether they're running a
-    // fresh or stale Swift recorder. `pnpm dev` only rebuilds Swift
-    // on startup; HMR doesn't watch .swift files, so a TS-side fix
-    // can ship without the matching Swift fix taking effect until
-    // the dev server restarts. Surfacing the mtime here makes that
-    // mismatch trivially diagnosable.
+    // Reserve both the service and the public lifecycle before the first await.
+    setRecordingState({ phase: "preflight", sessionId: attempt.sessionId, rect: attempt.rect, displayId: attempt.displayId });
+    let canRetry = true;
     try {
-      const s = statSync(binary);
-      log.info("recorder binary", {
-        path: binary,
-        mtime: s.mtime.toISOString(),
-        sizeBytes: s.size
+      this.assertStarting(attempt);
+      const binary = this.resolveBinary();
+      if (binary === null) {
+        attempt.startFailureCode = "recorder_unavailable";
+        canRetry = !app.isPackaged;
+        throw new Error(this.unavailableMessage());
+      }
+      // Assign late allocations to their owner even if cancellation wins the
+      // wait. Retirement drains allocation before releasing admission.
+      attempt.allocation = mkdtemp(join(tmpdir(), "pwrsnap-recording-")).then(dir => {
+        attempt.tempDir = dir;
+        attempt.outputPath = join(dir, `${attempt.sessionId}.mp4`);
+        return dir;
       });
-    } catch {
-      /* stat is informational; ignore failures */
-    }
-    let tmpDir: string;
-    let outputPath: string;
-    try {
-      tmpDir = await mkdtemp(join(tmpdir(), "pwrsnap-recording-"));
-      outputPath = join(tmpDir, `${sessionId}.mp4`);
+      await attempt.wait(attempt.allocation);
+      this.assertStarting(attempt);
+      if (attempt.options.capabilities.camera) {
+        await attempt.wait(beginCameraRecording(attempt.options.capabilities.camera));
+      }
+      this.assertStarting(attempt);
+      await this.startRecorder(attempt, binary);
+      this.assertStarting(attempt);
+      attempt.phase = "recording";
+      setRecordingState({
+        phase: "recording", sessionId: attempt.sessionId,
+        startedAt: new Date(attempt.startedAtMs).toISOString(),
+        rect: attempt.rect, displayId: attempt.displayId,
+        capabilities: this.recordedCapabilities(attempt)
+      });
+      return { sessionId: attempt.sessionId };
     } catch (cause) {
-      await this.cleanup();
-      publishRecordingFailure({
-        sessionId,
-        code: "recorder_start_failed",
-        displayId,
-        cause
-      });
+      if (attempt.cancelled || !this.owns(attempt)) throw new Error("cancelled");
+      await this.fail(attempt,
+        cause instanceof NativeRecorderError && cause.code === "microphone_unavailable"
+          ? "microphone_unavailable" : attempt.startFailureCode,
+        cause, { canRetry });
       throw cause;
     }
+  }
 
-    this.sessionId = sessionId;
-    this.subject = options.subject;
-    this.capabilities = options.capabilities;
-    this.captureCursor = options.captureCursor;
-    this.tempDir = tmpDir;
-    this.stopRequested = false;
+  protected recordedCapabilities(attempt: RecordingAttempt): RecordingCapabilities {
+    return { ...attempt.options.capabilities };
+  }
 
-    setRecordingState({ phase: "preflight", sessionId, rect: physicalRect, displayId });
-
-    try { if (options.capabilities.camera) await beginCameraRecording(options.capabilities.camera); }
-    catch (cause) {
-      if (this.sessionId !== sessionId) throw new Error("cancelled");
-      await this.cleanup();
-      publishRecordingFailure({ sessionId, code: "recorder_start_failed", displayId, cause });
-      throw cause;
+  protected async countdown(attempt: RecordingAttempt): Promise<void> {
+    for (let n = attempt.options.countdownSeconds; n > 0; n--) {
+      this.assertStarting(attempt);
+      setRecordingState({ phase: "countdown", sessionId: attempt.sessionId,
+        secondsRemaining: n, rect: attempt.rect, displayId: attempt.displayId });
+      // Clear the pending tick as well as settling the start caller on abort.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await attempt.wait(new Promise<void>(resolve => { timer = setTimeout(resolve, 1_000); }));
+      } finally { clearTimeout(timer); }
     }
-    if (this.sessionId !== sessionId) throw new Error("cancelled");
+    this.assertStarting(attempt);
+    setRecordingState({ phase: "starting", sessionId: attempt.sessionId, rect: attempt.rect, displayId: attempt.displayId });
+  }
 
-    // Spawn the recorder IMMEDIATELY (parallel with the countdown).
-    // The Swift recorder's first call to SCShareableContent can take
-    // 3–5s on a cold launch (the OS enumerates all on-screen windows
-    // + applications). If we waited for the countdown to finish
-    // before spawning, the user would see "1" frozen for that whole
-    // cold-load period. Overlapping the spawn + setup with the
-    // visible countdown hides the cost.
-    let child: ChildProcessWithoutNullStreams;
+  stop(): Promise<{ captureId: string }> {
+    const attempt = this.attempt;
+    if (!attempt) return Promise.reject(new Error("no_active_recording"));
+    if (attempt.stopOperation) return attempt.stopOperation;
+    if (attempt.phase !== "recording") return Promise.reject(new Error("control_unavailable"));
+    attempt.phase = "stopping";
+    // Set ownership before any await so duplicate stops share one persistence.
+    attempt.stopOperation = this.finish(attempt);
+    return attempt.stopOperation;
+  }
+
+  private async finish(attempt: RecordingAttempt): Promise<{ captureId: string }> {
+    setRecordingState({ phase: "stopping", sessionId: attempt.sessionId });
+    let stopped: RecorderStoppedEvent;
     try {
-      child = spawn(binary, [], { stdio: ["pipe", "pipe", "pipe"] });
+      stopped = await this.stopRecorder(attempt);
     } catch (cause) {
-      await this.cleanup();
-      publishRecordingFailure({
-        sessionId,
-        code: "recorder_spawn_failed",
-        displayId,
-        cause
+      const timeout = cause instanceof Error && cause.message === "recorder_stop_timeout";
+      log.warn("recording stop failed; recorder output preserved for recovery", {
+        outputPath: attempt.outputPath, tempDir: attempt.tempDir,
+        message: cause instanceof Error ? cause.message : String(cause)
       });
+      await this.fail(attempt, timeout ? "stop_timeout" : "stop_failed", cause,
+        { preserveTempDir: true, canRetry: false });
       throw cause;
     }
-    this.child = child;
+    attempt.phase = "processing";
+    setRecordingState({ phase: "processing", sessionId: attempt.sessionId });
+    let sourceAdopted = false;
+    try {
+      const sourceWindowTitle = await (attempt.sourceWindowTitlePromise ?? Promise.resolve(null));
+      const requested = this.recordedCapabilities(attempt);
+      const stored = await persistStoppedRecording({
+        ...stopped,
+        requestedSystemAudio: requested.systemAudio,
+        requestedMicrophone: requested.microphone,
+        subject: attempt.options.subject, sourceWindowTitle,
+        onSourceAdopted: async () => {
+          sourceAdopted = true;
+          const tempDir = attempt.tempDir;
+          attempt.tempDir = null;
+          await removeRecorderOwnedTempDir(tempDir);
+        }
+      });
+      await this.cleanup(attempt);
+      this.retryOptions = null;
+      this.retryWindowIdentity = null;
+      this.attempt = null;
+      setRecordingState({ phase: "ready", sessionId: attempt.sessionId, captureId: stored.captureId });
+      return stored;
+    } catch (cause) {
+      if (!sourceAdopted) log.warn("recording adoption failed; recorder output preserved for recovery", {
+        outputPath: stopped.outputPath, tempDir: attempt.tempDir,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      await this.fail(attempt, "processing_failed", cause,
+        { preserveTempDir: !sourceAdopted, canRetry: false });
+      throw cause;
+    }
+  }
 
-    this.startedPromise = new Promise<void>((resolve, reject) => {
-      this.startResolve = resolve;
-      this.startReject = reject;
-    });
-    this.stoppedPromise = new Promise<RecorderStoppedEvent>((resolve, reject) => {
-      this.stopResolve = resolve;
-      this.stopReject = reject;
-    });
-    // Suppress UnhandledPromiseRejection if cancel happens mid-
-    // countdown: we throw "cancelled" before getting to
-    // `await this.startedPromise`, and the subsequent child.kill
-    // makes `child.on("exit")` fire `startReject` on a promise no
-    // one is awaiting anymore. The no-op catch keeps the rejection
-    // observed without affecting the awaiter (since Promise rejection
-    // handlers don't cancel each other — the original awaiter still
-    // sees the rejection).
-    this.startedPromise.catch(() => undefined);
-    this.stoppedPromise.catch(() => undefined);
+  async restart(): Promise<{ sessionId: string }> {
+    const attempt = this.attempt;
+    if (!attempt) throw new Error("not_recording");
+    if ((attempt.phase !== "recording" && attempt.phase !== "starting") || attempt.restarting) throw new Error("control_unavailable");
+    attempt.restarting = true;
+    const identity = attempt.trustedWindowIdentity;
+    await this.cancel();
+    const started = await this.start({ ...attempt.options, countdownSeconds: 3 });
+    if (identity) this.attachTrustedWindowIdentity(started.sessionId, identity);
+    return started;
+  }
 
+  async retry(sessionId: string): Promise<{ sessionId: string }> {
+    this.retryCapabilities(sessionId);
+    this.retryInFlight = true;
+    try {
+      const identity = this.retryWindowIdentity;
+      if (this.attempt?.phase === "retired") await this.attempt.cleanupOperation;
+      const started = await this.startAttempt(snapshotStartOptions(this.retryOptions!), true);
+      if (identity) this.attachTrustedWindowIdentity(started.sessionId, identity);
+      return started;
+    } finally { this.retryInFlight = false; }
+  }
+
+  retryCapabilities(sessionId: string): RecordingCapabilities {
+    const state = getRecordingState();
+    if (this.retryInFlight || state.phase !== "failed" || state.sessionId !== sessionId
+      || !state.canRetry || this.retryOptions === null) throw new Error("stale_failure");
+    return snapshotStartOptions(this.retryOptions).capabilities;
+  }
+
+  async dismissFailure(sessionId: string): Promise<void> {
+    const state = getRecordingState();
+    const attempt = this.attempt;
+    if (this.retryInFlight || state.phase !== "failed" || state.sessionId !== sessionId
+      || (attempt !== null && (attempt.sessionId !== sessionId || attempt.phase !== "retired"))) {
+      throw new Error("stale_failure");
+    }
+    if (attempt !== null) await attempt.cleanupOperation;
+    // Retry or another Dismiss may have claimed the failure while cleanup ran.
+    const current = getRecordingState();
+    if (this.retryInFlight || this.attempt !== null || current.phase !== "failed" || current.sessionId !== sessionId) {
+      throw new Error("stale_failure");
+    }
+    this.retryOptions = null;
+    this.retryWindowIdentity = null;
+    setRecordingState({ phase: "idle" });
+  }
+
+  cancel(): Promise<void> {
+    const attempt = this.attempt;
+    if (!attempt) {
+      this.retryOptions = null;
+      this.retryWindowIdentity = null;
+      setRecordingState({ phase: "idle" });
+      return Promise.resolve();
+    }
+    if (attempt.cancelOperation) return attempt.cancelOperation;
+    if (attempt.phase === "stopping" || attempt.phase === "processing" || attempt.phase === "retired") {
+      return Promise.reject(new Error("control_unavailable"));
+    }
+    attempt.phase = "cancelling";
+    attempt.abort();
+    attempt.cancelOperation = this.discard(attempt);
+    return attempt.cancelOperation;
+  }
+
+  private async discard(attempt: RecordingAttempt): Promise<void> {
+    if (attempt.child) {
+      try {
+        this.requestStop(attempt);
+        await withDeadline(this.cancelAcknowledgement(attempt), 500, "cancel_timeout");
+      } catch { /* cancellation is best effort */ }
+    }
+    await this.cleanup(attempt);
+    this.retryOptions = null;
+    this.retryWindowIdentity = null;
+    this.attempt = null;
+    setRecordingState({ phase: "idle" });
+    log.info("recording cancelled", { sessionId: attempt.sessionId });
+  }
+
+  protected fail(attempt: RecordingAttempt, code: RecordingFailureCode, cause: unknown,
+    options: { preserveTempDir?: boolean; canRetry?: boolean } = {}): Promise<void> {
+    if (!this.owns(attempt) || attempt.cancelled) return Promise.resolve();
+    // Publish while admission is still held; callbacks after retirement cannot
+    // publish or clean up, and no successor can start until cleanup completes.
+    const cleanup = this.cleanup(attempt, options).then(() => {
+      if (this.attempt === attempt) this.attempt = null;
+    });
+    publishRecordingFailure({ sessionId: attempt.sessionId, displayId: attempt.displayId,
+      code, cause, canRetry: options.canRetry ?? true });
+    return cleanup;
+  }
+
+  private cleanup(attempt: RecordingAttempt, options: { preserveTempDir?: boolean } = {}): Promise<void> {
+    if (attempt.cleanupOperation) return attempt.cleanupOperation;
+    attempt.phase = "retired";
+    // Capture the process-global camera synchronously before awaiting anything.
+    // The camera is already detached and its worker closed before its file
+    // cleanup awaits. A close/remove error must not keep admission reserved or
+    // replace a saved capture or the original recorder failure with that error.
+    const cameraCleanup = cancelCameraRecording().catch((cause: unknown) => {
+      log.warn("recording camera cleanup failed", {
+        sessionId: attempt.sessionId,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    });
+    try { attempt.child?.kill("SIGTERM"); } catch { /* already exited */ }
+    attempt.cleanupOperation = (async () => {
+      await attempt.allocation?.catch(() => undefined);
+      const tempDir = attempt.tempDir;
+      attempt.tempDir = null;
+      if (!options.preserveTempDir) await removeRecorderOwnedTempDir(tempDir);
+      await cameraCleanup;
+    })();
+    return attempt.cleanupOperation;
+  }
+}
+
+class NativeRecorderService extends AttemptRecorderService {
+  protected resolveBinary(): string | null { return resolveRecorderBinary(); }
+  protected unavailableMessage(): string {
+    return "native recorder binary not available — Fast Video Capture requires macOS 13+ and the bundled PwrSnapRecorder helper";
+  }
+
+  protected async startRecorder(attempt: RecordingAttempt, binary: string): Promise<void> {
+    try {
+      const info = statSync(binary);
+      log.info("recorder binary", { path: binary, mtime: info.mtime.toISOString(), sizeBytes: info.size });
+    } catch { /* diagnostic only */ }
+    // Native preparation overlaps the countdown; captureAtMs controls when
+    // Swift actually starts ScreenCaptureKit. Exclude only the HUD renderer.
+    attempt.startFailureCode = "recorder_spawn_failed";
+    const child = spawn(binary, [], { stdio: ["pipe", "pipe", "pipe"] });
+    attempt.child = child;
+    attempt.startFailureCode = "recorder_start_failed";
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
-      // Stop acknowledgement precedes process exit. A retired recorder can
-      // still deliver buffered output after restart installs the next session.
-      if (this.sessionId !== sessionId) return;
-      this.consumeStdout(chunk);
+      if (this.owns(attempt)) this.consumeStdout(attempt, chunk);
     });
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
-      log.warn("recorder stderr", { sessionId, chunk: chunk.trim() });
+      log.warn("recorder stderr", { sessionId: attempt.sessionId, chunk: chunk.trim() });
     });
-    let startFailureCode: RecordingFailureCode = "recorder_start_failed";
     child.on("error", (cause) => {
-      if (this.sessionId !== sessionId) return;
-      if (this.startReject !== null) {
-        startFailureCode = "recorder_spawn_failed";
-        this.startReject(cause);
-        this.startReject = null;
-        this.startResolve = null;
-        return;
+      if (!this.owns(attempt) || attempt.cancelled) return;
+      if (attempt.phase === "starting") {
+        attempt.startFailureCode = "recorder_spawn_failed";
+        attempt.started.reject(cause);
+      } else if (attempt.phase === "stopping") {
+        attempt.stopped.reject(cause);
+      } else if (attempt.phase === "recording") {
+        void this.fail(attempt, "recorder_exited", cause, { preserveTempDir: true });
       }
-      if (this.stopRequested) return;
-      void this.cleanup();
-      publishRecordingFailure({
-        sessionId,
-        code: "recorder_exited",
-        displayId,
-        cause
-      });
     });
     child.on("exit", (code, signal) => {
-      log.info("recorder exited", { sessionId, code, signal });
-      if (this.child !== child || this.sessionId !== sessionId) return;
-      if (this.startReject !== null && this.startedPromise !== null) {
-        this.startReject(new Error(`recorder exited before start ack (code=${code})`));
-        this.startReject = null;
-        this.startResolve = null;
-      } else if (!this.stopRequested && this.sessionId === sessionId) {
-        const cause = new Error(
-          `recorder exited unexpectedly (code=${code ?? "null"}, signal=${signal ?? "null"})`
-        );
-        void this.cleanup();
-        publishRecordingFailure({
-          sessionId,
-          code: "recorder_exited",
-          displayId,
-          cause
-        });
+      log.info("recorder exited", { sessionId: attempt.sessionId, code, signal });
+      attempt.exit = { code, signal };
+      attempt.exited.resolve(attempt.exit);
+      if (!this.owns(attempt) || attempt.cancelled) return;
+      if (attempt.phase === "starting" && !attempt.startAcknowledged) {
+        attempt.started.reject(new Error(`recorder exited before start ack (code=${code})`));
+      } else if (attempt.phase === "recording" || attempt.phase === "starting") {
+        void this.fail(attempt, "recorder_exited",
+          new Error(`recorder exited unexpectedly (code=${code ?? "null"}, signal=${signal ?? "null"})`),
+          { preserveTempDir: true });
+      }
+      // exit can precede the last stdout data. While stopping, wait for the
+      // stopped line or stream close, bounded by stopRecorder's deadline.
+    });
+    child.on("close", (code, signal) => {
+      if (this.owns(attempt) && attempt.phase === "stopping" && !attempt.stopAcknowledged) {
+        attempt.stopped.reject(new Error(`recorder closed without stop ack (code=${code}, signal=${signal})`));
       }
     });
 
-    // Send the start command with a wall-clock target so the
-    // recorder begins capturing AT countdownSeconds from now,
-    // regardless of how long Swift's own setup took. The Swift
-    // binary does setup as fast as it can, then waits until
-    // captureAtMs before calling startCapture().
-    //
-    // `excludePids` is the recording-controller HUD's renderer PID
-    // (when known). Swift filters SCRunningApplication by this PID
-    // so the captured pixels never contain our countdown overlay or
-    // Stop/Restart/Cancel pill. See collectOurPids() for why we
-    // narrowed this to JUST the HUD instead of every PwrSnap PID.
-    const captureAtMs = Date.now() + options.countdownSeconds * 1000;
-    const excludePids = collectOurPids();
     let cameraPreview: ReturnType<typeof prepareCameraPreview>;
-    try { cameraPreview = prepareCameraPreview(displayId, physicalRect); }
+    try { cameraPreview = prepareCameraPreview(attempt.displayId, attempt.rect); }
     catch (cause) {
       confirmCameraPreviewExclusion(false);
       log.warn("camera preview unavailable; recording remains hidden", {
         message: cause instanceof Error ? cause.message : String(cause)
       });
     }
-    try {
-      child.stdin.write(
-        JSON.stringify({
-          type: "start",
-          displayId,
-          rect: physicalRect,
-          outputPath,
-          systemAudio: options.capabilities.systemAudio,
-          microphone: options.capabilities.microphone,
-          // The input's name, or omitted for the system default. The
-          // recorder matches it against AVFoundation's device names and
-          // refuses the take when none matches: recording a different
-          // microphone than the one the selector showed is the failure
-          // the device picker exists to prevent.
-          ...(options.capabilities.microphone && options.capabilities.microphoneDevice !== undefined
-            ? { microphoneDevice: options.capabilities.microphoneDevice.label }
-            : {}),
-          // Omitted when undefined (JSON.stringify drops it), so the
-          // recorder falls back to its `showsCursor ?? true` default.
-          showsCursor: options.captureCursor,
-          captureAtMs,
-          excludePids,
-          cameraPreview
-        }) + "\n"
-      );
-    } catch (cause) {
-      await this.cleanup();
-      publishRecordingFailure({
-        sessionId,
-        code: "recorder_start_failed",
-        displayId,
-        cause
-      });
-      throw cause;
-    }
-
-    // Render the visible countdown in parallel with Swift's setup.
-    //
-    // CRITICAL: `cancel()` runs concurrently if the user hits Cancel
-    // mid-countdown. It sets `this.sessionId = null` (via cleanup)
-    // and resets recording-state to idle. Without the early-exit
-    // check below, this loop's next iteration would dispatch
-    // `setRecordingState({ phase: "countdown", ... })` AGAIN after
-    // the user cancelled — the HUD would flicker back up for a
-    // second. The `this.sessionId !== sessionId` check catches that
-    // race: each iteration verifies the captured `sessionId` is
-    // still the active session and bails immediately if not.
-    if (options.countdownSeconds > 0) {
-      for (let n = options.countdownSeconds; n > 0; n--) {
-        if (this.sessionId !== sessionId) {
-          throw new Error("cancelled");
-        }
-        setRecordingState({
-          phase: "countdown",
-          sessionId,
-          secondsRemaining: n,
-          rect: physicalRect,
-          displayId
-        });
-        await new Promise((r) => setTimeout(r, 1_000));
-      }
-      if (this.sessionId !== sessionId) {
-        throw new Error("cancelled");
-      }
-    }
-
-    // Countdown done. If the recorder isn't ready yet (cold-launch
-    // SCShareableContent etc. taking longer than the countdown), the
-    // HUD switches to a `starting` indicator so the user knows we're
-    // still working rather than stuck. The timeout is generous —
-    // 15s — but bounded, so a wedged Swift process can't trap the
-    // app in a permanent non-idle state.
-    setRecordingState({ phase: "starting", sessionId, rect: physicalRect, displayId });
-    let startTimeout: ReturnType<typeof setTimeout> | null = null;
-    try {
-      await Promise.race([
-        this.startedPromise,
-        new Promise<never>((_, reject) => {
-          startTimeout = setTimeout(
-            () => reject(new Error("recorder_start_timeout")),
-            15_000
-          );
-        })
-      ]);
-    } catch (cause) {
-      // Recorder failed to ack `started`. Kill it, clean up state,
-      // and rethrow so the caller can surface a typed error.
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        /* ignore */
-      }
-      await this.cleanup();
-      publishRecordingFailure({
-        sessionId,
-        code: cause instanceof NativeRecorderError && cause.code === "microphone_unavailable"
-          ? "microphone_unavailable"
-          : startFailureCode,
-        displayId,
-        cause
-      });
-      throw cause;
-    } finally {
-      if (startTimeout !== null) clearTimeout(startTimeout);
-    }
-
-    setRecordingState({
-      phase: "recording",
-      sessionId,
-      startedAt: new Date().toISOString(),
-      rect: physicalRect,
-      displayId,
-      capabilities: { ...options.capabilities }
-    });
-    return { sessionId };
+    const options = attempt.options;
+    child.stdin.write(JSON.stringify({
+      type: "start", displayId: attempt.displayId, rect: attempt.rect,
+      outputPath: attempt.outputPath,
+      systemAudio: options.capabilities.systemAudio,
+      microphone: options.capabilities.microphone,
+      ...(options.capabilities.microphone && options.capabilities.microphoneDevice !== undefined
+        ? { microphoneDevice: options.capabilities.microphoneDevice.label } : {}),
+      showsCursor: options.captureCursor,
+      captureAtMs: Date.now() + options.countdownSeconds * 1000,
+      excludePids: collectOurPids(), cameraPreview
+    }) + "\n");
+    await this.countdown(attempt);
+    await withDeadline(attempt.wait(attempt.started.promise), 15_000, "recorder_start_timeout");
+    attempt.startedAtMs = Date.now();
   }
 
-  async stop(): Promise<{ captureId: string }> {
-    if (this.child === null || this.sessionId === null) {
-      throw new Error("no_active_recording");
-    }
-    const sessionId = this.sessionId;
-    // Snapshot mutable session state before the first await. Temp cleanup after
-    // adoption is asynchronous, and a concurrent cancel clears `this.subject`.
-    const subject = this.subject!;
-    // Same reason as `subject`: a concurrent cancel nulls this out, and
-    // it is read after several awaits. What was REQUESTED is not
-    // recoverable from `stopped`, which only reports what landed.
-    const requested = this.capabilities ?? { systemAudio: false, microphone: false };
-    const displayId = subjectDisplayId(subject);
-    this.stopRequested = true;
-    setRecordingState({ phase: "stopping", sessionId });
-    let stopped: RecorderStoppedEvent;
+  protected requestStop(attempt: RecordingAttempt): void {
+    attempt.child!.stdin.write(JSON.stringify({ type: "stop" }) + "\n");
+  }
+
+  protected cancelAcknowledgement(attempt: RecordingAttempt): Promise<unknown> {
+    return Promise.race([attempt.stopped.promise, attempt.exited.promise]);
+  }
+
+  protected async stopRecorder(attempt: RecordingAttempt): Promise<RecorderStoppedEvent> {
+    this.requestStop(attempt);
     try {
-      this.child.stdin.write(JSON.stringify({ type: "stop" }) + "\n");
-      stopped = await this.stoppedPromise!;
+      return await withDeadline(attempt.stopped.promise, 10_000, "recorder_stop_timeout");
     } catch (cause) {
-      await this.cleanup();
-      publishRecordingFailure({
-        sessionId,
-        code: "stop_failed",
-        displayId,
-        cause
-      });
-      throw cause;
-    }
-    setRecordingState({ phase: "processing", sessionId });
-    let sourceAdopted = false;
-    try {
-      const sourceWindowTitle = await (this.sourceWindowTitlePromise ??
-        Promise.resolve(null));
-      const stored = await persistStoppedRecording({
-        outputPath: stopped.outputPath,
-        durationSec: stopped.durationSec,
-        containerFormat: stopped.containerFormat,
-        hasSystemAudio: stopped.hasSystemAudio,
-        hasMicrophoneAudio: stopped.hasMicrophoneAudio,
-        requestedSystemAudio: requested.systemAudio,
-        requestedMicrophone: requested.microphone,
-        subject,
-        sourceWindowTitle,
-        onSourceAdopted: async () => {
-          sourceAdopted = true;
-          await this.cleanupTempDir();
-        }
-      });
-      setRecordingState({ phase: "ready", sessionId, captureId: stored.captureId });
-      this.retryOptions = null;
-      this.retryWindowIdentity = null;
-      await this.cleanup();
-      return stored;
-    } catch (cause) {
-      if (sourceAdopted) {
-        await this.cleanup();
-      } else {
-        log.warn("recording adoption failed; recorder output preserved for recovery", {
-          outputPath: stopped.outputPath,
-          tempDir: this.tempDir,
-          message: cause instanceof Error ? cause.message : String(cause)
-        });
-        await this.cleanup({ preserveTempDir: true });
+      if (attempt.exit !== null && !attempt.stopAcknowledged) {
+        throw new Error(`recorder exited without stop ack (code=${attempt.exit.code}, signal=${attempt.exit.signal})`);
       }
-      publishRecordingFailure({
-        sessionId,
-        code: "processing_failed",
-        displayId,
-        cause,
-        canRetry: false
-      });
       throw cause;
     }
   }
 
-  /**
-   * Discard the active session and immediately spawn a fresh one
-   * with the same subject + capabilities. Defaults the countdown
-   * back to the original 3 seconds so the user gets the same
-   * pre-roll on the retry. Snapshots subject/capabilities BEFORE
-   * calling cancel() because cancel() clears those fields as part
-   * of cleanup.
-   */
-  async restart(): Promise<{ sessionId: string }> {
-    if (this.subject === null || this.capabilities === null) {
-      throw new Error("not_recording");
-    }
-    const subject = this.subject;
-    const capabilities = this.capabilities;
-    const captureCursor = this.captureCursor;
-    const trustedWindowIdentity = this.trustedWindowIdentity;
-    await this.cancel();
-    const restarted = await this.start({
-      subject,
-      capabilities,
-      captureCursor,
-      countdownSeconds: 3
-    });
-    if (trustedWindowIdentity !== null) {
-      this.attachTrustedWindowIdentity(restarted.sessionId, trustedWindowIdentity);
-    }
-    return restarted;
-  }
-
-  async retry(sessionId: string): Promise<{ sessionId: string }> {
-    this.retryCapabilities(sessionId);
-    const state = getRecordingState();
-    if (
-      this.retryInFlight ||
-      state.phase !== "failed" ||
-      state.sessionId !== sessionId ||
-      !state.canRetry ||
-      this.retryOptions === null
-    ) {
-      throw new Error("stale_failure");
-    }
-    this.retryInFlight = true;
-    try {
-      const identity = this.retryWindowIdentity;
-      const started = await this.startAttempt(snapshotStartOptions(this.retryOptions), true);
-      if (identity !== null) this.attachTrustedWindowIdentity(started.sessionId, identity);
-      return started;
-    } finally {
-      this.retryInFlight = false;
-    }
-  }
-
-  retryCapabilities(sessionId: string): RecordingCapabilities {
-    const state = getRecordingState();
-    if (
-      state.phase !== "failed" ||
-      state.sessionId !== sessionId ||
-      !state.canRetry ||
-      this.retryOptions === null
-    ) {
-      throw new Error("stale_failure");
-    }
-    return { ...this.retryOptions.capabilities };
-  }
-
-  async dismissFailure(sessionId: string): Promise<void> {
-    const state = getRecordingState();
-    if (this.retryInFlight || state.phase !== "failed" || state.sessionId !== sessionId) {
-      throw new Error("stale_failure");
-    }
-    await this.cleanup();
-    this.retryOptions = null;
-    this.retryWindowIdentity = null;
-    setRecordingState({ phase: "idle" });
-  }
-
-  async cancel(): Promise<void> {
-    // ALWAYS reset state on cancel — even if the internal session
-    // bookkeeping is wedged (e.g. spawn raced with another action
-    // and left the controller showing the countdown HUD with no
-    // active child). The user invoking Cancel from the tray expects
-    // the HUD to vanish regardless. Without this unconditional
-    // reset the only escape from a stuck countdown was to quit the
-    // app, which is exactly the bug the prior version hit.
-    const sessionId = this.sessionId;
-    const child = this.child;
-    this.stopRequested = true;
-    if (child !== null) {
-      try {
-        // Best-effort: send stop and discard the output. If the
-        // binary hung, kill it directly.
-        child.stdin.write(JSON.stringify({ type: "stop" }) + "\n");
-        await Promise.race([
-          this.stoppedPromise,
-          new Promise((resolve) => setTimeout(resolve, 500))
-        ]);
-      } catch {
-        /* ignore */
-      }
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        /* ignore */
-      }
-    }
-    await this.cleanup();
-    this.retryOptions = null;
-    this.retryWindowIdentity = null;
-    setRecordingState({ phase: "idle" });
-    log.info("recording cancelled", { sessionId });
-  }
-
-  private consumeStdout(chunk: string): void {
-    this.inboundBuffer += chunk;
+  private consumeStdout(attempt: RecordingAttempt, chunk: string): void {
+    attempt.inboundBuffer += chunk;
     let nl: number;
-    while ((nl = this.inboundBuffer.indexOf("\n")) !== -1) {
-      const line = this.inboundBuffer.slice(0, nl).trim();
-      this.inboundBuffer = this.inboundBuffer.slice(nl + 1);
-      if (line.length === 0) continue;
+    while (this.owns(attempt) && (nl = attempt.inboundBuffer.indexOf("\n")) !== -1) {
+      const line = attempt.inboundBuffer.slice(0, nl).trim();
+      attempt.inboundBuffer = attempt.inboundBuffer.slice(nl + 1);
+      if (!line) continue;
       let parsed: RecorderEvent;
-      try {
-        parsed = JSON.parse(line) as RecorderEvent;
-      } catch (err) {
+      try { parsed = JSON.parse(line) as RecorderEvent; }
+      catch {
         log.warn("recorder produced unparseable line", { line });
         continue;
       }
+      // A cancelled attempt may acknowledge discard, but cannot touch the
+      // process-global camera or settle startup successfully.
+      if (attempt.cancelled && parsed.event !== "stopped") continue;
       switch (parsed.event) {
         case "timeline":
-          // Older helper binaries do not emit UTC. Their generic `started`
-          // receipt is a usable fallback; never use an incompatible uptime.
           if (parsed.utcTimeMs !== undefined) markCameraScreenStartUtc(parsed.utcTimeMs);
           break;
         case "cameraPreview":
           confirmCameraPreviewExclusion(parsed.excluded === true);
           break;
         case "started":
-          markCameraScreenStart();
-          this.startResolve?.();
-          this.startResolve = null;
-          this.startReject = null;
+          if (!attempt.startAcknowledged) {
+            attempt.startAcknowledged = true;
+            markCameraScreenStart();
+            attempt.started.resolve();
+          }
           break;
         case "stopped":
-          this.stopResolve?.(parsed);
-          this.stopResolve = null;
-          this.stopReject = null;
+          attempt.stopAcknowledged = true;
+          attempt.stopped.resolve(parsed);
           break;
         case "error": {
-          const err = new NativeRecorderError(parsed.code, parsed.message);
-          if (this.startReject !== null) {
-            this.startReject(err);
-            this.startReject = null;
-            this.startResolve = null;
-          } else if (this.stopRequested && this.stopReject !== null) {
-            this.stopReject(err);
-            this.stopReject = null;
-            this.stopResolve = null;
-          } else {
-            const sessionId = this.sessionId;
-            const subject = this.subject;
-            if (sessionId !== null && subject !== null) {
-              void this.cleanup();
-              publishRecordingFailure({
-                sessionId,
-                code: "recorder_exited",
-                displayId: subjectDisplayId(subject),
-                cause: err
-              });
-            }
+          const cause = new NativeRecorderError(parsed.code, parsed.message);
+          if (attempt.phase === "starting") attempt.started.reject(cause);
+          else if (attempt.phase === "stopping") attempt.stopped.reject(cause);
+          else if (attempt.phase === "recording") {
+            void this.fail(attempt, "recorder_exited", cause, { preserveTempDir: true });
           }
           break;
         }
       }
     }
   }
-
-  private async cleanupTempDir(): Promise<void> {
-    const tempDir = this.tempDir;
-    this.tempDir = null;
-    await removeRecorderOwnedTempDir(tempDir);
-  }
-
-  private async cleanup(options: { preserveTempDir?: boolean } = {}): Promise<void> {
-    const cameraCleanup = cancelCameraRecording();
-    // Defense in depth: the Swift recorder is supposed to exit on
-    // its own after `stop` (or after we kill it on cancel/timeout),
-    // but bugs in the Swift side could leave the process alive with
-    // its SCStream still attached to the ScreenCaptureKit daemon.
-    // The NEXT recording in the same Electron PID would then trip
-    // -3805 ("application connection interrupted") because the
-    // daemon revokes the stale stream's connection the instant a
-    // new one registers. Sending SIGTERM here is a no-op if Swift
-    // already exited (the child reference is from before exit) and
-    // a guaranteed kill if it hasn't.
-    const child = this.child;
-    if (child !== null) {
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        /* ignore — child may already be gone */
-      }
-    }
-    this.child = null;
-    this.sessionId = null;
-    this.subject = null;
-    this.capabilities = null;
-    this.captureCursor = undefined;
-    this.startedPromise = null;
-    this.stoppedPromise = null;
-    this.startResolve = null;
-    this.startReject = null;
-    this.stopResolve = null;
-    this.stopReject = null;
-    this.inboundBuffer = "";
-    this.stopRequested = false;
-    this.trustedWindowIdentity = null;
-    this.sourceWindowTitlePromise = null;
-    if (options.preserveTempDir === true) {
-      // Detach ownership without deleting: an adoption failure may leave the
-      // only complete recording here for manual recovery.
-      this.tempDir = null;
-    } else {
-      await this.cleanupTempDir();
-    }
-    await cameraCleanup;
-  }
 }
-
 
 type PersistStoppedRecordingInput = {
   outputPath: string;
@@ -975,491 +817,109 @@ async function persistStoppedRecording(stopped: PersistStoppedRecordingInput): P
   return { captureId: record.id };
 }
 
-class WindowsFfmpegRecorderService implements RecordingService {
-  private child: ChildProcessWithoutNullStreams | null = null;
-  private sessionId: string | null = null;
-  private subject: RecordingSubject | null = null;
-  private capabilities: RecordingCapabilities | null = null;
-  /** Raw request snapshot. `undefined` intentionally preserves the documented
-   *  default-on behavior when restart() plans the replacement FFmpeg process. */
-  private captureCursor: boolean | undefined = undefined;
-  private tempDir: string | null = null;
-  private outputPath: string | null = null;
-  private startedAtMs = 0;
-  private stopRequested = false;
-  private exitPromise: Promise<{ code: number | null; signal: NodeJS.Signals | null }> | null = null;
-  private stderrTail: string[] = [];
-  private retryOptions: StartOptions | null = null;
-  // Survives failure cleanup with retryOptions; never stores a stale title.
-  private retryWindowIdentity: TrustedRecordingWindowIdentity | null = null;
-  private retryInFlight = false;
-  private trustedWindowIdentity: TrustedRecordingWindowIdentity | null = null;
-  private sourceWindowTitlePromise: Promise<string | null> | null = null;
-
-  isActive(): boolean {
-    return this.child !== null && this.sessionId !== null;
+class WindowsFfmpegRecorderService extends AttemptRecorderService {
+  protected resolveBinary(): string | null { return resolveFfmpegPath(); }
+  protected unavailableMessage(): string {
+    return "ffmpeg_not_available: Windows video recording requires PwrSnapFFmpeg.exe in the packaged app, or PWRSNAP_FFMPEG_PATH / ffmpeg.exe on PATH in development.";
+  }
+  protected override recordedCapabilities(attempt: RecordingAttempt): RecordingCapabilities {
+    return { ...attempt.options.capabilities, systemAudio: false, microphone: false };
   }
 
-  attachTrustedWindowIdentity(
-    sessionId: string,
-    identity: TrustedRecordingWindowIdentity
-  ): boolean {
-    const state = getRecordingState();
-    const failedSubject = state.phase === "failed" && state.sessionId === sessionId
-      && state.canRetry ? this.retryOptions?.subject : null;
-    if (failedSubject?.kind === "window" && failedSubject.windowId === identity.windowId) {
-      this.retryWindowIdentity = { ...identity };
-      return true;
-    }
-    if (
-      this.sessionId !== sessionId ||
-      this.subject?.kind !== "window" ||
-      this.subject.windowId !== identity.windowId
-    ) {
-      return false;
-    }
-    this.retryWindowIdentity = { ...identity };
-    this.trustedWindowIdentity = { ...identity };
-    this.sourceWindowTitlePromise = resolveTrustedRecordingWindowTitle(identity);
-    return true;
-  }
-
-  async start(opts: StartOptions): Promise<{ sessionId: string }> {
-    return this.startAttempt(opts, false);
-  }
-
-  private async startAttempt(
-    opts: StartOptions,
-    retryingFailure: boolean
-  ): Promise<{ sessionId: string }> {
-    if (getRecordingState().phase === "failed" && !retryingFailure) {
-      throw new Error("failure_action_required");
-    }
-    if (isRecordingActive() || this.child !== null) {
-      throw new Error("already_recording");
-    }
-    const sessionId = nanoid(12);
-    const options = snapshotStartOptions(opts);
-    const hudRect = subjectToPhysicalRect(options.subject);
-    const displayId = subjectDisplayId(options.subject);
-    this.retryOptions = options;
-    if (!retryingFailure) this.retryWindowIdentity = null;
-    const ffmpeg = resolveFfmpegPath();
-    if (ffmpeg === null) {
-      const cause = new Error(
-        "ffmpeg_not_available: Windows video recording requires PwrSnapFFmpeg.exe in the packaged app, or PWRSNAP_FFMPEG_PATH / ffmpeg.exe on PATH in development."
-      );
-      publishRecordingFailure({
-        sessionId,
-        code: "recorder_unavailable",
-        displayId,
-        cause,
-        canRetry: !app.isPackaged
-      });
-      throw cause;
-    }
-
+  protected async startRecorder(attempt: RecordingAttempt, ffmpeg: string): Promise<void> {
+    const options = attempt.options;
     if (options.capabilities.microphone || options.capabilities.systemAudio) {
       log.warn("Windows recording currently captures screen video only; audio toggles ignored", {
-        microphone: options.capabilities.microphone,
-        systemAudio: options.capabilities.systemAudio
+        microphone: options.capabilities.microphone, systemAudio: options.capabilities.systemAudio
       });
-    }
-
-    let tmpDir: string;
-    let outputPath: string;
-    try {
-      tmpDir = await mkdtemp(join(tmpdir(), "pwrsnap-recording-"));
-      outputPath = join(tmpDir, `${sessionId}.mp4`);
-    } catch (cause) {
-      await this.cleanup();
-      publishRecordingFailure({
-        sessionId,
-        code: "recorder_start_failed",
-        displayId,
-        cause
-      });
-      throw cause;
     }
     const captureRect = subjectToWindowsDesktopRect(options.subject);
     const capturePlan = planWindowsFfmpegCapture({
-      rect: captureRect,
-      outputPath,
-      captureCursor: options.captureCursor,
-      cameraSync: options.capabilities.camera !== undefined
+      rect: captureRect, outputPath: attempt.outputPath,
+      captureCursor: options.captureCursor, cameraSync: options.capabilities.camera !== undefined
     });
-
-    this.sessionId = sessionId;
-    this.subject = options.subject;
-    this.capabilities = snapshotStartOptions(options).capabilities;
-    this.captureCursor = options.captureCursor;
-    this.tempDir = tmpDir;
-    this.outputPath = outputPath;
-    this.stderrTail = [];
-    this.stopRequested = false;
-
-    setRecordingState({ phase: "preflight", sessionId, rect: hudRect, displayId });
-    try { if (options.capabilities.camera) await beginCameraRecording(options.capabilities.camera); }
-    catch (cause) {
-      if (this.sessionId !== sessionId) throw new Error("cancelled");
-      await this.cleanup();
-      publishRecordingFailure({ sessionId, code: "recorder_start_failed", displayId, cause });
-      throw cause;
-    }
-    if (this.sessionId !== sessionId) throw new Error("cancelled");
-
-    if (options.countdownSeconds > 0) {
-      for (let n = options.countdownSeconds; n > 0; n--) {
-        if (this.sessionId !== sessionId) {
-          throw new Error("cancelled");
-        }
-        setRecordingState({
-          phase: "countdown",
-          sessionId,
-          secondsRemaining: n,
-          rect: hudRect,
-          displayId
-        });
-        await new Promise((r) => setTimeout(r, 1_000));
-      }
-      if (this.sessionId !== sessionId) {
-        throw new Error("cancelled");
-      }
-    }
-
-    setRecordingState({ phase: "starting", sessionId, rect: hudRect, displayId });
-
+    await this.countdown(attempt);
+    // A starting-state observer can cancel before this continuation resumes.
+    this.assertStarting(attempt);
     log.info("starting Windows ffmpeg recorder", {
-      ffmpeg,
-      captureRect,
-      outputPath,
+      ffmpeg, captureRect, outputPath: attempt.outputPath,
       captureCursor: capturePlan.effectiveCaptureCursor
     });
-    let child: ChildProcessWithoutNullStreams;
-    try {
-      child = spawn(ffmpeg, capturePlan.args, {
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true
-      });
-    } catch (cause) {
-      await this.cleanup();
-      publishRecordingFailure({
-        sessionId,
-        code: "recorder_spawn_failed",
-        displayId,
-        cause
-      });
-      throw cause;
-    }
-    this.child = child;
-    this.startedAtMs = Date.now();
+    attempt.startFailureCode = "recorder_spawn_failed";
+    const child = spawn(ffmpeg, capturePlan.args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    attempt.child = child;
+    attempt.startedAtMs = Date.now();
     markCameraScreenStart();
     const utcToHostMs = Number(process.hrtime.bigint()) / 1e6 - Date.now();
     let cameraSyncBanner = options.capabilities.camera ? "" : null;
-    this.exitPromise = new Promise((resolve) => {
-      child.on("exit", (code, signal) => {
-        log.info("Windows ffmpeg recorder exited", { code, signal });
-        resolve({ code, signal });
-        if (!this.stopRequested && this.sessionId === sessionId) {
-          const message = windowsFfmpegFailureMessage(this.stderrTail, code, signal);
-          void this.cleanup();
-          publishRecordingFailure({
-            sessionId,
-            code: "recorder_exited",
-            displayId,
-            cause: message
-          });
-        }
-      });
+    child.on("exit", (code, signal) => {
+      log.info("Windows ffmpeg recorder exited", { code, signal });
+      attempt.exit = { code, signal };
+      attempt.exited.resolve(attempt.exit);
+      if (!this.owns(attempt) || attempt.cancelled) return;
+      if (attempt.phase === "recording" || attempt.phase === "starting") {
+        void this.fail(attempt, "recorder_exited",
+          windowsFfmpegFailureMessage(attempt.stderrTail, code, signal), { preserveTempDir: true });
+      }
     });
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
-      if (this.sessionId !== sessionId) return;
+      if (!this.owns(attempt) || attempt.cancelled) return;
       if (cameraSyncBanner !== null) {
         cameraSyncBanner = (cameraSyncBanner + chunk).slice(-8192);
         const utcMs = windowsCaptureStartUtcMs(cameraSyncBanner);
         if (utcMs !== null) {
           markCameraScreenStart(utcMs + utcToHostMs);
-          this.startedAtMs = utcMs;
+          attempt.startedAtMs = utcMs;
           cameraSyncBanner = null;
         }
       }
-      this.rememberStderr(chunk);
-      log.warn("Windows ffmpeg recorder stderr", { chunk: chunk.trim() });
+      const trimmed = chunk.trim();
+      if (trimmed) {
+        attempt.stderrTail.push(trimmed);
+        if (attempt.stderrTail.length > 8) attempt.stderrTail.shift();
+      }
+      log.warn("Windows ffmpeg recorder stderr", { chunk: trimmed });
     });
     child.stdout.setEncoding("utf8");
     child.on("error", (cause) => {
-      if (this.sessionId !== sessionId) return;
-      void this.cleanup();
-      publishRecordingFailure({
-        sessionId,
-        code: "recorder_spawn_failed",
-        displayId,
-        cause
-      });
+      if (!this.owns(attempt) || attempt.cancelled) return;
+      if (attempt.phase === "stopping") attempt.exited.reject(cause);
+      else if (attempt.phase === "recording" || attempt.phase === "starting") {
+        void this.fail(attempt, "recorder_spawn_failed", cause, { preserveTempDir: true });
+      }
     });
-
-    setRecordingState({
-      phase: "recording",
-      sessionId,
-      startedAt: new Date(this.startedAtMs).toISOString(),
-      rect: hudRect,
-      displayId,
-      // gdigrab is video-only; an audio request is rejected upstream.
-      capabilities: { ...options.capabilities, systemAudio: false, microphone: false }
-    });
-    return { sessionId };
   }
 
-  async stop(): Promise<{ captureId: string }> {
-    if (this.child === null || this.sessionId === null || this.exitPromise === null) {
-      throw new Error("no_active_recording");
-    }
-    const sessionId = this.sessionId;
-    const outputPath = this.outputPath!;
-    const subject = this.subject!;
-    const displayId = subjectDisplayId(subject);
-    const startedAtMs = this.startedAtMs;
-    const child = this.child;
-    const exitPromise = this.exitPromise;
+  protected requestStop(attempt: RecordingAttempt): void { attempt.child!.stdin.write("q"); }
+  protected cancelAcknowledgement(attempt: RecordingAttempt): Promise<unknown> { return attempt.exited.promise; }
 
-    this.stopRequested = true;
-    setRecordingState({ phase: "stopping", sessionId });
-    try {
-      child.stdin.write("q");
-    } catch {
-      /* ffmpeg may already have closed stdin; the exit wait below handles it */
-    }
-    const gracefulExit = await waitForWindowsFfmpegExit(exitPromise, 5_000);
-    let exit = gracefulExit;
+  protected async stopRecorder(attempt: RecordingAttempt): Promise<RecorderStoppedEvent> {
+    try { this.requestStop(attempt); } catch { /* exit/deadline decides the outcome */ }
+    let exit = await waitForWindowsFfmpegExit(attempt.exited.promise, 5_000);
     if (exit === null) {
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        /* ignore */
-      }
-      exit = await waitForWindowsFfmpegExit(exitPromise, 5_000);
+      try { attempt.child!.kill("SIGTERM"); } catch { /* best effort */ }
+      exit = await waitForWindowsFfmpegExit(attempt.exited.promise, 5_000);
     }
-    if (exit === null) {
-      const message = "ffmpeg recorder did not exit after stop timeout";
-      await this.cleanup();
-      publishRecordingFailure({
-        sessionId,
-        code: "stop_timeout",
-        displayId,
-        cause: message
-      });
-      throw new Error(message);
-    }
+    if (exit === null) throw new Error("recorder_stop_timeout");
     if (exit.code !== 0 || exit.signal !== null) {
-      const message = windowsFfmpegFailureMessage(this.stderrTail, exit.code, exit.signal);
-      await this.cleanup();
-      publishRecordingFailure({
-        sessionId,
-        code: "stop_failed",
-        displayId,
-        cause: message
-      });
-      throw new Error(message);
+      throw new Error(windowsFfmpegFailureMessage(attempt.stderrTail, exit.code, exit.signal));
     }
-
-    setRecordingState({ phase: "processing", sessionId });
-    const durationSec = Math.max(0.1, (Date.now() - startedAtMs) / 1000);
-    let sourceAdopted = false;
-    try {
-      const sourceWindowTitle = await (this.sourceWindowTitlePromise ??
-        Promise.resolve(null));
-      const stored = await persistStoppedRecording({
-        outputPath,
-        durationSec,
-        containerFormat: "mp4",
-        hasSystemAudio: false,
-        hasMicrophoneAudio: false,
-        // The gdigrab backend is video-only and rejects an audio
-        // request upstream, so nothing can have been asked for here.
-        requestedSystemAudio: false,
-        requestedMicrophone: false,
-        subject,
-        sourceWindowTitle,
-        onSourceAdopted: async () => {
-          sourceAdopted = true;
-          await this.cleanupTempDir();
-        }
-      });
-      setRecordingState({ phase: "ready", sessionId, captureId: stored.captureId });
-      this.retryOptions = null;
-      this.retryWindowIdentity = null;
-      await this.cleanup();
-      return stored;
-    } catch (cause) {
-      if (sourceAdopted) {
-        await this.cleanup();
-      } else {
-        log.warn("recording adoption failed; recorder output preserved for recovery", {
-          outputPath,
-          tempDir: this.tempDir,
-          message: cause instanceof Error ? cause.message : String(cause)
-        });
-        await this.cleanup({ preserveTempDir: true });
-      }
-      publishRecordingFailure({
-        sessionId,
-        code: "processing_failed",
-        displayId,
-        cause,
-        canRetry: false
-      });
-      throw cause;
-    }
-  }
-
-  async restart(): Promise<{ sessionId: string }> {
-    if (this.subject === null || this.capabilities === null) {
-      throw new Error("not_recording");
-    }
-    const subject = this.subject;
-    const capabilities = this.capabilities;
-    const captureCursor = this.captureCursor;
-    const trustedWindowIdentity = this.trustedWindowIdentity;
-    await this.cancel();
-    const restarted = await this.start({
-      subject,
-      capabilities: { ...capabilities, systemAudio: false, microphone: false },
-      captureCursor,
-      countdownSeconds: 3
-    });
-    if (trustedWindowIdentity !== null) {
-      this.attachTrustedWindowIdentity(restarted.sessionId, trustedWindowIdentity);
-    }
-    return restarted;
-  }
-
-  async retry(sessionId: string): Promise<{ sessionId: string }> {
-    this.retryCapabilities(sessionId);
-    const state = getRecordingState();
-    if (
-      this.retryInFlight ||
-      state.phase !== "failed" ||
-      state.sessionId !== sessionId ||
-      !state.canRetry ||
-      this.retryOptions === null
-    ) {
-      throw new Error("stale_failure");
-    }
-    this.retryInFlight = true;
-    try {
-      const identity = this.retryWindowIdentity;
-      const started = await this.startAttempt(snapshotStartOptions(this.retryOptions), true);
-      if (identity !== null) this.attachTrustedWindowIdentity(started.sessionId, identity);
-      return started;
-    } finally {
-      this.retryInFlight = false;
-    }
-  }
-
-  retryCapabilities(sessionId: string): RecordingCapabilities {
-    const state = getRecordingState();
-    if (
-      state.phase !== "failed" ||
-      state.sessionId !== sessionId ||
-      !state.canRetry ||
-      this.retryOptions === null
-    ) {
-      throw new Error("stale_failure");
-    }
-    return { ...this.retryOptions.capabilities };
-  }
-
-  async dismissFailure(sessionId: string): Promise<void> {
-    const state = getRecordingState();
-    if (this.retryInFlight || state.phase !== "failed" || state.sessionId !== sessionId) {
-      throw new Error("stale_failure");
-    }
-    await this.cleanup();
-    this.retryOptions = null;
-    this.retryWindowIdentity = null;
-    setRecordingState({ phase: "idle" });
-  }
-
-  async cancel(): Promise<void> {
-    const sessionId = this.sessionId;
-    const child = this.child;
-    this.stopRequested = true;
-    if (child !== null) {
-      try {
-        child.stdin.write("q");
-      } catch {
-        /* ignore */
-      }
-      await Promise.race([
-        this.exitPromise ?? Promise.resolve(),
-        new Promise((resolve) => setTimeout(resolve, 500))
-      ]);
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        /* ignore */
-      }
-    }
-    await this.cleanup();
-    this.retryOptions = null;
-    this.retryWindowIdentity = null;
-    setRecordingState({ phase: "idle" });
-    log.info("recording cancelled", { sessionId });
-  }
-
-  private rememberStderr(chunk: string): void {
-    const trimmed = chunk.trim();
-    if (trimmed.length === 0) return;
-    this.stderrTail.push(trimmed);
-    if (this.stderrTail.length > 8) this.stderrTail.shift();
-  }
-
-  private async cleanupTempDir(): Promise<void> {
-    const tempDir = this.tempDir;
-    this.tempDir = null;
-    await removeRecorderOwnedTempDir(tempDir);
-  }
-
-  private async cleanup(options: { preserveTempDir?: boolean } = {}): Promise<void> {
-    const cameraCleanup = cancelCameraRecording();
-    const child = this.child;
-    if (child !== null && !child.killed) {
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        /* ignore */
-      }
-    }
-    this.child = null;
-    this.sessionId = null;
-    this.subject = null;
-    this.capabilities = null;
-    this.captureCursor = undefined;
-    this.outputPath = null;
-    this.startedAtMs = 0;
-    this.stopRequested = false;
-    this.exitPromise = null;
-    this.stderrTail = [];
-    this.trustedWindowIdentity = null;
-    this.sourceWindowTitlePromise = null;
-    if (options.preserveTempDir === true) {
-      this.tempDir = null;
-    } else {
-      await this.cleanupTempDir();
-    }
-    await cameraCleanup;
+    return {
+      event: "stopped", outputPath: attempt.outputPath,
+      durationSec: Math.max(0.1, (Date.now() - attempt.startedAtMs) / 1000),
+      containerFormat: "mp4", hasSystemAudio: false, hasMicrophoneAudio: false
+    };
   }
 }
 
-async function waitForWindowsFfmpegExit(
-  exitPromise: Promise<{ code: number | null; signal: NodeJS.Signals | null }>,
-  timeoutMs: number
-): Promise<{ code: number | null; signal: NodeJS.Signals | null } | null> {
-  return await Promise.race([
-    exitPromise,
-    new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs))
-  ]);
+async function waitForWindowsFfmpegExit(exitPromise: Promise<RecorderExit>, timeoutMs: number): Promise<RecorderExit | null> {
+  try {
+    return await withDeadline(exitPromise, timeoutMs, "ffmpeg_exit_timeout");
+  } catch (cause) {
+    if (cause instanceof Error && cause.message === "ffmpeg_exit_timeout") return null;
+    throw cause;
+  }
 }
 
 function windowsFfmpegFailureMessage(

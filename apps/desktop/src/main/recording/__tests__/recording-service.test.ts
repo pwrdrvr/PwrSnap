@@ -19,8 +19,8 @@ const mocks = vi.hoisted(() => {
     binaryPath: "/fake/PwrSnapRecorder",
     binaryExists: true,
     finishCamera: vi.fn(async (): Promise<unknown> => null),
-    beginCamera: vi.fn(async () => undefined),
-    cancelCamera: vi.fn(async () => undefined),
+    beginCamera: vi.fn(async (): Promise<void> => undefined),
+    cancelCamera: vi.fn(async (): Promise<void> => undefined),
     isPackaged: false,
     stateLog: [] as Array<{ phase: string }>,
     /** Full broadcast log including rect/displayId payloads — used
@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => {
      *  reaches the HUD in display-local coords. */
     stateLogFull: [] as Array<Record<string, unknown>>,
     currentState: { phase: "idle" } as Record<string, unknown>,
+    stateObserver: null as ((next: Record<string, unknown>) => void) | null,
     infoLogs: [] as Array<{
       message: string;
       context: Record<string, unknown> | undefined;
@@ -172,6 +173,7 @@ vi.mock("../recording-state", async () => {
       mocks.currentState = next;
       mocks.stateLog.push({ phase: next.phase as string });
       mocks.stateLogFull.push(next);
+      mocks.stateObserver?.(next);
     },
     getRecordingState: () => mocks.currentState,
     isRecordingActive: () =>
@@ -283,6 +285,7 @@ beforeEach(() => {
   mocks.stateLog.length = 0;
   mocks.stateLogFull.length = 0;
   mocks.currentState = { phase: "idle" };
+  mocks.stateObserver = null;
   mocks.infoLogs.length = 0;
   mocks.pendingTimeouts.length = 0;
   mocks.liveWindows.length = 0;
@@ -419,6 +422,406 @@ describe("RecordingService.start concurrent guard", () => {
     await vi.advanceTimersByTimeAsync(1100);
     await first;
     expect(firstOutcome).toBeInstanceOf(Error);
+  });
+});
+
+// Each assertion observes the public lifecycle or owned resources; no private
+// service fields are patched. Keep both backends in these race schedules.
+describe.each(["darwin", "win32"])("RecordingService attempt ownership on %s", (platform) => {
+  async function loadService() {
+    Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    const { __setRecordingServiceForTests, getRecordingService } = await import("../recording-service");
+    __setRecordingServiceForTests(null);
+    return getRecordingService();
+  }
+  function observe<T>(promise: Promise<T>) {
+    const result: { value?: T; error?: Error; settled: boolean } = { settled: false };
+    void promise.then(value => { result.value = value; result.settled = true; },
+      (error: Error) => { result.error = error; result.settled = true; });
+    return result;
+  }
+  async function recording(service: import("../recording-service").RecordingService) {
+    const start = service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+    void start.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(0);
+    const child = mocks.spawnedChildren.at(-1)!;
+    if (platform === "darwin") child.emitLine({ event: "started" });
+    await start;
+    return child;
+  }
+  async function cancel(service: import("../recording-service").RecordingService) {
+    const done = service.cancel();
+    await vi.advanceTimersByTimeAsync(600);
+    await done;
+  }
+
+  test("reserves admission before the first microtask or temp allocation completes", async () => {
+    const service = await loadService();
+    const first = observe(service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 3 }));
+    const second = observe(service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 3 }));
+    const activeAtAdmission = service.isActive();
+    await vi.advanceTimersByTimeAsync(0);
+    const phaseAtAdmission = mocks.currentState.phase;
+    await cancel(service);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(activeAtAdmission).toBe(true);
+    expect(phaseAtAdmission).toBe("countdown");
+    expect(second.error?.message).toBe("already_recording");
+    expect(first.error?.message).toBe("cancelled");
+    expect(mocks.spawnedChildren).toHaveLength(platform === "darwin" ? 1 : 0);
+    expect(mocks.spawnedChildren.every(child => child.killCalled)).toBe(true);
+  });
+
+  test.each(["resolve", "reject"])("cancel during mkdtemp ignores its late %s and allows a replacement", async (completion) => {
+    const fs = await import("node:fs/promises");
+    let resolve!: (dir: string) => void;
+    let reject!: (error: Error) => void;
+    vi.mocked(fs.mkdtemp).mockImplementationOnce(() => new Promise((res, rej) => { resolve = res; reject = rej; }));
+    const service = await loadService();
+    const old = observe(service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 }));
+    const cancelling = service.cancel();
+    await vi.advanceTimersByTimeAsync(0);
+    const settledBeforeAllocation = old.settled;
+    if (completion === "resolve") resolve("/tmp/pwrsnap-recording-old");
+    else reject(new Error("late allocation failure"));
+    await cancelling;
+    const replacement = await recording(service);
+    const state = { ...mocks.currentState };
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(settledBeforeAllocation).toBe(true);
+    expect(old.error?.message).toBe("cancelled");
+    expect(mocks.spawnedChildren).toHaveLength(1);
+    expect(replacement.killCalled).toBe(false);
+    expect(mocks.currentState).toEqual(state);
+    expect(mocks.removedRecordingDirs).toEqual(completion === "resolve" ? ["/tmp/pwrsnap-recording-old"] : []);
+    await cancel(service);
+  });
+
+  test.each(["resolve", "reject"])("cancel settles startup while camera startup later %ss", async (completion) => {
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    mocks.beginCamera.mockImplementationOnce(() => new Promise<void>((res, rej) => { resolve = res; reject = rej; }));
+    const service = await loadService();
+    const old = observe(service.start({ subject: SUBJECT, capabilities: { ...CAPS, camera: { deviceId: "camera" } }, countdownSeconds: 0 }));
+    await vi.advanceTimersByTimeAsync(0);
+    await cancel(service);
+    const settledAtCancel = old.settled;
+    const replacement = await recording(service);
+    const state = { ...mocks.currentState };
+    if (completion === "resolve") resolve();
+    else reject(new Error("late camera failure"));
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(settledAtCancel).toBe(true);
+    expect(old.error?.message).toBe("cancelled");
+    expect(mocks.spawnedChildren).toHaveLength(1);
+    expect(replacement.killCalled).toBe(false);
+    expect(mocks.currentState).toEqual(state);
+    await cancel(service);
+  });
+
+  test("repeated cancel joins cleanup and holds admission until cleanup finishes", async () => {
+    const service = await loadService();
+    const child = await recording(service);
+    const first = service.cancel();
+    const second = service.cancel();
+    const overlap = observe(service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 }));
+    await vi.advanceTimersByTimeAsync(600);
+    await Promise.all([first, second]);
+    expect(overlap.error?.message).toBe("already_recording");
+    expect(child.stdin.write.mock.calls.filter(([line]) => line === "q" || line.includes('"type":"stop"'))).toHaveLength(1);
+    expect(mocks.removedRecordingDirs).toHaveLength(1);
+    expect(mocks.currentState.phase).toBe("idle");
+  });
+
+  test("stop coalesces repeated requests and rejects destructive controls during finalization", async () => {
+    const service = await loadService();
+    const child = await recording(service);
+    const first = service.stop();
+    const second = service.stop();
+    const cancelResult = observe(service.cancel());
+    const restartResult = observe(service.restart());
+    if (platform === "darwin") child.emitLine({ event: "stopped", durationSec: 2, containerFormat: "mp4", hasSystemAudio: false, hasMicrophoneAudio: false, outputPath: "/tmp/pwrsnap-recording-fake/original.mp4" });
+    else child.emit("exit", 0, null);
+    await vi.advanceTimersByTimeAsync(600);
+    expect(await first).toEqual(await second);
+    expect(cancelResult.error?.message).toBe("control_unavailable");
+    expect(restartResult.error?.message).toBe("control_unavailable");
+    expect(mocks.currentState.phase).toBe("ready");
+    const { adoptExistingFileAsSource } = await import("../../persistence/source-store");
+    expect(adoptExistingFileAsSource).toHaveBeenCalledTimes(1);
+    expect(child.stdin.write.mock.calls.filter(([line]) => line === "q" || line.includes('"type":"stop"'))).toHaveLength(1);
+  });
+
+  test("processing holds admission and repeated stop shares the durable adoption", async () => {
+    const sourceStore = await import("../../persistence/source-store");
+    const adopt = vi.mocked(sourceStore.adoptExistingFileAsSource).getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(sourceStore.adoptExistingFileAsSource).mockImplementationOnce(async (...args) => { await gate; return adopt(...args); });
+    const service = await loadService();
+    const child = await recording(service);
+    const stopped = service.stop();
+    if (platform === "darwin") child.emitLine({ event: "stopped", durationSec: 2, containerFormat: "mp4", hasSystemAudio: false, hasMicrophoneAudio: false, outputPath: "/tmp/original.mp4" });
+    else child.emit("exit", 0, null);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.currentState.phase).toBe("processing");
+    const repeated = service.stop();
+    const cancelled = observe(service.cancel());
+    const restarted = observe(service.restart());
+    const overlapping = observe(service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 }));
+    release();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(await stopped).toEqual(await repeated);
+    expect(cancelled.error?.message).toBe("control_unavailable");
+    expect(restarted.error?.message).toBe("control_unavailable");
+    expect(overlapping.error?.message).toBe("already_recording");
+    expect(sourceStore.adoptExistingFileAsSource).toHaveBeenCalledTimes(1);
+    expect(mocks.currentState.phase).toBe("ready");
+  });
+
+  test("a second restart cannot create another replacement", async () => {
+    const service = await loadService();
+    const child = await recording(service);
+    const restarted = service.restart();
+    const repeated = observe(service.restart());
+    if (platform === "darwin") child.emitLine({ event: "stopped" });
+    else child.emit("exit", 0, null);
+    await vi.advanceTimersByTimeAsync(3_600);
+    const replacement = mocks.spawnedChildren.at(-1)!;
+    if (platform === "darwin") replacement.emitLine({ event: "started" });
+    await restarted;
+    expect(repeated.error?.message).toBe("control_unavailable");
+    expect(mocks.spawnedChildren).toHaveLength(2);
+    await cancel(service);
+  });
+
+  test("cancel keeps admission while camera cleanup drains", async () => {
+    const service = await loadService();
+    await recording(service);
+    let release!: () => void;
+    mocks.cancelCamera.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    const cancelled = observe(service.cancel());
+    await vi.advanceTimersByTimeAsync(600);
+    const overlapping = observe(service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(cancelled.settled).toBe(false);
+    expect(service.isActive()).toBe(true);
+    expect(overlapping.error?.message).toBe("already_recording");
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(cancelled.settled).toBe(true);
+    expect(mocks.currentState.phase).toBe("idle");
+    await recording(service);
+    await cancel(service);
+  });
+
+  test("camera cleanup rejection still releases cancellation admission", async () => {
+    const service = await loadService();
+    const child = await recording(service);
+    const sessionId = mocks.currentState.sessionId;
+    mocks.cancelCamera.mockRejectedValueOnce(new Error("camera file close failed"));
+    const cancelled = observe(service.cancel());
+    const repeated = observe(service.cancel());
+    await vi.advanceTimersByTimeAsync(600);
+    expect(service.isActive()).toBe(false);
+    expect(mocks.currentState.phase).toBe("idle");
+    expect(cancelled).toMatchObject({ settled: true, value: undefined });
+    expect(repeated).toMatchObject({ settled: true, value: undefined });
+    expect(cancelled.error).toBeUndefined();
+    expect(repeated.error).toBeUndefined();
+    expect(child.killCalled).toBe(true);
+    expect(mocks.warningLogs).toContainEqual({
+      message: "recording camera cleanup failed",
+      fields: { sessionId, message: "camera file close failed" }
+    });
+    await service.cancel();
+    await recording(service);
+    await cancel(service);
+  });
+
+  test("camera cleanup rejection after adoption preserves the ready result", async () => {
+    const service = await loadService();
+    const child = await recording(service);
+    mocks.cancelCamera.mockRejectedValueOnce(new Error("camera temp removal failed"));
+    const stopped = observe(service.stop());
+    if (platform === "darwin") child.emitLine({ event: "stopped", durationSec: 2, containerFormat: "mp4", hasSystemAudio: false, hasMicrophoneAudio: false, outputPath: "/tmp/original.mp4" });
+    else child.emit("exit", 0, null);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(stopped).toMatchObject({ settled: true, value: { captureId: "cap-1" } });
+    expect(stopped.error).toBeUndefined();
+    expect(service.isActive()).toBe(false);
+    expect(mocks.currentState).toMatchObject({ phase: "ready", captureId: "cap-1" });
+    await recording(service);
+    await cancel(service);
+  });
+
+  test.each(["resolve", "reject"])("dismiss waits for current failure cleanup to %s and completes on the first request", async (completion) => {
+    const service = await loadService();
+    let release!: () => void;
+    let reject!: (error: Error) => void;
+    mocks.cancelCamera.mockImplementationOnce(() => new Promise<void>((res, rej) => { release = res; reject = rej; }));
+    mocks.nextSpawnError = new Error("recorder spawn failed");
+    const starting = observe(service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.currentState.phase).toBe("failed");
+    const failedId = mocks.currentState.sessionId as string;
+    const dismiss = observe(service.dismissFailure(failedId));
+    const stale = observe(service.dismissFailure("another-session"));
+    await vi.advanceTimersByTimeAsync(0);
+    const waitingForCleanup = !dismiss.settled;
+    const phaseBeforeCleanup = mocks.currentState.phase;
+    if (completion === "resolve") release();
+    else reject(new Error("camera cleanup failed"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(waitingForCleanup).toBe(true);
+    expect(phaseBeforeCleanup).toBe("failed");
+    expect(dismiss).toMatchObject({ settled: true, value: undefined });
+    expect(dismiss.error).toBeUndefined();
+    expect(stale.error?.message).toBe("stale_failure");
+    expect(starting.error?.message).toBe("recorder spawn failed");
+    expect(service.isActive()).toBe(false);
+    expect(mocks.currentState.phase).toBe("idle");
+    await recording(service);
+    await cancel(service);
+  });
+
+  test("dismiss revalidates a failure after waiting when retry claims it", async () => {
+    const service = await loadService();
+    let release!: () => void;
+    mocks.cancelCamera.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    mocks.nextSpawnError = new Error("recorder spawn failed");
+    const starting = observe(service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 }));
+    await vi.advanceTimersByTimeAsync(0);
+    const failedId = mocks.currentState.sessionId as string;
+    const dismiss = observe(service.dismissFailure(failedId));
+    await vi.advanceTimersByTimeAsync(0);
+    const waitingForCleanup = !dismiss.settled;
+    const retry = service.retry(failedId);
+    void retry.catch(() => undefined);
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    if (platform === "darwin") mocks.spawnedChildren.at(-1)!.emitLine({ event: "started" });
+    const replacement = await retry;
+    expect(waitingForCleanup).toBe(true);
+    expect(dismiss.error?.message).toBe("stale_failure");
+    expect(starting.error?.message).toBe("recorder spawn failed");
+    expect(mocks.currentState).toMatchObject({ phase: "recording", sessionId: replacement.sessionId });
+    await cancel(service);
+  });
+
+  test.each(["exit", "error", "silence"])("stop reaches a bounded failure after %s without acknowledgement and preserves output", async (terminal) => {
+    const service = await loadService();
+    const child = await recording(service);
+    if (terminal === "silence") child.kill = () => { child.killCalled = true; return true; };
+    const stopped = observe(service.stop());
+    if (terminal === "exit") child.emit("exit", 7, null);
+    if (terminal === "error") child.emit("error", new Error("stop process failure"));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(stopped.settled).toBe(true);
+    expect(stopped.error).toBeInstanceOf(Error);
+    expect(mocks.currentState).toMatchObject({ phase: "failed", code: terminal === "silence" ? "stop_timeout" : "stop_failed", canRetry: false });
+    expect(service.isActive()).toBe(false);
+    expect(child.killCalled).toBe(true);
+    expect(mocks.removedRecordingDirs).toEqual([]);
+    const { adoptExistingFileAsSource } = await import("../../persistence/source-store");
+    expect(adoptExistingFileAsSource).not.toHaveBeenCalled();
+    const failure = mocks.currentState.sessionId as string;
+    await service.dismissFailure(failure);
+    const replacement = await recording(service);
+    child.emit("exit", 0, null);
+    child.emit("error", new Error("late terminal event"));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mocks.currentState.phase).toBe("recording");
+    expect(replacement.killCalled).toBe(false);
+    await cancel(service);
+  });
+
+  test("retry reserves admission before its asynchronous preparation", async () => {
+    const service = await loadService();
+    mocks.nextSpawnError = new Error("spawn failed");
+    await expect(service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 })).rejects.toThrow("spawn failed");
+    const failedId = mocks.currentState.sessionId as string;
+    const retry = service.retry(failedId);
+    const duplicate = observe(service.retry(failedId));
+    const fresh = observe(service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 }));
+    const dismiss = observe(service.dismissFailure(failedId));
+    await vi.advanceTimersByTimeAsync(0);
+    if (platform === "darwin") mocks.spawnedChildren.at(-1)!.emitLine({ event: "started" });
+    await retry;
+    expect(duplicate.error?.message).toBe("stale_failure");
+    expect(fresh.error?.message).toBe("already_recording");
+    expect(dismiss.error?.message).toBe("stale_failure");
+    expect(mocks.spawnedChildren).toHaveLength(1);
+    await cancel(service);
+  });
+});
+
+describe("RecordingService native startup settlement", () => {
+  test.each(["silence", "started", "error", "exit"])("cancel while starting isolates late %s and the old deadline from a replacement", async (late) => {
+    const { __setRecordingServiceForTests, getRecordingService } = await import("../recording-service");
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+    let error: Error | undefined;
+    const old = service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 }).catch((cause: Error) => { error = cause; });
+    await vi.advanceTimersByTimeAsync(0);
+    const oldChild = mocks.spawnedChildren[0]!;
+    const cancelling = service.cancel();
+    await vi.advanceTimersByTimeAsync(600);
+    await cancelling;
+    const settledAtCancel = error?.message;
+    const next = service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+    await vi.advanceTimersByTimeAsync(0);
+    const child = mocks.spawnedChildren[1]!;
+    child.emitLine({ event: "started" });
+    await next;
+    const state = { ...mocks.currentState };
+    if (late === "started") oldChild.emitLine({ event: "started" });
+    if (late === "error") oldChild.emitLine({ event: "error", code: "late", message: "late startup error" });
+    if (late === "exit") oldChild.emit("exit", 7, null);
+    await vi.advanceTimersByTimeAsync(20_000);
+    await old;
+    expect(settledAtCancel).toBe("cancelled");
+    expect(error?.message).toBe("cancelled");
+    expect(child.killCalled).toBe(false);
+    expect(mocks.currentState).toEqual(state);
+    const cleanup = service.cancel();
+    await vi.advanceTimersByTimeAsync(600);
+    await cleanup;
+  });
+
+  test("stop before the started acknowledgement cannot enter finalization", async () => {
+    const { getRecordingService, __setRecordingServiceForTests } = await import("../recording-service");
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+    const starting = service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+    await vi.advanceTimersByTimeAsync(0);
+    const stopped = service.stop().catch((error: Error) => error);
+    mocks.spawnedChildren[0]!.emitLine({ event: "started" });
+    await starting;
+    expect(await Promise.race([stopped, Promise.resolve("pending")])).not.toBe("pending");
+    await expect(stopped).resolves.toMatchObject({ message: "control_unavailable" });
+    const cleanup = service.cancel();
+    await vi.advanceTimersByTimeAsync(600);
+    await cleanup;
+  });
+
+  test("buffered stopped acknowledgement after exit still completes exactly once", async () => {
+    const { getRecordingService, __setRecordingServiceForTests } = await import("../recording-service");
+    __setRecordingServiceForTests(null);
+    const service = getRecordingService();
+    const start = service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+    await vi.advanceTimersByTimeAsync(0);
+    const child = mocks.spawnedChildren[0]!;
+    child.emitLine({ event: "started" });
+    await start;
+    const stop = service.stop();
+    child.emit("exit", 0, null);
+    await vi.advanceTimersByTimeAsync(0);
+    child.emitLine({ event: "stopped", durationSec: 2, containerFormat: "mp4", hasSystemAudio: false, hasMicrophoneAudio: false, outputPath: "/tmp/original.mp4" });
+    child.emit("close", 0, null);
+    await stop;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mocks.currentState.phase).toBe("ready");
   });
 });
 
@@ -1473,6 +1876,51 @@ describe("Windows FFmpeg recorder", () => {
     await cancelPromise;
   }
 
+  test.each([
+    { countdownSeconds: 1, delivery: "state observer" },
+    { countdownSeconds: 1, delivery: "queued microtask" },
+    { countdownSeconds: 0, delivery: "state observer" },
+    { countdownSeconds: 0, delivery: "queued microtask" }
+  ])("cancel at the Windows starting boundary with $countdownSeconds seconds via $delivery cannot spawn a retired attempt", async ({ countdownSeconds, delivery }) => {
+    const service = await loadWindowsService();
+    let cancelDone: Promise<void> | undefined;
+    mocks.stateObserver = (next) => {
+      if (next.phase !== "starting") return;
+      mocks.stateObserver = null;
+      if (delivery === "queued microtask") {
+        queueMicrotask(() => { cancelDone = service.cancel(); });
+      } else {
+        cancelDone = service.cancel();
+      }
+    };
+    const start = service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds })
+      .catch((error: Error) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    if (countdownSeconds > 0) {
+      expect(mocks.currentState.phase).toBe("countdown");
+      await vi.advanceTimersByTimeAsync(countdownSeconds * 1_000);
+    }
+    expect(cancelDone).toBeDefined();
+    await cancelDone;
+    expect(await start).toMatchObject({ message: "cancelled" });
+    expect(mocks.currentState.phase).toBe("idle");
+    expect(service.isActive()).toBe(false);
+    // Count live children separately: spawning after cleanup's kill step can
+    // leave the service idle with an untracked FFmpeg process still capturing.
+    expect(mocks.spawnedChildren.filter(child => !child.killCalled)).toHaveLength(0);
+    expect(mocks.spawnCalls).toHaveLength(0);
+    expect(mocks.removedRecordingDirs).toEqual(["/tmp/pwrsnap-recording-fake"]);
+    const phasesAfterCancel = mocks.stateLog.length;
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(mocks.stateLog).toHaveLength(phasesAfterCancel);
+
+    // The cancelled attempt must also leave admission available for a take.
+    await service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0 });
+    expect(mocks.spawnedChildren).toHaveLength(1);
+    expect(mocks.spawnedChildren[0]!.killCalled).toBe(false);
+    await cancelAndExit(service, mocks.spawnedChildren[0]!);
+  });
+
   test("restart keeps the selected camera and a later camera-off take stays off", async () => {
     const service = await loadWindowsService();
     const camera = { deviceId: "presenter-camera", label: "Presenter camera" };
@@ -1917,6 +2365,7 @@ describe("Windows FFmpeg recorder", () => {
     expect(mocks.stateLog.map((s) => s.phase)).toContain("failed");
     expect(mocks.stateLog.map((s) => s.phase)).not.toContain("processing");
     expect(mocks.stateLog.map((s) => s.phase)).not.toContain("ready");
-    expect(mocks.removedRecordingDirs).toEqual(["/tmp/pwrsnap-recording-fake"]);
+    // A forced exit cannot prove the original is unusable; retain it.
+    expect(mocks.removedRecordingDirs).toEqual([]);
   });
 });

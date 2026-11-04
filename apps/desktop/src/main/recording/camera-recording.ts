@@ -39,6 +39,7 @@ export class CameraRecording {
   private serial: Promise<void> = Promise.resolve();
   private startup: Promise<void> | undefined;
   private cancelled = false;
+  private cancellation: Promise<void> | undefined;
   start(camera: RecordingCamera): Promise<void> {
     this.startup = this.open(camera);
     return this.startup;
@@ -49,11 +50,13 @@ export class CameraRecording {
     this.file = await open(join(this.temp, "source.partial"), "wx");
     if (this.cancelled) throw new Error("cancelled");
     await this.worker.load();
+    if (this.cancelled) throw new Error("cancelled");
     let best = Infinity;
     // Calibrate renderer performance.now against main's monotonic clock.
     for (let i = 0; i < 5; i++) {
       const before = now();
       const remote = await this.worker.call<number>("clock");
+      if (this.cancelled) throw new Error("cancelled");
       const after = now();
       if (after - before < best) {
         best = after - before;
@@ -61,6 +64,7 @@ export class CameraRecording {
       }
     }
     this.info = await this.worker.call("record", camera.deviceId, this.token);
+    if (this.cancelled) throw new Error("cancelled");
   }
   markScreenStart(hostTimeMs?: number): void {
     if (hostTimeMs !== undefined || !this.screenStartedAt)
@@ -137,14 +141,18 @@ export class CameraRecording {
     await rm(this.temp, { recursive: true, force: true });
     return metadata;
   }
-  async cancel(): Promise<void> {
+  cancel(): Promise<void> {
+    if (this.cancellation) return this.cancellation;
     this.cancelled = true;
     this.worker.close();
-    await this.startup?.catch(() => undefined);
-    await this.serial.catch(() => undefined);
-    await this.file?.close();
-    this.file = null;
-    if (this.temp) await rm(this.temp, { recursive: true, force: true });
+    this.cancellation = (async () => {
+      await this.startup?.catch(() => undefined);
+      await this.serial.catch(() => undefined);
+      await this.file?.close();
+      this.file = null;
+      if (this.temp) await rm(this.temp, { recursive: true, force: true });
+    })();
+    return this.cancellation;
   }
 }
 export async function beginCameraRecording(
@@ -184,7 +192,7 @@ export function confirmCameraPreviewExclusion(excluded: boolean): void {
 export async function finishCameraRecording(): Promise<CameraRecording | null> {
   const recording = active;
   if (recording) await recording.finish();
-  active = null;
+  if (active === recording) active = null;
   return recording;
 }
 export async function cancelCameraRecording(): Promise<void> {

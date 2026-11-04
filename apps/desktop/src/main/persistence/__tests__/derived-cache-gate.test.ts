@@ -102,6 +102,31 @@ describe("admission", () => {
 });
 
 describe("background maintenance admission", () => {
+  test("migration followed by a playback request waits and then completes", async () => {
+    // The generated model's minimal counterexample: migration(all), request.
+    // Maintenance preserves the capture, so it cannot cancel this request.
+    const blocked = deferred<void>();
+    const maintenance = withDerivedCacheCleanup("all", () => blocked.promise, { writeAdmission: "wait" });
+    const work = vi.fn(async () => "prepared playback");
+    let state = "waiting";
+    const request = runGatedCacheWrite("cap-a", "playback", work).then(
+      (value) => { state = "completed"; return value; },
+      (cause: unknown) => { state = "cancelled"; return cause; }
+    );
+    try {
+      await Promise.resolve();
+      expect(state).toBe("waiting");
+      expect(work).not.toHaveBeenCalled();
+      blocked.resolve();
+      await maintenance;
+      expect(await request).toBe("prepared playback");
+      expect(work).toHaveBeenCalledOnce();
+    } finally {
+      blocked.resolve();
+      await Promise.allSettled([maintenance, request]);
+    }
+  });
+
   test("queued consumers can cancel independently and surviving consumers coalesce after maintenance", async () => {
     const blocked = deferred<void>();
     const maintenance = withDerivedCacheCleanup("all", () => blocked.promise, { writeAdmission: "wait" });

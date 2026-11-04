@@ -202,13 +202,13 @@ describe("Windows release configuration", () => {
     expect(script).not.toContain("process.env.CSC_KEYCHAIN");
   });
 
-  test("macOS Icon Composer packaging selects stable Xcode on restricted macOS 26 runners", () => {
+  test("macOS Icon Composer packaging selects stable Xcode on GitHub-hosted macos-26", () => {
     const action = read(".github/actions/select-xcode-for-actool/action.yml");
     const releaseWorkflow = read(".github/workflows/release.yml");
     const previewWorkflow = read(".github/workflows/preview-build.yml");
 
-    expect(releaseWorkflow.match(/runs-on: \[self-hosted, macOS, ARM64, pwrdrvr-macos\]/g)).toHaveLength(2);
-    expect(previewWorkflow).toContain("runs-on: [self-hosted, macOS, ARM64, pwrdrvr-macos]");
+    expect(releaseWorkflow.match(/runs-on: macos-26\n/g)).toHaveLength(2);
+    expect(previewWorkflow).toContain("runs-on: macos-26\n");
     expect(action).toContain('host_version="$(sw_vers -productVersion)"');
     expect(action).toContain('if [ "$host_major" -lt 26 ]');
     expect(action).toContain("/Applications/Xcode*.app");
@@ -216,7 +216,7 @@ describe("Windows release configuration", () => {
     expect(action).not.toContain("sudo xcode-select");
   });
 
-  test("persistent macOS signing isolates the artifact and always removes credentials", () => {
+  test("macOS signing isolates the artifact and always removes credentials", () => {
     const workflow = read(".github/workflows/release.yml");
     const signing = workflow.split("  sign:\n")[1].split("  linux-build:\n")[0];
     expect(signing).toContain("working-directory: release-signing");
@@ -234,7 +234,9 @@ describe("Windows release configuration", () => {
     expect(signing).not.toContain("configure-nodejs@");
     expect(workflow).toContain("scripts/release/cleanup-macos-signing.py");
     const preview = read(".github/workflows/preview-build.yml").split("  preview-windows:")[0];
-    expect(preview).toContain("github.event.pull_request.head.repo.full_name == github.repository");
+    expect(preview).not.toContain("github.event.pull_request.head.repo.full_name");
+    expect(preview).not.toContain("environment: apple-signing");
+    expect(preview).not.toMatch(/\$\{\{\s*secrets\./);
   });
 
   test("tagged release workflow gates publication on Linux, macOS, and Azure-signed Windows", () => {

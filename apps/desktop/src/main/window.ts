@@ -924,6 +924,11 @@ export function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
     ...linuxSquareCorners(),
     ...(windowsBounds ?? { width: 1440, height: 960 }),
+    // Hosted macOS CI has a 1024x768 display. Let E2E keep its requested
+    // viewport (including visual goldens) beyond the screen's work area.
+    // The fixture opts in; packaged builds and ordinary launches cannot.
+    enableLargerThanScreen:
+      isE2E() && process.env.PWRSNAP_E2E_LARGER_THAN_SCREEN === "1" && !app.isPackaged,
     // Keep this well below the responsive toolbar/grid breakpoints
     // (≤1024 narrow through ≤560 tiny, ≤640 very-narrow, plus the grid's
     // <560px-pane cell floor) so the narrow layouts are reachable by

@@ -37,7 +37,7 @@ jobs:
     name: Test and prepare signing input
     if: ${{ github.event_name != 'pull_request' }}
     needs: distribution-audit
-    runs-on: [self-hosted, macOS, ARM64, pwrdrvr-macos]
+    runs-on: macos-26
     timeout-minutes: 75
     permissions:
       contents: read
@@ -56,7 +56,6 @@ jobs:
         timeout-minutes: 10
         with:
           node-version: "^24.22.0"
-          persistent-store-dir: ~/Library/Caches/pwrsnap-ci/${{ runner.name }}
           cache-electron: "true"
 
       - name: Check release metadata
@@ -68,7 +67,7 @@ jobs:
         run: pnpm typecheck
 
       # electron-builder compiles build/icon.icon with actool 26+. The
-      # self-hosted runner must provide macOS 26 and a stable Xcode 26+.
+      # GitHub-hosted macos-26 runner supplies the matching host frameworks.
       # Select the toolchain only for icon compilation/packaging. See
       # AGENTS.md "macOS app icon".
       - name: Select Xcode for macOS 26 packaging
@@ -136,7 +135,7 @@ jobs:
 
   sign:
     name: Sign, notarize, package macOS
-    runs-on: [self-hosted, macOS, ARM64, pwrdrvr-macos]
+    runs-on: macos-26
     needs: prepare
     timeout-minutes: 120
     environment: apple-signing
@@ -147,8 +146,8 @@ jobs:
       contents: read
       id-token: none
     steps:
-      # Persistent runners retain prior checkouts. Signing reads only this
-      # job's verified artifact in a fresh workspace, without a source checkout.
+      # Signing reads only this job's verified artifact in an isolated
+      # workspace, without a source checkout.
       - name: Initialize isolated signing workspace
         working-directory: .
         run: |

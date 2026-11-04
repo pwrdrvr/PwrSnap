@@ -307,7 +307,7 @@ interruption — but an agent must get explicit approval before taking your scre
 The focused Playwright visual-regression suite uses lossless WebP references
 stored in Git LFS under `apps/desktop/e2e/*.spec.ts-snapshots/`. Screenshot
 rendering varies across operating systems, so Linux and macOS/arm64 use
-separate reviewed baseline environments. The self-hosted macOS VM is the
+separate reviewed baseline environments. GitHub-hosted `macos-26` is the
 active visual CI lane while Linux visual coverage is temporarily excluded until
 its worker teardown is stabilized; Windows continues to run behavioral E2E
 coverage.
@@ -335,7 +335,7 @@ that will not. `--keep-stage` leaves the generated baselines in the stage
 directory either way, so a teardown failure after a good render does not have
 to be re-rendered.
 
-For macOS, review the `*-actual.webp` files emitted by the self-hosted VM's
+For macOS, review the `*-actual.webp` files emitted by the GitHub-hosted job's
 `desktop-e2e-macos-artifacts` artifact, then deliberately promote approved
 files to their `*-darwin.webp` baselines. For an authorized MCP golden-update
 job, explicitly add only the relevant `apps/desktop/e2e/<spec>-snapshots`

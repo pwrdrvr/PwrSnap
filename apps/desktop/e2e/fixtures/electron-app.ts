@@ -543,6 +543,9 @@ async function launchPwrSnapCore(
     HOME: homeRoot,
     NODE_ENV: "production",
     PWRSNAP_E2E: "1",
+    // Hosted macOS runners have a small display. Preserve requested Library
+    // viewports; a spec checking work-area fit can unset this in options.env.
+    PWRSNAP_E2E_LARGER_THAN_SCREEN: "1",
     // Belt-and-braces isolation: HOME alone doesn't reliably rebase
     // app.getPath('userData') under Playwright (the bundle name is
     // "Electron" not "PwrSnap" so the cached path lands at the host

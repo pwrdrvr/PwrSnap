@@ -126,6 +126,11 @@ test.describe("render-cache clear → bundle source recovery", () => {
   test("clipboard:copy recovers after cache clear and only extracts a source for reuse", async () => {
     const app = await launchPwrSnap();
     try {
+      // The Library's preset metrics can independently request the original
+      // and restore source.png. Close it before seeding so this assertion
+      // observes only the clipboard consumer of the shared source cache.
+      await app.window.close();
+
       // 1. Seed a real bundle capture — persistCaptureFromTempV2 packs
       //    the .pwrsnap and materializes <userData>/render-cache/<id>/source.png.
       //    outputDir is pinned under homeRoot so the spec controls the

@@ -133,19 +133,28 @@ test.describe("video float-over", () => {
         }, captureId);
         await expect.poll(async () => (await findFloatOverPage(app)) !== null).toBe(true);
         const page = (await findFloatOverPage(app))!;
-        const pixel = async (): Promise<boolean> => {
+        const pixel = async (): Promise<string> => {
           // The custom-protocol video can taint a canvas. Sample the
           // rendered picture instead of requiring canvas read access.
-          // Locator screenshots include overlapping siblings, so use
-          // the center, clear of the corner badges and bottom controls.
-          const screenshot = await page.locator(".fo__preview canvas").screenshot();
+          // Locator screenshots include overlapping siblings. Hide the
+          // controls and badges only while sampling the decoded picture;
+          // their wrapping depends on the display's compact layout.
+          const screenshot = await page.locator(".fo__preview canvas").screenshot({
+            path: test.info().outputPath("decoded-preview.png"),
+            style: ".video-preview__controls, .fo__preview-dim, .fo__preview-size { visibility: hidden !important; }"
+          });
           const { width, height } = await sharp(screenshot).metadata();
           const [r, g, b] = await sharp(screenshot)
             .extract({ left: Math.floor(width! / 2), top: Math.floor(height! / 2), width: 1, height: 1 })
             .raw().toBuffer();
-          return r! < 10 && g! > 100 && b! < 10;
+          if (r! < 10 && g! > 100 && b! < 10) return "green";
+          const media = await page.locator("video").evaluate((v) => {
+            const el = v as HTMLVideoElement;
+            return { time: el.currentTime, readyState: el.readyState, seeking: el.seeking, error: el.error?.message };
+          });
+          return `RGB(${r}, ${g}, ${b}); media=${JSON.stringify(media)}`;
         };
-        await expect.poll(pixel, { timeout: 5000 }).toBe(true);
+        await expect.poll(pixel, { timeout: 5000 }).toBe("green");
         await expect(page.getByTestId("preview-timecode")).toHaveText("0:00.0 / 0:01.6");
         expect(await page.locator("video").evaluate((v) => (v as HTMLVideoElement).paused)).toBe(true);
 
@@ -154,7 +163,7 @@ test.describe("video float-over", () => {
         });
         expect(edit.ok).toBe(true);
         await expect(page.getByTestId("preview-timecode")).toHaveText("0:00.0 / 0:01.2");
-        await expect.poll(pixel, { timeout: 5000 }).toBe(true);
+        await expect.poll(pixel, { timeout: 5000 }).toBe("green");
         expect(await page.locator("video").evaluate((v) => (v as HTMLVideoElement).paused)).toBe(true);
       } finally {
         await app.close();

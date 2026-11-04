@@ -3,7 +3,8 @@ import { createRoot } from "react-dom/client";
 import { describe, expect, test } from "vitest";
 import fc from "fast-check";
 import { BundleLayerNode } from "@pwrsnap/shared";
-import { useUndoRedo, type UndoRedoDispatchEdit, type UseUndoRedoResult } from "../useUndoRedo";
+import { useUndoRedo, type UseUndoRedoResult } from "../useUndoRedo";
+import { historyPersistenceOracle } from "./history-persistence-oracle";
 
 function node(index: number): BundleLayerNode {
   return BundleLayerNode.parse({
@@ -20,30 +21,8 @@ function node(index: number): BundleLayerNode {
  * Missing deletes are also flagged as invalid replay attempts, even though
  * the production handler tolerates them as idempotent agent retries. */
 async function mount(onBeforeHistory?: () => Promise<boolean>) {
-  const live = new Map<string, BundleLayerNode>();
-  const invalid: string[] = [];
-  const calls: string[] = [];
-  let failAt: string | null = null;
-  const dispatch: UndoRedoDispatchEdit = async (op) => {
-    if (op.kind !== "upsert" && op.kind !== "delete") throw new Error("unexpected model edit");
-    const id = op.kind === "upsert" ? BundleLayerNode.parse(op.node).id : op.id;
-    const key = `${op.kind}:${id}`;
-    calls.push(key);
-    if (failAt === key) {
-      failAt = null;
-      return { ok: false, error: { kind: "persistence", code: "insert_failed", message: "generated transient failure" } };
-    }
-    if ((op.kind === "upsert") === live.has(id)) {
-      invalid.push(key);
-      return { ok: false, error: { kind: "persistence", code: "insert_failed", message: "invalid live-ID transition" } };
-    }
-    if (op.kind === "upsert") {
-      live.set(id, op.node);
-      return { ok: true, value: { kind: "upsert", artifact: { format: 2, node: op.node } } };
-    }
-    live.delete(id);
-    return { ok: true, value: { kind: "delete" } };
-  };
+  const state = historyPersistenceOracle();
+  const { live, invalid, calls, dispatch } = state;
   let api!: UseUndoRedoResult;
   function Probe() {
     const value = useUndoRedo({ captureId: "model-capture", dispatchEdit: dispatch, onBeforeHistory });
@@ -57,7 +36,7 @@ async function mount(onBeforeHistory?: () => Promise<boolean>) {
   let closed = false;
   return {
     get api() { return api; }, live, invalid, calls, dispatch,
-    failOnce(key: string) { failAt = key; },
+    failOnce(key: string) { state.failOnceAt = key; },
     async close() {
       if (closed) return;
       closed = true;
@@ -174,7 +153,7 @@ describe("editor history document oracle", () => {
     } finally { await real.close(); }
   });
 
-  test("a two-layer Undo retry resumes after its acknowledged first delete", async () => {
+  test("a two-layer Undo failure rolls back before retrying the whole group", async () => {
     const real = await mount();
     const a = node(1);
     const b = node(2);
@@ -183,10 +162,10 @@ describe("editor history document oracle", () => {
       real.calls.length = 0;
       real.failOnce(`delete:${b.id}`);
       await act(async () => { await real.api.undo(); });
-      assertDocument(real, [b.id]);
+      assertDocument(real, [a.id, b.id]);
       await act(async () => { await real.api.undo(); });
       assertDocument(real, []);
-      expect(real.calls).toEqual([`delete:${a.id}`, `delete:${b.id}`, `delete:${b.id}`]);
+      expect(real.calls).toEqual([`delete:${a.id}`, `delete:${b.id}`, `delete:${a.id}`, `delete:${b.id}`]);
     } finally { await real.close(); }
   });
 
@@ -206,7 +185,7 @@ describe("editor history document oracle", () => {
     }), { numRuns: 300 });
   });
 
-  test("generated partial replay cut points preserve acknowledged writes and recovery", async () => {
+  test("generated atomic failure cut points preserve the committed document and recovery", async () => {
     await fc.assert(fc.asyncProperty(
       fc.integer({ min: 2, max: 8 }), fc.nat({ max: 20 }), fc.constantFrom("undo", "redo"), fc.constantFrom("retry", "reverse", "edit"),
       async (size, cut, direction, recovery) => {
@@ -214,14 +193,14 @@ describe("editor history document oracle", () => {
         const nodes = Array.from({ length: size }, (_, i) => node(i + 1));
         const ids = nodes.map((entry) => entry.id);
         const prefixSize = 1 + cut % (size - 1);
-        const prefix = ids.slice(0, prefixSize);
-        const suffix = ids.slice(prefixSize);
+        const before = direction === "redo" ? [] : ids;
+        const after = direction === "redo" ? ids : [];
         try {
           await act(async () => { await write(real, "create", nodes); });
           if (direction === "redo") await act(async () => { await real.api.undo(); });
           real.failOnce(`${direction === "redo" ? "upsert" : "delete"}:${ids[prefixSize]}`);
           await act(async () => { await real.api[direction](); });
-          assertDocument(real, direction === "redo" ? prefix : suffix);
+          assertDocument(real, before);
           if (recovery === "retry") {
             await act(async () => { await real.api[direction](); });
             assertDocument(real, direction === "redo" ? ids : []);
@@ -229,17 +208,17 @@ describe("editor history document oracle", () => {
             assertDocument(real, direction === "redo" ? [] : ids);
           } else if (recovery === "reverse") {
             await act(async () => { await real.api[direction === "redo" ? "undo" : "redo"](); });
-            assertDocument(real, direction === "redo" ? [] : ids);
+            assertDocument(real, before);
             await act(async () => { await real.api[direction](); });
-            assertDocument(real, direction === "redo" ? prefix : suffix);
+            assertDocument(real, after);
             await act(async () => { await real.api[direction](); });
             assertDocument(real, direction === "redo" ? ids : []);
           } else {
             const landing = node(size + 1);
             await act(async () => { await write(real, "create", [landing]); });
-            assertDocument(real, [...(direction === "redo" ? prefix : suffix), landing.id]);
+            assertDocument(real, [...before, landing.id]);
             await act(async () => { await real.api.undo(); });
-            assertDocument(real, direction === "redo" ? prefix : suffix);
+            assertDocument(real, before);
             await act(async () => { await real.api.undo(); });
             assertDocument(real, []);
           }

@@ -18,6 +18,7 @@ import { BundleLayerNode, type OverlayRow } from "@pwrsnap/shared";
 import { registerCaptureUndoFallback, useEditMenuBridge } from "../../../lib/editMenuBridge";
 
 import type { LayerEditOp } from "../useCaptureModel";
+import { historyPersistenceOracle } from "./history-persistence-oracle";
 
 import {
   useUndoRedo,
@@ -259,7 +260,7 @@ describe("useUndoRedo", () => {
       await Promise.all([undo, redo]);
     });
     expect(admissions).toBe(1);
-    expect(dispatchEditMock.mock.calls).toEqual([[{ kind: "delete", id: "released" }]]);
+    expect(replayedEdits(dispatchEditMock)).toEqual([[{ kind: "delete", id: "released" }]]);
     expect(api!.canUndo).toBe(true);
   });
 
@@ -305,7 +306,7 @@ describe("useUndoRedo", () => {
       first = api!.undo();
       second = api!.undo();
     });
-    expect(dispatchEditMock.mock.calls).toEqual([[{ kind: "delete", id: "newer" }]]);
+    expect(replayedEdits(dispatchEditMock)).toEqual([[{ kind: "delete", id: "newer" }]]);
     expect(applyingRef.current).toBe(true);
     await act(async () => {
       resolve({ ok: true, value: { kind: "delete" } });
@@ -314,7 +315,7 @@ describe("useUndoRedo", () => {
     expect(applyingRef.current).toBe(false);
     expect(api!.canUndo).toBe(true);
     await act(async () => { await api!.undo(); });
-    expect(dispatchEditMock.mock.calls.at(-1)).toEqual([{ kind: "delete", id: "older" }]);
+    expect(replayedEdits(dispatchEditMock).at(-1)).toEqual([{ kind: "delete", id: "older" }]);
   });
 
   test("a failed undo remains available for retry and does not create redo history", async () => {
@@ -328,7 +329,7 @@ describe("useUndoRedo", () => {
     expect(api!.canUndo).toBe(true);
     expect(api!.canRedo).toBe(false);
     await act(async () => { await api!.undo(); });
-    expect(dispatchEditMock.mock.calls).toEqual([
+    expect(replayedEdits(dispatchEditMock)).toEqual([
       [{ kind: "delete", id: "retry" }], [{ kind: "delete", id: "retry" }]
     ]);
     expect(api!.canUndo).toBe(false);
@@ -1334,7 +1335,7 @@ describe("useUndoRedo", () => {
   });
 });
 
-describe("useUndoRedo partial replay retries", () => {
+describe("useUndoRedo atomic and partial geometry retries", () => {
   function node(label: string): BundleLayerNode {
     return BundleLayerNode.parse(makeNode(label.padEnd(16, "_")));
   }
@@ -1343,33 +1344,8 @@ describe("useUndoRedo partial replay retries", () => {
    * fails with insert_failed. A transient failure has that same code: the
    * hook must distinguish acknowledged progress, never guess from errors. */
   function persistence(liveNodes: BundleLayerNode[]) {
-    const state = {
-      live: new Map(liveNodes.map((entry) => [entry.id, entry])),
-      calls: [] as string[],
-      conflicts: 0,
-      failOnceAt: null as string | null
-    };
-    dispatchEditMock.mockImplementation(async (op) => {
-      if (op.kind !== "upsert" && op.kind !== "delete") throw new Error("unexpected fixture operation");
-      const id = op.kind === "upsert" ? op.node.id : op.id;
-      const call = `${op.kind}:${id}`;
-      state.calls.push(call);
-      if (state.failOnceAt === call) {
-        state.failOnceAt = null;
-        return { ok: false, error: { kind: "persistence", code: "insert_failed", message: "transient fixture failure" } };
-      }
-      if (op.kind === "upsert") {
-        BundleLayerNode.parse(op.node);
-        if (state.live.has(id)) {
-          state.conflicts += 1;
-          return { ok: false, error: { kind: "persistence", code: "insert_failed", message: "UNIQUE constraint failed: layers.id" } };
-        }
-        state.live.set(id, op.node);
-        return { ok: true, value: { kind: "upsert", artifact: { format: 2, node: op.node } } };
-      }
-      state.live.delete(id);
-      return { ok: true, value: { kind: "delete" } };
-    });
+    const state = historyPersistenceOracle(liveNodes);
+    dispatchEditMock.mockImplementation(state.dispatch);
     return state;
   }
 
@@ -1389,7 +1365,7 @@ describe("useUndoRedo partial replay retries", () => {
     api.endInteraction(token);
   }
 
-  test.each(["undo-delete", "redo-create"] as const)("%s retries only the failed restore, then reaches earlier history", async (scenario) => {
+  test.each(["undo-delete", "redo-create"] as const)("%s rolls back and retries every restore, then reaches earlier history", async (scenario) => {
     const a = node("a");
     const b = node("b");
     const older = node("older");
@@ -1404,10 +1380,10 @@ describe("useUndoRedo partial replay retries", () => {
     state.failOnceAt = `upsert:${b.id}`;
     const direction = scenario === "redo-create" ? "redo" : "undo";
     await act(async () => { await current.api![direction](); });
-    expect(new Set(state.live.keys())).toEqual(new Set([a.id, older.id]));
+    expect(new Set(state.live.keys())).toEqual(new Set([older.id]));
     await act(async () => { await current.api![direction](); });
     expect(new Set(state.live.keys())).toEqual(new Set([a.id, b.id, older.id]));
-    expect(state.calls).toEqual([`upsert:${a.id}`, `upsert:${b.id}`, `upsert:${b.id}`]);
+    expect(state.calls).toEqual([`upsert:${a.id}`, `upsert:${b.id}`, `upsert:${a.id}`, `upsert:${b.id}`]);
     expect(state.conflicts).toBe(0);
     expect(current.api!.canUndo).toBe(true);
     expect(current.api!.canRedo).toBe(direction === "undo");
@@ -1420,7 +1396,7 @@ describe("useUndoRedo partial replay retries", () => {
   test.each([
     { direction: "undo", failure: "restore" }, { direction: "redo", failure: "restore" },
     { direction: "undo", failure: "remove" }, { direction: "redo", failure: "remove" }
-  ] as const)("replace $direction resumes after a failed second $failure without replaying successful writes", async ({ direction, failure }) => {
+  ] as const)("replace $direction rolls back a failed second $failure before retrying the whole group", async ({ direction, failure }) => {
     const removed = [node("a"), node("b")];
     const added = [node("c"), node("d")];
     const state = persistence(added);
@@ -1439,11 +1415,12 @@ describe("useUndoRedo partial replay retries", () => {
     const failureIndex = failure === "restore" ? 1 : 3;
     state.failOnceAt = steps[failureIndex]!;
     await act(async () => { await current.api![direction](); });
-    // The unfinished piece can be retried and the acknowledged piece reversed.
-    expect(current.api!.canUndo).toBe(true);
-    expect(current.api!.canRedo).toBe(true);
+    // An atomic failure creates no acknowledged prefix or reverse entry.
+    expect(new Set(state.live.keys())).toEqual(new Set(take.map((entry) => entry.id)));
+    expect(current.api!.canUndo).toBe(direction === "undo");
+    expect(current.api!.canRedo).toBe(direction === "redo");
     await act(async () => { await current.api![direction](); });
-    expect(state.calls).toEqual([...steps.slice(0, failureIndex + 1), ...steps.slice(failureIndex)]);
+    expect(state.calls).toEqual([...steps.slice(0, failureIndex + 1), ...steps]);
     expect(new Set(state.live.keys())).toEqual(new Set(restore.map((entry) => entry.id)));
     expect(state.conflicts).toBe(0);
     expect(current.api!.canUndo).toBe(direction === "redo");
@@ -1456,7 +1433,7 @@ describe("useUndoRedo partial replay retries", () => {
     expect(new Set(state.live.keys())).toEqual(new Set(restore.map((entry) => entry.id)));
   });
 
-  test("a later tagged push cannot coalesce into a partially restored entry or erase its retry progress", async () => {
+  test("a later tagged push cannot coalesce into a failed atomic entry or erase its retry identity", async () => {
     const a = node("a");
     const b = node("b");
     const c = node("c");
@@ -1480,13 +1457,13 @@ describe("useUndoRedo partial replay retries", () => {
     await act(async () => { await current.api!.undo(); });
     expect(state.calls).toEqual([`upsert:${c.id}`]);
     await act(async () => { await current.api!.undo(); });
-    expect(state.calls).toEqual([`upsert:${c.id}`, `upsert:${b.id}`]);
+    expect(state.calls).toEqual([`upsert:${c.id}`, `upsert:${a.id}`, `upsert:${b.id}`]);
     expect(new Set(state.live.keys())).toEqual(new Set([a.id, b.id, c.id]));
     expect(current.api!.canUndo).toBe(false);
     expect(state.conflicts).toBe(0);
   });
 
-  test.each(["create", "replace-restore", "replace-remove"] as const)("a new edit preserves the acknowledged portion of a partial %s redo as undoable history", async (scenario) => {
+  test.each(["create", "replace-restore", "replace-remove"] as const)("a new edit discards an uncommitted %s redo without inventing a completed prefix", async (scenario) => {
     const added = [node("a"), node("b")];
     const removed = scenario === "create" ? [] : [node("p"), node("q")];
     const c = node("c");
@@ -1513,14 +1490,12 @@ describe("useUndoRedo partial replay retries", () => {
     expect(new Set(state.live.keys())).toEqual(new Set(removed.map((entry) => entry.id)));
     expect(current.api!.canUndo).toBe(false);
     await act(async () => { await current.api!.redo(); });
-    expect(new Set(state.live.keys())).toEqual(partial);
-    await act(async () => { await current.api!.redo(); });
     expect(new Set(state.live.keys())).toEqual(new Set([...partial, c.id]));
     expect(current.api!.canRedo).toBe(false);
     expect(state.conflicts).toBe(0);
   });
 
-  test.each(["delete", "replace"] as const)("reverse replay cannot bypass a partial %s redo and invalidate its acknowledged cursor", async (kind) => {
+  test.each(["delete", "replace"] as const)("an earlier Undo can cross a failed atomic %s redo without bypassing committed writes", async (kind) => {
     const removed = [node("a"), node("b")];
     const added = kind === "delete" ? [] : [node("c"), node("d")];
     const state = persistence(added);
@@ -1536,15 +1511,14 @@ describe("useUndoRedo partial replay retries", () => {
     await act(async () => { await current.api!.undo(); });
     state.failOnceAt = `delete:${removed[1]!.id}`;
     await act(async () => { await current.api!.redo(); });
-    // Previously Undo reached the older create(A), whose subsequent redo
-    // restored A behind the retained delete(A) checkpoint. Retrying then
-    // skipped A and left it persisted outside the intended final state.
+    // The failed atomic request left A and B untouched. Earlier Undo/Redo
+    // remains valid because there is no committed prefix to skip.
     await act(async () => { await current.api!.undo(); });
     const reversed = new Set(state.live.keys());
     await act(async () => { await current.api!.redo(); });
     await act(async () => { await current.api!.redo(); });
     expect(new Set(state.live.keys())).toEqual(new Set(added.map((entry) => entry.id)));
-    expect(reversed).toEqual(new Set(removed.map((entry) => entry.id)));
+    expect(reversed).toEqual(new Set([removed[1]!.id]));
     expect(current.api!.canRedo).toBe(false);
     expect(state.conflicts).toBe(0);
     // The older entry remains behind both pieces of the interrupted batch.
@@ -1555,7 +1529,7 @@ describe("useUndoRedo partial replay retries", () => {
     expect(current.api!.canUndo).toBe(false);
   });
 
-  test("reverse replay cannot bypass a partial undo and invalidate its acknowledged cursor", async () => {
+  test("reverse replay crosses a failed atomic undo without creating partial history", async () => {
     const a = node("a");
     const b = node("b");
     const state = persistence([b]);
@@ -1572,12 +1546,12 @@ describe("useUndoRedo partial replay retries", () => {
     await act(async () => { await current.api!.undo(); });
     await act(async () => { await current.api!.undo(); });
     expect(new Set(state.live.keys())).toEqual(new Set());
-    expect(reversed).toEqual(new Set([a.id, b.id]));
+    expect(reversed).toEqual(new Set([b.id]));
     expect(current.api!.canUndo).toBe(false);
     expect(state.conflicts).toBe(0);
   });
 
-  test.each(["undo", "redo"] as const)("partial %s exposes reverse history to the keyboard bridge even when its destination stack was empty", async (direction) => {
+  test.each(["undo", "redo"] as const)("failed atomic %s does not advertise an uncommitted reverse entry to the keyboard bridge", async (direction) => {
     const a = node("a");
     const b = node("b");
     const state = persistence([a, b]);
@@ -1595,9 +1569,9 @@ describe("useUndoRedo partial replay retries", () => {
         window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, shiftKey: direction === "undo", bubbles: true }));
       });
       expect(new Set(state.live.keys())).toEqual(new Set(direction === "redo" ? [] : [a.id, b.id]));
-      expect(canReverse).toBe(true);
-      expect(fallback.undo).not.toHaveBeenCalled();
-      expect(fallback.redo).not.toHaveBeenCalled();
+      expect(canReverse).toBe(false);
+      expect(fallback.undo).toHaveBeenCalledTimes(direction === "redo" ? 1 : 0);
+      expect(fallback.redo).toHaveBeenCalledTimes(direction === "undo" ? 1 : 0);
       expect(state.conflicts).toBe(0);
     } finally {
       unregister();

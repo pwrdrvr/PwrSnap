@@ -9,7 +9,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { act, createElement, useEffect } from "react";
 import { createRoot } from "react-dom/client";
-import { expect, test, vi } from "vitest";
+import { expect, test, vi, type TestContext } from "vitest";
 import { BundleLayerNode as LayerSchema, type BundleLayerNode } from "@pwrsnap/shared";
 import { useCaptureModel, type LayerEditOp } from "../useCaptureModel";
 import { useUndoRedo, type UseUndoRedoResult } from "../useUndoRedo";
@@ -241,19 +241,28 @@ async function withHarness(run: (real: Real) => Promise<void>): Promise<void> {
   }
 }
 
-test("generated edit sessions agree with document/history stacks across rollback and lost replies", async () => {
+// A Vitest timeout aborts the signal before its finish hooks. Stop admitting
+// fresh property cases and drain the current one before another test can bind
+// the shared command bus to its own database. The original timeout still fails.
+function drainPropertyOnFinish(context: TestContext, work: Promise<void>): Promise<void> {
+  context.onTestFinished(async () => { await work.catch(() => undefined); });
+  return work;
+}
+
+test("generated edit sessions agree with document/history stacks across rollback and lost replies", async (context) => {
   const error = console.error;
   const errors = vi.spyOn(console, "error").mockImplementation((message, ...args: unknown[]) => {
-    if (message !== "editor undo failed" && message !== "editor redo failed") error(message, ...args);
+    if (message !== "editor undo failed" && message !== "editor redo failed" && message !== "Editor history replay failed") error(message, ...args);
   });
   try {
     // Each case migrates/queries real SQLite and may replay a group twice.
     // Bound the workload for the default 5s CI timeout; shrinking stays on.
-    await fc.assert(fc.asyncProperty(
+    await drainPropertyOnFinish(context, fc.assert(fc.asyncProperty(
       fc.constantFrom<Action>("external", "delete", "replace"),
       command,
       fc.commands([command], { maxCommands: 16 }),
       async (intervening, generated, commands) => {
+        context.signal.throwIfAborted();
         await withHarness(async (real) => {
           const model: Model = { live: new Map(), past: [], future: [], serial: 0 };
           // Generate complete user workflows as well as arbitrary suffixes, so
@@ -266,7 +275,7 @@ test("generated edit sessions agree with document/history stacks across rollback
           await fc.asyncModelRun(() => ({ model, real }), commands);
         });
       }
-    ), { numRuns: 50 });
+    ), { numRuns: 50 }));
   } finally { errors.mockRestore(); }
 });
 
@@ -275,45 +284,57 @@ const patch = fc.record({
   x: fc.integer({ min: -100, max: 200 }),
   color: fc.constantFrom("auto", "#2489ff", "#ff8000")
 });
-test("scheduled geometry/style replies preserve FIFO edits and a newer external field", async () => {
-  await fc.assert(fc.asyncProperty(
-    fc.scheduler({ act: async (step) => { await act(step); } }),
-    fc.array(patch, { minLength: 2, maxLength: 8 }),
-    async (scheduler, patches) => {
-      await withHarness(async () => {
-        const original = layer(1, "vector", 10);
-        await edit({ kind: "upsert", node: original });
-        if (original.kind !== "vector" || original.shape.kind !== "arrow") throw new Error("missing arrow");
-        const expected = { ...original, name: "external field", shape: { ...original.shape } };
-        const ordinary = dispatch.getMockImplementation()!;
-        dispatch.mockImplementation(scheduler.scheduleFunction(ordinary));
-        let work: Promise<unknown>[] = [];
-        await act(async () => {
-          expect((await bus.dispatch("layers:update", { captureId, layer: { ...original, name: expected.name } }, { principal: "ipc" })).ok).toBe(true);
-          if (snapshot.kind !== "loaded") throw new Error("model not loaded");
-          const edit = snapshot.dispatchEdit;
-          work = patches.map((patch) => {
-            if (patch.kind === "geometry") {
-              const from = { x: patch.x / 100, y: 0.25 };
-              const to = { x: 0.75, y: 0.875 };
-              expected.shape = { ...expected.shape, from, to };
-              return edit({ kind: "updateGeometry", layerId: original.id, geometry: { kind: "arrow", from, to } });
-            }
-            expected.shape = { ...expected.shape, color: patch.color };
-            return edit({ kind: "updateOverlay", layerId: original.id, patch: { kind: "arrow", color: patch.color } });
-          });
+// Preserve 100 schedules in four independent batches, giving each a quarter
+// of the former workload under the default 5s CI timeout.
+for (const batch of [1, 2, 3, 4]) {
+  test(`scheduled geometry/style replies preserve FIFO edits and a newer external field (batch ${batch})`, async (context) => {
+    await drainPropertyOnFinish(context, fc.assert(fc.asyncProperty(
+      fc.scheduler({ act: async (step) => { await act(step); } }),
+      fc.array(patch, { minLength: 2, maxLength: 8 }),
+      async (scheduler, patches) => {
+        context.signal.throwIfAborted();
+        await withHarness(async () => {
+          const original = layer(1, "vector", 10);
+          await edit({ kind: "upsert", node: original });
+          if (original.kind !== "vector" || original.shape.kind !== "arrow") throw new Error("missing arrow");
+          const expected = { ...original, name: "external field", shape: { ...original.shape } };
+          const ordinary = dispatch.getMockImplementation()!;
+          dispatch.mockImplementation(scheduler.scheduleFunction(ordinary));
+          let work: Promise<unknown>[] = [];
+          try {
+            await act(async () => {
+              expect((await bus.dispatch("layers:update", { captureId, layer: { ...original, name: expected.name } }, { principal: "ipc" })).ok).toBe(true);
+              if (snapshot.kind !== "loaded") throw new Error("model not loaded");
+              const edit = snapshot.dispatchEdit;
+              work = patches.map((patch) => {
+                if (patch.kind === "geometry") {
+                  const from = { x: patch.x / 100, y: 0.25 };
+                  const to = { x: 0.75, y: 0.875 };
+                  expected.shape = { ...expected.shape, from, to };
+                  return edit({ kind: "updateGeometry", layerId: original.id, geometry: { kind: "arrow", from, to } });
+                }
+                expected.shape = { ...expected.shape, color: patch.color };
+                return edit({ kind: "updateOverlay", layerId: original.id, patch: { kind: "arrow", color: patch.color } });
+              });
+            });
+            const results = await scheduler.waitFor(Promise.all(work));
+            await scheduler.waitAll();
+            for (const result of results) expect(result).toMatchObject({ ok: true });
+            expect(listLayerTree(captureId)).toEqual([expected]);
+            if (snapshot.kind !== "loaded") throw new Error("model not loaded");
+            expect(snapshot.layers).toEqual([expected]);
+            expect(snapshot.record.edits_version).toBe(getCaptureById(captureId)!.edits_version);
+          } finally {
+            // Release scheduled replies and settle queued writes even when an
+            // assertion fails, before withHarness closes this SQLite connection.
+            await scheduler.waitFor(Promise.allSettled(work));
+            await scheduler.waitAll();
+          }
         });
-        const results = await scheduler.waitFor(Promise.all(work));
-        await scheduler.waitAll();
-        for (const result of results) expect(result).toMatchObject({ ok: true });
-        expect(listLayerTree(captureId)).toEqual([expected]);
-        if (snapshot.kind !== "loaded") throw new Error("model not loaded");
-        expect(snapshot.layers).toEqual([expected]);
-        expect(snapshot.record.edits_version).toBe(getCaptureById(captureId)!.edits_version);
-      });
-    }
-  ), { numRuns: 100 });
-});
+      }
+    ), { numRuns: 25 }));
+  });
+}
 
 test("a pending external refetch survives two queued geometry writes", async () => {
   // Plain regression for the scheduler's two-geometry-write counterexample.

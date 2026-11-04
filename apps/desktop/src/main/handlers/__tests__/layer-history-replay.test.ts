@@ -96,6 +96,24 @@ function rows() {
 }
 
 describe("IPC history receipt protocol", () => {
+  test("closed cleanup never reads the destroyed BrowserWindow webContents accessor", async () => {
+    await reserve();
+    const contents = liveWindow.webContents;
+    Object.defineProperty(liveWindow, "webContents", {
+      configurable: true,
+      get: () => {
+        if (destroyed) throw new TypeError("Object has been destroyed");
+        return contents;
+      }
+    });
+    destroyed = true;
+    expect(() => liveWindow.emit("closed")).not.toThrow();
+    expect(contents.listenerCount("render-process-gone")).toBe(0);
+    expect(contents.listenerCount("did-start-navigation")).toBe(0);
+    expect(liveWindow.listenerCount("closed")).toBe(0);
+    expect((await bus.dispatch("layers:replayHistory", { phase: "reserve", captureId }, context())).ok).toBe(false);
+  });
+
   test("reserved removal state is a precondition, not the later restore target", async () => {
     const changed = { ...a, visible: false, z_index: 9000 };
     updateLayer({ captureId, node: changed });

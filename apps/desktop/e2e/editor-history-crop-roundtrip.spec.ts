@@ -42,9 +42,10 @@ test("history roundtrip: visibility change does not block create redo", async ({
     await win.keyboard.press(`${accel()}+Z`);
     await expect.poll(async () => (await arrows(app, captureId)).length).toBe(0);
     await win.keyboard.press(`${accel()}+Shift+Z`);
-    await screenshot(win, info, "after-redo");
-    await expect.poll(async () => (await arrows(app, captureId))[0]).toEqual(original);
-    await expect(win.getByTestId("persisted-glyph-svg")).toHaveCount(1);
+    try {
+      await expect.poll(async () => (await arrows(app, captureId))[0]).toEqual(original);
+      await expect(win.getByTestId("persisted-glyph-svg")).toHaveCount(1);
+    } finally { await screenshot(win, info, "after-redo"); }
   } finally {
     await app.close();
   }
@@ -68,9 +69,10 @@ test("history roundtrip: crop, undo crop, undo create, redo create", async ({}, 
     await win.keyboard.press(`${accel()}+Z`);
     await expect.poll(async () => (await arrows(app, captureId)).length).toBe(0);
     await win.keyboard.press(`${accel()}+Shift+Z`);
-    await screenshot(win, info, "after-create-redo");
-    await expect.poll(async () => (await arrows(app, captureId))[0]).toEqual(original);
-    await expect(win.getByTestId("persisted-glyph-svg")).toHaveCount(1);
+    try {
+      await expect.poll(async () => (await arrows(app, captureId))[0]).toEqual(original);
+      await expect(win.getByTestId("persisted-glyph-svg")).toHaveCount(1);
+    } finally { await screenshot(win, info, "after-create-redo"); }
   } finally {
     await app.close();
   }
@@ -91,10 +93,11 @@ test("history roundtrip: odd right-bottom crop Reset restores the full image", a
     await win.getByTestId("psl-right-tab-layers").click();
     await screenshot(win, info, "edge-cropped");
     await win.getByRole("button", { name: "Remove crop (restore full image)", exact: true }).click();
-    await screenshot(win, info, "after-reset");
-    await expect.poll(async () => dimensions(app, captureId)).toEqual([1001, 803]);
-    await expect(win.getByRole("button", { name: "Remove crop (restore full image)", exact: true })).toHaveCount(0);
-    await expect(win.getByTestId("persisted-glyph-svg")).toHaveCount(1);
+    try {
+      await expect.poll(async () => dimensions(app, captureId)).toEqual([1001, 803]);
+      await expect(win.getByRole("button", { name: "Remove crop (restore full image)", exact: true })).toHaveCount(0);
+      await expect(win.getByTestId("persisted-glyph-svg")).toHaveCount(1);
+    } finally { await screenshot(win, info, "after-reset"); }
   } finally {
     await app.close();
   }
@@ -122,6 +125,40 @@ test("history roundtrip: computer-use smoke fixture", async ({}, info) => {
     }
     await expect(win.getByTestId("editor-error")).toHaveCount(0);
     await screenshot(win, info, "computer-use-final");
+  } finally {
+    await app.close();
+  }
+});
+
+test("history roundtrip: destroying the editor window releases history without exceptions", async () => {
+  const app = await launchPwrSnap();
+  try {
+    const captureId = await seedRasterCapture(app);
+    const win = await openEditorImage(app, captureId);
+    await drawArrow(win, app, captureId);
+    await win.keyboard.press(`${accel()}+Z`);
+    await expect.poll(async () => (await arrows(app, captureId)).length).toBe(0);
+    await win.keyboard.press(`${accel()}+Shift+Z`);
+    await expect.poll(async () => (await arrows(app, captureId)).length).toBe(1);
+    const errors = await app.electronApp.evaluate(async ({ BrowserWindow }) => {
+      const failures: string[] = [];
+      const monitor = (error: Error): void => { failures.push(error.message); };
+      process.on("uncaughtExceptionMonitor", monitor);
+      try {
+        const window = BrowserWindow.getAllWindows().find((candidate) => {
+          if (candidate.isDestroyed()) return false;
+          const url = candidate.webContents.getURL();
+          return url.includes("/renderer/index.html") && !url.includes("stage=");
+        });
+        if (window === undefined) throw new Error("missing library window");
+        try { window.destroy(); } catch (error) { failures.push(String(error)); }
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        return failures;
+      } finally {
+        process.removeListener("uncaughtExceptionMonitor", monitor);
+      }
+    });
+    expect(errors).toEqual([]);
   } finally {
     await app.close();
   }

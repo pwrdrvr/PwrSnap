@@ -45,34 +45,39 @@ export function registerLayerHistoryReplayHandlers(): void {
     const window = BrowserWindow.fromId(ctx.sourceWindowId);
     if (window === null || window.isDestroyed() || window.webContents.isDestroyed() ||
       !isLiveHotkeyRecorderDocument(window.webContents.id, ctx.sourceDocumentId)) return null;
-    const old = owners.get(window.id);
+    // BrowserWindow.webContents is a native accessor that throws after the
+    // window is destroyed, including inside its own `closed` callback.
+    const contents = window.webContents;
+    const contentsId = contents.id;
+    const windowId = window.id;
+    const old = owners.get(windowId);
     if (old?.documentId === ctx.sourceDocumentId) return old;
     if (old !== undefined) old.dispose();
     if (owners.size >= MAX_HISTORY_DOCUMENTS) return null;
     const clear = (): void => {
-      const owner = owners.get(window.id);
+      const owner = owners.get(windowId);
       if (owner?.token === token) {
-        fenceHotkeyRecorderDocument(window.webContents.id);
+        fenceHotkeyRecorderDocument(contentsId);
         owner.dispose();
       }
     };
     const onNavigation = (_event: unknown, _url: string, inPlace: boolean, mainFrame: boolean): void => {
       if (mainFrame && !inPlace) clear();
     };
-    const token = createHmac("sha256", secret).update(JSON.stringify([window.id, ctx.sourceDocumentId])).digest("hex");
+    const token = createHmac("sha256", secret).update(JSON.stringify([windowId, ctx.sourceDocumentId])).digest("hex");
     const owner: Owner = {
       documentId: ctx.sourceDocumentId, token, watermark: 0, receipts: new Map(),
       dispose: () => {
         window.removeListener("closed", clear);
-        window.webContents.removeListener("render-process-gone", clear);
-        window.webContents.removeListener("did-start-navigation", onNavigation);
-        owners.delete(window.id);
+        contents.removeListener("render-process-gone", clear);
+        contents.removeListener("did-start-navigation", onNavigation);
+        owners.delete(windowId);
       }
     };
     window.on("closed", clear);
-    window.webContents.on("render-process-gone", clear);
-    window.webContents.on("did-start-navigation", onNavigation);
-    owners.set(window.id, owner);
+    contents.on("render-process-gone", clear);
+    contents.on("did-start-navigation", onNavigation);
+    owners.set(windowId, owner);
     return owner;
   }
   function snapshot(captureId: string) {

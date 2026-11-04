@@ -1714,6 +1714,17 @@ Rules the surface keeps, and where each one lives:
   production sources so `createGrant` has no caller and `issueOAuthGrant`
   is reached only from the authorization-code exchange.
 
+## A bug fix ships a property, model or oracle test
+
+**A bug fix states the rule it broke as a property, model or oracle test, and
+confirms that test fails on the pre-fix code.** Do the same for new
+rule-heavy logic, state machines, concurrency, and code that reads or writes
+persisted state (settings, secrets, SQLite, `.pwrsnap` bundles). Example tests
+alone check only what their author expected. Here they have asserted the bug
+as correct (#604, #715).
+[docs/property-model-oracle-testing.md](docs/property-model-oracle-testing.md)
+says what each kind is and how to write one.
+
 ## React act warnings fail renderer tests
 
 The renderer Vitest project uses `act-warning-runner.ts` and

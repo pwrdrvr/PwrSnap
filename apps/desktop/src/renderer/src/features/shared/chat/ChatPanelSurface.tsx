@@ -156,7 +156,9 @@ function threadBelongsToScope(
 
 type StreamEntry = { full: string; listeners: Set<(t: string) => void> };
 type ThreadStreamState = Map<string, Map<string, StreamEntry>>;
+type ThreadTerminalState = Map<string, Map<string, ChatMessage["status"]>>;
 type ChatPanelError = { message: string; showSettingsHint: boolean };
+type StopRequest = { turnId: string; phase: "requesting" | "acknowledged" };
 
 function streamsForThread(
   state: ThreadStreamState,
@@ -168,6 +170,18 @@ function streamsForThread(
     state.set(threadId, streams);
   }
   return streams;
+}
+
+function terminalStatusesForThread(
+  state: ThreadTerminalState,
+  threadId: string
+): Map<string, ChatMessage["status"]> {
+  let statuses = state.get(threadId);
+  if (statuses === undefined) {
+    statuses = new Map();
+    state.set(threadId, statuses);
+  }
+  return statuses;
 }
 
 function latestStreamMessageId(
@@ -229,14 +243,19 @@ export function ChatPanelSurface({
   activeTurnRef.current = activeTurnId;
   const stoppingTurnRef = useRef<string | null>(null);
   stoppingTurnRef.current = stoppingTurnId;
-  const stopInFlightRef = useRef<string | null>(null);
+  // Thread navigation changes the visible projection, never ownership of an
+  // outstanding Stop. Keep it until IPC and the turn settle, or a newer turn
+  // is admitted on the same thread.
+  const stopRequestsRef = useRef<Map<string, StopRequest>>(new Map());
   const pendingChipsRef = useRef<ChatActivityChip[]>(pendingChips);
   pendingChipsRef.current = pendingChips;
   // turnId → the assistant message id that turn produced, learned from the
   // first stream delta (or the commit for tool-only turns). Lets a tool
   // chip attach to the right bubble in the transcript.
   const turnMsgRef = useRef<Map<string, string>>(new Map());
-  const terminalStatusRef = useRef<Map<string, ChatMessage["status"]>>(new Map());
+  // Unassigned zero-delta terminals may be consumed only by a later commit
+  // from the same producer thread, including after a navigation round-trip.
+  const terminalStatusRef = useRef<ThreadTerminalState>(new Map());
   const streamState = useRef<ThreadStreamState>(new Map());
   const channels = SURFACE_CHANNELS[surface];
 
@@ -272,21 +291,53 @@ export function ChatPanelSurface({
     []
   );
 
-  const updateActiveTurn = useCallback((turnId: string | null): void => {
-    activeTurnRef.current = turnId;
-    setActiveTurnId(turnId);
-  }, []);
-
   const updateStoppingTurn = useCallback((turnId: string | null): void => {
     stoppingTurnRef.current = turnId;
     setStoppingTurnId(turnId);
   }, []);
 
+  const observeTurnAdmission = useCallback((threadId: string, turnId: string): void => {
+    const stop = stopRequestsRef.current.get(threadId);
+    if (stop !== undefined && stop.turnId !== turnId) {
+      // A new turn can be admitted by another window before the old Stop IPC
+      // settles, even when this thread stays offscreen for the entire turn.
+      // Retire the producer's guard without changing another thread's view.
+      // The old reply's identity-checked finally cannot clear a replacement.
+      stopRequestsRef.current.delete(threadId);
+      if (activeThreadRef.current === threadId) updateStoppingTurn(null);
+    }
+  }, [updateStoppingTurn]);
+
+  const acceptTurnActivity = useCallback((threadId: string, turnId: string): boolean => {
+    const stop = stopRequestsRef.current.get(threadId);
+    if (stop !== undefined && stop.turnId !== turnId) {
+      // Delta/tool events may be delayed. They cannot establish a foreign
+      // active turn while a live Stop owns this thread, even after navigation
+      // projects an awaiting-approval thread without an active turn id.
+      if (!terminalStatusesForThread(terminalStatusRef.current, threadId).has(stop.turnId)) return false;
+      observeTurnAdmission(threadId, turnId);
+    }
+    return true;
+  }, [observeTurnAdmission]);
+
+  // Projection is deliberately separate from admission: speculative activity
+  // must pass acceptTurnActivity before it can supply a missing active id.
+  const updateActiveTurn = useCallback((turnId: string | null): void => {
+    activeTurnRef.current = turnId;
+    setActiveTurnId(turnId);
+  }, []);
+
   const clearTurnTracking = useCallback((): void => {
     updateActiveTurn(null);
     updateStoppingTurn(null);
-    stopInFlightRef.current = null;
   }, [updateActiveTurn, updateStoppingTurn]);
+
+  const observeTerminalStop = useCallback((threadId: string, turnId: string): void => {
+    const request = stopRequestsRef.current.get(threadId);
+    if (request?.turnId !== turnId || request.phase === "requesting") return;
+    stopRequestsRef.current.delete(threadId);
+    if (activeThreadRef.current === threadId) updateStoppingTurn(null);
+  }, [updateStoppingTurn]);
 
   /** Append a chip to a message's activity (dedup by callId). */
   const appendActivity = useCallback(
@@ -395,14 +446,19 @@ export function ChatPanelSurface({
     );
     setActivityByMsg({});
     updatePendingChips([]);
-    updateStoppingTurn(null);
-    stopInFlightRef.current = null;
+    updateStoppingTurn(
+      activeThreadId === null ? null : stopRequestsRef.current.get(activeThreadId)?.turnId ?? null
+    );
     setStreamingMessageId(bufferedMessageId);
     setActionError(null);
     const selected = threadsRef.current.find((thread) => thread.threadId === activeThreadId);
-    updateActiveTurn(
-      selected?.status.kind === "streaming" ? selected.status.turnId : null
-    );
+    const selectedTurnId = selected?.status.kind === "streaming" &&
+      !terminalStatusesForThread(terminalStatusRef.current, selected.threadId).has(selected.status.turnId)
+        ? selected.status.turnId : null;
+    if (activeThreadId !== null && selectedTurnId !== null) {
+      observeTurnAdmission(activeThreadId, selectedTurnId);
+    }
+    updateActiveTurn(selectedTurnId);
     if (activeThreadId === null) {
       setMessages([]);
       return;
@@ -419,21 +475,16 @@ export function ChatPanelSurface({
           ([, messageId]) => messageId === message.id
         )?.[0];
         if (matchingTurn === undefined) continue;
-        terminalStatusRef.current.set(matchingTurn, message.status);
+        terminalStatusesForThread(terminalStatusRef.current, activeThreadId).set(matchingTurn, message.status);
         if (activeTurnRef.current === matchingTurn) updateActiveTurn(null);
-        if (
-          stoppingTurnRef.current === matchingTurn &&
-          stopInFlightRef.current !== matchingTurn
-        ) {
-          updateStoppingTurn(null);
-        }
+        observeTerminalStop(activeThreadId, matchingTurn);
       }
       setMessages((current) => mergeHistoryWithLive(result.value.messages, current));
     })();
     return () => {
       cancelled = true;
     };
-  }, [surface, activeThreadId, updateActiveTurn, updatePendingChips, updateStoppingTurn]);
+  }, [surface, activeThreadId, updateActiveTurn, updatePendingChips, updateStoppingTurn, observeTerminalStop, observeTurnAdmission]);
 
   // Subscribe to the chat event stream.
   useEffect(() => {
@@ -444,11 +495,13 @@ export function ChatPanelSurface({
         const { thread } = payload as { thread: LibraryChatThreadView };
         if (!threadBelongsToScope(surface, scopeId, thread)) return;
         if (
-          thread.threadId === activeThreadRef.current &&
           thread.status.kind === "streaming" &&
-          terminalStatusRef.current.has(thread.status.turnId)
+          terminalStatusesForThread(terminalStatusRef.current, thread.threadId).has(thread.status.turnId)
         ) {
           return;
+        }
+        if (thread.status.kind === "streaming") {
+          observeTurnAdmission(thread.threadId, thread.status.turnId);
         }
         setThreads((prev) => {
           if (thread.archived) return prev.filter((t) => t.threadId !== thread.threadId);
@@ -474,7 +527,8 @@ export function ChatPanelSurface({
         if (!isActiveThread && !threadsRef.current.some((thread) => thread.threadId === e.threadId)) {
           return;
         }
-        if (terminalStatusRef.current.has(e.turnId)) return;
+        if (terminalStatusesForThread(terminalStatusRef.current, e.threadId).has(e.turnId)) return;
+        if (!acceptTurnActivity(e.threadId, e.turnId)) return;
         let entry = streamsForThread(streamState.current, e.threadId).get(e.messageId);
         if (entry === undefined) {
           entry = { full: "", listeners: new Set() };
@@ -511,7 +565,8 @@ export function ChatPanelSurface({
       subscribe(channels.toolCall, (payload) => {
         const e = payload as LibraryChatToolCallEvent;
         if (e.threadId !== activeThreadRef.current) return;
-        const terminal = terminalStatusRef.current.has(e.turnId);
+        const terminal = terminalStatusesForThread(terminalStatusRef.current, e.threadId).has(e.turnId);
+        if (!terminal && !acceptTurnActivity(e.threadId, e.turnId)) return;
         // A tool fired → the agent is working. Adopt the turn id if we
         // didn't capture it from the send result.
         if (!terminal && activeTurnRef.current === null) updateActiveTurn(e.turnId);
@@ -540,7 +595,6 @@ export function ChatPanelSurface({
           return;
         }
         streamState.current.get(e.threadId)?.delete(e.message.id);
-        if (e.threadId !== activeThreadRef.current) return;
         let turnId: string | null = e.turnId ?? null;
         if (turnId === null) {
           for (const [candidateTurnId, messageId] of turnMsgRef.current) {
@@ -551,17 +605,31 @@ export function ChatPanelSurface({
           }
         }
         if (e.message.role === "assistant" && turnId === null) {
-          const unassigned = [...terminalStatusRef.current.keys()]
-            .reverse()
-            .find((candidate) => !turnMsgRef.current.has(candidate));
-          turnId = unassigned ?? activeTurnRef.current;
+          const isActiveThread = e.threadId === activeThreadRef.current;
+          const unassigned = isActiveThread
+            ? [...terminalStatusesForThread(terminalStatusRef.current, e.threadId).keys()]
+                .reverse()
+                .find((candidate) => !turnMsgRef.current.has(candidate))
+            : undefined;
+          const producer = threadsRef.current.find((thread) => thread.threadId === e.threadId);
+          turnId = unassigned ?? (isActiveThread
+            ? activeTurnRef.current
+            : producer?.status.kind === "streaming" ? producer.status.turnId : null);
         }
         if (e.message.role === "assistant" && turnId !== null) {
           turnMsgRef.current.set(turnId, e.message.id);
         }
-        const override = turnId !== null ? terminalStatusRef.current.get(turnId) : undefined;
+        const override = turnId !== null
+          ? terminalStatusesForThread(terminalStatusRef.current, e.threadId).get(turnId) : undefined;
         const committed =
           override === "interrupted" ? { ...e.message, status: "interrupted" as const } : e.message;
+        // Terminal bookkeeping belongs to the producer thread even when its
+        // transcript is offscreen. Otherwise navigation admits stale deltas.
+        if (committed.role === "assistant" && committed.status !== "streaming" && turnId !== null) {
+          terminalStatusesForThread(terminalStatusRef.current, e.threadId).set(turnId, committed.status);
+          observeTerminalStop(e.threadId, turnId);
+        }
+        if (e.threadId !== activeThreadRef.current) return;
         setStreamingMessageId((cur) => (cur === e.message.id ? null : cur));
         setMessages((prev) => {
           const idx = prev.findIndex((m) => m.id === e.message.id);
@@ -580,12 +648,8 @@ export function ChatPanelSurface({
           if (turnId !== null && activeTurnRef.current === turnId) {
             flushPendingTo(committed.id);
           }
-          if (turnId !== null) terminalStatusRef.current.set(turnId, committed.status);
           if (turnId !== null && activeTurnRef.current === turnId) {
             updateActiveTurn(null);
-          }
-          if (turnId !== null && stoppingTurnRef.current === turnId) {
-            if (stopInFlightRef.current !== turnId) updateStoppingTurn(null);
           }
         }
       })
@@ -594,24 +658,30 @@ export function ChatPanelSurface({
     unsubs.push(
       subscribe(channels.turnInterrupted, (payload) => {
         const e = payload as LibraryChatTurnInterruptedEvent;
-        if (e.threadId !== activeThreadRef.current) return;
-        const currentTurn = activeTurnRef.current;
+        const isActiveThread = e.threadId === activeThreadRef.current;
+        const producer = threadsRef.current.find((thread) => thread.threadId === e.threadId);
+        if (!isActiveThread && producer === undefined) return;
+        const currentTurn = isActiveThread ? activeTurnRef.current
+          : producer?.status.kind === "streaming" ? producer.status.turnId : null;
         if (currentTurn !== null && currentTurn !== e.turnId) return;
-        const existingTerminal = terminalStatusRef.current.get(e.turnId);
+        const existingTerminal = terminalStatusesForThread(terminalStatusRef.current, e.threadId).get(e.turnId);
         if (
           currentTurn === null &&
           (existingTerminal === "complete" || existingTerminal === "failed") &&
-          stoppingTurnRef.current !== e.turnId &&
-          stopInFlightRef.current !== e.turnId
+          stopRequestsRef.current.get(e.threadId)?.turnId !== e.turnId
         ) {
           return;
         }
 
-        terminalStatusRef.current.set(e.turnId, "interrupted");
-        setActionError(null);
+        terminalStatusesForThread(terminalStatusRef.current, e.threadId).set(e.turnId, "interrupted");
+        observeTerminalStop(e.threadId, e.turnId);
         const messageId = turnMsgRef.current.get(e.turnId);
+        const partial = messageId === undefined ? ""
+          : streamState.current.get(e.threadId)?.get(messageId)?.full ?? "";
+        if (messageId !== undefined) streamState.current.get(e.threadId)?.delete(messageId);
+        if (!isActiveThread) return;
+        setActionError(null);
         if (messageId !== undefined) {
-          const partial = streamState.current.get(e.threadId)?.get(messageId)?.full ?? "";
           setMessages((prev) =>
             prev.map((message) => {
               if (message.id !== messageId) return message;
@@ -628,16 +698,9 @@ export function ChatPanelSurface({
               };
             })
           );
-          streamState.current.get(e.threadId)?.delete(messageId);
           setStreamingMessageId((cur) => cur === messageId ? null : cur);
         }
         if (currentTurn === e.turnId) updateActiveTurn(null);
-        if (
-          stoppingTurnRef.current === e.turnId &&
-          stopInFlightRef.current !== e.turnId
-        ) {
-          updateStoppingTurn(null);
-        }
         // Drop the in-flight pending chips, but keep whatever already
         // attached to committed messages.
         updatePendingChips([]);
@@ -649,8 +712,9 @@ export function ChatPanelSurface({
       streamState.current.clear();
       turnMsgRef.current.clear();
       terminalStatusRef.current.clear();
+      stopRequestsRef.current.clear();
     };
-  }, [surface, scopeId, channels, appendActivity, flushPendingTo, updateActiveTurn, updatePendingChips, updateStoppingTurn]);
+  }, [surface, scopeId, channels, appendActivity, flushPendingTo, updateActiveTurn, updatePendingChips, observeTerminalStop, observeTurnAdmission, acceptTurnActivity]);
 
   const subscribeToStream = useCallback(
     (messageId: string, onDelta: (fullText: string) => void): (() => void) => {
@@ -754,48 +818,45 @@ export function ChatPanelSurface({
           setDraftResetVersion((version) => version + 1);
         }
       }
-      if (
-        activeThreadRef.current === threadId &&
-        !terminalStatusRef.current.has(result.value.turnId)
-      ) {
-        updateActiveTurn(result.value.turnId);
+      if (!terminalStatusesForThread(terminalStatusRef.current, threadId).has(result.value.turnId)) {
+        observeTurnAdmission(threadId, result.value.turnId);
+        if (activeThreadRef.current === threadId) updateActiveTurn(result.value.turnId);
       }
     },
-    [surface, scopeId, backendAvailability, updateActiveTurn, updatePendingChips]
+    [surface, scopeId, backendAvailability, updateActiveTurn, updatePendingChips, observeTurnAdmission]
   );
 
   const onStop = useCallback(async (): Promise<void> => {
     const threadId = activeThreadRef.current;
     const turnId = activeTurnRef.current;
     if (threadId === null || turnId === null) return;
-    if (stopInFlightRef.current !== null) return;
+    if (stopRequestsRef.current.get(threadId)?.turnId === turnId) return;
 
-    stopInFlightRef.current = turnId;
+    const request: StopRequest = { turnId, phase: "requesting" };
+    stopRequestsRef.current.set(threadId, request);
     updateStoppingTurn(turnId);
     setActionError(null);
+    let acknowledged = false;
     try {
       const result = await interruptThread(surface, threadId);
+      acknowledged = result.ok;
       if (!result.ok) {
-        if (activeTurnRef.current === turnId) {
-          updateStoppingTurn(null);
+        if (activeThreadRef.current === threadId && activeTurnRef.current === turnId) {
           setActionError(`Couldn’t stop the response: ${result.error.message}`);
         }
       }
     } catch (cause) {
-      if (activeTurnRef.current === turnId) {
-        updateStoppingTurn(null);
+      if (activeThreadRef.current === threadId && activeTurnRef.current === turnId) {
         setActionError(
           `Couldn’t stop the response: ${cause instanceof Error ? cause.message : String(cause)}`
         );
       }
     } finally {
-      if (stopInFlightRef.current === turnId) {
-        stopInFlightRef.current = null;
-        if (
-          stoppingTurnRef.current === turnId &&
-          activeTurnRef.current !== turnId
-        ) {
-          updateStoppingTurn(null);
+      if (stopRequestsRef.current.get(threadId) === request) {
+        request.phase = "acknowledged";
+        if (!acknowledged || terminalStatusesForThread(terminalStatusRef.current, threadId).has(turnId)) {
+          stopRequestsRef.current.delete(threadId);
+          if (activeThreadRef.current === threadId) updateStoppingTurn(null);
         }
       }
     }
@@ -853,6 +914,8 @@ export function ChatPanelSurface({
   }
 
   const showGreeting = activeThreadId === null;
+  const visibleStop = stoppingTurnId !== null &&
+    (activeTurnId === null || stoppingTurnId === activeTurnId);
   const composerDraftKey = chatDraftKey(surface, scopeId, activeThreadId);
   const composerDraft = readChatDraftSnapshot(composerDraftKey);
   const activeThread =
@@ -995,7 +1058,7 @@ export function ChatPanelSurface({
           }
           onStop={onStop}
           turnState={
-            stoppingTurnId !== null
+            visibleStop
               ? "stopping"
               : activeTurnId !== null
                 ? "active"

@@ -70,6 +70,35 @@ function harness() {
 }
 
 describe("ChatApprovalBroker", () => {
+  it.each(["owner", "thread"] as const)("%s closure keeps a late failed submission retired after reopening", async (closure) => {
+    const { broker, resolved, superseded } = harness();
+    const request = approval();
+    const oldOwner = {};
+    const gate = deferred<void>();
+    const oldResolver = vi.fn(() => gate.promise);
+    broker.register(request, oldOwner, oldResolver);
+    const submission = broker.resolve({ ...request, decision: "approve" });
+    if (closure === "owner") broker.closeOwner(oldOwner);
+    else broker.closeThread(request.threadId);
+    broker.openThread(request.threadId);
+    const next = approval({ turnId: "turn-2", approvalId: "approval-2" });
+    const nextResolver = vi.fn(async () => undefined);
+    expect(broker.register(next, {}, nextResolver)).toBe(true);
+
+    gate.reject(new Error("retired transport failure"));
+    expect((await submission).ok).toBe(false);
+    expect(broker.pendingForThread(request.threadId)).toBe(next);
+    expect(oldResolver.mock.calls).toEqual([["approve"]]);
+    expect(resolved).toEqual([]);
+    expect(superseded).toHaveLength(1);
+    // A retransmission restores the exact terminal event, without resolving
+    // either the retired callback or its replacement.
+    expect((await broker.resolve({ ...request, decision: "approve" })).ok).toBe(false);
+    expect(superseded).toHaveLength(2);
+    expect(nextResolver).not.toHaveBeenCalled();
+    expect(broker.pendingForThread(next.threadId)).toBe(next);
+  });
+
   it("fails closed when a backend request has no exact turn identity", async () => {
     const { broker, resolved, superseded } = harness();
     const request = approval({ turnId: "" });

@@ -466,7 +466,7 @@ describe("packaged Windows smoke", () => {
     const source = packagedRendererProbeSource();
     expect(source).toContain('#root .app-shell .psl');
     expect(source).toContain("dataset.libraryReadiness");
-    expect(source).toContain('svg[aria-label="PwrSnap"]');
+    expect(source).toContain('.psl__title .pwrsnap-wordmark');
     expect(source).toContain('window.pwrsnapApi.dispatch("library:list"');
     expect(source).toContain("rowCount === 0 && totalLive === 0 && trashTotal === 0");
   });
@@ -474,9 +474,13 @@ describe("packaged Windows smoke", () => {
   test("executes the renderer probe and refuses a mounted Library whose own load failed", async () => {
     const source = packagedRendererProbeSource();
     const library = {
-      dataset: { libraryReadiness: "ready", libraryTotalLive: "0" }
+      dataset: { libraryReadiness: "ready", libraryTotalLive: "0" },
+      querySelector: (selector: string) => selector === '.psl__title .pwrsnap-wordmark'
+        ? brand
+        : null
     };
     const brand = {
+      textContent: "PwrSnap",
       getBoundingClientRect: () => ({ width: 120, height: 24 })
     };
     const dispatch = vi.fn(async () => ({
@@ -490,7 +494,6 @@ describe("packaged Windows smoke", () => {
       querySelector: (selector: string) => {
         if (selector === "#root .app-shell") return {};
         if (selector === "#root .app-shell .psl") return library;
-        if (selector === 'svg[aria-label="PwrSnap"]') return brand;
         return null;
       }
     };

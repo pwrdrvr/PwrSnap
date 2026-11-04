@@ -469,10 +469,11 @@ export function packagedRendererProbeSource(): string {
     const libraryMounted = library !== null;
     const libraryUiState = library?.dataset.libraryReadiness;
     const libraryUiTotalLive = Number(library?.dataset.libraryTotalLive);
-    const brand = document.querySelector('svg[aria-label="PwrSnap"]');
+    const brand = library?.querySelector('.psl__title .pwrsnap-wordmark') ?? null;
     const brandStyle = brand === null ? null : getComputedStyle(brand);
     const brandRect = brand === null ? null : brand.getBoundingClientRect();
     const brandVisible = brand !== null &&
+      brand.textContent?.trim() === "PwrSnap" &&
       brandStyle !== null &&
       brandRect !== null &&
       brandStyle.display !== "none" &&

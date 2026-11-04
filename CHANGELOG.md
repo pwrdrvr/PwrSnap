@@ -9,6 +9,8 @@ This release improves capture responsiveness, reel editing, and update reliabili
   capture work does not have to wait for that preparation to finish.
 - Save As - Improved responsiveness by opening the destination picker while
   the image renders, rather than waiting for rendering before showing it.
+- Cart Exports - Improved ZIP export and drag preparation with bounded parallel
+  rendering, and fixed cancelled ZIP exports replacing the selected destination.
 - Reels - Fixed concurrent scene additions overwriting each other or
   undoing edits and removals made while capture details were loading.
 - Windows Updates - Improved installation to run silently and relaunch

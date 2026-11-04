@@ -7,6 +7,8 @@ import {
   installSizzleQuitBarrier,
   isSizzleQuitDeferred,
   markSizzleCloseRendererReady,
+  onSizzleCloseCancelled,
+  onSizzleQuitCancelled,
   wireSizzleCloseBarrier
 } from "../sizzle-close-barrier";
 
@@ -70,6 +72,34 @@ function makeWindow(id: number): {
 }
 
 describe("Sizzle close barrier", () => {
+  test("notifies close cancellation only for an accepted matching response and supports unsubscribe", () => {
+    const fake = makeWindow(44);
+    wireSizzleCloseBarrier(fake.window);
+    markSizzleCloseRendererReady(44);
+    const closeCancelled = vi.fn();
+    const quitCancelled = vi.fn();
+    const unsubscribeClose = onSizzleCloseCancelled(closeCancelled);
+    const unsubscribeQuit = onSizzleQuitCancelled(quitCancelled);
+    fake.close();
+    expect(closeCancelled).not.toHaveBeenCalled();
+    expect(completeSizzleCloseRequest(999, 1, "cancel")).toBe(false);
+    expect(completeSizzleCloseRequest(44, 0, "cancel")).toBe(false);
+    expect(closeCancelled).not.toHaveBeenCalled();
+    expect(completeSizzleCloseRequest(44, 1, "cancel")).toBe(true);
+    expect(completeSizzleCloseRequest(44, 1, "cancel")).toBe(false);
+    expect(closeCancelled).toHaveBeenCalledOnce();
+    // Native update quit closes windows before before-quit. An ordinary
+    // window cancellation must not become the system-shutdown quit signal.
+    expect(quitCancelled).not.toHaveBeenCalled();
+    unsubscribeClose();
+    unsubscribeQuit();
+    fake.close();
+    expect(completeSizzleCloseRequest(44, 2, "cancel")).toBe(true);
+    expect(closeCancelled).toHaveBeenCalledOnce();
+    fake.close();
+    expect(completeSizzleCloseRequest(44, 3, "close")).toBe(true);
+  });
+
   test("blocks native close until the matching renderer response closes or cancels", () => {
     const fake = makeWindow(41);
     wireSizzleCloseBarrier(fake.window);

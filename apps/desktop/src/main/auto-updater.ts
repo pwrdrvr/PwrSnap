@@ -20,6 +20,7 @@
 
 import { app, autoUpdater as electronNativeUpdater } from "electron";
 import { waitForUpdateCheckSlot } from "./update-check-wait";
+import { onSizzleCloseCancelled } from "./sizzle/sizzle-close-barrier";
 import electronUpdater from "electron-updater";
 import type {
   AppUpdateCancelResult,
@@ -431,18 +432,6 @@ function waitForDownloadOutcome(expectedVersion: string): Promise<AppUpdateCheck
     waiter.timer.unref?.();
     retryDownloadWaiters.add(waiter);
   });
-}
-
-function installableUpdateVersion(): string | undefined {
-  return updateStatus.status === "downloaded" || updateStatus.status === "install-failed"
-    ? updateStatus.version
-    : undefined;
-}
-
-function installRetrySelection(): UpdateSelection | undefined {
-  return updateStatus.status === "install-failed"
-    ? { channel: updateStatus.channel, train: updateStatus.train }
-    : undefined;
 }
 
 function getInstallAttemptStore(): AppUpdateInstallAttemptStore {
@@ -2055,25 +2044,44 @@ export function cancelAppUpdateDownload(): AppUpdateCancelResult {
   return { canceled: true };
 }
 
-let installWithQuitFlush = async (install: () => void): Promise<void> => install();
+let installWithQuitFlush = async (
+  install: (onInstallFailed?: () => void) => void
+): Promise<void> => install();
+
+/** Installation is independent of discovery/transfer and their UI projection.
+ * One request owns retry preparation and the deferred quit callback. A successful
+ * handoff stays latched until native failure, explicit quit cancellation or
+ * disposal: another click cannot start a second quit while this attempt is live. */
+type InstallRequest = {
+  generation: number;
+  phase: "preparing" | "installing" | "handed-off";
+  failure?: Error;
+  stopObserving: () => void;
+  fail: (error: Error) => boolean;
+  dispose: () => void;
+  promise: Promise<AppUpdateInstallResult>;
+};
+let installRequest: InstallRequest | undefined;
 
 /** Bootstrap supplies the same bounded diagnostics flush used by normal quit. */
 export function setAppUpdateInstallHandler(handler: typeof installWithQuitFlush): void {
   installWithQuitFlush = handler;
 }
 
-export async function installDownloadedAppUpdate(): Promise<AppUpdateInstallResult> {
-  const retrySelection = installRetrySelection();
+export function installDownloadedAppUpdate(): Promise<AppUpdateInstallResult> {
+  if (installRequest) return installRequest.promise;
   const currentSelection = currentUpdateSelection();
-  const eligibleDownload = downloadedUpdateMatchesSelection(currentUpdateSelectionKey());
-  let version = eligibleDownload?.version ?? (retrySelection ? installableUpdateVersion() : undefined);
+  // Admission reads held payload/failure ownership for the live selection;
+  // the UI status may still project a different track or a follow-up check.
+  const eligible = downloadedOrFailedMatchesSelection(updateSelectionKey(currentSelection));
+  const version = eligible?.version;
   if (!version) {
-    return {
+    return Promise.resolve({
       status: "error",
       message: heldDownloadedUpdate
         ? "The downloaded update is not for the selected channel."
         : "No downloaded update is ready to install."
-    };
+    });
   }
   if (devFakeUpdateCheckEnabled()) {
     // The only way to reach `downloaded` outside production is the
@@ -2083,19 +2091,71 @@ export async function installDownloadedAppUpdate(): Promise<AppUpdateInstallResu
     log.info("dev fake update — Restart is a no-op outside production", {
       version
     });
-    return {
+    return Promise.resolve({
       status: "error",
       message: `Dev preview (v${version}): Restart only works in production builds.`
-    };
+    });
   }
+  // Reserve before running the hook, which may synchronously call back into
+  // the updater. Failed preparation releases only its own reservation.
+  let interrupt!: (result: AppUpdateInstallResult) => void;
+  const interrupted = new Promise<AppUpdateInstallResult>((resolve) => { interrupt = resolve; });
+  const request: InstallRequest = {
+    generation: updaterGeneration,
+    phase: "preparing",
+    stopObserving: () => {},
+    fail(error) {
+      if (installRequest !== request || request.generation !== updaterGeneration) return false;
+      request.failure = error;
+      request.stopObserving();
+      installRequest = undefined;
+      interrupt({ status: "error", message: error.message });
+      return true;
+    },
+    dispose() {
+      request.stopObserving();
+      interrupt({ status: "error", message: "Update install request is no longer active." });
+    },
+    // Disposal answers the caller even if a shared check or shutdown hook
+    // never settles. Its eventual callback still has to pass assertOwner.
+    promise: Promise.race([
+      interrupted,
+      Promise.resolve().then(() => performAppUpdateInstall(
+        request, version, currentSelection, eligible?.status === "install-failed"
+      ))
+    ])
+  };
+  installRequest = request;
+  void request.promise.then((result) => {
+    if (result.status !== "restarting") {
+      request.stopObserving();
+      if (installRequest === request) installRequest = undefined;
+    }
+  });
+  return request.promise;
+}
+
+async function performAppUpdateInstall(
+  request: InstallRequest,
+  version: string,
+  selection: UpdateSelection,
+  retry: boolean
+): Promise<AppUpdateInstallResult> {
+  const assertOwner = (): void => {
+    if (installRequest !== request || request.generation !== updaterGeneration) {
+      throw new Error("Update install request is no longer active.");
+    }
+  };
   try {
-    if (retrySelection !== undefined) {
+    assertOwner();
+    if (retry) {
       log.info("retrying failed app update install by refreshing update payload", {
         version,
-        updateChannel: retrySelection.channel,
-        updateTrain: retrySelection.train
+        updateChannel: selection.channel,
+        updateTrain: selection.train
       });
-      const retryResult = await checkForAppUpdatesNow("manual", retrySelection);
+      const retryResult = await checkForAppUpdatesNow("manual", selection);
+      assertOwner();
       const refreshedResult =
         retryResult.status === "available"
           ? await waitForDownloadOutcome(retryResult.version)
@@ -2111,17 +2171,67 @@ export async function installDownloadedAppUpdate(): Promise<AppUpdateInstallResu
       }
       version = refreshedResult.version;
     }
+    assertOwner();
+    const payload = heldDownloadedUpdate;
+    if (!payload || payload.version !== version || payload.selection !== updateSelectionKey(selection)) {
+      throw new Error("The downloaded update changed before installation. Please try again.");
+    }
     log.info("installing downloaded update", { version });
-    recordInstallAttempt(version, retrySelection ?? currentSelection);
-    await installWithQuitFlush(() => {
-      if (process.platform === "win32") {
-        // NSIS defaults to its visible wizard. Install silently and
-        // have the installer relaunch the updated app when it finishes.
-        autoUpdater().quitAndInstall(true, true);
-      } else {
-        autoUpdater().quitAndInstall();
+    await installWithQuitFlush((onInstallFailed) => {
+      if (request.phase !== "preparing") return;
+      assertOwner();
+      // The hook can wait while Settings changes selection or a new payload
+      // replaces this one. The native updater installs its current payload,
+      // so an older request must not silently authorize that different build.
+      if (heldDownloadedUpdate !== payload || currentUpdateSelectionKey() !== payload.selection) {
+        throw new Error("The selected update changed before installation. Please try again.");
+      }
+      recordInstallAttempt(version, selection);
+      const updater = autoUpdater();
+      const failNativeInstall = (error: Error): void => {
+        if (!request.fail(error)) return;
+        // The shutdown barrier owns its clock. The captured notification is
+        // optional so the updater and barrier can be updated independently.
+        try {
+          onInstallFailed?.();
+        } catch (notificationError) {
+          log.warn("failed to notify shutdown of native install failure", { message: String(notificationError) });
+        }
+      };
+      // Errors before this point belong to discovery/transfer, not a native
+      // install. Keep observing after return: quitAndInstall can report its
+      // failure asynchronously, and a normal return does not confirm a quit.
+      request.phase = "installing";
+      // Native update quit closes windows before app.before-quit, so the
+      // ordinary app-quit cancellation signal cannot see this close barrier.
+      const stopCloseCancellation = onSizzleCloseCancelled(() => {
+        failNativeInstall(new Error("Update installation canceled because quitting was canceled."));
+      });
+      request.stopObserving = () => {
+        updater.removeListener("error", failNativeInstall);
+        stopCloseCancellation();
+      };
+      updater.on("error", failNativeInstall);
+      try {
+        if (process.platform === "win32") {
+          // NSIS defaults to its visible wizard. Install silently and
+          // have the installer relaunch the updated app when it finishes.
+          updater.quitAndInstall(true, true);
+        } else {
+          updater.quitAndInstall();
+        }
+        // A synchronous error event can accompany a normal return. Do not
+        // overwrite that failed outcome or retain a successful owner for it.
+        if (request.failure) throw request.failure;
+        request.phase = "handed-off";
+      } catch (error) {
+        failNativeInstall(error instanceof Error ? error : new Error(String(error)));
+        throw error;
       }
     });
+    if (request.phase !== "handed-off") {
+      throw new Error("Update installation was not started.");
+    }
     return { status: "restarting" };
   } catch (err) {
     return {
@@ -2263,6 +2373,8 @@ export function initAppUpdater(selectionResolver: SelectionResolver): void {
 
 export function disposeAutoUpdater(): void {
   updaterGeneration += 1;
+  installRequest?.dispose();
+  installRequest = undefined;
   if (periodicUpdateCheckTimer) {
     clearTimeout(periodicUpdateCheckTimer);
     periodicUpdateCheckTimer = undefined;

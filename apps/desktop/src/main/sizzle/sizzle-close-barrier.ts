@@ -18,6 +18,14 @@ let quitApp: QuitApp | null = null;
 let deferredQuit: CloseBarrierState | null = null;
 let quitAttempt = 0;
 const quitCancelledListeners = new Set<() => void>();
+const closeCancelledListeners = new Set<() => void>();
+
+/** Observe an accepted explicit close cancellation, including native update
+ * quits whose window closes precede app.before-quit. Pending saves do not fire. */
+export function onSizzleCloseCancelled(listener: () => void): () => void {
+  closeCancelledListeners.add(listener);
+  return () => { closeCancelledListeners.delete(listener); };
+}
 
 function resumeDeferredQuit(): void {
   deferredQuit = null;
@@ -163,6 +171,7 @@ export function completeSizzleCloseRequest(
     if (cancelledQuit) {
       for (const listener of quitCancelledListeners) listener();
     }
+    for (const listener of [...closeCancelledListeners]) listener();
     return true;
   }
 

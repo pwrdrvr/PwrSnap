@@ -6,6 +6,7 @@
 // can still install while that happens (see `supersedingDownload` in
 // auto-updater.ts).
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { EventEmitter } from "node:events";
 
 type Handler = (...args: unknown[]) => void;
 
@@ -47,6 +48,7 @@ const mocks = vi.hoisted(() => {
     native: emitter(),
     broadcast: vi.fn(),
     installAttempt: undefined as undefined | Record<string, unknown>,
+    writeInstallAttempt: vi.fn((attempt: object) => ({ schemaVersion: 1, ...attempt })),
     autoUpdater: {
       allowDowngrade: false,
       allowPrerelease: false,
@@ -59,6 +61,7 @@ const mocks = vi.hoisted(() => {
         updaterEvents.on(event, handler);
         return mocks.autoUpdater;
       },
+      removeListener: updaterEvents.removeListener,
       quitAndInstall: vi.fn(),
       setFeedURL: vi.fn()
     }
@@ -88,7 +91,7 @@ vi.mock("../update-install-attempt-store", () => ({
     clear: () => undefined,
     filePath: () => "",
     read: () => mocks.installAttempt,
-    write: (attempt: object) => ({ schemaVersion: 1, ...attempt })
+    write: mocks.writeInstallAttempt
   })
 }));
 vi.mock("../mac-shipit-diagnostics", () => ({ readMacShipItDiagnostics: () => undefined }));
@@ -103,13 +106,13 @@ const originalPlatform = process.platform;
 const originalNodeEnv = process.env.NODE_ENV;
 const originalFetch = globalThis.fetch;
 
-function feed(version: string): void {
+function feed(version: string, prerelease = false): void {
   fetchMock.mockResolvedValue({
     ok: true,
     json: async () => [{
       tag_name: `v${version}`,
       draft: false,
-      prerelease: false,
+      prerelease,
       assets: [
         { name: "latest-mac.yml", state: "uploaded" },
         { name: `PwrSnap-${version}-universal-mac.zip`, state: "uploaded" },
@@ -178,6 +181,7 @@ beforeEach(() => {
   mocks.autoUpdater.autoInstallOnAppQuit = false;
   mocks.autoUpdater.currentVersion = { version: "1.0.0" };
   mocks.installAttempt = undefined;
+  mocks.writeInstallAttempt.mockClear();
 });
 
 afterEach(async () => {
@@ -189,6 +193,23 @@ afterEach(async () => {
 });
 
 describe("a newer release replaces a downloaded update", () => {
+  test.each(["darwin", "win32"] as const)("completion wins a racing cancel on %s", async (platform) => {
+    setPlatform(platform);
+    feed("1.0.1");
+    const transfer = offerDownload("1.0.1");
+    const updater = await import("../auto-updater");
+    updater.initAppUpdater(() => ({ channel: "latest", train: "stable" }));
+    await updater.checkForAppUpdatesNow("startup");
+    expect(updater.cancelAppUpdateDownload()).toEqual({ canceled: true });
+    mocks.updaterEvents.emit("update-downloaded", { version: "1.0.1" });
+    // The request reached its terminal event before the token's rejection.
+    transfer.download.reject(new Error("cancelled after completion"));
+    await transfer.download.promise.catch(() => undefined);
+    expect(updater.readAppUpdateStatus()).toEqual({ status: "downloaded", version: "1.0.1" });
+    expect(updater.cancelAppUpdateDownload()).toEqual({ canceled: false });
+    expect(transfer.token.cancel).toHaveBeenCalledOnce();
+  });
+
   test("keeps the downloaded update when the feed has nothing newer", async () => {
     setPlatform("darwin");
     const updater = await bootWithDownloaded();
@@ -282,6 +303,27 @@ describe("a newer release replaces a downloaded update", () => {
     expect(mocks.native.count("update-downloaded")).toBe(0);
   });
 
+  test("a disposed native staging callback cannot promote a payload after reinitialization", async () => {
+    setPlatform("darwin");
+    const updater = await bootWithDownloaded();
+    feed("1.0.2");
+    const second = offerDownload("1.0.2");
+    await updater.checkForAppUpdatesNow("manual");
+    mocks.updaterEvents.emit("update-downloaded", { version: "1.0.2" });
+    second.download.resolve([]);
+    const callbacks = [...mocks.native.handlers.get("update-downloaded")!];
+    updater.disposeAutoUpdater();
+    expect(mocks.native.count("update-downloaded")).toBe(0);
+    expect(mocks.native.count("error")).toBe(0);
+    feed("1.0.0");
+    updater.initAppUpdater(() => ({ channel: "latest", train: "stable" }));
+    await updater.checkForAppUpdatesNow("startup");
+    const broadcasts = mocks.broadcast.mock.calls.length;
+    for (const callback of callbacks) callback();
+    expect(mocks.broadcast).toHaveBeenCalledTimes(broadcasts);
+    expect(updater.readAppUpdateStatus()).toEqual({ status: "no-update", version: "1.0.0" });
+  });
+
   test("an unreadable held version is kept rather than downloaded again every check", async () => {
     setPlatform("darwin");
     feed("1.0.1");
@@ -372,6 +414,285 @@ describe("a newer release replaces a downloaded update", () => {
   });
 });
 
+describe.each(["darwin", "win32"] as const)("install request ownership on %s", (platform) => {
+  beforeEach(() => setPlatform(platform));
+
+  async function holdInstall() {
+    const updater = await bootWithDownloaded();
+    const flush = deferred();
+    const beforeInstall = vi.fn(async (install: () => void) => {
+      await flush.promise;
+      install();
+    });
+    updater.setAppUpdateInstallHandler(beforeInstall);
+    const installing = updater.installDownloadedAppUpdate();
+    await vi.waitFor(() => expect(beforeInstall).toHaveBeenCalledOnce());
+    return { updater, flush, beforeInstall, installing };
+  }
+
+  test("joins duplicate requests during the flush and after handoff", async () => {
+    const { updater, flush, beforeInstall, installing } = await holdInstall();
+    const duplicate = updater.installDownloadedAppUpdate();
+    flush.resolve(undefined);
+    await expect(installing).resolves.toEqual({ status: "restarting" });
+    await expect(duplicate).resolves.toEqual({ status: "restarting" });
+    await expect(updater.installDownloadedAppUpdate()).resolves.toEqual({ status: "restarting" });
+    expect(beforeInstall).toHaveBeenCalledOnce();
+    expect(mocks.writeInstallAttempt).toHaveBeenCalledOnce();
+    expect(mocks.autoUpdater.quitAndInstall.mock.calls).toEqual([
+      platform === "win32" ? [true, true] : []
+    ]);
+  });
+
+  test("records an attempt only at handoff and admits a retry after flush failure", async () => {
+    const updater = await bootWithDownloaded();
+    const flush = deferred();
+    const beforeInstall = vi.fn(async (install: () => void) => {
+      await flush.promise;
+      install();
+    });
+    updater.setAppUpdateInstallHandler(beforeInstall);
+    const installing = updater.installDownloadedAppUpdate();
+    await vi.waitFor(() => expect(beforeInstall).toHaveBeenCalledOnce());
+    const attemptsBeforeHandoff = mocks.writeInstallAttempt.mock.calls.length;
+    flush.reject(new Error("flush failed"));
+    await expect(installing).resolves.toEqual({ status: "error", message: "flush failed" });
+    expect(mocks.autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    updater.setAppUpdateInstallHandler(async (install) => install());
+    await expect(updater.installDownloadedAppUpdate()).resolves.toEqual({ status: "restarting" });
+    expect(attemptsBeforeHandoff).toBe(0);
+    expect(mocks.writeInstallAttempt).toHaveBeenCalledOnce();
+    expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledOnce();
+  });
+
+  test("does not hand off an update from a selection changed during the flush", async () => {
+    const { updater, flush, installing } = await holdInstall();
+    updater.setUpdateSelectionResolver(() => ({ channel: "prerelease", train: "beta" }));
+    updater.reconcileAppUpdateSelection();
+    flush.resolve(undefined);
+    await expect(installing).resolves.toMatchObject({ status: "error" });
+    expect(mocks.autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    expect(mocks.writeInstallAttempt).not.toHaveBeenCalled();
+    updater.setUpdateSelectionResolver(() => ({ channel: "latest", train: "stable" }));
+    await expect(updater.installDownloadedAppUpdate()).resolves.toEqual({ status: "restarting" });
+    expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledOnce();
+  });
+
+  test("requires a fresh request when a newer payload replaces the admitted one", async () => {
+    const { updater, flush, installing } = await holdInstall();
+    feed("1.0.2");
+    const newer = offerDownload("1.0.2");
+    await updater.checkForAppUpdatesNow("manual");
+    mocks.updaterEvents.emit("update-downloaded", { version: "1.0.2" });
+    newer.download.resolve([]);
+    if (platform === "darwin") mocks.native.emit("update-downloaded");
+    expect(updater.readAppUpdateStatus()).toEqual({ status: "downloaded", version: "1.0.2" });
+    flush.resolve(undefined);
+    await expect(installing).resolves.toMatchObject({ status: "error" });
+    expect(mocks.autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    expect(mocks.writeInstallAttempt).not.toHaveBeenCalled();
+    await expect(updater.installDownloadedAppUpdate()).resolves.toEqual({ status: "restarting" });
+    expect(mocks.writeInstallAttempt).toHaveBeenCalledWith(expect.objectContaining({ expectedVersion: "1.0.2" }));
+  });
+
+  test.each([false, true])("invalidates a deferred handoff on dispose (reinitialize=%s)", async (reinitialize) => {
+    const { updater, flush, installing } = await holdInstall();
+    updater.disposeAutoUpdater();
+    if (reinitialize) {
+      feed("1.0.0");
+      updater.initAppUpdater(() => ({ channel: "latest", train: "stable" }));
+      await updater.checkForAppUpdatesNow("startup");
+    }
+    flush.resolve(undefined);
+    await expect(installing).resolves.toMatchObject({ status: "error" });
+    expect(mocks.autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    expect(mocks.writeInstallAttempt).not.toHaveBeenCalled();
+  });
+
+  test("settles its caller on disposal even if the shutdown hook never finishes", async () => {
+    const { updater, flush, installing } = await holdInstall();
+    const outcome = vi.fn();
+    void installing.then(outcome);
+    updater.disposeAutoUpdater();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const disposedOutcome = outcome.mock.calls[0]?.[0];
+    // Release the test's hook even when characterizing a missing disposal
+    // signal, so the red test leaves no live preparation behind.
+    flush.resolve(undefined);
+    await installing;
+    expect(disposedOutcome).toMatchObject({ status: "error" });
+    expect(mocks.autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+  });
+
+  test("hands off once even if the shutdown hook invokes its callback twice", async () => {
+    const updater = await bootWithDownloaded();
+    updater.setAppUpdateInstallHandler(async (install) => { install(); install(); });
+    await expect(updater.installDownloadedAppUpdate()).resolves.toEqual({ status: "restarting" });
+    expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledOnce();
+    expect(mocks.writeInstallAttempt).toHaveBeenCalledOnce();
+  });
+
+  test("releases admission when the hook returns without handing off", async () => {
+    const updater = await bootWithDownloaded();
+    updater.setAppUpdateInstallHandler(async () => {});
+    await expect(updater.installDownloadedAppUpdate()).resolves.toMatchObject({ status: "error" });
+    expect(mocks.writeInstallAttempt).not.toHaveBeenCalled();
+    updater.setAppUpdateInstallHandler(async (install) => install());
+    await expect(updater.installDownloadedAppUpdate()).resolves.toEqual({ status: "restarting" });
+    expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledOnce();
+  });
+
+  test("releases admission when the native installer throws", async () => {
+    const updater = await bootWithDownloaded();
+    const onInstallFailed = vi.fn();
+    updater.setAppUpdateInstallHandler(async (install) => install(onInstallFailed));
+    mocks.autoUpdater.quitAndInstall.mockImplementationOnce(() => { throw new Error("install failed"); });
+    await expect(updater.installDownloadedAppUpdate()).resolves.toEqual({ status: "error", message: "install failed" });
+    expect(onInstallFailed).toHaveBeenCalledOnce();
+    expect(mocks.updaterEvents.count("error")).toBe(1);
+    await expect(updater.installDownloadedAppUpdate()).resolves.toEqual({ status: "restarting" });
+    expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledTimes(2);
+  });
+
+  test("does not admit a failed-install retry from a stale UI projection", async () => {
+    mocks.installAttempt = {
+      schemaVersion: 1, expectedVersion: "1.0.1", fromVersion: "1.0.0",
+      channel: "latest", train: "stable", attemptedAt: "2026-10-11T00:00:00.000Z"
+    };
+    feed("1.0.1");
+    mocks.autoUpdater.checkForUpdates.mockRejectedValue(new Error("unexpected retry"));
+    const updater = await import("../auto-updater");
+    updater.initAppUpdater(() => ({ channel: "latest", train: "stable" }));
+    updater.setUpdateSelectionResolver(() => ({ channel: "prerelease", train: "beta" }));
+    // No status read/reconciliation between the setting write and command.
+    await expect(updater.installDownloadedAppUpdate()).resolves.toMatchObject({ status: "error" });
+    expect(mocks.autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+    expect(mocks.writeInstallAttempt).not.toHaveBeenCalled();
+    expect(mocks.autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+  });
+
+  test("can retry a canceled repair without reading the UI status first", async () => {
+    mocks.installAttempt = {
+      schemaVersion: 1, expectedVersion: "1.0.1", fromVersion: "1.0.0",
+      channel: "latest", train: "stable", attemptedAt: "2026-10-11T00:00:00.000Z"
+    };
+    feed("1.0.1");
+    const first = offerDownload("1.0.1");
+    const updater = await import("../auto-updater");
+    updater.initAppUpdater(() => ({ channel: "latest", train: "stable" }));
+    const canceled = updater.installDownloadedAppUpdate();
+    await vi.waitFor(() => expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1));
+    expect(updater.cancelAppUpdateDownload()).toEqual({ canceled: true });
+    mocks.updaterEvents.emit("update-cancelled", { version: "1.0.1" });
+    first.download.reject(new Error("cancelled"));
+    await expect(canceled).resolves.toMatchObject({ status: "error" });
+    expect(mocks.writeInstallAttempt).not.toHaveBeenCalled();
+    const second = offerDownload("1.0.1");
+    const retry = updater.installDownloadedAppUpdate();
+    await vi.waitFor(() => expect(mocks.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(2));
+    mocks.updaterEvents.emit("update-downloaded", { version: "1.0.1" });
+    second.download.resolve([]);
+    await expect(retry).resolves.toEqual({ status: "restarting" });
+    expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledOnce();
+  });
+
+  describe("native error ownership", () => {
+    test.each(["sync", "late"] as const)("releases the failed owner and signals its hook once (%s)", async (when) => {
+      const updater = await bootWithDownloaded();
+      const onInstallFailed = vi.fn();
+      updater.setAppUpdateInstallHandler(async (install) => install(onInstallFailed));
+      const error = new Error("native install failed without throwing");
+      if (when === "sync") {
+        mocks.autoUpdater.quitAndInstall.mockImplementationOnce(() => mocks.updaterEvents.emit("error", error));
+      }
+      const first = await updater.installDownloadedAppUpdate();
+      if (when === "late") mocks.updaterEvents.emit("error", error);
+      await expect(updater.installDownloadedAppUpdate()).resolves.toEqual({ status: "restarting" });
+      expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledTimes(2);
+      expect(onInstallFailed).toHaveBeenCalledOnce();
+      expect(first).toEqual(when === "sync" ? { status: "error", message: error.message } : { status: "restarting" });
+      expect(mocks.updaterEvents.count("error")).toBe(2); // global + current native attempt
+    });
+
+    test.each([false, true])("a failed handoff permits a new payload request (selection changed=%s)", async (changeSelection) => {
+      const updater = await bootWithDownloaded();
+      await updater.installDownloadedAppUpdate();
+      mocks.updaterEvents.emit("error", new Error("native install failed"));
+      const version = changeSelection ? "1.1.0-alpha.1" : "1.0.2";
+      if (changeSelection) {
+        updater.setUpdateSelectionResolver(() => ({ channel: "prerelease", train: "beta" }));
+        updater.reconcileAppUpdateSelection();
+      }
+      feed(version, changeSelection);
+      const next = offerDownload(version);
+      await updater.checkForAppUpdatesNow("manual");
+      mocks.updaterEvents.emit("update-downloaded", { version });
+      next.download.resolve([]);
+      if (platform === "darwin" && !changeSelection) mocks.native.emit("update-downloaded");
+      expect(updater.readAppUpdateStatus()).toEqual({ status: "downloaded", version });
+      await expect(updater.installDownloadedAppUpdate()).resolves.toEqual({ status: "restarting" });
+      expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledTimes(2);
+      expect(mocks.writeInstallAttempt).toHaveBeenLastCalledWith(expect.objectContaining({
+        expectedVersion: version,
+        train: changeSelection ? "beta" : "stable",
+        channel: changeSelection ? "prerelease" : "latest"
+      }));
+    });
+
+    test("detached native error callbacks cannot fail a newer owner or signal its hook", async () => {
+      const updater = await bootWithDownloaded();
+      const globalHandlers = new Set(mocks.updaterEvents.handlers.get("error"));
+      const firstFailed = vi.fn();
+      updater.setAppUpdateInstallHandler(async (install) => install(firstFailed));
+      await updater.installDownloadedAppUpdate();
+      const obsolete = [...mocks.updaterEvents.handlers.get("error")!].filter((handler) => !globalHandlers.has(handler));
+      mocks.updaterEvents.emit("error", new Error("first native attempt failed"));
+      const secondFailed = vi.fn();
+      updater.setAppUpdateInstallHandler(async (install) => install(secondFailed));
+      const second = updater.installDownloadedAppUpdate();
+      await second;
+      for (const handler of obsolete) handler(new Error("obsolete native failure"));
+      expect(updater.installDownloadedAppUpdate()).toBe(second);
+      expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledTimes(2);
+      expect(firstFailed).toHaveBeenCalledOnce();
+      expect(secondFailed).not.toHaveBeenCalled();
+      expect(obsolete).toHaveLength(1);
+      mocks.updaterEvents.emit("error", new Error("second native attempt failed"));
+      for (const handler of obsolete) handler(new Error("duplicate obsolete failure"));
+      expect(firstFailed).toHaveBeenCalledOnce();
+      expect(secondFailed).toHaveBeenCalledOnce();
+      expect(mocks.updaterEvents.count("error")).toBe(1);
+    });
+
+    test("disposal detaches the native observer without signaling failure after reinitialization", async () => {
+      const updater = await bootWithDownloaded();
+      const globalHandlers = new Set(mocks.updaterEvents.handlers.get("error"));
+      const onInstallFailed = vi.fn();
+      updater.setAppUpdateInstallHandler(async (install) => install(onInstallFailed));
+      await updater.installDownloadedAppUpdate();
+      const obsolete = [...mocks.updaterEvents.handlers.get("error")!].filter((handler) => !globalHandlers.has(handler));
+      updater.disposeAutoUpdater();
+      expect(mocks.updaterEvents.count("error")).toBe(1);
+      feed("1.0.0");
+      updater.initAppUpdater(() => ({ channel: "latest", train: "stable" }));
+      await updater.checkForAppUpdatesNow("startup");
+      for (const handler of obsolete) handler(new Error("disposed native failure"));
+      expect(obsolete).toHaveLength(1);
+      expect(onInstallFailed).not.toHaveBeenCalled();
+      expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledOnce();
+    });
+
+    test("a transfer error while the hook is preparing does not fail an unstarted native attempt", async () => {
+      const { updater, flush, installing } = await holdInstall();
+      mocks.updaterEvents.emit("error", new Error("unrelated transfer error"));
+      expect(updater.installDownloadedAppUpdate()).toBe(installing);
+      flush.resolve(undefined);
+      await expect(installing).resolves.toEqual({ status: "restarting" });
+      expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledOnce();
+    });
+  });
+});
+
 describe("an install that lands past the recorded version", () => {
   function attempt(expectedVersion: string) {
     return {
@@ -401,5 +722,117 @@ describe("an install that lands past the recorded version", () => {
     expect(updater.readAppUpdateStatus()).toMatchObject({
       status: "install-failed", version: "1.0.1", currentVersion: "1.0.0"
     });
+  });
+});
+
+describe("explicit Sizzle cancellation of a native update quit", () => {
+  beforeEach(() => setPlatform("darwin"));
+
+  async function nativeClose() {
+    const barrier = await import("../sizzle/sizzle-close-barrier");
+    const events = new EventEmitter();
+    const contentsEvents = new EventEmitter();
+    let destroyed = false;
+    const send = vi.fn();
+    const window = {
+      id: 991,
+      isDestroyed: () => destroyed,
+      on: (event: string, handler: Handler) => events.on(event, handler),
+      webContents: {
+        isDestroyed: () => false,
+        send,
+        on: (event: string, handler: Handler) => contentsEvents.on(event, handler)
+      },
+      close: () => {
+        const event = { preventDefault: vi.fn() };
+        events.emit("close", event);
+        if (!event.preventDefault.mock.calls.length) {
+          destroyed = true;
+          events.emit("closed");
+        }
+      }
+    };
+    barrier.wireSizzleCloseBarrier(window as unknown as import("electron").BrowserWindow);
+    barrier.markSizzleCloseRendererReady(window.id);
+    // Electron's native updater closes windows BEFORE app.before-quit. Do
+    // not set quitDeferred through installSizzleQuitBarrier in this fixture.
+    mocks.autoUpdater.quitAndInstall.mockImplementation(() => window.close());
+    return {
+      barrier,
+      send,
+      cancel: (requestId: number) => barrier.completeSizzleCloseRequest(window.id, requestId, "cancel"),
+      finish: (requestId: number) => barrier.completeSizzleCloseRequest(window.id, requestId, "close"),
+      isDestroyed: () => destroyed
+    };
+  }
+
+  test("a canceled native window close permits a later Restart after reopening Settings", async () => {
+    const updater = await bootWithDownloaded();
+    const close = await nativeClose();
+    await updater.installDownloadedAppUpdate();
+    expect(close.send).toHaveBeenCalledWith(expect.any(String), { requestId: 1 });
+    expect(close.barrier.isSizzleQuitDeferred()).toBe(false);
+    expect(close.cancel(1)).toBe(true);
+    // A Settings mount only reads/reconciles the status; it cannot repair a
+    // native install owner whose quit was explicitly canceled.
+    expect(updater.readAppUpdateStatus()).toEqual({ status: "downloaded", version: "1.0.1" });
+    await updater.installDownloadedAppUpdate();
+    expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledTimes(2);
+    expect(close.send).toHaveBeenLastCalledWith(expect.any(String), { requestId: 2 });
+  });
+
+  test("a pending save and its successful close retain the native install owner", async () => {
+    const updater = await bootWithDownloaded();
+    const close = await nativeClose();
+    const installing = updater.installDownloadedAppUpdate();
+    await installing;
+    expect(updater.installDownloadedAppUpdate()).toBe(installing);
+    expect(close.isDestroyed()).toBe(false);
+    expect(close.finish(1)).toBe(true);
+    expect(close.isDestroyed()).toBe(true);
+    expect(updater.installDownloadedAppUpdate()).toBe(installing);
+    expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledOnce();
+  });
+
+  test("signals only the matching native attempt, ignoring stale and duplicate cancel responses", async () => {
+    const updater = await bootWithDownloaded();
+    const close = await nativeClose();
+    const firstAbandoned = vi.fn();
+    updater.setAppUpdateInstallHandler(async (install) => install(firstAbandoned));
+    await updater.installDownloadedAppUpdate();
+    expect(close.cancel(1)).toBe(true);
+    const secondAbandoned = vi.fn();
+    updater.setAppUpdateInstallHandler(async (install) => install(secondAbandoned));
+    const second = updater.installDownloadedAppUpdate();
+    await second;
+    expect(close.cancel(1)).toBe(false);
+    expect(updater.installDownloadedAppUpdate()).toBe(second);
+    expect(firstAbandoned).toHaveBeenCalledOnce();
+    expect(secondAbandoned).not.toHaveBeenCalled();
+    expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledTimes(2);
+    expect(close.cancel(2)).toBe(true);
+    expect(close.cancel(2)).toBe(false);
+    expect(secondAbandoned).toHaveBeenCalledOnce();
+  });
+
+  test("disposal retires the close-cancel observer without notifying the old diagnostics attempt", async () => {
+    const updater = await bootWithDownloaded();
+    const close = await nativeClose();
+    const abandoned = vi.fn();
+    updater.setAppUpdateInstallHandler(async (install) => install(abandoned));
+    await updater.installDownloadedAppUpdate();
+    updater.disposeAutoUpdater();
+    expect(close.cancel(1)).toBe(true);
+    expect(abandoned).not.toHaveBeenCalled();
+  });
+
+  test("a synchronous native close cancellation returns an error and permits retry", async () => {
+    const updater = await bootWithDownloaded();
+    const close = await nativeClose();
+    const native = mocks.autoUpdater.quitAndInstall.getMockImplementation()!;
+    mocks.autoUpdater.quitAndInstall.mockImplementationOnce(() => { native(); close.cancel(1); });
+    await expect(updater.installDownloadedAppUpdate()).resolves.toMatchObject({ status: "error" });
+    await expect(updater.installDownloadedAppUpdate()).resolves.toEqual({ status: "restarting" });
+    expect(mocks.autoUpdater.quitAndInstall).toHaveBeenCalledTimes(2);
   });
 });

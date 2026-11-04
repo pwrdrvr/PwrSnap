@@ -330,12 +330,9 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
           <h1 className="pss__main-title">AI Providers</h1>
           <p className="pss__main-sub">
             {onThisMac.length > 0
-              ? "Three ways to run AI. Installed agents are CLIs you already use, signed in to your own account. The on-device model is built into macOS. Direct API connections are called by PwrSnap itself, with your key, on your provider's bill. "
-              : "Two ways to run AI. Installed agents are CLIs you already use, signed in to your own account. Direct API connections are called by PwrSnap itself, with your key, on your provider's bill. "}
+              ? "Three ways to run AI. Installed agents are CLIs you already use, signed in to your own account. The on-device model is built into macOS. Direct API connections are called by PwrSnap itself, with your ChatGPT plan or a key on your provider's bill. "
+              : "Two ways to run AI. Installed agents are CLIs you already use, signed in to your own account. Direct API connections are called by PwrSnap itself, with your ChatGPT plan or a key on your provider's bill. "}
             Pick which one does each job in{" "}
-            Two ways to run AI. Installed agents are CLIs you already use, signed in to your
-            own account. Direct API connections are called by PwrSnap itself, with your
-            ChatGPT plan or with a key on your provider's bill. Pick which one does each job in{" "}
             <button
               type="button"
               className="pss__text-link"

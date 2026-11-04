@@ -143,6 +143,7 @@ vi.mock("../../log", () => ({
 vi.mock("../../capture/region-selector", () => ({
   pickRegion: async () => ({ ok: false, reason: "cancelled" }),
   getLastWindowListSnapshot: () => [],
+  isSelectorInvocationCurrent: () => true,
   hideSelector: () => undefined
 }));
 

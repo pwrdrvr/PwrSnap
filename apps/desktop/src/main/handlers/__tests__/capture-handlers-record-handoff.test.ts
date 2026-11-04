@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 const COMMITTED = {
+  windowListSnapshot: [],
   ok: true as const,
   rect: { x: 10, y: 20, w: 400, h: 300 },
   displayId: 1,
@@ -84,6 +85,7 @@ vi.mock("../../log", () => ({
 vi.mock("../../capture/region-selector", () => ({
   pickRegion: mocks.pickRegion,
   getLastWindowListSnapshot: () => [],
+  isSelectorInvocationCurrent: () => true,
   hideSelector: () => undefined
 }));
 

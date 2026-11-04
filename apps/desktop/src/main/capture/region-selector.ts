@@ -45,7 +45,6 @@ import {
   captureAndRegister,
   readSnapshotForRenderer,
   recordSnapshotCanvasUpload,
-  releaseAllSnapshots,
   releaseSnapshot,
   type ScreenSnapshot
 } from "./screen-snapshot";
@@ -66,9 +65,47 @@ const log = getMainLogger("pwrsnap:region-selector");
 const selectorWindows = new Map<number, BrowserWindow>();
 const standbySelectorWindows = new Map<number, BrowserWindow>();
 const selectorWindowLoads = new WeakMap<BrowserWindow, Promise<boolean>>();
+const loadedSelectorWindows = new WeakSet<BrowserWindow>();
 const standbyWarmScheduled = new Set<number>();
 const selectorDisplaysNeedingFreshPanel = new Set<number>();
-let pendingResolver: ((result: SelectorResult) => void) | null = null;
+// Admission happens before any asynchronous preparation. The object identity
+// owns every continuation; settled sessions remain here only until their caller
+// retires the overlay with the returned token.
+type SelectorInvocation = {
+  id: number;
+  phase: "preparing" | "selecting" | "settled";
+  window: BrowserWindow | null;
+  displayId: number | null;
+  snapshot: ScreenSnapshot | null;
+  previousAppPid: number | null;
+  windowListSnapshot: readonly WindowInfo[];
+  releaseProtection: () => void;
+  resolve: (result: SelectorResult) => void;
+};
+let activeInvocation: SelectorInvocation | null = null;
+let nextSelectorInvocationId = 0;
+let selectorLifetime = 0;
+
+function ownsSelector(invocation: SelectorInvocation): boolean {
+  return activeInvocation === invocation && invocation.phase !== "settled";
+}
+
+function settleSelector(invocation: SelectorInvocation, result: SelectorOutcome): void {
+  if (invocation.phase === "settled") return;
+  invocation.phase = "settled";
+  invocation.releaseProtection();
+  if (activeInvocation === invocation) {
+    activeSelectorSenderId = null;
+    snapshotPaintObservation = null;
+    if (pendingPaintWait !== null) {
+      const waiter = pendingPaintWait;
+      pendingPaintWait = null;
+      waiter.settle("superseded");
+    }
+    uninstallSelectorGlobalShortcuts();
+  }
+  invocation.resolve({ ...result, selectorInvocationId: invocation.id });
+}
 let resultListenerAttached = false;
 let displayListenersAttached = false;
 
@@ -131,27 +168,21 @@ function isTopLevelSelectorFrame(event: IpcMainInvokeEvent): boolean {
   );
 }
 
-function abortActiveSelector(senderId: number, reason: string): void {
-  if (activeSelectorSenderId !== senderId) return;
-  snapshotPaintObservation = null;
-  activeSelectorSenderId = null;
-  if (pendingPaintWait?.senderId === senderId) {
-    const waiter = pendingPaintWait;
-    pendingPaintWait = null;
-    waiter.settle("superseded");
-  }
+function abortActiveSelector(
+  senderId: number,
+  reason: string,
+  invocation = activeInvocation
+): void {
+  if (invocation === null || !ownsSelector(invocation)) return;
+  if (invocation.window?.webContents.id !== senderId) return;
   finishPendingPresentation("destroy", reason, senderId);
-  if (activeScreenSnapshot !== null) {
-    const stale = activeScreenSnapshot;
-    activeScreenSnapshot = null;
+  settleSelector(invocation, { ok: false, reason: "destroyed" });
+  if (invocation.snapshot !== null) {
+    const stale = invocation.snapshot;
+    invocation.snapshot = null;
     void releaseSnapshot(stale.id);
   }
-  previousAppPid = null;
-  if (pendingResolver !== null) {
-    const resolver = pendingResolver;
-    pendingResolver = null;
-    resolver({ ok: false, reason: "destroyed" });
-  }
+  invocation.previousAppPid = null;
 }
 
 function finishPendingPresentation(
@@ -190,7 +221,7 @@ function waitForSnapshotPainted(
       received: false,
       trace,
       fields: {
-        transport: activeScreenSnapshot?.selectorDescriptor?.transport ?? "img",
+        transport: activeInvocation?.snapshot?.selectorDescriptor?.transport ?? "img",
         gateOutcome: "waiting"
       } as Record<string, string | number | boolean | null>
     };
@@ -276,19 +307,6 @@ const selectorPrewarmTimings = new Map<number, SelectorPrewarmTiming>();
 // capture handler reuses it after commit to backfill source_app_*.
 let lastSnapshot: WindowInfo[] = [];
 
-// Active screen snapshot for the in-flight pickRegion. The selector
-// shows this immutable generation as a full-window background; the user drags
-// against the snapshot, and commit crops the snapshot rather than
-// re-shooting the live screen. Released on hide.
-let activeScreenSnapshot: ScreenSnapshot | null = null;
-
-// Process id of the app that was frontmost at pickRegion time —
-// captured BEFORE we steal focus to show the selector. After the
-// selector hides on cancel or commit, we re-activate this pid so
-// the user lands back where they were instead of looking at our
-// library window.
-let previousAppPid: number | null = null;
-
 type SelectorWindowListPayload = {
   windows: {
     windowId: number;
@@ -305,7 +323,12 @@ type SelectorWindowListPayload = {
   cursor: { x: number; y: number };
 };
 
-export type SelectorResult =
+export type SelectorResult = SelectorOutcome & {
+  /** Main-local token: delayed caller cleanup may retire only this invocation. */
+  selectorInvocationId: number;
+};
+
+type SelectorOutcome =
   | {
       ok: true;
       rect: { x: number; y: number; w: number; h: number };
@@ -318,6 +341,9 @@ export type SelectorResult =
        *  the consumer when this result is produced, so
        *  `hideAllSelectors` skips the cleanup on this code path. */
       screenSnapshotId: string;
+      /** The main-owned provenance used for this committed selection. A later
+       * invocation may replace the shared cache before its consumer resumes. */
+      windowListSnapshot: readonly WindowInfo[];
       /** Pid of the app that was frontmost when the selector opened.
        *  The capture handler activates this app via NSRunningApplication
        *  AFTER the float-over has been populated, so the toast wins
@@ -486,6 +512,7 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
       log.info(`renderer viewport wc=${wcId} ${summary}`);
     });
     ipcMain.handle(SELECTOR_SNAPSHOT_READ_CHANNEL, async (event, payload: unknown) => {
+      const invocation = activeInvocation;
       const snapshotId =
         typeof payload === "object" && payload !== null && "id" in payload
           ? (payload as { id?: unknown }).id
@@ -495,13 +522,15 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
         !isTopLevelSelectorFrame(event) ||
         typeof snapshotId !== "string" ||
         !/^[A-Za-z0-9_-]{1,64}$/.test(snapshotId) ||
-        activeScreenSnapshot?.id !== snapshotId ||
-        activeScreenSnapshot.selectorDescriptor === undefined
+        invocation === null ||
+        !ownsSelector(invocation) ||
+        invocation.snapshot?.id !== snapshotId ||
+        invocation.snapshot.selectorDescriptor === undefined
       ) {
         log.warn("selector raw snapshot read rejected", {
           senderMatches: event.sender.id === activeSelectorSenderId,
           topLevelFrame: isTopLevelSelectorFrame(event),
-          snapshotMatches: activeScreenSnapshot?.id === snapshotId
+          snapshotMatches: invocation?.snapshot?.id === snapshotId
         });
         return { ok: false, code: "unauthorized" } as const;
       }
@@ -513,7 +542,7 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
         observation.fields.mainBitmapReadOutcome = result.ok ? "read" : result.code;
       }
       if (!result.ok && result.code === "read_failed") {
-        abortActiveSelector(event.sender.id, "raw_snapshot_read_failed");
+        abortActiveSelector(event.sender.id, "raw_snapshot_read_failed", invocation);
       }
       return result;
     });
@@ -534,11 +563,11 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
       const canvasUploadBytes = painted.canvasUploadBytes;
       if (
         transport === "raw-rgba" &&
-        activeScreenSnapshot !== null &&
+        activeInvocation?.snapshot != null &&
         Number.isSafeInteger(canvasUploadBytes) &&
         (canvasUploadBytes as number) >= 0
       ) {
-        recordSnapshotCanvasUpload(activeScreenSnapshot.id, canvasUploadBytes as number);
+        recordSnapshotCanvasUpload(activeInvocation.snapshot.id, canvasUploadBytes as number);
       }
       const waiter = pendingPaintWait;
       pendingPaintWait = null;
@@ -643,15 +672,22 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
           : {})
       });
     });
-    ipcMain.on(SELECTOR_RESULT_CHANNEL, (_event, payload: unknown) => {
+    ipcMain.on(SELECTOR_RESULT_CHANNEL, (event, payload: unknown) => {
       // IMPORTANT: this handler does NOT hide the selector windows.
       // The caller (capture-handlers) hides via `hideSelector()` AFTER
       // it has set the float-over to LOADED, so the selector hide
       // reveals an already-painted toast — no post-hoc show race.
-      if (pendingResolver === null) return;
-      const resolver = pendingResolver;
-      pendingResolver = null;
-      activeSelectorSenderId = null;
+      const invocation = activeInvocation;
+      if (invocation === null || invocation.phase !== "selecting") return;
+      if (
+        event.sender.id !== invocation.window?.webContents.id ||
+        !isTopLevelSelectorFrame(event) ||
+        typeof payload !== "object" || payload === null ||
+        !("screenUrl" in payload) ||
+        payload.screenUrl !== `pwrsnap-screen://r/${invocation.snapshot?.id}`
+      ) return;
+      if ("displayId" in payload && payload.displayId !== invocation.displayId) return;
+      const resolver = (result: SelectorOutcome): void => settleSelector(invocation, result);
       if (isSelectorPayload(payload) && payload.ok) {
         // Renderer ships rects in WINDOW-LOCAL display logical
         // coords. The selector window covers display.bounds via
@@ -667,25 +703,25 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
         // raced ahead of the result event), fall back to a
         // cancelled outcome — the capture handler can't do its
         // job without it.
-        if (activeScreenSnapshot === null) {
-          const prevPid = previousAppPid;
-          previousAppPid = null;
+        if (invocation.snapshot === null) {
+          const prevPid = invocation.previousAppPid;
+          invocation.previousAppPid = null;
           resolver({ ok: false, reason: "cancelled", previousAppPid: prevPid });
         } else {
           // Ownership transfer: clear the module-scope reference so
           // hideAllSelectors skips the cleanup. The consumer (the
           // capture handler) calls releaseSnapshot(id) after it
           // finishes cropping.
-          const snapshot = activeScreenSnapshot;
-          activeScreenSnapshot = null;
+          const snapshot = invocation.snapshot;
+          invocation.snapshot = null;
           // Snapshot previousAppPid into the result then null the
           // module-scope reference so a follow-up cancel doesn't
           // re-activate. The capture handler is responsible for
           // calling activateApp AFTER the float-over has been
           // populated (lifecycle reorder).
-          const prevPid = previousAppPid;
-          previousAppPid = null;
-          const result: SelectorResult = {
+          const prevPid = invocation.previousAppPid;
+          invocation.previousAppPid = null;
+          const result: SelectorOutcome = {
             ok: true,
             rect: {
               x: payload.rect.x + offsetX,
@@ -695,6 +731,7 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
             },
             displayId: payload.displayId,
             screenSnapshotId: snapshot.id,
+            windowListSnapshot: invocation.windowListSnapshot,
             previousAppPid: prevPid
           };
           if (typeof payload.snappedWindowId === "number") {
@@ -749,8 +786,8 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
           resolver(result);
         }
       } else {
-        const prevPid = previousAppPid;
-        previousAppPid = null;
+        const prevPid = invocation.previousAppPid;
+        invocation.previousAppPid = null;
         resolver({ ok: false, reason: "cancelled", previousAppPid: prevPid });
       }
       // (intentionally no hideAllSelectors here — caller owns it)
@@ -795,64 +832,120 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
  * menu itself) and have it preserved in the snapshot they pick
  * against.
  */
-export async function pickRegion(
-  opts: {
-    mode?: SelectorMode;
-    keepPwrSnapChrome?: boolean;
-    /** BrowserWindow ids to exclude from the frozen snapshot via
-     *  content protection (NSWindow.sharingType=.none) — WITHOUT
-     *  hiding them. Used when the capture was triggered from a PwrSnap
-     *  window the user obviously didn't mean to capture (e.g. the
-     *  Library's own Capture button): the Library stays exactly where
-     *  it is on screen, but is absent from the picker's frozen
-     *  background. Cleared the instant the snapshot is taken. */
-    protectWindowIds?: readonly number[];
-    /** Visual intent telegraphed to the renderer. `"video"` swaps
-     *  the "Capture" chip for a "● Recording video" badge and
-     *  changes the hint text so the user knows clicking commits a
-     *  recording, not a snap. No behavioral effect on selection
-     *  itself — both intents return the same rect / window payload. */
-    intent?: "snap" | "video";
-    /** Recording seed for the selector's cursor toggle. Forwarded to
-     *  the renderer in the mode signal; the committed value rides back
-     *  on the result as `captureCursor`. Pass it on the snap path too
-     *  when the chooser can reach a recording, or `C` starts from the
-     *  wrong default. */
-    cursorDefault?: boolean;
-    /** Recording seed for the selector's source chips, from
-     *  `settings.recording.includeMicrophone` / `.includeSystemAudio`.
-     *  Forwarded to the renderer in the mode signal; the committed
-     *  value rides back on the result as `sources`.
-     *
-     *  Omitting it hides the chips entirely, which is the right answer
-     *  for a caller that cannot reach a recording. Pass it on the snap
-     *  path too whenever the chooser can reach one, for the same reason
-     *  `cursorDefault` is passed there. */
-    sourcesDefault?: RecordingCapabilities;
-    /** The saved microphone and camera, from `settings.recording.
-     *  microphoneDevice` / `.cameraDevice`. Forwarded in the mode signal so
-     *  the chips open the saved device and name it before the first frame.
-     *  Omitted means "no saved choice", the same as two nulls. */
-    devicesDefault?: RecordingDeviceDefaults;
-    cameraOffered?: boolean;
-    /** Selector-based image-capture diagnostics. Omitted by video flows. */
-    latencyTrace?: CaptureLatencyTrace;
-    /** Snap-vs-Record policy for this show (issue #75), from
-     *  `settings.recording.quickCaptureAction`. Decides whether the
-     *  selector offers a Record action and which one `↵` commits.
-     *  Omitted (or `"snap"`) leaves the selector exactly as it was
-     *  before the chooser existed — the renderer defaults to `"snap"`
-     *  for exactly this reason. Opt-IN is the only safe direction:
-     *  `capture-handlers` is the sole caller that resolves the returned
-     *  `action`, so a caller which never asked for the chooser would
-     *  otherwise render a Record button, bind `R`, and then quietly
-     *  take a still. Ignored when `intent === "video"`. */
-    quickCaptureAction?: QuickCaptureAction;
-    /** How the HUD is drawn, from `settings.recording.selectorHud`.
-     *  Omitted means the default (shutter). */
-    hudStyle?: SelectorHudStyle;
-  } = {}
-): Promise<SelectorResult> {
+type SelectorOptions = {
+  mode?: SelectorMode;
+  keepPwrSnapChrome?: boolean;
+  /** BrowserWindow ids to exclude from the frozen snapshot via
+   *  content protection (NSWindow.sharingType=.none) — WITHOUT
+   *  hiding them. Used when the capture was triggered from a PwrSnap
+   *  window the user obviously didn't mean to capture (e.g. the
+   *  Library's own Capture button): the Library stays exactly where
+   *  it is on screen, but is absent from the picker's frozen
+   *  background. Cleared the instant the snapshot is taken. */
+  protectWindowIds?: readonly number[];
+  /** Visual intent telegraphed to the renderer. `"video"` swaps
+   *  the "Capture" chip for a "● Recording video" badge and
+   *  changes the hint text so the user knows clicking commits a
+   *  recording, not a snap. No behavioral effect on selection
+   *  itself — both intents return the same rect / window payload. */
+  intent?: "snap" | "video";
+  /** Recording seed for the selector's cursor toggle. Forwarded to
+   *  the renderer in the mode signal; the committed value rides back
+   *  on the result as `captureCursor`. Pass it on the snap path too
+   *  when the chooser can reach a recording, or `C` starts from the
+   *  wrong default. */
+  cursorDefault?: boolean;
+  /** Recording seed for the selector's source chips, from
+   *  `settings.recording.includeMicrophone` / `.includeSystemAudio`.
+   *  Forwarded to the renderer in the mode signal; the committed
+   *  value rides back on the result as `sources`.
+   *
+   *  Omitting it hides the chips entirely, which is the right answer
+   *  for a caller that cannot reach a recording. Pass it on the snap
+   *  path too whenever the chooser can reach one, for the same reason
+   *  `cursorDefault` is passed there. */
+  sourcesDefault?: RecordingCapabilities;
+  /** The saved microphone and camera, from `settings.recording.
+   *  microphoneDevice` / `.cameraDevice`. Forwarded in the mode signal so
+   *  the chips open the saved device and name it before the first frame.
+   *  Omitted means "no saved choice", the same as two nulls. */
+  devicesDefault?: RecordingDeviceDefaults;
+  cameraOffered?: boolean;
+  /** Selector-based image-capture diagnostics. Omitted by video flows. */
+  latencyTrace?: CaptureLatencyTrace;
+  /** Snap-vs-Record policy for this show (issue #75), from
+   *  `settings.recording.quickCaptureAction`. Decides whether the
+   *  selector offers a Record action and which one `↵` commits.
+   *  Omitted (or `"snap"`) leaves the selector exactly as it was
+   *  before the chooser existed — the renderer defaults to `"snap"`
+   *  for exactly this reason. Opt-IN is the only safe direction:
+   *  `capture-handlers` is the sole caller that resolves the returned
+   *  `action`, so a caller which never asked for the chooser would
+   *  otherwise render a Record button, bind `R`, and then quietly
+   *  take a still. Ignored when `intent === "video"`. */
+  quickCaptureAction?: QuickCaptureAction;
+  /** How the HUD is drawn, from `settings.recording.selectorHud`.
+   *  Omitted means the default (shutter). */
+  hudStyle?: SelectorHudStyle;
+};
+
+export function pickRegion(opts: SelectorOptions = {}): Promise<SelectorResult> {
+  const requestStartedAt = Date.now();
+  const previous = activeInvocation;
+  opts.latencyTrace?.mark("shared_session", {
+    busy: previous !== null && previous.phase !== "settled",
+    action: previous !== null && previous.phase !== "settled" ? "supersede_previous" : "acquired"
+  });
+  if (previous !== null) {
+    finishPendingPresentation("cancel", "superseded_before_visible_ack");
+    hideAllSelectors();
+  }
+  let resolveResult!: (result: SelectorResult) => void;
+  const result = new Promise<SelectorResult>((resolve) => { resolveResult = resolve; });
+  const invocation: SelectorInvocation = {
+    id: ++nextSelectorInvocationId,
+    phase: "preparing",
+    window: null,
+    displayId: null,
+    snapshot: null,
+    previousAppPid: null,
+    windowListSnapshot: [],
+    releaseProtection: () => undefined,
+    resolve: resolveResult
+  };
+  activeInvocation = invocation;
+  lastSnapshot = [];
+  void prepareRegion(invocation, opts).then(
+    (failure) => { if (failure !== undefined) settleSelector(invocation, failure); },
+    (error: unknown) => {
+      if (!ownsSelector(invocation)) return;
+      log.warn("selector preparation failed", { message: error instanceof Error ? error.message : String(error) });
+      settleSelector(invocation, { ok: false, reason: "destroyed" });
+      hideSelector(invocation.id);
+    }
+  );
+  return result.then((selection) => {
+    log.info("capture selector selection finished", {
+      displayId: invocation.displayId,
+      ok: selection.ok,
+      reason: selection.ok ? "completed" : selection.reason,
+      durationFromUserRequestMs: Date.now() - requestStartedAt
+    });
+    const trace = opts.latencyTrace;
+    if (trace !== undefined && !trace.isFinished()) {
+      trace.finish(selection.ok || selection.reason === "destroyed" ? "destroy" : "cancel", {
+        reason: selection.ok ? "selection_completed_before_visible_ack" : selection.reason
+      });
+      if (pendingPresentation?.trace === trace) pendingPresentation = null;
+    }
+    return selection;
+  });
+}
+
+async function prepareRegion(
+  invocation: SelectorInvocation,
+  opts: SelectorOptions
+): Promise<SelectorOutcome | undefined> {
   const mode: SelectorMode = opts.mode ?? "auto";
   const keepPwrSnapChrome = opts.keepPwrSnapChrome ?? false;
   const protectWindowIds = opts.protectWindowIds ?? [];
@@ -870,10 +963,6 @@ export async function pickRegion(
     intent,
     keepPwrSnapChrome,
     ...selectorPrewarmAgePayload()
-  });
-  latencyTrace?.mark("shared_session", {
-    busy: pendingResolver !== null,
-    action: pendingResolver === null ? "acquired" : "supersede_previous"
   });
   const prewarmStage = latencyTrace?.begin("selector_prewarm_load");
   if (selectorWindows.size === 0) {
@@ -910,7 +999,10 @@ export async function pickRegion(
     }
     return { ok: false, reason: "destroyed" };
   }
+  invocation.window = targetWindow;
+  invocation.displayId = targetDisplay.id;
   const targetReady = await waitForSelectorWindowLoad(targetDisplay.id, targetWindow);
+  if (!ownsSelector(invocation)) return;
   if (prewarmStage !== undefined) {
     latencyTrace?.end(prewarmStage, {
       outcome: targetReady ? "ready" : "load_failed"
@@ -920,25 +1012,8 @@ export async function pickRegion(
     return { ok: false, reason: "destroyed" };
   }
 
-  if (pendingResolver !== null) {
-    const previous = pendingResolver;
-    pendingResolver = null;
-    previous({ ok: false, reason: "cancelled" });
-  }
-
   const win = targetWindow;
 
-  // Capture the screen NOW, before we show the selector. This is the
-  // SnagIt model: freeze the screen, paint the snapshot as a
-  // full-window background, drag against it. Apps starting /
-  // stopping / popping in during selection no longer bleed into the
-  // capture — the renderer is showing pixels that no longer exist.
-  // Released on hideAllSelectors (regardless of commit / cancel).
-  if (activeScreenSnapshot !== null) {
-    const stale = activeScreenSnapshot;
-    activeScreenSnapshot = null;
-    void releaseSnapshot(stale.id);
-  }
   // Synchronously dismiss PwrSnap capture chrome BEFORE the snapshot
   // and window-list enumeration so our own popovers/toasts neither
   // appear in the frozen background nor become snap candidates. The
@@ -962,12 +1037,21 @@ export async function pickRegion(
   // no flicker, no focus disturbance. Set AFTER the hide above so a
   // hide throw can't leave a window protected, and the try/finally
   // around the snapshot below lifts it on every exit path.
+  // A cancellation releases its lease immediately. The old acquisition's
+  // finally is then a no-op and cannot unprotect a successor's snapshot.
+  let protectionReleased = false;
+  invocation.releaseProtection = () => {
+    if (protectionReleased) return;
+    protectionReleased = true;
+    setSnapshotContentProtection(protectWindowIds, false);
+  };
   setSnapshotContentProtection(protectWindowIds, true);
   if (!keepPwrSnapChrome || protectWindowIds.length > 0) {
     // Compositor flush — let the hide / content-protection toggle
     // reach the window server before we snapshot, otherwise the
     // frozen background can race ahead of the state change.
     await new Promise((resolve) => setTimeout(resolve, 50));
+    if (!ownsSelector(invocation)) return;
   }
   if (chromeStage !== undefined) {
     latencyTrace?.end(chromeStage, {
@@ -993,7 +1077,6 @@ export async function pickRegion(
     .filter((w): w is BrowserWindow => w !== null && !w.isDestroyed())
     .map((w) => w.getBounds());
   let windowListPayload: SelectorWindowListPayload | null = null;
-  let windowListResolver: ((result: SelectorResult) => void) | null = null;
   let acceptingWindowList = true;
   let selectorVisible = false;
   const windowLayoutRequestedAt = Date.now();
@@ -1006,7 +1089,7 @@ export async function pickRegion(
     if (
       !acceptingWindowList ||
       !selectorVisible ||
-      pendingResolver !== windowListResolver ||
+      !ownsSelector(invocation) ||
       win.isDestroyed()
     ) {
       return;
@@ -1015,7 +1098,7 @@ export async function pickRegion(
     setTimeout(() => {
       if (
         !acceptingWindowList ||
-        pendingResolver !== windowListResolver ||
+        !ownsSelector(invocation) ||
         win.isDestroyed()
       ) {
         return;
@@ -1023,10 +1106,9 @@ export async function pickRegion(
       win.webContents.send(SELECTOR_WINDOW_LIST_CHANNEL, payload);
     }, 50);
   };
-  const windowListPromise = listWindowsSnapshot()
+  void listWindowsSnapshot()
     .then((snapshot) => {
-      if (!acceptingWindowList) return;
-      if (selectorVisible && pendingResolver !== windowListResolver) return;
+      if (!acceptingWindowList || !ownsSelector(invocation)) return;
       log.info("completed fetching window layout info", {
         displayId: targetDisplay.id,
         durationMs: Date.now() - windowLayoutRequestedAt,
@@ -1051,7 +1133,8 @@ export async function pickRegion(
         frontmostBundleId: snapshot.frontmostBundleId
       });
       lastSnapshot = prepared.snapshot;
-      previousAppPid = prepared.previousAppPid;
+      invocation.windowListSnapshot = prepared.snapshot;
+      invocation.previousAppPid = prepared.previousAppPid;
       windowListPayload = prepared.payload;
       deliverWindowListPayload(prepared.payload);
       if (windowEnumerationStage !== undefined) {
@@ -1063,6 +1146,7 @@ export async function pickRegion(
       }
     })
     .catch((err) => {
+      if (!ownsSelector(invocation)) return;
       if (windowEnumerationStage !== undefined) {
         latencyTrace?.end(windowEnumerationStage, { outcome: "failed" });
       }
@@ -1082,6 +1166,10 @@ export async function pickRegion(
   });
   try {
     const screenSnapshot = await captureAndRegister(targetDisplay.id, latencyTrace);
+    if (!ownsSelector(invocation)) {
+      await releaseSnapshot(screenSnapshot.id);
+      return;
+    }
     if (win.isDestroyed()) {
       await releaseSnapshot(screenSnapshot.id);
       if (screenFrameStage !== undefined) {
@@ -1093,13 +1181,12 @@ export async function pickRegion(
         });
       }
       acceptingWindowList = false;
-      void windowListPromise;
       latencyTrace?.finish("destroy", {
         reason: "selector_destroyed_during_screen_acquisition"
       });
       return { ok: false, reason: "destroyed" };
     }
-    activeScreenSnapshot = screenSnapshot;
+    invocation.snapshot = screenSnapshot;
     if (screenFrameStage !== undefined) {
       latencyTrace?.end(screenFrameStage, {
         outcome: "completed",
@@ -1117,6 +1204,7 @@ export async function pickRegion(
       ...screenSnapshot.acquisition
     });
   } catch (err) {
+    if (!ownsSelector(invocation)) return;
     if (screenFrameStage !== undefined) {
       latencyTrace?.end(screenFrameStage, {
         outcome: "failed",
@@ -1131,7 +1219,6 @@ export async function pickRegion(
     });
     latencyTrace?.finish("error", { code: "screen_frame_acquisition_failed" });
     acceptingWindowList = false;
-    void windowListPromise;
     return { ok: false, reason: "destroyed" };
   } finally {
     // Lift protection on EVERY snapshot exit path — success, throw, or
@@ -1139,8 +1226,9 @@ export async function pickRegion(
     // the function returns). The frozen snapshot already excludes the
     // protected windows; holding protection any longer would leave them
     // stuck uncapturable. No-op when protectWindowIds is empty.
-    setSnapshotContentProtection(protectWindowIds, false);
+    invocation.releaseProtection();
   }
+  if (!ownsSelector(invocation)) return;
 
   // Arm Esc + Enter via globalShortcut for the duration of the
   // selector. macOS sometimes withholds keyboard events from a
@@ -1152,190 +1240,164 @@ export async function pickRegion(
   // covers everything.
   installSelectorGlobalShortcuts(win);
 
-  const result = await new Promise<SelectorResult>((resolve) => {
-    activeSelectorSenderId = win.webContents.id;
-    pendingResolver = resolve;
-    windowListResolver = resolve;
-    // Tell the renderer which mode + snapshot descriptor/URL to use, then let
-    // it paint the raw canvas or decode the fallback <img> while the window is
-    // STILL HIDDEN. We reveal the window only once the renderer acks
-    // that paint (or a short timeout elapses) — see `reveal()` below.
-    // Showing first (the old behavior) made the window appear as an
-    // empty transparent overlay for a frame, flashing the live screen
-    // / desktop behind the screen-saver-level selector before the
-    // snapshot landed. ("compose → load image → show in one go.")
-    const presentationGeneration =
-      latencyTrace === undefined ? undefined : ++selectorPresentationGeneration;
-    const modePayload =
-      activeScreenSnapshot !== null
-        ? {
-            mode,
-            screenUrl: `pwrsnap-screen://r/${activeScreenSnapshot.id}`,
-            ...(activeScreenSnapshot.selectorDescriptor !== undefined
-              ? { snapshot: activeScreenSnapshot.selectorDescriptor }
-              : {}),
-            intent,
-            cursor: cursorDefault,
-            ...(sourcesDefault !== undefined ? { sources: sourcesDefault } : {}),
-            ...(devicesDefault !== undefined ? { devices: devicesDefault } : {}),
-            cameraOffered: opts.cameraOffered === true,
-            quickCaptureAction,
-            ...(hudStyle !== undefined ? { hudStyle } : {}),
-            ...(latencyTrace !== undefined && presentationGeneration !== undefined
-              ? {
-                  invocationId: latencyTrace.invocation.id,
-                  generation: presentationGeneration
-                }
-              : {})
-          }
-        : null;
-    const presentationScreenUrl = modePayload?.screenUrl;
-    if (!win.isDestroyed() && modePayload !== null) {
-      win.webContents.send(SELECTOR_MODE_CHANNEL, modePayload);
-    }
-    const displayRequestedAt = Date.now();
-    log.info("capture selector display requested", {
-      displayId: targetDisplay.id,
-      durationFromUserRequestMs: elapsedFromRequest()
-    });
-    // Reveal the window once the snapshot has painted (gated below).
-    const reveal = (): void => {
-      if (win.isDestroyed() || pendingResolver !== resolve) return;
-      // Pre-show the float-over UNDER the selector, then show the
-      // selector — kept as ONE atomic step so the floating-level
-      // float-over is never briefly visible uncovered. The selector
-      // (screen-saver level) covers it until commit/cancel, and the
-      // post-commit reveal stays instant (toast already painted).
-      setFloatOverState({ kind: "show-idle" });
-      // Order matters: setSimpleFullScreen(true) BEFORE show().
-      //
-      // Without this, `win.show()` paints the renderer's first frame
-      // while Cocoa is still clipping content to the work-area (the
-      // region below the menu bar) — even though the BrowserWindow
-      // bounds cover the full display. The screen snapshot, painted
-      // at body coords (0, 0), then sits 25-or-so pixels below where
-      // it should, with the LIVE menu bar still visible above. ~150ms
-      // later setSimpleFullScreen settles, the menu bar slides out,
-      // the window's content area expands, and the snapshot suddenly
-      // jumps up by the menu-bar height — visible to the user as the
-      // whole screen "lurching."
-      //
-      // First ⌘⇧P after launch happened to look clean because no prior
-      // teardown had toggled setSimpleFullScreen back to false; the
-      // pre-warmed window inherited a permissive style mask. Subsequent
-      // shows hit the lurch because hideAllSelectors → leaveMenuBarOverlayMode
-      // had reset it.
-      //
-      // Doing the toggle while the window is hidden lets the style-
-      // mask change settle off-screen; show() then reveals the window
-      // already in its final geometry. Snapshot's menu bar pixels land
-      // exactly where the user expects them, no jump.
-      //
-      // The renderer paints the menu bar / dock area itself via the
-      // screen snapshot, so covering the real menu bar is fine — user
-      // sees a 1-frame-old version of it instead of the live one.
-      // Matches every native Mac capture tool (Cleanshot, Shottr,
-      // SnagIt).
-      enterMenuBarOverlayMode(win);
-      win.show();
-      selectorDisplaysNeedingFreshPanel.add(targetDisplay.id);
-      win.focus();
-      // webContents.focus() in addition to BrowserWindow.focus() —
-      // belt and braces. focus() makes the NSWindow key, but
-      // webContents focus is what governs whether keystrokes route
-      // to the renderer's document.
-      win.webContents.focus();
-      // Non-activating panels do not always win the final z-order
-      // arbitration when another app was frontmost at hotkey time. The
-      // selector still receives normal-window hover/mouse events, but
-      // the Dock/menu bar can remain live above it. Re-assert ordering
-      // after show/focus, matching the float-over and recording HUD
-      // pattern without activating PwrSnap or changing Spaces.
-      win.moveTop();
-      latencyTrace?.mark("browser_window_present_calls", {
-        show: true,
-        showInactive: false,
-        focus: true,
-        webContentsFocus: true,
-        moveTop: true
-      });
-      if (
-        latencyTrace !== undefined &&
-        presentationGeneration !== undefined &&
-        presentationScreenUrl !== undefined
-      ) {
-        if (pendingPresentation !== null) {
-          finishPendingPresentation("cancel", "superseded_before_visible_ack");
+  invocation.phase = "selecting";
+  activeSelectorSenderId = win.webContents.id;
+  // Tell the renderer which mode + snapshot descriptor/URL to use, then let
+  // it paint the raw canvas or decode the fallback <img> while the window is
+  // STILL HIDDEN. We reveal the window only once the renderer acks
+  // that paint (or a short timeout elapses) — see `reveal()` below.
+  // Showing first (the old behavior) made the window appear as an
+  // empty transparent overlay for a frame, flashing the live screen
+  // / desktop behind the screen-saver-level selector before the
+  // snapshot landed. ("compose → load image → show in one go.")
+  const presentationGeneration =
+    latencyTrace === undefined ? undefined : ++selectorPresentationGeneration;
+  const modePayload =
+    invocation.snapshot !== null
+      ? {
+          mode,
+          screenUrl: `pwrsnap-screen://r/${invocation.snapshot.id}`,
+          ...(invocation.snapshot.selectorDescriptor !== undefined
+            ? { snapshot: invocation.snapshot.selectorDescriptor }
+            : {}),
+          intent,
+          cursor: cursorDefault,
+          ...(sourcesDefault !== undefined ? { sources: sourcesDefault } : {}),
+          ...(devicesDefault !== undefined ? { devices: devicesDefault } : {}),
+          cameraOffered: opts.cameraOffered === true,
+          quickCaptureAction,
+          ...(hudStyle !== undefined ? { hudStyle } : {}),
+          ...(latencyTrace !== undefined && presentationGeneration !== undefined
+            ? {
+                invocationId: latencyTrace.invocation.id,
+                generation: presentationGeneration
+              }
+            : {})
         }
-        pendingPresentation = {
-          invocationId: latencyTrace.invocation.id,
-          generation: presentationGeneration,
-          screenUrl: presentationScreenUrl,
-          senderId: win.webContents.id,
-          trace: latencyTrace,
-          visibleStage: latencyTrace.begin("first_visible_paint_ack")
-        };
-        win.webContents.send(SELECTOR_PRESENTATION_REQUEST_CHANNEL, {
-          invocationId: latencyTrace.invocation.id,
-          generation: presentationGeneration,
-          screenUrl: presentationScreenUrl
-        });
-      }
-      log.info("capture selector displayed", {
-        displayId: targetDisplay.id,
-        durationFromDisplayRequestedMs: Date.now() - displayRequestedAt,
-        durationFromUserRequestMs: elapsedFromRequest()
-      });
-      scheduleStandbySelectorWarm(targetDisplay);
-      selectorVisible = true;
-      if (windowListPayload !== null) {
-        deliverWindowListPayload(windowListPayload);
-      }
-      // No mode re-send here: the renderer already received the mode +
-      // snapshot at the pre-gate send above — that's precisely what it
-      // loaded/decoded to fire the paint ack we just waited on. Showing
-      // the window doesn't reset the renderer's state, so a re-send is a
-      // no-op.
-    };
-
-    // Gate the reveal on the snapshot actually painting in the
-    // (still-hidden) renderer, so the window never appears empty. The
-    // timeout is the safety net: if the ack never comes (renderer
-    // wedged), show anyway — identical to the pre-fix behavior.
-    if (modePayload === null) {
-      reveal();
-    } else {
-      void waitForSnapshotPainted(
-        modePayload.screenUrl,
-        win.webContents.id,
-        SHOW_AFTER_PAINT_TIMEOUT_MS,
-        latencyTrace
-      ).then(reveal);
-    }
-  });
-  acceptingWindowList = false;
-  void windowListPromise;
-  uninstallSelectorGlobalShortcuts();
-  log.info("capture selector selection finished", {
+      : null;
+  const presentationScreenUrl = modePayload?.screenUrl;
+  if (!win.isDestroyed() && modePayload !== null) {
+    win.webContents.send(SELECTOR_MODE_CHANNEL, modePayload);
+  }
+  const displayRequestedAt = Date.now();
+  log.info("capture selector display requested", {
     displayId: targetDisplay.id,
-    ok: result.ok,
-    reason: result.ok ? "completed" : result.reason,
     durationFromUserRequestMs: elapsedFromRequest()
   });
-  if (latencyTrace !== undefined && !latencyTrace.isFinished()) {
-    latencyTrace.finish(
-      result.ok ? "destroy" : result.reason === "destroyed" ? "destroy" : "cancel",
-      {
-        reason: result.ok
-          ? "selection_completed_before_visible_ack"
-          : result.reason
+  // Reveal the window once the snapshot has painted (gated below).
+  const reveal = (): void => {
+    if (win.isDestroyed() || !ownsSelector(invocation)) return;
+    // Pre-show the float-over UNDER the selector, then show the
+    // selector — kept as ONE atomic step so the floating-level
+    // float-over is never briefly visible uncovered. The selector
+    // (screen-saver level) covers it until commit/cancel, and the
+    // post-commit reveal stays instant (toast already painted).
+    setFloatOverState({ kind: "show-idle" });
+    // Order matters: setSimpleFullScreen(true) BEFORE show().
+    //
+    // Without this, `win.show()` paints the renderer's first frame
+    // while Cocoa is still clipping content to the work-area (the
+    // region below the menu bar) — even though the BrowserWindow
+    // bounds cover the full display. The screen snapshot, painted
+    // at body coords (0, 0), then sits 25-or-so pixels below where
+    // it should, with the LIVE menu bar still visible above. ~150ms
+    // later setSimpleFullScreen settles, the menu bar slides out,
+    // the window's content area expands, and the snapshot suddenly
+    // jumps up by the menu-bar height — visible to the user as the
+    // whole screen "lurching."
+    //
+    // First ⌘⇧P after launch happened to look clean because no prior
+    // teardown had toggled setSimpleFullScreen back to false; the
+    // pre-warmed window inherited a permissive style mask. Subsequent
+    // shows hit the lurch because hideAllSelectors → leaveMenuBarOverlayMode
+    // had reset it.
+    //
+    // Doing the toggle while the window is hidden lets the style-
+    // mask change settle off-screen; show() then reveals the window
+    // already in its final geometry. Snapshot's menu bar pixels land
+    // exactly where the user expects them, no jump.
+    //
+    // The renderer paints the menu bar / dock area itself via the
+    // screen snapshot, so covering the real menu bar is fine — user
+    // sees a 1-frame-old version of it instead of the live one.
+    // Matches every native Mac capture tool (Cleanshot, Shottr,
+    // SnagIt).
+    enterMenuBarOverlayMode(win);
+    win.show();
+    selectorDisplaysNeedingFreshPanel.add(targetDisplay.id);
+    win.focus();
+    // webContents.focus() in addition to BrowserWindow.focus() —
+    // belt and braces. focus() makes the NSWindow key, but
+    // webContents focus is what governs whether keystrokes route
+    // to the renderer's document.
+    win.webContents.focus();
+    // Non-activating panels do not always win the final z-order
+    // arbitration when another app was frontmost at hotkey time. The
+    // selector still receives normal-window hover/mouse events, but
+    // the Dock/menu bar can remain live above it. Re-assert ordering
+    // after show/focus, matching the float-over and recording HUD
+    // pattern without activating PwrSnap or changing Spaces.
+    win.moveTop();
+    latencyTrace?.mark("browser_window_present_calls", {
+      show: true,
+      showInactive: false,
+      focus: true,
+      webContentsFocus: true,
+      moveTop: true
+    });
+    if (
+      latencyTrace !== undefined &&
+      presentationGeneration !== undefined &&
+      presentationScreenUrl !== undefined
+    ) {
+      if (pendingPresentation !== null) {
+        finishPendingPresentation("cancel", "superseded_before_visible_ack");
       }
-    );
-    if (pendingPresentation?.trace === latencyTrace) {
-      pendingPresentation = null;
+      pendingPresentation = {
+        invocationId: latencyTrace.invocation.id,
+        generation: presentationGeneration,
+        screenUrl: presentationScreenUrl,
+        senderId: win.webContents.id,
+        trace: latencyTrace,
+        visibleStage: latencyTrace.begin("first_visible_paint_ack")
+      };
+      win.webContents.send(SELECTOR_PRESENTATION_REQUEST_CHANNEL, {
+        invocationId: latencyTrace.invocation.id,
+        generation: presentationGeneration,
+        screenUrl: presentationScreenUrl
+      });
     }
+    log.info("capture selector displayed", {
+      displayId: targetDisplay.id,
+      durationFromDisplayRequestedMs: Date.now() - displayRequestedAt,
+      durationFromUserRequestMs: elapsedFromRequest()
+    });
+    scheduleStandbySelectorWarm(targetDisplay, invocation);
+    selectorVisible = true;
+    if (windowListPayload !== null) {
+      deliverWindowListPayload(windowListPayload);
+    }
+    // No mode re-send here: the renderer already received the mode +
+    // snapshot at the pre-gate send above — that's precisely what it
+    // loaded/decoded to fire the paint ack we just waited on. Showing
+    // the window doesn't reset the renderer's state, so a re-send is a
+    // no-op.
+  };
+
+  // Gate the reveal on the snapshot actually painting in the
+  // (still-hidden) renderer, so the window never appears empty. The
+  // timeout is the safety net: if the ack never comes (renderer
+  // wedged), show anyway — identical to the pre-fix behavior.
+  if (modePayload === null) {
+    reveal();
+  } else {
+    void waitForSnapshotPainted(
+      modePayload.screenUrl,
+      win.webContents.id,
+      SHOW_AFTER_PAINT_TIMEOUT_MS,
+      latencyTrace
+    ).then(reveal);
   }
-  return result;
 }
 
 /**
@@ -1726,13 +1788,16 @@ hotkeyRecorderSuspension.registerParticipant({
 });
 
 /**
- * The window-list snapshot taken at the most recent pickRegion call.
- * Capture handlers query this to backfill source-app metadata on
- * commit (no need to re-shell to the helper — the snapshot from the
- * moment of capture is exactly the right point-in-time).
+ * Latest selector enumeration for headless region attribution. Committed
+ * selections carry their own windowListSnapshot across asynchronous handoffs.
  */
 export function getLastWindowListSnapshot(): readonly WindowInfo[] {
   return lastSnapshot;
+}
+
+export function isSelectorInvocationCurrent(selectorInvocationId: number): boolean {
+  // A settled result retains ownership until its caller retires the overlay.
+  return activeInvocation?.id === selectorInvocationId;
 }
 
 /**
@@ -1742,14 +1807,18 @@ export function getLastWindowListSnapshot(): readonly WindowInfo[] {
  * post-hoc show race). Also called on cancel paths after the float-over
  * has been hidden synchronously.
  *
- * Public sibling of the historical `hideAllSelectors`. The internal
- * function name is preserved to keep diffs small.
+ * A returned invocation token scopes delayed cleanup to that selection. With
+ * no token this is an explicit cancellation, including during preparation.
  */
-export function hideSelector(): void {
+export function hideSelector(selectorInvocationId?: number): void {
+  if (selectorInvocationId !== undefined && !isSelectorInvocationCurrent(selectorInvocationId)) return;
   hideAllSelectors();
 }
 
 function hideAllSelectors(): void {
+  const invocation = activeInvocation;
+  if (invocation !== null) settleSelector(invocation, { ok: false, reason: "cancelled" });
+  activeInvocation = null;
   snapshotPaintObservation = null;
   // Release the globalShortcut binding before we lower the window;
   // leaving Esc / ↵ globally bound after the selector is gone would
@@ -1763,11 +1832,11 @@ function hideAllSelectors(): void {
   }
   // Release the screen snapshot UNLESS ownership has already
   // transferred to a consumer (the OK code path clears
-  // `activeScreenSnapshot` before calling hideAllSelectors). On
+  // the invocation snapshot before calling hideAllSelectors). On
   // cancel / destroyed paths the snapshot is still ours; clean up.
-  if (activeScreenSnapshot !== null) {
-    const stale = activeScreenSnapshot;
-    activeScreenSnapshot = null;
+  if (invocation?.snapshot != null) {
+    const stale = invocation.snapshot;
+    invocation.snapshot = null;
     void releaseSnapshot(stale.id);
   }
   const rebuildAfterHide: { displayId: number; staleWindow: BrowserWindow }[] = [];
@@ -2032,7 +2101,9 @@ function createSelectorWindow(
   window.webContents.on(
     "did-start-navigation",
     (_event, _url, _isInPlace, isMainFrame) => {
-      if (isMainFrame) abortActiveSelector(selectorSenderId, "selector_renderer_navigated");
+      if (isMainFrame && loadedSelectorWindows.has(window)) {
+        abortActiveSelector(selectorSenderId, "selector_renderer_navigated");
+      }
     }
   );
 
@@ -2084,6 +2155,7 @@ function createSelectorWindow(
         if (timing !== undefined && timing.startedAt === loadStartedAt) {
           timing.loadedAt = Date.now();
         }
+        loadedSelectorWindows.add(window);
         return true;
       },
       (err: unknown) => {
@@ -2100,7 +2172,7 @@ function createSelectorWindow(
   return window;
 }
 
-function scheduleStandbySelectorWarm(display: Display): void {
+function scheduleStandbySelectorWarm(display: Display, invocation: SelectorInvocation): void {
   if (process.platform !== "darwin") return;
   const existing = standbySelectorWindows.get(display.id);
   if (existing !== undefined && !existing.isDestroyed()) return;
@@ -2109,8 +2181,11 @@ function scheduleStandbySelectorWarm(display: Display): void {
   log.info("pre-warming next capture selector scheduled", {
     displayId: display.id
   });
+  const lifetime = selectorLifetime;
   setTimeout(() => {
+    if (lifetime !== selectorLifetime) return;
     standbyWarmScheduled.delete(display.id);
+    if (activeInvocation !== invocation) return;
     warmStandbySelectorForDisplay(display);
   }, 0);
 }
@@ -2342,17 +2417,20 @@ function isSelectorPayload(value: unknown): value is {
 }
 
 export function disposeRegionSelector(): void {
+  selectorLifetime += 1;
   finishPendingPresentation("destroy", "selector_disposed_before_visible_ack");
-  if (activeSelectorSenderId !== null) {
-    abortActiveSelector(activeSelectorSenderId, "selector_disposed");
-  } else if (pendingResolver !== null) {
-    const resolver = pendingResolver;
-    pendingResolver = null;
-    resolver({ ok: false, reason: "destroyed" });
+  const invocation = activeInvocation;
+  if (invocation !== null) {
+    settleSelector(invocation, { ok: false, reason: "destroyed" });
+    if (invocation.snapshot !== null) {
+      void releaseSnapshot(invocation.snapshot.id);
+      invocation.snapshot = null;
+    }
   }
+  activeInvocation = null;
   activeSelectorSenderId = null;
-  activeScreenSnapshot = null;
-  void releaseAllSnapshots();
+  snapshotPaintObservation = null;
+  uninstallSelectorGlobalShortcuts();
   for (const win of selectorWindows.values()) {
     if (!win.isDestroyed()) win.destroy();
   }

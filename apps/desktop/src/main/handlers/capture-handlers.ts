@@ -44,6 +44,7 @@ import {
   getLastWindowListSnapshot,
   hideSelector
 } from "../capture/region-selector";
+import { finishSelectorCancellation } from "../capture/selector-cancellation";
 import {
   regionSelectorUnsupported,
   WAYLAND_SELECTOR_ERROR_CODE,
@@ -516,39 +517,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       trace.finish(selection.reason === "destroyed" ? "destroy" : "cancel", {
         reason: selection.reason
       });
-      setFloatOverState({ kind: "cancel" });
-      // Compositor flush — the float-over hide must reach the
-      // window server before we lower the selector, otherwise
-      // there's a one-frame window where the toast is visible
-      // before the selector window's compositor pass is complete.
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      hideSelector();
-      // No activateApp(previousAppPid): the selector is a
-      // non-activating NSPanel, so whatever app was frontmost before
-      // the capture was never deactivated — it stays frontmost when
-      // the selector hides. Re-activating it (the old behavior) was
-      // the main trigger for AppKit demoting PwrSnap to Accessory,
-      // which is what made the Dock icon flash and the Library appear
-      // to hide. We only intervene when PwrSnap's OWN window was
-      // frontmost (previousAppPid null): there the selector-hide
-      // key-window cascade would let the floating focus-sink steal key
-      // from the Library, so restore it explicitly.
-      if (selection.previousAppPid === null || selection.previousAppPid === undefined) {
-        const library = findMainLibraryWindow();
-        if (library !== null && !library.isDestroyed()) {
-          if (library.isMinimized()) library.restore();
-          if (!library.isVisible()) library.show();
-          library.focus();
-        }
-      }
-      // The Accessory demotion that strips the Library's Dock icon
-      // lands asynchronously — and when PwrSnap was a background app
-      // (capture triggered from another app), WITHOUT a
-      // did-resign-active to drive the app-level safety net. A single
-      // synchronous reclaim races it and loses. Re-assert Regular at a
-      // spread of delays — guarded, so it no-ops once the Dock is back,
-      // and never steals focus from the app the user's now in.
-      scheduleDockReclaim();
+      await finishSelectorCancellation(selection);
       return err({
         kind: "capture",
         code: selection.reason,
@@ -636,7 +605,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       // across a spread of delays to catch the async demotion — guarded,
       // so it no-ops once the Dock is back. (Full rationale on the
       // cancel branch above.)
-      hideSelector();
+      hideSelector(selection.selectorInvocationId);
       scheduleDockReclaim();
     };
     try {
@@ -657,7 +626,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       //     redraws after the user committed don't bleed into the
       //     capture — by definition, the snapshot is frozen-in-
       //     time.
-      const snapshot = getLastWindowListSnapshot();
+      const snapshot = selection.windowListSnapshot;
       // Third path, for a multi-window pick in WINDOWS output mode:
       // crop the union box out of the same frozen snapshot, but keep
       // only the pixels inside the picked extents. `rect` is the union

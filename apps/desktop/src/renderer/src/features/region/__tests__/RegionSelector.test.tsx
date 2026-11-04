@@ -3015,3 +3015,18 @@ describe("U7 — recording source chips", () => {
     });
   });
 });
+
+
+describe("selector result invocation identity", () => {
+  test("echoes the per-show frozen URL on cancel and resets it before a reused selector commits", async () => {
+    await mount();
+    await emitMode({ mode: "auto", screenUrl: "pwrsnap-screen://r/old" });
+    await keyDown("Escape");
+    expect(submitRegion).toHaveBeenLastCalledWith({ ok: false, screenUrl: "pwrsnap-screen://r/old" });
+    submitRegion.mockClear();
+    await emitMode({ mode: "region", screenUrl: "pwrsnap-screen://r/new" });
+    await drawRect();
+    await keyDown("Enter");
+    expect(submitRegion).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ ok: true, screenUrl: "pwrsnap-screen://r/new" }));
+  });
+});

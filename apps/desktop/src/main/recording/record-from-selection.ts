@@ -21,7 +21,6 @@ import { releaseFloatOverDock, setFloatOverState } from "../float-over";
 import { getMainLogger } from "../log";
 import { appWindowsOverlappingGlobalRect } from "../capture/rect-overlap";
 import {
-  getLastWindowListSnapshot,
   hideSelector,
   type SelectorResult,
 } from "../capture/region-selector";
@@ -267,7 +266,7 @@ export async function startRecordingFromSelection(
   const tearDown = (): void => {
     if (tornDown) return;
     tornDown = true;
-    hideSelector();
+    hideSelector(selection.selectorInvocationId);
     void releaseSnapshot(screenSnapshotId);
     // Unconditional, matching the snap path's `tearDownSelector`. The
     // two reclaims further down are both branch-local: one needs
@@ -324,7 +323,7 @@ export async function startRecordingFromSelection(
     //   • Snap to one of ours but the rect doesn't actually intersect
     //     any visible BrowserWindow (e.g. that window just closed) →
     //     fall through to the previous-app activation; nothing to raise.
-    const cachedSnapshot = getLastWindowListSnapshot();
+    const cachedSnapshot = selection.windowListSnapshot;
     const selectedWindow = selection.snappedWindowId === undefined
       ? null
       : findWindowById(cachedSnapshot, selection.snappedWindowId);
@@ -419,7 +418,7 @@ export async function startRecordingFromSelection(
     const sourceApp = resolveSelectionSourceApp(
       selection.rect,
       selection.snappedWindowId,
-      getLastWindowListSnapshot(),
+      cachedSnapshot,
     );
     // A snapshot windowId in the selection means the user pointed at a
     // specific window (with or without ⇧). Persist that as a `window`

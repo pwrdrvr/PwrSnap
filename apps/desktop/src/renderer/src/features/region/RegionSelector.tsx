@@ -278,6 +278,7 @@ export function RegionSelector() {
   // not the live screen. Apps starting / stopping during selection
   // can no longer change what's under the cursor.
   const [screenUrl, setScreenUrl] = useState<string | null>(null);
+  const resultScreenUrlRef = useRef<string | null>(null);
   const [rawSnapshot, setRawSnapshot] =
     useState<SelectorRawSnapshotDescriptor | null>(null);
   const [rawSnapshotFallback, setRawSnapshotFallback] = useState(false);
@@ -825,6 +826,7 @@ export function RegionSelector() {
   // snapshot subscription above.
   useLayoutEffect(() => {
     const unsub = window.pwrsnapApi?.onSelectorMode((payload) => {
+      resultScreenUrlRef.current = payload.screenUrl ?? null;
       setMode(payload.mode);
       if (decodedScreenUrlRef.current !== payload.screenUrl) {
         decodedScreenUrlRef.current = null;
@@ -1326,6 +1328,18 @@ export function RegionSelector() {
     setInteraction({ kind: "snap" });
   }
 
+  function submitSelection(
+    payload: Parameters<NonNullable<Window["pwrsnapApi"]>["submitRegion"]>[0]
+  ): void {
+    // Echo the opaque frozen generation for both commit and cancel. A reused
+    // renderer may still have an older result queued when the next show starts.
+    const result = {
+      ...payload,
+      ...(resultScreenUrlRef.current !== null ? { screenUrl: resultScreenUrlRef.current } : {})
+    };
+    window.pwrsnapApi?.submitRegion(result);
+  }
+
   /**
    * Submit the selection with a terminal action.
    *
@@ -1442,7 +1456,7 @@ export function RegionSelector() {
         const only = activePicks[0]!;
         const wantFull = modeRef.current === "window" || shiftRef.current;
         submittedRef.current = true;
-        window.pwrsnapApi?.submitRegion({
+        submitSelection({
           ok: true,
           rect: toLogical(only.rawRect),
           displayId,
@@ -1463,7 +1477,7 @@ export function RegionSelector() {
         return;
       }
       submittedRef.current = true;
-      window.pwrsnapApi?.submitRegion({
+      submitSelection({
         ok: true,
         rect: toLogical(union),
         displayId,
@@ -1507,7 +1521,7 @@ export function RegionSelector() {
     const wantFull =
       rectIsWholeWindow && (shiftRef.current || modeRef.current === "window");
     submittedRef.current = true;
-    window.pwrsnapApi?.submitRegion({
+    submitSelection({
       ok: true,
       rect: toLogical(r),
       displayId,
@@ -1604,7 +1618,7 @@ export function RegionSelector() {
     // The real exit: tell main to tear the selector down, then reset
     // local state so a re-shown (pre-warmed) window starts clean.
     submittedRef.current = true;
-    window.pwrsnapApi?.submitRegion({ ok: false });
+    submitSelection({ ok: false });
     resetToSnap();
   }
 

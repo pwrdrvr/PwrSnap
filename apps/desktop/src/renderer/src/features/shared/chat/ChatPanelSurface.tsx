@@ -34,6 +34,7 @@ import {
   type ChatBackendAvailability,
   type ChatBackendChoice
 } from "./ChatBackendChips";
+import { ChatgptPlanNote, ChatgptUsageAction, chatgptPlanProviders, isChatgptUsageLimit } from "./ChatgptUsageAction";
 import "./chat-panel.css";
 
 type ChatSurface = "library" | "sizzle";
@@ -192,6 +193,7 @@ export function ChatPanelSurface({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [codexError, setCodexError] = useState<ChatPanelError | null>(null);
+  const [planProviders, setPlanProviders] = useState<ReadonlySet<string>>(() => new Set());
   const [actionError, setActionError] = useState<string | null>(null);
   const [draftResetVersion, setDraftResetVersion] = useState(0);
   const [loading, setLoading] = useState<boolean>(true);
@@ -319,6 +321,7 @@ export function ChatPanelSurface({
   useEffect(() => {
     let cancelled = false;
     const updateProviders = (settings: Settings): void => {
+      setPlanProviders(chatgptPlanProviders(settings));
       const enabled = settings.ai?.acp?.enabledAgentIds ?? [];
       setProviders(["codex", ...enabled.map((id) => `acp:${id}`), ...(settings.ai?.customModels ?? []).map((m) => `custom:${m.id}`)]);
       setProviderLabels(Object.fromEntries((settings.ai?.customModels ?? []).map((m) => [`custom:${m.id}`, m.displayName])));
@@ -819,6 +822,7 @@ export function ChatPanelSurface({
       <div className="ps-libchat ps-libchat--empty" data-testid={testId}>
         <div className="ps-libchat-empty-title">Chat is unavailable</div>
         <p className="ps-libchat-empty-body">{codexError.message}</p>
+        {isChatgptUsageLimit(codexError.message) ? <ChatgptUsageAction /> : null}
         {codexError.showSettingsHint ? (
           <p className="ps-libchat-empty-body">
             Open <b>Settings → AI Providers</b> to configure Codex, Gemini, or
@@ -951,6 +955,7 @@ export function ChatPanelSurface({
                 ? { onAvailabilityChange: setBackendAvailability }
                 : {})}
             />
+            {planProviders.has(draftConfig.provider) ? <ChatgptPlanNote /> : null}
             {draftHint !== null ? (
               <p className="ps-libchat-empty-body" style={{ color: "var(--accent)" }}>
                 {draftHint}
@@ -960,6 +965,7 @@ export function ChatPanelSurface({
         ) : (
           <>
             {lockedChoice !== null ? <LockedBackendChips choice={lockedChoice} providerLabels={providerLabels} /> : null}
+            {lockedChoice !== null && planProviders.has(lockedChoice.provider) ? <ChatgptPlanNote /> : null}
             <MessageList
               messages={messages}
               streamingMessageId={streamingMessageId}
@@ -976,6 +982,7 @@ export function ChatPanelSurface({
         {actionError !== null ? (
           <div className="ps-libchat-action-error" role="alert">
             {actionError}
+            {isChatgptUsageLimit(actionError) ? <ChatgptUsageAction /> : null}
           </div>
         ) : null}
         <Composer

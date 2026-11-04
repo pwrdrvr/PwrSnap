@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
+  CHATGPT_PLAN_BASE_URL,
   customConnectionInputSchema, customConnectionSchema, customModelInputSchema, customModelSchema, customProviderId,
-  MAX_CUSTOM_CONNECTIONS, MAX_CUSTOM_MODELS, resolveCustomModel,
+  isChatgptConnection, MAX_CUSTOM_CONNECTIONS, MAX_CUSTOM_MODELS, resolveCustomModel,
   type CustomConnection, type CustomConnectionInput, type CustomModel, type CustomModelDiscovery, type CustomModelInput,
   type DesktopSettingsSecretName, type ResolvedCustomModel, type SecretStatus, type Settings, type SettingsPatch
 } from "@pwrsnap/shared";
@@ -65,12 +66,22 @@ export class CustomModelService {
   async saveConnection(input: CustomConnectionInput): Promise<CustomConnection> {
     const parsed = customConnectionInputSchema.safeParse(input);
     if (!parsed.success) throw new DirectApiError("Check the connection: it needs a name, and an HTTPS address (or HTTP on this Mac) with no query string.");
+    // A ChatGPT connection has one address and one protocol; whatever the
+    // editor sent, the plan token is only ever pointed at OpenAI.
+    const wanted = parsed.data.auth.type === "chatgpt"
+      ? { ...parsed.data, baseUrl: CHATGPT_PLAN_BASE_URL, protocol: "openai-responses" as const } : parsed.data;
     return this.mutate(async () => {
       const { connections, models } = await this.lists();
-      const prior = parsed.data.id === undefined ? undefined : connections.find((c) => c.id === parsed.data.id);
-      if (parsed.data.id !== undefined && !prior) throw new DirectApiError("This connection was removed.");
+      const prior = wanted.id === undefined ? undefined : connections.find((c) => c.id === wanted.id);
+      if (wanted.id !== undefined && !prior) throw new DirectApiError("This connection was removed.");
       if (!prior && connections.length >= MAX_CUSTOM_CONNECTIONS) throw new DirectApiError(`At most ${MAX_CUSTOM_CONNECTIONS} connections can be saved.`);
-      const next = customConnectionSchema.parse({ ...parsed.data, id: prior?.id ?? randomUUID() });
+      if (wanted.auth.type === "chatgpt" && connections.some((c) => isChatgptConnection(c) && c.id !== prior?.id)) {
+        throw new DirectApiError("PwrSnap already has a ChatGPT connection.");
+      }
+      if (prior && isChatgptConnection(prior) !== (wanted.auth.type === "chatgpt")) {
+        throw new DirectApiError("A ChatGPT connection can't be changed into another kind. Add a new connection instead.");
+      }
+      const next = customConnectionSchema.parse({ ...wanted, id: prior?.id ?? randomUUID() });
       await this.store.write({ ai: { customConnections: prior
         ? connections.map((c) => (c.id === next.id ? next : c)) : [...connections, next], customModels: models } });
       await this.changed();
@@ -80,6 +91,12 @@ export class CustomModelService {
       }
       return next;
     });
+  }
+
+  /** The ChatGPT connection, created on first sign-in. */
+  async ensureChatgptConnection(): Promise<CustomConnection> {
+    const existing = (await this.lists()).connections.find(isChatgptConnection);
+    return existing ?? this.saveConnection({ name: "ChatGPT", baseUrl: CHATGPT_PLAN_BASE_URL, protocol: "openai-responses", auth: { type: "chatgpt" } });
   }
 
   async removeConnection(id: string): Promise<void> {
@@ -106,7 +123,8 @@ export class CustomModelService {
     if (parsed.some((p) => !p.success)) throw new DirectApiError("Each model needs an id and a name in pickers.");
     return this.mutate(async () => {
       const { connections, models } = await this.lists();
-      if (!connections.some((c) => c.id === connectionId)) throw new DirectApiError("This connection was removed.");
+      const connection = connections.find((c) => c.id === connectionId);
+      if (!connection) throw new DirectApiError("This connection was removed.");
       const mine = new Set(models.filter((m) => m.connectionId === connectionId).map((m) => m.id));
       const seen = new Set<string>();
       const next: CustomModel[] = [];
@@ -115,7 +133,10 @@ export class CustomModelService {
         if (seen.has(p.data.modelId)) throw new DirectApiError(`${p.data.modelId} is listed twice.`);
         seen.add(p.data.modelId);
         const id = p.data.id !== undefined && mine.has(p.data.id) ? p.data.id : randomUUID();
-        next.push(customModelSchema.parse({ ...p.data, id, connectionId }));
+        // Plan usage only streams (transport sends stream: true regardless);
+        // saving it says so, so the page never offers a switch that does nothing.
+        const capabilities = isChatgptConnection(connection) ? { ...p.data.capabilities, streaming: true } : p.data.capabilities;
+        next.push(customModelSchema.parse({ ...p.data, capabilities, id, connectionId }));
       }
       const others = models.filter((m) => m.connectionId !== connectionId);
       if (others.length + next.length > MAX_CUSTOM_MODELS) throw new DirectApiError(`At most ${MAX_CUSTOM_MODELS} models can be saved across all connections.`);
@@ -147,13 +168,16 @@ export class CustomModelService {
    *  that the key works — no model turn, no tokens. */
   async discover(connectionId: string, signal?: AbortSignal): Promise<CustomModelDiscovery> {
     const endpoint = endpointOf(await this.connection(connectionId));
-    return discoverApi(endpoint, await this.credentials.headers(endpoint, signal));
+    try { return await discoverApi(endpoint, await this.credentials.headers(endpoint, signal)); }
+    catch (e) { await this.credentials.noteFailure(endpoint, e); throw e; }
   }
   async test(id: string, signal: AbortSignal): Promise<{ message: string; ms: number }> {
     const model = await this.model(id);
     const started = performance.now();
-    await invokeApi({ model, headers: await this.credentials.headers(model, signal), system: "This is a connection test.",
-      messages: [{ role: "user", text: "Reply with OK." }], signal });
+    try {
+      await invokeApi({ model, headers: await this.credentials.headers(model, signal), system: "This is a connection test.",
+        messages: [{ role: "user", text: "Reply with OK." }], signal });
+    } catch (e) { await this.credentials.noteFailure(model, e); throw e; }
     return { message: "The model replied.", ms: Math.round(performance.now() - started) };
   }
   async selected(provider: string, modelId?: string): Promise<ResolvedCustomModel> {

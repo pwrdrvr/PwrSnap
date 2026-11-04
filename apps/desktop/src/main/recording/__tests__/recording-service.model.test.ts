@@ -2,7 +2,8 @@
 // settles that request, terminal events settle Stop, and only Stop may adopt a
 // finalized original once. The model knows issued commands, not service fields.
 import { EventEmitter } from "node:events";
-import { dirname } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, posix, win32 } from "node:path";
 import fc from "fast-check";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { RecordingService } from "../recording-service";
@@ -109,8 +110,10 @@ vi.mock("node:child_process", () => ({ spawn: (_binary: string, args: string[]) 
 } }));
 vi.mock("node:fs", () => ({ existsSync: () => true, statSync: () => ({ mtime: new Date(0), size: 1 }) }));
 vi.mock("node:fs/promises", () => ({
-  mkdtemp: () => {
-    const dir = `/tmp/recording-model-${world.issuing}-${world.directories.size}`;
+  mkdtemp: (prefix: string) => {
+    // Backend selection via process.platform does not change node:path's host
+    // semantics. Preserve the caller's prefix as the real mkdtemp does.
+    const dir = `${prefix}${world.issuing}-${world.directories.size}`;
     world.directories.set(dir, { request: world.issuing, removed: false });
     return scheduled(Promise.resolve(dir), `allocate request ${world.issuing}`);
   },
@@ -454,15 +457,29 @@ describe.each(["darwin", "win32"])("RecordingService command model on %s", platf
 // Mutation checks for the oracle itself: metadata outlives the producer-owned
 // pathname for buffered events, but reads and moves must require live bytes.
 describe("recording model source availability contract", () => {
+  test.each([
+    { style: "POSIX", paths: posix, prefix: "/tmp/recording-model-" },
+    { style: "Windows", paths: win32, prefix: "C:\\Temp\\recording-model-" }
+  ])("allocated $style directories retain ownership when an output filename is joined", async ({ paths, prefix }) => {
+    const scheduler = fc.schedulerFor([1]);
+    resetWorld("darwin", scheduler);
+    world.issuing = ++world.nextRequest;
+    const fs = await import("node:fs/promises");
+    const dir = await scheduler.waitFor(fs.mkdtemp(prefix));
+    expect(dir.startsWith(prefix), "mkdtemp must append to the caller's host-native prefix").toBe(true);
+    const output = paths.join(dir, "original.mp4");
+    expect(world.directories.get(paths.dirname(output)), "the output's parent is the allocated directory")
+      .toEqual({ request: world.issuing, removed: false });
+  });
   async function fixture() {
     const scheduler = fc.schedulerFor(Array.from({ length: 20 }, (_, i) => i + 1));
     resetWorld("darwin", scheduler);
     world.issuing = ++world.nextRequest;
     const fs = await import("node:fs/promises");
-    const dir = await scheduler.waitFor(fs.mkdtemp("/tmp/recording-model-contract-"));
+    const dir = await scheduler.waitFor(fs.mkdtemp(join(tmpdir(), "recording-model-contract-")));
     const child = new RecorderProcess();
     world.children.push(child);
-    const path = `${dir}/original.mp4`;
+    const path = join(dir, "original.mp4");
     child.open(path);
     child.stdin.write(JSON.stringify({ type: "stop" }));
     await scheduler.waitIdle();

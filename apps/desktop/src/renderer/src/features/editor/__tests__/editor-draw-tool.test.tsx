@@ -23,6 +23,8 @@ import {
 import { BundleLayerNode, strokeSegments } from "@pwrsnap/shared";
 import type { CaptureRecord, Settings } from "@pwrsnap/shared";
 import type { LayerEditOp } from "../useCaptureModel";
+import type { LayersPanelApi } from "../Editor";
+import { useEditMenuBridge } from "../../../lib/editMenuBridge";
 import { baseSettings } from "../../settings/__tests__/settings-fixture";
 
 const CANVAS_W = 1000;
@@ -156,11 +158,11 @@ vi.mock("../useCaptureModel", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../useCaptureModel")>();
   return {
     ...actual,
-    useCaptureModel: () => ({
+    useCaptureModel: (captureId: string) => ({
       kind: "loaded",
       format: 2,
-      captureId: "cap_draw",
-      record,
+      captureId,
+      record: { ...record, id: captureId },
       layers: hoisted.layers,
       layersView: [],
       dispatchEdit: (op: LayerEditOp) => hoisted.dispatchEdit!(op)
@@ -169,6 +171,35 @@ vi.mock("../useCaptureModel", async (importOriginal) => {
 });
 
 const ops: LayerEditOp[] = [];
+
+function addPastedRaster(): void {
+  const base = layers[0]!;
+  if (base.kind !== "raster") throw new Error("expected raster");
+  hoisted.layers = [...layers, {
+    ...base, id: "pasted", z_index: 3000,
+    source_ref: { kind: "embedded", sha256: "c".repeat(64) },
+    natural_width_px: 100, natural_height_px: 100,
+    transform: [1, 0, 0, 1, 100, 700], original_transform: [1, 0, 0, 1, 100, 700]
+  }];
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+function HistoryBridge({ children }: { children?: React.ReactNode }) {
+  useEditMenuBridge();
+  return children;
+}
+
+function editorElement(
+  Editor: typeof import("../Editor").Editor,
+  props: React.ComponentProps<typeof Editor>
+) {
+  return createElement(HistoryBridge, null, createElement(Editor, props));
+}
 
 /** Answers an upsert the way `layers:upsert` does: a node that fails the
  *  bundle schema is refused, so a malformed piece (a wrong-length id, a
@@ -189,12 +220,22 @@ async function realisticDispatch(op: LayerEditOp): Promise<unknown> {
     hoisted.layers = [...hoisted.layers.filter((l) => l.id !== node.id), node];
     return { ok: true, value: { kind: "upsert", artifact: { format: 2, node } } };
   }
+  if (op.kind === "updateGeometry") {
+    const previousNode = hoisted.layers.find((node) => node.id === op.layerId)!;
+    const node = op.geometry.kind === "transform"
+      ? { ...previousNode, transform: op.geometry.transform }
+      : previousNode.kind === "vector" && previousNode.shape.kind === "arrow" && op.geometry.kind === "arrow"
+        ? { ...previousNode, shape: { ...previousNode.shape, ...op.geometry } }
+        : previousNode;
+    hoisted.layers = hoisted.layers.map((layer) => layer.id === node.id ? node : layer);
+    return { ok: true, value: { kind: "update", artifact: { format: 2, node, previousNode } } };
+  }
   if (op.kind === "delete") hoisted.layers = hoisted.layers.filter((l) => l.id !== op.id);
   return { ok: true, value: { kind: "delete" } };
 }
 let realGetBoundingClientRect: (() => DOMRect) | null = null;
 
-beforeAll(() => {
+beforeAll(async () => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
     true;
   const proto = globalThis.HTMLElement?.prototype;
@@ -220,6 +261,7 @@ beforeAll(() => {
       toJSON: () => ({})
     } as DOMRect;
   };
+  await import("../Editor");
 });
 
 afterAll(() => {
@@ -231,10 +273,26 @@ afterAll(() => {
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
+let latestSelection: readonly string[] = [];
+let panelApi: LayersPanelApi | null = null;
+const observeSelection = (ids: readonly string[]) => { latestSelection = ids; };
+const observePanel = (api: LayersPanelApi | null) => { panelApi = api; };
 
 beforeEach(() => {
   ops.length = 0;
-  hoisted.settings = baseSettings;
+  hoisted.settings = {
+    ...baseSettings,
+    editor: {
+      ...baseSettings.editor,
+      toolStyles: {
+        ...baseSettings.editor.toolStyles,
+        arrow: { ...baseSettings.editor.toolStyles.arrow, outline: "none" },
+        shape: { ...baseSettings.editor.toolStyles.shape, outline: "none" }
+      }
+    }
+  };
+  latestSelection = [];
+  panelApi = null;
   hoisted.dispatchEdit = realisticDispatch;
   hoisted.layers = [...layers];
   container = document.createElement("div");
@@ -249,7 +307,7 @@ afterEach(() => {
   root = null;
 });
 
-function pointer(type: string, clientX: number, clientY: number): PointerEvent {
+function pointer(type: string, clientX: number, clientY: number, pointerId = 1): PointerEvent {
   return new PointerEvent(type, {
     bubbles: true,
     cancelable: true,
@@ -257,15 +315,17 @@ function pointer(type: string, clientX: number, clientY: number): PointerEvent {
     buttons: type === "pointerup" ? 0 : 1,
     clientX,
     clientY,
-    pointerId: 1,
-    isPrimary: true
+    pointerId,
+    isPrimary: pointerId === 1
   });
 }
 
 async function mountWithDrawTool(): Promise<HTMLElement> {
   const { Editor } = await import("../Editor");
   await act(async () => {
-    root?.render(createElement(Editor, { captureId: "cap_draw" }));
+    root?.render(editorElement(Editor, {
+      captureId: "cap_draw", onSelectionChange: observeSelection, onLayersApi: observePanel
+    }));
   });
   // Let the settings read settle.
   await act(async () => {
@@ -281,10 +341,10 @@ async function mountWithDrawTool(): Promise<HTMLElement> {
 }
 
 /** Render again, so the editor reads the layers written so far. */
-async function rerender(): Promise<void> {
+async function rerender(captureId = "cap_draw"): Promise<void> {
   const { Editor } = await import("../Editor");
   await act(async () => {
-    root?.render(createElement(Editor, { captureId: "cap_draw" }));
+    root?.render(editorElement(Editor, { captureId, onSelectionChange: observeSelection, onLayersApi: observePanel }));
   });
 }
 
@@ -308,7 +368,334 @@ async function drag(canvas: HTMLElement, path: ReadonlyArray<readonly [number, n
   });
 }
 
-describe("Editor — Draw tool", () => {
+describe("Editor — canvas gestures and Draw tool", () => {
+  test("an applying history replay excludes a new canvas gesture", async () => {
+    const canvas = await mountWithDrawTool();
+    await drag(canvas, [[100, 100], [300, 150]]);
+    await rerender();
+    const gate = deferred<void>();
+    hoisted.dispatchEdit = async (op) => {
+      if (op.kind === "delete") await gate.promise;
+      return realisticDispatch(op);
+    };
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true }));
+    });
+    await drag(canvas, [[700, 100], [900, 150]]);
+    await act(async () => { gate.resolve(); });
+    expect(ops.map((op) => op.kind)).toEqual(["upsert", "delete"]);
+  });
+
+  test("a gesture started while history waits for persistence supersedes that history request", async () => {
+    const canvas = await mountWithDrawTool();
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "a" })); });
+    const gate = deferred<void>();
+    hoisted.dispatchEdit = async (op) => {
+      if (op.kind === "upsert") await gate.promise;
+      return realisticDispatch(op);
+    };
+    await drag(canvas, [[100, 100], [300, 150]]);
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true }));
+    });
+    await act(async () => { canvas.dispatchEvent(pointer("pointerdown", 700, 100)); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointermove", 900, 150)); });
+    await act(async () => { gate.resolve(); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointerup", 900, 150)); });
+    expect(ops.map((op) => op.kind)).toEqual(["upsert", "upsert"]);
+  });
+
+  test.each([false, true])("history (redo=%s) cancels the first open stroke even with an empty stack", async (shiftKey) => {
+    const canvas = await mountWithDrawTool();
+    await act(async () => { canvas.dispatchEvent(pointer("pointerdown", 100, 100)); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointermove", 300, 150)); });
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", metaKey: true, ctrlKey: true, shiftKey, bubbles: true }));
+    });
+    await act(async () => { canvas.dispatchEvent(pointer("pointerup", 300, 150)); });
+    expect(ops).toEqual([]);
+  });
+
+  test.each(["cancel", "outside"])("a raster drag handles %s without pointermove IPC", async (terminal) => {
+    addPastedRaster();
+    const canvas = await mountWithDrawTool();
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "v" })); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointerdown", 150, 750)); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointermove", 1100, 750)); });
+    expect(ops).toEqual([]);
+    const raster = container!.querySelector<HTMLElement>("[data-layer-id='pasted']")!;
+    expect(raster.classList.contains("is-dragging")).toBe(true);
+    await act(async () => { canvas.dispatchEvent(pointer(terminal === "cancel" ? "pointercancel" : "pointerup", 1100, 750)); });
+    if (terminal === "cancel") {
+      await act(async () => { canvas.dispatchEvent(pointer("pointerup", 1100, 750)); });
+      expect(ops).toEqual([]);
+    } else {
+      expect(ops).toEqual([{
+        kind: "updateGeometry", layerId: "pasted",
+        geometry: { kind: "transform", transform: [1, 0, 0, 1, 1050, 700] }
+      }]);
+    }
+    expect(raster.classList.contains("is-dragging")).toBe(false);
+  });
+
+  test.each(["drag", "press", "selection"])("a failed older raster commit cleans only its own preview after a new %s", async (nextAction) => {
+    addPastedRaster();
+    const canvas = await mountWithDrawTool();
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "v" })); });
+    const gate = deferred<unknown>();
+    hoisted.dispatchEdit = () => gate.promise;
+    await drag(canvas, [[150, 750], [250, 750]]);
+    if (nextAction !== "selection") {
+      await act(async () => { canvas.dispatchEvent(pointer("pointerdown", 250, 750)); });
+      if (nextAction === "drag") await act(async () => { canvas.dispatchEvent(pointer("pointermove", 400, 750)); });
+    } else {
+      await act(async () => { panelApi!.selectLayers("stroke_1", false); });
+    }
+    const raster = container!.querySelector<HTMLElement>("[data-layer-id='pasted']")!;
+    const preview = raster.style.transform;
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await act(async () => {
+        gate.resolve({ ok: false, error: { kind: "validation", code: "refused", message: "fixture" } });
+      });
+      expect(errors).toHaveBeenCalledTimes(1);
+    } finally {
+      errors.mockRestore();
+    }
+    expect(raster.classList.contains("is-dragging")).toBe(nextAction !== "selection");
+    if (nextAction !== "selection") expect(raster.style.transform).toBe(preview);
+    expect(latestSelection).toEqual([nextAction !== "selection" ? "pasted" : "stroke_1"]);
+    // The next gesture still owns its cancellation/release pair.
+    await act(async () => { canvas.dispatchEvent(pointer("pointercancel", 400, 750)); });
+    expect(raster.classList.contains("is-dragging")).toBe(false);
+  });
+
+  test.each(["cancel", "outside"])("a selection drag handles %s without pointermove IPC", async (terminal) => {
+    const canvas = await mountWithDrawTool();
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "v" })); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointerdown", 500, 300)); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointermove", 1100, 300)); });
+    expect(ops).toEqual([]);
+    await act(async () => { canvas.dispatchEvent(pointer(terminal === "cancel" ? "pointercancel" : "pointerup", 1100, 300)); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointerup", 1100, 300)); });
+    if (terminal === "cancel") expect(ops).toEqual([]);
+    else expect(ops).toEqual([{
+      kind: "updateGeometry", layerId: "arrow_1",
+      geometry: { kind: "arrow", from: { x: 1.1, y: 0.2 }, to: { x: 1.1, y: 0.8 } }
+    }]);
+  });
+
+  test("undo waits for a released gesture to persist, then undoes that gesture", async () => {
+    const canvas = await mountWithDrawTool();
+    await drag(canvas, [[100, 100], [200, 100]]);
+    const olderId = ops[0]!.kind === "upsert" ? ops[0]!.node.id : "";
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "a" })); });
+    const gate = deferred<void>();
+    const admitted: LayerEditOp[] = [];
+    hoisted.dispatchEdit = async (op) => {
+      admitted.push(op);
+      if (op.kind === "upsert") await gate.promise;
+      return realisticDispatch(op);
+    };
+    await drag(canvas, [[700, 100], [900, 150]]);
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", metaKey: true, ctrlKey: true, bubbles: true }));
+    });
+    const before = admitted.map((op) => op.kind);
+    await act(async () => { gate.resolve(); });
+    expect(before).toEqual(["upsert"]);
+    expect(admitted.map((op) => op.kind)).toEqual(["upsert", "delete"]);
+    expect(admitted[1]).toEqual({ kind: "delete", id: admitted[0]!.kind === "upsert" ? admitted[0]!.node.id : "" });
+    expect(hoisted.layers.some((layer) => layer.id === olderId)).toBe(true);
+  });
+
+  test.each(["a", "s", "h", "b"])("%s: press, final move and release can finish before React paints", async (key) => {
+    const canvas = await mountWithDrawTool();
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key })); });
+    await act(async () => {
+      canvas.dispatchEvent(pointer("pointerdown", 100, 100));
+      canvas.dispatchEvent(pointer("pointermove", 300, 150));
+      canvas.dispatchEvent(pointer("pointerup", 300, 150));
+    });
+    expect(ops.filter((op) => op.kind === "upsert")).toHaveLength(1);
+  });
+
+  test("a pending placement cannot select over a newer gesture or clear its draft", async () => {
+    const canvas = await mountWithDrawTool();
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "a" })); });
+    const gate = deferred<void>();
+    const dispatch = vi.fn(async (op: LayerEditOp) => {
+      await gate.promise;
+      return realisticDispatch(op);
+    });
+    hoisted.dispatchEdit = dispatch;
+    await drag(canvas, [[100, 100], [300, 150]]);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    await act(async () => { canvas.dispatchEvent(pointer("pointerdown", 700, 100)); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointermove", 900, 150)); });
+    await act(async () => { gate.resolve(); });
+    expect(latestSelection).toEqual([]);
+    await act(async () => { canvas.dispatchEvent(pointer("pointerup", 900, 150)); });
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(ops[1]).toMatchObject({
+      kind: "upsert", node: { shape: { kind: "arrow", from: { x: 0.7, y: 0.1 }, to: { x: 0.9, y: 0.15 } } }
+    });
+  });
+
+  test("a pending placement cannot select over a newer Layers-panel selection", async () => {
+    const canvas = await mountWithDrawTool();
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "a" })); });
+    const gate = deferred<void>();
+    hoisted.dispatchEdit = async (op) => { await gate.promise; return realisticDispatch(op); };
+    await drag(canvas, [[100, 100], [300, 150]]);
+    await act(async () => { panelApi!.selectLayers("stroke_1", false); });
+    await act(async () => { gate.resolve(); });
+    expect(latestSelection).toEqual(["stroke_1"]);
+  });
+
+  test("selection survives a stale refetch, then is pruned after the layer lands and is removed", async () => {
+    const canvas = await mountWithDrawTool();
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "a" })); });
+    let saved: BundleLayerNode[] = [];
+    hoisted.dispatchEdit = async (op) => {
+      const result = await realisticDispatch(op);
+      saved = hoisted.layers;
+      // Persistence has completed; the broadcast/refetch has not.
+      hoisted.layers = [...layers];
+      return result;
+    };
+    await drag(canvas, [[100, 100], [300, 150]]);
+    const selected = latestSelection;
+    expect(selected).toHaveLength(1);
+    hoisted.layers = [...layers];
+    await rerender();
+    expect(latestSelection).toEqual(selected);
+    hoisted.layers = saved;
+    await rerender();
+    hoisted.layers = [...layers];
+    await rerender();
+    expect(latestSelection).toEqual([]);
+  });
+
+  test.each(["switch", "unmount"])("%s during a commit detaches its completion from the next editor session", async (action) => {
+    const canvas = await mountWithDrawTool();
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "a" })); });
+    const gate = deferred<void>();
+    hoisted.dispatchEdit = async (op) => { await gate.promise; return realisticDispatch(op); };
+    await drag(canvas, [[100, 100], [300, 150]]);
+    if (action === "switch") await rerender("cap_other");
+    else await act(async () => { root?.render(null); });
+    await act(async () => { gate.resolve(); });
+    if (action === "unmount") await rerender("cap_other");
+    expect(latestSelection).toEqual([]);
+    ops.length = 0;
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", metaKey: true, ctrlKey: true, bubbles: true }));
+    });
+    expect(ops).toEqual([]);
+  });
+
+  test("undo during an open stroke cancels it without replaying an older edit", async () => {
+    const canvas = await mountWithDrawTool();
+    await drag(canvas, [[100, 100], [200, 100]]);
+    await act(async () => { canvas.dispatchEvent(pointer("pointerdown", 700, 100)); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointermove", 900, 100)); });
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", metaKey: true, ctrlKey: true, bubbles: true }));
+    });
+    await act(async () => { canvas.dispatchEvent(pointer("pointerup", 900, 100)); });
+    expect(ops.map((op) => op.kind)).toEqual(["upsert"]);
+  });
+
+  test.each(["a", "s", "h", "b", "d"])("%s: pointercancel discards the gesture, and a later release cannot commit it", async (key) => {
+    const canvas = await mountWithDrawTool();
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key })); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointerdown", 100, 100)); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointermove", 300, 150)); });
+    expect(ops).toEqual([]); // pointermove stays local
+    await act(async () => { canvas.dispatchEvent(pointer("pointercancel", 300, 150)); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointerup", 300, 150)); });
+    expect(ops).toEqual([]);
+    await drag(canvas, [[100, 100], [300, 150]]);
+    expect(ops.filter((op) => op.kind === "upsert")).toHaveLength(1);
+  });
+
+  test.each(["lostpointercapture", "blur"])("%s abandons a stroke and releases admission for the next gesture", async (terminal) => {
+    const canvas = await mountWithDrawTool();
+    await act(async () => { canvas.dispatchEvent(pointer("pointerdown", 100, 100)); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointermove", 300, 150)); });
+    await act(async () => {
+      if (terminal === "blur") window.dispatchEvent(new Event("blur"));
+      else canvas.dispatchEvent(pointer(terminal, 300, 150));
+    });
+    await act(async () => { canvas.dispatchEvent(pointer("pointerup", 300, 150)); });
+    expect(ops).toEqual([]);
+    await drag(canvas, [[100, 100], [300, 150]]);
+    expect(ops.filter((op) => op.kind === "upsert")).toHaveLength(1);
+  });
+
+  test("a second pointer press cannot replace the active arrow's origin", async () => {
+    const canvas = await mountWithDrawTool();
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true })); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointerdown", 100, 100)); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointermove", 300, 200)); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointerdown", 900, 900, 2)); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointermove", 500, 200)); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointerup", 500, 200)); });
+    expect(ops).toHaveLength(1);
+    expect(ops[0]).toMatchObject({ kind: "upsert", node: {
+      kind: "vector", shape: { kind: "arrow", from: { x: 0.1, y: 0.1 }, to: { x: 0.5, y: 0.2 } }
+    } });
+  });
+
+  test("a second pointer cannot replace, move, cancel or finish the active stroke", async () => {
+    const canvas = await mountWithDrawTool();
+    await act(async () => { canvas.dispatchEvent(pointer("pointerdown", 100, 100)); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointermove", 200, 100)); });
+    for (const type of ["pointerdown", "pointermove", "pointercancel", "pointerup"]) {
+      await act(async () => { canvas.dispatchEvent(pointer(type, 900, 900, 2)); });
+    }
+    expect(ops).toEqual([]);
+    await act(async () => { canvas.dispatchEvent(pointer("pointerup", 200, 100)); });
+    const upserts = ops.filter((op) => op.kind === "upsert");
+    expect(upserts).toHaveLength(1);
+    expect(upserts[0]!.node).toMatchObject({
+      kind: "vector", shape: { kind: "stroke", points: [{ x: 0.1, y: 0.1 }, { x: 0.2, y: 0.1 }] }
+    });
+  });
+
+  test.each(["group", "raster"])("a %s drag completing after a newer selection preserves that selection", async (kind) => {
+    if (kind === "raster") addPastedRaster();
+    const { Editor } = await import("../Editor");
+    let panel: LayersPanelApi | null = null;
+    let selection: readonly string[] = [];
+    await act(async () => {
+      root?.render(editorElement(Editor, {
+        captureId: "cap_draw", onLayersApi: (api) => { panel = api; },
+        onSelectionChange: (ids) => { selection = ids; }
+      }));
+    });
+    const canvas = container!.querySelector<HTMLElement>("[data-testid='editor-canvas']")!;
+    const gate = deferred<Awaited<ReturnType<typeof realisticDispatch>>>();
+    hoisted.dispatchEdit = (op) => {
+      ops.push(op);
+      return gate.promise;
+    };
+    const [x, y] = kind === "raster" ? [150, 750] : [500, 300];
+    await act(async () => { canvas.dispatchEvent(pointer("pointerdown", x!, y!)); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointermove", x! + 100, y!)); });
+    await act(async () => { canvas.dispatchEvent(pointer("pointerup", x! + 100, y!)); });
+    expect(ops).toHaveLength(1);
+    const id = kind === "raster" ? "pasted" : "arrow_1";
+    expect(ops[0]).toMatchObject({ kind: "updateGeometry", layerId: id });
+    await act(async () => { panel!.selectLayers("stroke_1", false); });
+    expect(selection).toEqual(["stroke_1"]);
+    await act(async () => {
+      gate.resolve({ ok: true, value: { kind: "update", artifact: { format: 2, node: hoisted.layers.find((node) => node.id === id) } } });
+    });
+    expect(selection).toEqual(["stroke_1"]);
+  });
+
   test("a pen drag commits ONE stroke layer along the path, on top, and leaves nothing selected", async () => {
     const canvas = await mountWithDrawTool();
     await drag(canvas, [

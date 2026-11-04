@@ -45,7 +45,7 @@
 //   bracketing keeps the original "every call → one entry" semantics
 //   except when the grace window catches a follow-up.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import type { BundleLayerNode, OverlayRow, PwrSnapError, Result } from "@pwrsnap/shared";
 import { registerEditorUndoRedo } from "../../lib/editMenuBridge";
 import type {
@@ -144,6 +144,60 @@ export type EditOp =
   | { kind: "replace"; removed: CreateDeleteItem[]; added: CreateDeleteItem[] };
 
 const MAX_DEPTH = 100;
+
+type ReplayProgress = {
+  direction: "undo" | "redo";
+  completedSteps: number;
+};
+
+type PartialReplay = ReplayProgress & { op: EditOp };
+
+/** Only acknowledged writes belong to the completed piece. Legacy null
+ * restore payloads do not dispatch a step and stay in the remaining piece. */
+function splitLayerItems(items: CreateDeleteItem[], steps: number, restoring: boolean) {
+  const completed: CreateDeleteItem[] = [];
+  const remaining: CreateDeleteItem[] = [];
+  for (const item of items) {
+    if (steps > 0 && (!restoring || item.node !== null)) {
+      completed.push(item);
+      steps -= 1;
+    } else {
+      remaining.push(item);
+    }
+  }
+  return { completed, remaining };
+}
+
+/** A direct retry keeps the original batch. Crossing it with an edit or
+ * reverse replay instead makes both sides honest stack entries: the writes
+ * already acknowledged can be reversed, and the rest can still be retried. */
+function splitPartialReplay(op: EditOp, progress: ReplayProgress): { completed: EditOp; remaining: EditOp } {
+  if (op.kind === "create" || op.kind === "delete") {
+    const restoring = (op.kind === "create") === (progress.direction === "redo");
+    const parts = splitLayerItems(op.items, progress.completedSteps, restoring);
+    return {
+      completed: { kind: op.kind, items: parts.completed },
+      remaining: { kind: op.kind, items: parts.remaining }
+    };
+  }
+  if (op.kind === "geometry") {
+    return {
+      completed: { kind: op.kind, items: op.items.slice(0, progress.completedSteps) },
+      remaining: { kind: op.kind, items: op.items.slice(progress.completedSteps) }
+    };
+  }
+  if (op.kind === "replace") {
+    const undo = progress.direction === "undo";
+    const restore = splitLayerItems(undo ? op.removed : op.added, progress.completedSteps, true);
+    const take = splitLayerItems(undo ? op.added : op.removed, progress.completedSteps - restore.completed.length, false);
+    return {
+      completed: { kind: op.kind, removed: undo ? restore.completed : take.completed, added: undo ? take.completed : restore.completed },
+      remaining: { kind: op.kind, removed: undo ? restore.remaining : take.remaining, added: undo ? take.remaining : restore.remaining }
+    };
+  }
+  // Crop and style each dispatch one step: failure cannot acknowledge a prefix.
+  throw new Error("Single-step history operation has no partial replay");
+}
 
 /** Merge the new op's items into the existing entry's items array
  *  per the requested mergeMode. Each op produced by recordCreate /
@@ -320,9 +374,26 @@ export function useUndoRedo(opts: {
    *  visually reverting it — which IS the undo the user asked for, so
    *  the stack must not also pop. Return false to proceed normally. */
   onBeforeHistory?: (() => Promise<boolean>) | undefined;
+  /** A live draft or released write also owns history admission when
+   * the stacks are empty. Keep the Edit-menu bridge in the editor until
+   * reconciliation has cancelled or recorded that work. */
+  hasPendingHistory?: (() => boolean) | undefined;
 }): UseUndoRedoResult {
-  const [past, setPast] = useState<EditOp[]>([]);
-  const [future, setFuture] = useState<EditOp[]>([]);
+  const [past, setPastState] = useState<EditOp[]>([]);
+  const [future, setFutureState] = useState<EditOp[]>([]);
+  // History reconciliation may await a released gesture's persistence.
+  // Its recorder must publish synchronously, before the next React paint,
+  // so the resumed history request chooses the newly recorded entry.
+  const pastRef = useRef(past);
+  const futureRef = useRef(future);
+  const setPast = useCallback((update: SetStateAction<EditOp[]>) => {
+    pastRef.current = typeof update === "function" ? update(pastRef.current) : update;
+    setPastState(pastRef.current);
+  }, []);
+  const setFuture = useCallback((update: SetStateAction<EditOp[]>) => {
+    futureRef.current = typeof update === "function" ? update(futureRef.current) : update;
+    setFutureState(futureRef.current);
+  }, []);
   // Stash the dispatchEdit in a ref so the undo/redo callbacks don't
   // re-create on every render (it changes identity whenever the model
   // refetches, which is every layer write).
@@ -330,11 +401,26 @@ export function useUndoRedo(opts: {
   dispatchEditRef.current = opts.dispatchEdit;
   const onBeforeHistoryRef = useRef(opts.onBeforeHistory);
   onBeforeHistoryRef.current = opts.onBeforeHistory;
+  const hasPendingHistoryRef = useRef(opts.hasPendingHistory);
+  hasPendingHistoryRef.current = opts.hasPendingHistory;
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   // Internal ref used to suppress recording when WE are the ones
   // re-issuing an op via undo/redo. If the caller passed an
   // `applyingRef`, we expose ours through that one too — but the
   // canonical source of truth lives here.
-  const applying = useRef(false);
+  const operationRef = useRef<"idle" | "reconciling" | "applying">("idle");
+  // A partial replay owns the boundary between the stacks until it is
+  // retried or split. Other edits/history must not invalidate its cursor.
+  const [partialReplay, setPartialReplayState] = useState<PartialReplay | null>(null);
+  const partialReplayRef = useRef(partialReplay);
+  const setPartialReplay = useCallback((partial: PartialReplay | null) => {
+    partialReplayRef.current = partial;
+    setPartialReplayState(partial);
+  }, []);
 
   // Coalescing state — refs so it doesn't trigger renders.
   //
@@ -358,26 +444,26 @@ export function useUndoRedo(opts: {
     timestamp: number;
   } | null>(null);
 
-  const wrapApplying = useCallback(
-    async (fn: () => Promise<void>): Promise<void> => {
-      applying.current = true;
-      if (opts.applyingRef !== undefined) {
-        (opts.applyingRef as React.RefObject<boolean>).current = true;
-      }
-      try {
-        await fn();
-      } finally {
-        applying.current = false;
-        if (opts.applyingRef !== undefined) {
-          (opts.applyingRef as React.RefObject<boolean>).current = false;
-        }
-      }
-    },
-    [opts.applyingRef]
-  );
+  const splitPendingReplay = useCallback(() => {
+    const partial = partialReplayRef.current;
+    if (partial === null) return;
+    const { completed, remaining } = splitPartialReplay(partial.op, partial);
+    if (partial.direction === "redo") {
+      setFuture((prev) => [...prev.slice(0, -1), remaining]);
+      setPast((prev) => [...prev.slice(-(MAX_DEPTH - 1)), completed]);
+    } else {
+      setPast((prev) => [...prev.slice(0, -1), remaining]);
+      setFuture((prev) => [...prev, completed]);
+    }
+    setPartialReplay(null);
+    lastCoalesceRef.current = null;
+  }, [setPast, setFuture, setPartialReplay]);
 
   const push = useCallback((op: EditOp, recordOpts?: RecordOptions) => {
-    if (applying.current) return;
+    if (operationRef.current === "applying") return;
+    // Recording happens after persistence. Preserve a partial redo's live
+    // writes in past BEFORE the new edit clears future, and disarm coalescing.
+    splitPendingReplay();
     const opKind = recordOpts?.opKind;
     const layerId = recordOpts?.layerId;
     const now = typeof performance !== "undefined" ? performance.now() : Date.now();
@@ -504,7 +590,7 @@ export function useUndoRedo(opts: {
     // is derived from `lastCoalesceRef` above, which the two branches
     // immediately above have already set (tagged) or cleared
     // (untagged) for this push.
-  }, []);
+  }, [splitPendingReplay]);
 
   const recordCreate = useCallback(
     (
@@ -636,8 +722,22 @@ export function useUndoRedo(opts: {
   // between undo (inverse of the latest past op) and redo (re-apply the
   // future op = inverse of what undo just did).
   const applyInverse = useCallback(
-    async (op: EditOp, direction: "undo" | "redo"): Promise<void> => {
-      const dispatchEdit = dispatchEditRef.current;
+    async (op: EditOp, direction: "undo" | "redo", progress: ReplayProgress): Promise<void> => {
+      const dispatch = dispatchEditRef.current;
+      const dispatchEdit: UndoRedoDispatchEdit = async (edit) => {
+        const result = await dispatch(edit);
+        if (!result.ok) throw new Error(`Editor history ${direction} failed: ${result.error.code}`);
+        return result;
+      };
+      let stepIndex = 0;
+      const step = async (apply: () => Promise<void>): Promise<void> => {
+        const index = stepIndex++;
+        if (index < progress.completedSteps) return;
+        await apply();
+        // Include local id-chain updates in the acknowledged step. Never
+        // repeat a successful restore: upsert rejects an already-live id.
+        progress.completedSteps = index + 1;
+      };
       // What "do" means depends on direction:
       //   undo: apply the inverse of `op`
       //   redo: re-apply `op`
@@ -655,7 +755,7 @@ export function useUndoRedo(opts: {
           if (isInverse) {
             // Delete the just-created layer.
             // eslint-disable-next-line no-await-in-loop
-            await dispatchEdit({ kind: "delete", id: item.row.id });
+            await step(async () => { await dispatchEdit({ kind: "delete", id: item.row.id }); });
             continue;
           }
           // redo of create — re-upsert. The node carries its z_index;
@@ -664,9 +764,10 @@ export function useUndoRedo(opts: {
           // logical position. `item.node` is always set for v2 creates;
           // the `null` fallback is dead but kept for the recorder's
           // optional-node shape.
-          if (item.node !== null) {
+          const node = item.node;
+          if (node !== null) {
             // eslint-disable-next-line no-await-in-loop
-            await dispatchEdit({ kind: "upsert", node: item.node });
+            await step(async () => { await dispatchEdit({ kind: "upsert", node }); });
           }
         }
         return;
@@ -685,15 +786,16 @@ export function useUndoRedo(opts: {
             // its original z_index so the restored layer comes back
             // where it was, not on top (layers:upsert preserves
             // node.z_index when bumpZIndexToMax isn't set).
-            if (item.node !== null) {
+            const node = item.node;
+            if (node !== null) {
               // eslint-disable-next-line no-await-in-loop
-              await dispatchEdit({ kind: "upsert", node: item.node });
+              await step(async () => { await dispatchEdit({ kind: "upsert", node }); });
             }
             continue;
           }
           // redo of delete — re-delete.
           // eslint-disable-next-line no-await-in-loop
-          await dispatchEdit({ kind: "delete", id: item.row.id });
+          await step(async () => { await dispatchEdit({ kind: "delete", id: item.row.id }); });
         }
         return;
       }
@@ -738,15 +840,17 @@ export function useUndoRedo(opts: {
           const ch = op.rect.h;
           const rectX = cw > 0 ? -op.rect.x / cw : 0;
           const rectY = ch > 0 ? -op.rect.y / ch : 0;
-          await dispatchEdit({
-            kind: "crop",
-            rect: { x: rectX, y: rectY, w: rectW, h: rectH }
+          await step(async () => {
+            await dispatchEdit({
+              kind: "crop",
+              rect: { x: rectX, y: rectY, w: rectW, h: rectH }
+            });
           });
           return;
         }
         // redo — current canvas is back at previousWidthPx/Height after
         // the prior undo. Re-apply the original normalized rect.
-        await dispatchEdit({ kind: "crop", rect: op.rect });
+        await step(async () => { await dispatchEdit({ kind: "crop", rect: op.rect }); });
         return;
       }
       if (op.kind === "geometry") {
@@ -763,14 +867,16 @@ export function useUndoRedo(opts: {
           const targetGeometry =
             direction === "undo" ? item.previousGeometry : item.nextGeometry;
           // eslint-disable-next-line no-await-in-loop
-          const result = await dispatchEdit({
-            kind: "updateGeometry",
-            layerId: item.currentIdRef.current,
-            geometry: targetGeometry
+          await step(async () => {
+            const result = await dispatchEdit({
+              kind: "updateGeometry",
+              layerId: item.currentIdRef.current,
+              geometry: targetGeometry
+            });
+            if (result.ok && result.value.kind === "update") {
+              item.currentIdRef.current = result.value.artifact.node.id;
+            }
           });
-          if (result.ok && result.value.kind === "update") {
-            item.currentIdRef.current = result.value.artifact.node.id;
-          }
         }
         return;
       }
@@ -779,14 +885,16 @@ export function useUndoRedo(opts: {
         // is updateOverlay.
         const targetPatch =
           direction === "undo" ? op.previousPatch : op.nextPatch;
-        const result = await dispatchEdit({
-          kind: "updateOverlay",
-          layerId: op.currentIdRef.current,
-          patch: targetPatch
+        await step(async () => {
+          const result = await dispatchEdit({
+            kind: "updateOverlay",
+            layerId: op.currentIdRef.current,
+            patch: targetPatch
+          });
+          if (result.ok && result.value.kind === "update") {
+            op.currentIdRef.current = result.value.artifact.node.id;
+          }
         });
-        if (result.ok && result.value.kind === "update") {
-          op.currentIdRef.current = result.value.artifact.node.id;
-        }
         return;
       }
       if (op.kind === "replace") {
@@ -796,14 +904,15 @@ export function useUndoRedo(opts: {
         const restore = direction === "undo" ? op.removed : op.added;
         const take = direction === "undo" ? op.added : op.removed;
         for (const item of restore) {
-          if (item.node !== null) {
+          const node = item.node;
+          if (node !== null) {
             // eslint-disable-next-line no-await-in-loop
-            await dispatchEdit({ kind: "upsert", node: item.node });
+            await step(async () => { await dispatchEdit({ kind: "upsert", node }); });
           }
         }
         for (const item of take) {
           // eslint-disable-next-line no-await-in-loop
-          await dispatchEdit({ kind: "delete", id: item.row.id });
+          await step(async () => { await dispatchEdit({ kind: "delete", id: item.row.id }); });
         }
         return;
       }
@@ -815,43 +924,56 @@ export function useUndoRedo(opts: {
     []
   );
 
-  const undo = useCallback(async () => {
-    // Deferred-state reconciliation: a pending nudge burst is not on
-    // the stack yet — cancelling it (reverting the on-screen movement)
-    // IS the undo the user asked for, so consume the keystroke.
-    if ((await onBeforeHistoryRef.current?.()) === true) return;
-    const op = past[past.length - 1];
-    if (op === undefined) return;
-    await wrapApplying(async () => {
-      await applyInverse(op, "undo");
-    });
-    setPast((prev) => prev.slice(0, -1));
-    setFuture((prev) => [...prev, op]);
-    // After an undo, drop the grace window — a fresh edit shouldn't
-    // be coalesced into an entry that's no longer on the past stack.
-    // LOAD-BEARING for an OPEN bracket too, not just the grace
-    // window: push() derives the bracket's armed state from this ref,
-    // so clearing it here is what stops the next matching push from
-    // folding into whatever entry this pop exposed. A ⌘Z can land
-    // mid-bracket — `deleteSelected` awaits an IPC round-trip per
-    // selected row with the bracket held open.
-    lastCoalesceRef.current = null;
-  }, [past, applyInverse, wrapApplying]);
+  const replay = useCallback(async (direction: "undo" | "redo") => {
+    // Own admission BEFORE reconciliation yields: two key/menu requests
+    // must not replay the same entry or release each other's applying gate.
+    if (!mountedRef.current || operationRef.current !== "idle") return;
+    operationRef.current = "reconciling";
+    try {
+      if ((await onBeforeHistoryRef.current?.()) === true) return;
+      if (!mountedRef.current) return;
+      if (partialReplayRef.current !== null && partialReplayRef.current.direction !== direction) {
+        splitPendingReplay();
+      }
+      const source = direction === "undo" ? pastRef.current : futureRef.current;
+      const op = source[source.length - 1];
+      if (op === undefined) return;
+      const partial = partialReplayRef.current;
+      const progress = partial?.op === op && partial.direction === direction ? partial : { op, direction, completedSteps: 0 };
+      // A replay attempt, including one that fails partway, disarms the
+      // bracket/grace ownership. A later push must start a new entry so
+      // it cannot merge over this operation and discard its retry cursor.
+      lastCoalesceRef.current = null;
+      operationRef.current = "applying";
+      if (opts.applyingRef !== undefined) opts.applyingRef.current = true;
+      try {
+        await applyInverse(op, direction, progress);
+      } catch (error) {
+        // Retain only a genuinely applied prefix, tied to this exact entry.
+        if (progress.completedSteps > 0) setPartialReplay(progress);
+        throw error;
+      }
+      setPartialReplay(null);
+      if (direction === "undo") {
+        setPast((prev) => prev.slice(0, -1));
+        setFuture((prev) => [...prev, op]);
+      } else {
+        setFuture((prev) => prev.slice(0, -1));
+        setPast((prev) => [...prev, op]);
+      }
+    } catch (error) {
+      // A rejected dispatch leaves the entry on its original stack so the
+      // operator can retry. Multi-item replays stop at the first failure.
+      // eslint-disable-next-line no-console
+      console.error("Editor history replay failed", error);
+    } finally {
+      if (opts.applyingRef !== undefined) opts.applyingRef.current = false;
+      operationRef.current = "idle";
+    }
+  }, [applyInverse, opts.applyingRef, setPast, setFuture, splitPendingReplay, setPartialReplay]);
 
-  const redo = useCallback(async () => {
-    if ((await onBeforeHistoryRef.current?.()) === true) return;
-    const op = future[future.length - 1];
-    if (op === undefined) return;
-    await wrapApplying(async () => {
-      await applyInverse(op, "redo");
-    });
-    setFuture((prev) => prev.slice(0, -1));
-    setPast((prev) => [...prev, op]);
-    // Same reasoning as undo() above: this also disarms an open
-    // bracket, so a later matching push can't coalesce into the entry
-    // this redo just pushed.
-    lastCoalesceRef.current = null;
-  }, [future, applyInverse, wrapApplying]);
+  const undo = useCallback(() => replay("undo"), [replay]);
+  const redo = useCallback(() => replay("redo"), [replay]);
 
   // Register this stack with the app-wide Edit-menu bridge
   // (lib/editMenuBridge.ts). The bridge owns BOTH the keyboard shortcuts
@@ -866,10 +988,6 @@ export function useUndoRedo(opts: {
   // single registration sees live values — the bridge delegates to the
   // capture-level fallback (restore last-deleted snap) the moment this stack
   // runs dry, without needing to re-register on every push/pop.
-  const canUndoRef = useRef(false);
-  const canRedoRef = useRef(false);
-  canUndoRef.current = past.length > 0;
-  canRedoRef.current = future.length > 0;
   useEffect(() => {
     return registerEditorUndoRedo({
       undo: () => {
@@ -878,8 +996,8 @@ export function useUndoRedo(opts: {
       redo: () => {
         void redo();
       },
-      canUndo: () => canUndoRef.current,
-      canRedo: () => canRedoRef.current
+      canUndo: () => operationRef.current !== "idle" || pastRef.current.length > 0 || partialReplayRef.current?.direction === "redo" || (hasPendingHistoryRef.current?.() ?? false),
+      canRedo: () => operationRef.current !== "idle" || futureRef.current.length > 0 || partialReplayRef.current?.direction === "undo" || (hasPendingHistoryRef.current?.() ?? false)
     });
   }, [undo, redo]);
 
@@ -895,8 +1013,8 @@ export function useUndoRedo(opts: {
       endInteraction,
       undo,
       redo,
-      canUndo: past.length > 0,
-      canRedo: future.length > 0
+      canUndo: past.length > 0 || partialReplay?.direction === "redo",
+      canRedo: future.length > 0 || partialReplay?.direction === "undo"
     }),
     [
       recordCreate,
@@ -910,7 +1028,8 @@ export function useUndoRedo(opts: {
       undo,
       redo,
       past.length,
-      future.length
+      future.length,
+      partialReplay?.direction
     ]
   );
 }

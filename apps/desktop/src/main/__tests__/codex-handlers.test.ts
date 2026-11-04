@@ -1,3 +1,4 @@
+import fc from "fast-check";
 import Database from "better-sqlite3";
 import { readFileSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
@@ -462,6 +463,51 @@ describe("Codex handlers", () => {
       }
     }
   );
+
+  async function checkPlanConsentPath(fallback: boolean, consent: boolean, automatic: boolean): Promise<void> {
+    let requests = 0;
+    const http = await server(async (req, res) => {
+      if (req.url?.startsWith("/unavailable")) { res.writeHead(503).end(); return; }
+      requests++; await body(req);
+      stream(res, [{ type: "response.output_text.delta", delta: JSON.stringify({
+        title: "Fixture", description: "Fixture", ocrText: "", filenameStem: "fixture", textAnchors: [], tags: []
+      }) }, { type: "response.completed", response: {} }]);
+    });
+    const plan: ResolvedCustomModel = { ...model(`${http.url}/v1`, "openai-responses"), auth: { type: "chatgpt" } };
+    const primary = { ...model(`${http.url}/unavailable`, "openai-responses"), id: "primary", connectionId: "primary-connection" };
+    const settings = testSettings();
+    settings.ai.enabled = true;
+    settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+    settings.ai.chatgptPlan = { accountLabel: "Fixture", planGranted: true, backgroundConsent: consent, welcomeSeen: true };
+    settings.ai.customModels = [plan, primary];
+    settings.ai.customConnections = [plan, primary].map(m => ({ id: m.connectionId, name: m.id,
+      baseUrl: m.baseUrl, protocol: m.protocol, auth: m.auth }));
+    settings.ai.defaults.enrichment = { provider: `custom:${fallback ? primary.id : plan.id}` };
+    settings.ai.enrichmentFallback = fallback ? { provider: `custom:${plan.id}` } : null;
+    const service = new CustomModelService({ read: async () => settings,
+      write: async () => { throw new Error("Unexpected settings write"); } },
+      { headers: async () => ({}), noteFailure: async () => undefined } as unknown as CustomCredentials, async () => undefined);
+    const spy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
+    try {
+      registerCodexHandlers({ settingsReader: async () => settings, budget: new AiEnrichmentBudget(),
+        primaryHealth: new EnrichmentPrimaryHealth(), clientFactory: () => { throw new Error("Unexpected Codex call"); } });
+      const result = await bus.dispatch("codex:enrich", { captureId: "cap_1",
+        triggerSource: automatic ? "auto-enrichment" : "library-regenerate" }, { principal: "ipc" });
+      if (result.ok) await waitFor(() => ["completed", "failed"].includes(getAiRun(result.value.runId)?.status ?? ""));
+      // Oracle: observe the actual HTTP boundary, independent of selection and run status.
+      expect(requests).toBe(automatic && !consent ? 0 : 1);
+    } finally {
+      unregisterCodexHandlers(); spy.mockRestore(); await http.close();
+    }
+  }
+
+  test("automatic enrichment cannot spend a ChatGPT fallback without consent", async () => {
+    await checkPlanConsentPath(true, false, true);
+  });
+
+  test("generated provider paths never spend ChatGPT plan usage automatically without consent", async () => {
+    await fc.assert(fc.asyncProperty(fc.boolean(), fc.boolean(), fc.boolean(), checkPlanConsentPath), { numRuns: 30 });
+  });
 
   test("automatic enrichment on the ChatGPT plan waits for its own consent; a clicked action does not", async () => {
     let requests = 0;

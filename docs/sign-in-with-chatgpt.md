@@ -67,7 +67,8 @@ Automatic post-capture enrichment does not run on the plan until **Allow
 automatic use for new captures** is on (`ai.chatgptPlan.backgroundConsent`).
 The `codex:enrich` gate refuses an `auto-enrichment` trigger routed to a
 chatgpt model without it (`chatgpt_background_consent_required`). This is in
-addition to the general AI consent. Clicked actions are the user's own
+addition to the general AI consent. A ChatGPT enrichment fallback checks the
+same consent before it sends a request; a healthy non-plan primary can still run. Clicked actions are the user's own
 requests and run without it.
 
 OpenAI's UI guidelines fix the wording:

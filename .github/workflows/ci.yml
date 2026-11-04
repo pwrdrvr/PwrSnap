@@ -316,51 +316,34 @@ jobs:
           retention-days: 30
 
   desktop-e2e-macos:
-    name: macOS Desktop E2E (self-hosted VM)
-    # Restricted organization-scoped self-hosted runner group. This is the
-    # only lane that exercises macOS-only specs (clipboard, tray, menu-bar,
-    # AppKit windowing); GH-hosted macOS runners are cost-prohibitive for
-    # per-PR E2E.
-    #
-    # Fork-PR guard: never schedule this job for PRs whose head repo
-    # isn't pwrdrvr/PwrSnap. Self-hosted runners must not execute
-    # arbitrary fork code even though the VMs are throwaway.
-    if: >-
-      needs.changes.outputs.code_impacting == 'true' &&
-      (github.event_name == 'push' ||
-       (github.event_name == 'pull_request' &&
-        github.event.pull_request.head.repo.full_name == github.repository))
-    runs-on: [self-hosted, macOS, ARM64, pwrdrvr-macos]
+    name: macOS Desktop E2E
+    # Standard GitHub-hosted Apple Silicon, with a fresh VM for every job.
+    # Fork PRs run here too; never move this public repository's CI back to
+    # self-hosted machines. Keep macos-26 for the matching packaging host.
+    if: needs.changes.outputs.code_impacting == 'true'
+    runs-on: macos-26
     needs: changes
     timeout-minutes: 30
     steps:
-      # Visual-regression goldens are Git LFS objects. The runner setup puts
-      # Homebrew (and git-lfs) on the job PATH; fetch the macOS references so
-      # this VM is the active visual CI lane.
+      # Visual-regression goldens are Git LFS objects. Fetch the macOS
+      # references for the active visual CI lane.
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
           lfs: true
-
-      # Reused persistent workspaces can retain LFS pointers after checkout.
-      - name: Materialize Git LFS objects
-        run: git lfs pull
 
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
         timeout-minutes: 10
         with:
           node-version: "^24.22.0"
-          # PwrSuiteLab owns the persistent runner disk. Never share a root
-          # across repositories/runners or with completed-tree mode.
-          persistent-store-dir: ~/Library/Caches/pwrsnap-ci/${{ runner.name }}
           cache-electron: "true"
 
       - name: Build native helpers
         run: pnpm rebuild:electron-native
 
       - name: Run desktop Electron E2E specs
-        # The runner provides a console GUI session for headed Electron.
+        # Hosted macOS runners provide a GUI session with a virtual GPU.
         # Software rendering avoids known virtual-GPU visibility flakes; see
         # docs/solutions/2026-08-01-vm-e2e-window-visibility-flakes.md.
         env:
@@ -505,21 +488,6 @@ jobs:
           LINUX_RESULT: ${{ needs.desktop-e2e.result }}
           MACOS_RESULT: ${{ needs.desktop-e2e-macos.result }}
           WINDOWS_RESULT: ${{ needs.windows-e2e.result }}
-          # `desktop-e2e-macos` is deliberately not scheduled for fork PRs —
-          # self-hosted runners must not execute arbitrary fork code — so it
-          # reports `skipped` there, and requiring it unconditionally would
-          # leave fork PRs blocked on a lane that can never run.
-          #
-          # Test only for the fork and let every OTHER missing macOS result
-          # fail the gate. Re-stating that job's whole scheduling expression
-          # here would be a second copy of it that can drift: once the two
-          # disagree, the gate either blocks fork PRs or passes with no macOS
-          # coverage. This way an event neither job anticipated (a
-          # `workflow_dispatch` or `merge_group` trigger added later) fails
-          # closed instead of silently dropping macOS from the gate.
-          IS_FORK_PR: >-
-            ${{ github.event_name == 'pull_request'
-            && github.event.pull_request.head.repo.full_name != github.repository }}
         run: |
           set -euo pipefail
           status=0
@@ -543,12 +511,7 @@ jobs:
 
           say "### Desktop E2E platform results"
           require "Linux" "$LINUX_RESULT"
-          if [[ "$IS_FORK_PR" == "true" && "$MACOS_RESULT" == "skipped" ]]; then
-            say "- SKIP \`macOS\` (skipped) — fork PR; self-hosted lane not scheduled"
-            echo "::warning::macOS Desktop E2E did not run for this fork PR; macOS-only coverage is unverified."
-          else
-            require "macOS" "$MACOS_RESULT"
-          fi
+          require "macOS" "$MACOS_RESULT"
           require "Windows" "$WINDOWS_RESULT"
 
           exit "$status"

@@ -18,10 +18,10 @@ jobs:
     # Run when the just-applied label is build-preview (labeled event), OR when
     # build-preview is already on the PR (synchronize event).
     if: >-
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      ((github.event.action == 'labeled' && github.event.label.name == 'build-preview') ||
-       (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'build-preview')))
-    runs-on: [self-hosted, macOS, ARM64, pwrdrvr-macos]
+      (github.event.action == 'labeled' && github.event.label.name == 'build-preview') ||
+      (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'build-preview'))
+    # Icon Composer needs macOS 26 host frameworks as well as actool 26+.
+    runs-on: macos-26
     timeout-minutes: 30
     steps:
       - name: Checkout PR branch
@@ -32,7 +32,6 @@ jobs:
         timeout-minutes: 10
         with:
           node-version: "^24.22.0"
-          persistent-store-dir: ~/Library/Caches/pwrsnap-ci/${{ runner.name }}
           cache-electron: "true"
 
       - name: Compute preview version
@@ -149,8 +148,8 @@ jobs:
             --notice THIRD_PARTY_LICENSES \
             --source-dir "$stage/build/ffmpeg-source"
 
-      # electron-builder compiles build/icon.icon with actool 26+. The
-      # Select a stable Xcode 26+ on the self-hosted macOS 26 guest.
+      # electron-builder compiles build/icon.icon with actool 26+.
+      # Select a stable Xcode 26+ on the GitHub-hosted macos-26 runner.
       # Native helpers were built during stage preparation above. See
       # AGENTS.md "macOS app icon".
       - name: Select Xcode for macOS 26 packaging

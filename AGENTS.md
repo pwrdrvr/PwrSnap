@@ -76,7 +76,12 @@
   or "just this machine". Suites sensitive to rasterization should pin the env
   themselves and assert the pin rather than trust the caller —
   `visual-regression.spec.ts` does both.
-- **Headed desktop E2E belongs in the lab VM, not on the operator's
+- **macOS CI, release, preview and benchmark jobs use standard GitHub-hosted
+  `macos-26` runners.** Icon Composer needs the macOS 26 host frameworks as
+  well as actool 26+. Do not use a paid larger size or `macos-26-intel`, and
+  do not move CI onto self-hosted machines. Fork pull requests run macOS E2E
+  too, and the required Desktop E2E gate requires every platform to pass.
+- **Local headed desktop E2E belongs in the lab VM, not on the operator's
   machine.** It takes over the screen — opens windows, steals focus, drives
   the selector and global hotkeys — and the operator's real windows can leak
   into a capture. For macOS Tart, self-hosted runner, or headed E2E work,
@@ -3191,7 +3196,7 @@ Rules:
 - **Every job that packages the mac app needs an actool 26 or newer.**
   electron-builder hard-fails below that, and its Icon Composer
   `AssetCatalogAgent` also requires the macOS 26 host frameworks. The macOS
-  packaging jobs therefore use the restricted self-hosted macOS 26 runners.
+  packaging jobs therefore use standard GitHub-hosted `macos-26` runners.
   Pointing Xcode 26 at a macOS 15 host crashes the agent with missing
   CoreMedia/MediaToolbox symbols.
   [select-xcode-for-actool](.github/actions/select-xcode-for-actool/action.yml)

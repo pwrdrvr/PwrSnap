@@ -6,7 +6,7 @@ with `ci:` when they start, skip, or narrow CI work.
 | Label | Workflow | Effect |
 |---|---|---|
 | `build-preview` | `preview-build.yml` | Builds unsigned macOS DMG and Windows NSIS preview artifacts. This is the existing combined preview path. |
-| `ci:check-performance` | `check-performance.yml` | Runs paired TypeScript 6/7 checks, file-inventory comparison and injected-error probes in one self-hosted macOS job. Remove after collecting the comparison. |
+| `ci:check-performance` | `check-performance.yml` | Runs paired TypeScript 6/7 checks, file-inventory comparison and injected-error probes in one GitHub-hosted `macos-26` job. Remove after collecting the comparison. |
 | `ci:windows-signing` | `release.yml` | Runs the release workflow's Windows prepare/sign jobs for a same-repository PR, verifies Authenticode, and uploads `windows-signed-installer-pr`. The protected job receives the staged archive without checking out source or installing project dependencies. PR events cannot run `publish-release-assets`. Add the label only for a reviewed signing change, temporarily allow `refs/pull/<number>/merge` in the environment, and remove that rule after validation. |
 
 If another label changes workflow behavior, document it here in the same change.
@@ -30,17 +30,15 @@ checkouts use the same workflow commit and repository layout. Keep
 `packageImportMethod: auto` portable; never share a live `node_modules` tree
 between jobs or checkouts.
 
-The fork-guarded macOS E2E and opt-in compiler benchmark jobs instead retain a
-pnpm store, Corepack and Electron downloads outside checkout, in
-`~/Library/Caches/pwrsnap-ci/${{ runner.name }}`. PwrSuiteLab owns runner disk
-lifetimes; reuse lasts only while that disk survives. Roots are separate per
-repository and runner, with the action's default 14-day reseed period. These
-jobs still frozen-install on every run and do not use completed-tree mode.
-Only same-repository code reaches these runners. macOS release preparation and
-preview jobs use the same runner-scoped download roots; signing consumes only
-a verified artifact in a fresh private workspace and does not install or read
-the persistent dependency store. Its private signing material and keychains
-are cleaned in an `always()` step. The `apple-signing` environment retains its
+All macOS jobs use standard GitHub-hosted `macos-26` Apple Silicon runners,
+with a fresh VM per job. macOS E2E, previews and opt-in compiler benchmarks run
+for fork PRs too; the Desktop E2E gate requires macOS on every code-impacting
+PR. Their configure-nodejs steps and release preparation use default
+Actions-backed pnpm-store and Electron-download caching, frozen-install on
+every run, and do not use completed-tree mode or a persistent local store.
+Signing consumes only a verified artifact in an isolated workspace and does
+not install dependencies. Its private signing material and keychains are
+cleaned in an `always()` step. The `apple-signing` environment retains its
 approval gate and tag policy.
 
 Windows preview/release and Linux release jobs retain default store caching and

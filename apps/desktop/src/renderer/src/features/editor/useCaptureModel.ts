@@ -206,6 +206,7 @@ export type EditCropArtifact = {
   previousHeightPx: number;
   widthPx: number;
   heightPx: number;
+  /** Original bounded request for redo. Inversion uses committed pixel dimensions. */
   rect: CropRect;
 };
 
@@ -260,8 +261,8 @@ export type CaptureModelError = {
 };
 
 /** Discriminated by the op kind so callers can read the artifact
- *  without restating the op kind. `delete` resolves with `undefined`
- *  artifact (nothing to surface). `upsert` resolves with the fresh
+ *  without restating the op kind. `delete` returns the transaction's
+ *  pre-state, or no artifact for an idempotent no-op. `upsert` resolves with the fresh
  *  row/layer; `crop` resolves with the previous canvas dims (so the
  *  undo stack can stash them and reverse on ⌘Z). `update` (geometry
  *  + style) resolves with both the persisted node and the exact
@@ -271,7 +272,7 @@ export type EditOpResult =
   | { kind: "historyReplay"; removals?: BundleLayerNode[] }
   | { kind: "historyAck" }
   | { kind: "upsert"; artifact: EditUpsertArtifact }
-  | { kind: "delete" }
+  | { kind: "delete"; artifact?: EditUpsertArtifact }
   | { kind: "crop"; artifact: EditCropArtifact }
   | { kind: "update"; artifact: EditUpdateArtifact }
   /** Z-order change. Ids don't change (layers:reorder is a true
@@ -781,6 +782,7 @@ export function useCaptureModel(captureId: string): CaptureModel {
   // A later read or edit invalidates older in-flight responses. An atomic
   // crop also installs its committed snapshot before the next queued edit.
   const refetchSeqRef = useRef(0);
+  const publishedReadSeqRef = useRef(0);
   const pendingRefetchRef = useRef<Promise<void> | null>(null);
 
   // refetch is recreated when captureId changes. v2 is the only
@@ -825,6 +827,10 @@ export function useCaptureModel(captureId: string): CaptureModel {
         if (recordRef.current?.id === captureId && record.edits_version < recordRef.current.edits_version) return;
         recordRef.current = record;
         layersRef.current = layers;
+        publishedReadSeqRef.current = mySeq;
+        for (const [id, cached] of committedLayersRef.current) {
+          if (mySeq > cached.writeSeq) committedLayersRef.current.delete(id);
+        }
         setState({ kind: "v2", record, layers });
       })();
       pendingRefetchRef.current = work;
@@ -898,7 +904,7 @@ export function useCaptureModel(captureId: string): CaptureModel {
   // cached). Same rationale as `recordRef` above — we want the
   // dispatchEdit reference identity to stay stable across refetches.
   const layersRef = useRef<BundleLayerNode[]>([]);
-  const committedLayersRef = useRef<Map<string, BundleLayerNode>>(new Map());
+  const committedLayersRef = useRef(new Map<string, { node: BundleLayerNode; writeSeq: number }>());
   const committedLayersCaptureIdRef = useRef(captureId);
   // A hook instance can survive a capture switch. A style lane belongs to
   // one capture only; never let a late old-capture row seed the next one.
@@ -908,16 +914,6 @@ export function useCaptureModel(captureId: string): CaptureModel {
   }
   if (state.kind === "v2" && state.record.id === captureId) {
     layersRef.current = state.layers;
-    // Keep a settled lane only until the model has incorporated its exact
-    // restored node. This closes the race between the IPC resolving and
-    // the broadcast/refetch landing, while still allowing a later external
-    // update to become the source for the next local style change.
-    for (const [layerId, node] of committedLayersRef.current) {
-      const landed = state.layers.find((layer) => layer.id === layerId);
-      if (landed !== undefined && JSON.stringify(landed) === JSON.stringify(node)) {
-        committedLayersRef.current.delete(layerId);
-      }
-    }
   }
 
   // Keep a crop behind earlier layer writes, and merge each later patch
@@ -945,6 +941,14 @@ export function useCaptureModel(captureId: string): CaptureModel {
         if (!isCurrentCapture()) return err({ kind: "validation", code: "edit_cancelled", message: "capture changed or editor unmounted" });
       }
       if (op.kind !== "historyAck") refetchSeqRef.current += 1;
+      const writeSeq = refetchSeqRef.current;
+      // An accepted read started after this mutation supersedes its cached
+      // predecessor, even when another writer changed it before we read it.
+      // A late mutation reply must not put that older node back in the cache.
+      const cacheCommittedLayer = (node: BundleLayerNode): void => {
+        if (isCurrentCapture() && publishedReadSeqRef.current <= writeSeq)
+          committedLayersRef.current.set(node.id, { node, writeSeq });
+      };
       switch (op.kind) {
         case "historyReplay": {
           if (op.identity.current === null) {
@@ -988,8 +992,7 @@ export function useCaptureModel(captureId: string): CaptureModel {
             ...(op.bumpZIndexToMax === true ? { bumpZIndexToMax: true } : {})
           });
           if (!result.ok) return err(result.error);
-          if (isCurrentCapture())
-            committedLayersRef.current.set(result.value.id, result.value);
+          cacheCommittedLayer(result.value);
           return {
             ok: true,
             value: {
@@ -1005,7 +1008,7 @@ export function useCaptureModel(captureId: string): CaptureModel {
             committedLayersRef.current.delete(op.id);
             layersRef.current = layersRef.current.filter((layer) => layer.id !== op.id);
           }
-          return { ok: true, value: { kind: "delete" } };
+          return { ok: true, value: { kind: "delete", ...(result.value.node === null ? {} : { artifact: { format: 2, node: result.value.node } }) } };
         }
         case "upsertBatch":
           return err({
@@ -1041,11 +1044,7 @@ export function useCaptureModel(captureId: string): CaptureModel {
                 previousHeightPx: result.value.previousHeightPx,
                 widthPx: result.value.widthPx,
                 heightPx: result.value.heightPx,
-                rect: {
-                  ...op.rect,
-                  w: result.value.widthPx / result.value.previousWidthPx,
-                  h: result.value.heightPx / result.value.previousHeightPx
-                }
+                rect: op.rect
               }
             }
           };
@@ -1054,7 +1053,7 @@ export function useCaptureModel(captureId: string): CaptureModel {
         case "updateOverlay": {
           const record = recordRef.current;
           if (record === null) return err({ kind: "validation", code: "record_not_loaded", message: "record not loaded" });
-          const previousNode = committedLayersRef.current.get(op.layerId)
+          const previousNode = committedLayersRef.current.get(op.layerId)?.node
             ?? layersRef.current.find((layer) => layer.id === op.layerId);
           if (previousNode === undefined) return err({ kind: "validation", code: "layer_not_found", message: `no layer with id ${op.layerId}` });
           const canvas = { width: record.width_px, height: record.height_px };
@@ -1064,8 +1063,7 @@ export function useCaptureModel(captureId: string): CaptureModel {
           if (merged === null) return err({ kind: "validation", code: op.kind === "updateGeometry" ? "geometry_kind_mismatch" : "patch_kind_mismatch", message: `cannot apply ${op.kind} to ${previousNode.kind}` });
           const result = await dispatch("layers:update", { captureId, layer: merged });
           if (!result.ok) return err(result.error);
-          if (isCurrentCapture())
-            committedLayersRef.current.set(op.layerId, result.value);
+          cacheCommittedLayer(result.value);
           return { ok: true, value: { kind: "update", artifact: { format: 2, node: result.value, previousNode } } };
         }
         case "reorder": {
@@ -1077,9 +1075,8 @@ export function useCaptureModel(captureId: string): CaptureModel {
             zIndex: op.zIndex
           });
           if (!result.ok) return err(result.error);
-          const current = committedLayersRef.current.get(op.layerId) ?? layersRef.current.find((layer) => layer.id === op.layerId);
-          if (isCurrentCapture() && current !== undefined)
-            committedLayersRef.current.set(op.layerId, { ...current, z_index: op.zIndex });
+          const current = committedLayersRef.current.get(op.layerId)?.node ?? layersRef.current.find((layer) => layer.id === op.layerId);
+          if (current !== undefined) cacheCommittedLayer({ ...current, z_index: op.zIndex });
           return { ok: true, value: { kind: "reorder" } };
         }
         default: {

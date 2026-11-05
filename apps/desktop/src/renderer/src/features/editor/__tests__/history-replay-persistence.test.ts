@@ -159,6 +159,152 @@ function recordPair(kind: "create" | "delete"): void {
 }
 
 describe("grouped history with real layer persistence", () => {
+  test("delete returns its exact pre-state once and rolls back without publication on failure", async () => {
+    testDb.exec(`CREATE TEMP TRIGGER refuse_delete BEFORE UPDATE OF rejected_at ON layers WHEN NEW.id = '${a.id}' BEGIN SELECT RAISE(ABORT, 'delete rollback'); END`);
+    const before = rows();
+    expect((await bus.dispatch("layers:delete", { id: a.id }, { principal: "ipc" })).ok).toBe(false);
+    expect(rows()).toEqual(before);
+    testDb.exec("DROP TRIGGER refuse_delete");
+    expect(await bus.dispatch("layers:delete", { id: a.id }, { principal: "ipc" })).toEqual({ ok: true, value: { node: a } });
+    const committed = rows();
+    expect(await bus.dispatch("layers:delete", { id: a.id }, { principal: "ipc" })).toEqual({ ok: true, value: { node: null } });
+    expect(rows()).toEqual(committed);
+  });
+
+  test.each(["upsert", "reorder", "update"] as const)("a delayed %s reply cannot re-cache a node older than the published snapshot", async (kind) => {
+    if (modelSnapshot.kind !== "loaded") throw new Error("model not loaded");
+    const edit = modelSnapshot.dispatchEdit;
+    const target = kind === "upsert" ? node("fresh", 5000) : a;
+    const ordinary = dispatchMock.getMockImplementation()!;
+    let release!: () => void;
+    let committed!: () => void;
+    const reply = new Promise<void>((resolve) => { release = resolve; });
+    const entered = new Promise<void>((resolve) => { committed = resolve; });
+    let held = false;
+    dispatchMock.mockImplementation(async (name: string, req: unknown) => {
+      const result = await ordinary(name, req);
+      if (!held && name === "layers:" + kind) { held = true; committed(); await reply; }
+      return result;
+    });
+    let pending!: ReturnType<typeof edit>;
+    await act(async () => {
+      pending = edit(kind === "upsert" ? { kind: "upsert", node: target }
+        : kind === "reorder" ? { kind: "reorder", layerId: target.id, zIndex: 8000 }
+        : { kind: "updateOverlay", layerId: target.id, patch: { kind: "arrow", color: "#2489ff" } });
+      await entered;
+    });
+    const current = listLayerTree(captureId).find((layer) => layer.id === target.id)!;
+    updateLayer({ captureId, node: { ...current, name: "newer before reply", visible: false, z_index: 9000 } });
+    await act(async () => {
+      for (const callback of subscribers.get("events:overlays:changed") ?? []) callback({ captureId });
+    });
+    await act(async () => { release(); expect((await pending).ok).toBe(true); });
+    await act(async () => { expect((await edit({ kind: "updateOverlay", layerId: target.id, patch: { kind: "arrow", color: "#ff8000" } })).ok).toBe(true); });
+    expect(listLayerTree(captureId).find((layer) => layer.id === target.id)).toMatchObject({ name: "newer before reply", visible: false, z_index: 9000 });
+  });
+
+  test.each(["geometry", "style"] as const)("delete queued behind %s records the committed deletion pre-state", async (kind) => {
+    if (modelSnapshot.kind !== "loaded") throw new Error("model not loaded");
+    const edit = modelSnapshot.dispatchEdit;
+    const stale = modelSnapshot.layers.find((layer) => layer.id === a.id)!;
+    const ordinary = dispatchMock.getMockImplementation()!;
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    dispatchMock.mockImplementation(async (name: string, req: unknown) => {
+      if (name === "layers:update") { started(); await gate; }
+      return ordinary(name, req);
+    });
+    let pending!: ReturnType<typeof edit>;
+    let deletion!: ReturnType<typeof edit>;
+    await act(async () => {
+      pending = edit(kind === "geometry"
+        ? { kind: "updateGeometry", layerId: a.id, geometry: { kind: "arrow", from: { x: 0.3, y: 0.4 }, to: { x: 0.7, y: 0.8 } } }
+        : { kind: "updateOverlay", layerId: a.id, patch: { kind: "arrow", color: "#2489ff" } });
+      await entered;
+      deletion = edit({ kind: "delete", id: a.id });
+    });
+    let actual!: BundleLayerNode;
+    await act(async () => {
+      release();
+      const updated = await pending;
+      const deleted = await deletion;
+      if (!updated.ok || updated.value.kind !== "update" || !deleted.ok) throw new Error("write failed");
+      actual = updated.value.artifact.node;
+      // Mirrors the former Editor callback on the old API, so this probe
+      // reaches the rejected-row conflict instead of failing on a missing field.
+      const payload = deleted.value as { artifact?: { node: BundleLayerNode } };
+      api.recordDelete({ id: a.id }, { node: payload.artifact?.node ?? stale });
+    });
+    await act(async () => { await api.undo(); });
+    expect(api.canUndo).toBe(false);
+    expect(listLayerTree(captureId).find((layer) => layer.id === a.id)).toEqual(actual);
+    await act(async () => { await api.redo(); });
+    expect(listLayerTree(captureId).some((layer) => layer.id === a.id)).toBe(false);
+  });
+
+  test.each(["upsert", "reorder", "update"] as const)("a newer snapshot supersedes the %s cache before the next full-node patch", async (kind) => {
+    if (modelSnapshot.kind !== "loaded") throw new Error("model not loaded");
+    const edit = modelSnapshot.dispatchEdit;
+    const target = kind === "upsert" ? node("fresh", 5000) : a;
+    await act(async () => {
+      const result = await edit(kind === "upsert" ? { kind: "upsert", node: target }
+        : kind === "reorder" ? { kind: "reorder", layerId: target.id, zIndex: 8000 }
+        : { kind: "updateOverlay", layerId: target.id, patch: { kind: "arrow", color: "#2489ff" } });
+      expect(result.ok).toBe(true);
+    });
+    const current = listLayerTree(captureId).find((layer) => layer.id === target.id)!;
+    const external = { ...current, name: "newer external name", visible: false, z_index: 9000 };
+    updateLayer({ captureId, node: external });
+    await act(async () => {
+      for (const callback of subscribers.get("events:overlays:changed") ?? []) callback({ captureId });
+    });
+    if (modelSnapshot.kind !== "loaded") throw new Error("model not loaded");
+    expect(modelSnapshot.layers.find((layer) => layer.id === target.id)).toEqual(external);
+    await act(async () => {
+      expect((await edit({ kind: "updateOverlay", layerId: target.id, patch: { kind: "arrow", color: "#ff8000" } })).ok).toBe(true);
+    });
+    expect(listLayerTree(captureId).find((layer) => layer.id === target.id)).toMatchObject({ name: external.name, visible: false, z_index: external.z_index });
+  });
+
+  test.each([
+    { edge: "right", width: 1001, height: 801 },
+    { edge: "bottom", width: 1001, height: 801 },
+    { edge: "bottom", width: 513, height: 513 } // Shrunk generated counterexample.
+  ] as const)("odd-size $width×$height $edge edge crop can undo and redo repeatedly", async ({ edge, width, height }) => {
+    addSource();
+    testDb.prepare("UPDATE captures SET width_px = ?, height_px = ? WHERE id = ?").run(width, height, captureId);
+    // Match source dimensions without changing the immutable source afterward.
+    const source = listLayerTree(captureId).find((layer) => layer.kind === "raster")!;
+    updateLayer({ captureId, node: { ...source, kind: "raster", source_ref: { kind: "embedded", sha256: "0".repeat(64) }, natural_width_px: width, natural_height_px: height } });
+    await act(async () => {
+      for (const callback of subscribers.get("events:captures:changed") ?? []) callback({ changedIds: [captureId] });
+    });
+    if (modelSnapshot.kind !== "loaded") throw new Error("model not loaded");
+    const edit = modelSnapshot.dispatchEdit;
+    const rect = edge === "right" ? { x: 0.5, y: 0, w: 0.5, h: 1 } : { x: 0, y: 0.5, w: 1, h: 0.5 };
+    await act(async () => {
+      const result = await edit({ kind: "crop", rect });
+      if (!result.ok || result.value.kind !== "crop") throw new Error("crop failed");
+      api.recordCrop({ ...result.value.artifact, newWidthPx: result.value.artifact.widthPx, newHeightPx: result.value.artifact.heightPx });
+    });
+    const cropped = listLayerTree(captureId);
+    for (let cycle = 0; cycle < 2; cycle++) {
+      await act(async () => { await api.undo(); });
+      expect(getCaptureById(captureId)).toMatchObject({ width_px: width, height_px: height });
+      await act(async () => { await api.redo(); });
+      expect(api.canRedo).toBe(false);
+      expect(getCaptureById(captureId)).toMatchObject({ width_px: edge === "right" ? Math.round(width / 2) : width, height_px: edge === "bottom" ? Math.round(height / 2) : height });
+      const roundTrip = listLayerTree(captureId);
+      expect(roundTrip.map((layer) => layer.id)).toEqual(cropped.map((layer) => layer.id));
+      for (const original of cropped) {
+        const restored = roundTrip.find((layer) => layer.id === original.id)!;
+        if (restored.kind === "raster" && original.kind === "raster") expect(restored.transform).toEqual(original.transform);
+      }
+    }
+  });
+
   test.each(["crop", "reorder", "visibility"] as const)("create redo restores its target after intervening %s", async (change) => {
     act(() => api.recordCreate({ id: a.id }, { node: a }));
     if (change === "crop") {

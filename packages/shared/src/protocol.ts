@@ -4883,7 +4883,7 @@ export type Commands = {
   /** Soft-delete a layer. Cascades rejected_at transitively to every
    *  descendant in one transaction — leaving orphaned-but-live
    *  children would render undefined behavior. */
-  "layers:delete": { req: { id: string }; res: void };
+  "layers:delete": { req: { id: string }; res: { node: BundleLayerNode | null } };
 
   /** Atomically apply a v2 viewport crop: re-normalize existing layers,
    *  insert a crop marker layer, and update the capture canvas

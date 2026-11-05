@@ -240,7 +240,11 @@ async function realisticDispatch(op: LayerEditOp): Promise<unknown> {
     hoisted.layers = hoisted.layers.map((layer) => layer.id === node.id ? node : layer);
     return { ok: true, value: { kind: "update", artifact: { format: 2, node, previousNode } } };
   }
-  if (op.kind === "delete") hoisted.layers = hoisted.layers.filter((l) => l.id !== op.id);
+  if (op.kind === "delete") {
+    const node = hoisted.layers.find((layer) => layer.id === op.id);
+    hoisted.layers = hoisted.layers.filter((l) => l.id !== op.id);
+    return { ok: true, value: { kind: "delete", ...(node === undefined ? {} : { artifact: { format: 2, node } }) } };
+  }
   return { ok: true, value: { kind: "delete" } };
 }
 let realGetBoundingClientRect: (() => DOMRect) | null = null;
@@ -379,6 +383,26 @@ async function drag(canvas: HTMLElement, path: ReadonlyArray<readonly [number, n
 }
 
 describe("Editor — canvas gestures and Draw tool", () => {
+  test.each(["panel", "keyboard"] as const)("%s deletion records the returned pre-state when the render snapshot predates a write", async (entry) => {
+    const canvas = await mountWithDrawTool();
+    await drag(canvas, [[100, 100], [300, 150]]);
+    await rerender();
+    const create = ops.find((op) => op.kind === "upsert");
+    if (create?.kind !== "upsert") throw new Error("missing created layer");
+    await act(async () => { panelApi!.selectLayers(create.node.id, false); });
+    const actual = { ...create.node, name: "committed behind the render snapshot", visible: false, z_index: 8000 };
+    hoisted.layers = hoisted.layers.map((node) => node.id === actual.id ? actual : node);
+    await act(async () => {
+      if (entry === "panel") await panelApi!.deleteLayer(actual.id);
+      else window.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true }));
+    });
+    expect(hoisted.layers.some((node) => node.id === actual.id)).toBe(false);
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true }));
+    });
+    expect(hoisted.layers.find((node) => node.id === actual.id)).toEqual(actual);
+  });
+
   test("an applying history replay excludes a new canvas gesture", async () => {
     const canvas = await mountWithDrawTool();
     await drag(canvas, [[100, 100], [300, 150]]);

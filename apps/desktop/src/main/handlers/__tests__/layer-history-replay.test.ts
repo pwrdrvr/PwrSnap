@@ -12,7 +12,19 @@ let documentCounter = 0;
 let sourceDocumentId: string;
 let destroyed: boolean;
 let liveWindow: EventEmitter & { id: number; isDestroyed: () => boolean; webContents: EventEmitter & { id: number; isDestroyed: () => boolean } };
-vi.mock("electron", () => ({ BrowserWindow: { fromId: (id: number) => id === 7 ? liveWindow : null } }));
+vi.mock("electron", () => ({
+  BrowserWindow: class {
+    static fromId(id: number) { return id === 7 ? liveWindow : null; }
+    constructor() { return liveWindow; }
+  },
+  app: { getAppPath: () => "/fixture", getPath: () => "/tmp/pwrsnap-history-fixture", isPackaged: false },
+  screen: { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1440, height: 960 } }) }
+}));
+vi.mock("../../startup-profiler", async (original) => ({ ...await original<object>(), attachRendererStartupProfiling() {} }));
+vi.mock("../../window-show", () => ({ showWindowWhenReady() {} }));
+vi.mock("../../process-role", () => ({ getRuntimeProcessRole: () => "combined" }));
+vi.mock("../../library-window-state", async (original) => ({ ...await original<object>(), readLibraryWindowBounds: () => null }));
+vi.mock("../../settings/startup-appearance", () => ({ getStartupAppearanceArgs: () => [], getStartupBackgroundColor: () => "#000000", STARTUP_BG_DARK: "#000000" }));
 vi.mock("../../persistence/db", () => ({ getDb: () => testDb }));
 vi.mock("../../log", () => ({
   getMainLogger: () => ({ info() {}, warn() {}, error() {}, debug() {} })
@@ -83,7 +95,7 @@ function context() {
 }
 async function reserve() {
   const result = await bus.dispatch("layers:replayHistory", { phase: "reserve", captureId }, context());
-  if (!result.ok || result.value.phase !== "reserved") throw new Error("reservation refused");
+  if (!result.ok || result.value.phase !== "reserved") throw new Error("reservation refused: " + JSON.stringify(result));
   return result.value.replayId;
 }
 function rows() {
@@ -96,6 +108,30 @@ function rows() {
 }
 
 describe("IPC history receipt protocol", () => {
+  test.each(["navigation", "renderer-gone"] as const)("Library reload after %s re-admits only a new document and retires old replay IDs", async (cause) => {
+    Object.assign(liveWindow, { loadFile: vi.fn().mockResolvedValue(undefined), loadURL: vi.fn().mockResolvedValue(undefined) });
+    Object.assign(liveWindow.webContents, { setVisualZoomLevelLimits: vi.fn() });
+    const { createMainWindow } = await import("../../window");
+    createMainWindow();
+    const old = context();
+    const replayId = await reserve();
+    if (cause === "navigation") liveWindow.webContents.emit("did-start-navigation", {}, "file:///fixture", false, true);
+    else liveWindow.webContents.emit("render-process-gone", {}, { reason: "crashed" });
+    const nextDocument = sourceDocumentId + "_next";
+    expect(admitHotkeyRecorderDocument(70, nextDocument)).toBeNull();
+    liveWindow.webContents.emit("did-finish-load");
+    expect(admitHotkeyRecorderDocument(70, nextDocument)).toBe(nextDocument);
+    sourceDocumentId = nextDocument;
+    const before = rows();
+    expect((await bus.dispatch("layers:replayHistory", { phase: "reserve", captureId }, old)).ok).toBe(false);
+    expect((await bus.dispatch("layers:ackHistoryReplay", { captureId, replayId }, context())).ok).toBe(false);
+    expect((await bus.dispatch("layers:replayHistory", { phase: "apply", captureId, replayId, restore: [], removeIds: [a.id] }, context())).ok).toBe(false);
+    expect(rows()).toEqual(before);
+    const fresh = await reserve();
+    expect(fresh.owner).not.toBe(replayId.owner);
+    expect((await bus.dispatch("layers:replayHistory", { phase: "apply", captureId, replayId: fresh, restore: [], removeIds: [a.id] }, context())).ok).toBe(true);
+  });
+
   test("closed cleanup never reads the destroyed BrowserWindow webContents accessor", async () => {
     await reserve();
     const contents = liveWindow.webContents;

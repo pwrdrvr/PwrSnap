@@ -209,11 +209,11 @@ async function withHarness(run: (real: Real) => Promise<void>): Promise<void> {
   admitHotkeyRecorderDocument(70, documentId);
   let armed: Failure = "none";
   const context = { principal: "ipc" as const, sourceWindowId: 7, sourceDocumentId: documentId };
-  dispatch.mockImplementation(async (name: string, req: { phase?: string; restore?: BundleLayerNode[]; removeIds?: string[] }) => {
+  dispatch.mockImplementation(async (name: string, req: { phase?: string; restore?: BundleLayerNode[] | boolean; removeIds?: string[] }) => {
     if (name === "library:byId") return { ok: true, value: getCaptureById(captureId) };
     const failure = name === "layers:replayHistory" && req.phase === "apply" ? armed : "none";
     if (failure !== "none") armed = "none";
-    const target = [...(req.restore ?? []).map((node) => node.id), ...req.removeIds ?? []].at(-1);
+    const target = [...(Array.isArray(req.restore) ? req.restore : []).map((node) => node.id), ...req.removeIds ?? []].at(-1);
     if (failure === "result" || failure === "reject-before") {
       db.exec("CREATE TEMP TRIGGER fail_history BEFORE UPDATE OF rejected_at ON layers WHEN NEW.id = '" + target + "' BEGIN SELECT RAISE(ABORT, 'generated transaction rollback'); END");
     }
@@ -284,6 +284,79 @@ const patch = fc.record({
   x: fc.integer({ min: -100, max: 200 }),
   color: fc.constantFrom("auto", "#2489ff", "#ff8000")
 });
+
+test("generated newer snapshots supersede local create/reorder caches before later patches", async (context) => {
+  await drainPropertyOnFinish(context, fc.assert(fc.asyncProperty(
+    fc.boolean(), fc.integer({ min: -100, max: 200 }), fc.boolean(),
+    async (reorder, value, visible) => {
+      context.signal.throwIfAborted();
+      await withHarness(async () => {
+        const original = layer(1, "vector", value);
+        // Model coalesced publication: only the later external state reaches
+        // this editor; it never incorporates the exact local node.
+        const listeners = [...subscribers];
+        subscribers.clear();
+        await edit({ kind: "upsert", node: original });
+        if (reorder) await edit({ kind: "reorder", layerId: original.id, zIndex: 8000 });
+        for (const listener of listeners) subscribers.add(listener);
+        const persisted = listLayerTree(captureId)[0]!;
+        const expected = { ...persisted, name: "external " + value, visible, z_index: 9000 };
+        await act(async () => {
+          expect((await bus.dispatch("layers:update", { captureId, layer: expected }, { principal: "ipc" })).ok).toBe(true);
+        });
+        await edit({ kind: "updateOverlay", layerId: original.id, patch: { kind: "arrow", color: "#ff8000" } });
+        expect(listLayerTree(captureId)[0]).toMatchObject({ name: expected.name, visible, z_index: expected.z_index });
+      });
+    }
+  ), { numRuns: 50 }));
+});
+
+test("generated odd edge crops preserve valid redo and source-pixel geometry across repeated history cycles", async (context) => {
+  await drainPropertyOnFinish(context, fc.assert(fc.asyncProperty(
+    fc.integer({ min: 256, max: 2047 }).map((size) => size * 2 + 1),
+    fc.integer({ min: 256, max: 2047 }).map((size) => size * 2 + 1),
+    fc.boolean(), fc.integer({ min: 0, max: 100 }),
+    async (width, height, right, value) => {
+      context.signal.throwIfAborted();
+      await withHarness(async () => {
+        db.prepare("UPDATE captures SET width_px = ?, height_px = ? WHERE id = ?").run(width, height, captureId);
+        const source = { ...layer(1, "raster", 0), kind: "raster" as const, source_ref: { kind: "embedded" as const, sha256: "0".repeat(64) }, natural_width_px: width, natural_height_px: height };
+        for (const node of [source, layer(2, "vector", value), layer(3, "effect", value)]) await edit({ kind: "upsert", node });
+        await act(async () => {
+          if (snapshot.kind !== "loaded") throw new Error("model not loaded");
+          const rect = right ? { x: 0.5, y: 0, w: 0.5, h: 1 } : { x: 0, y: 0.5, w: 1, h: 0.5 };
+          const result = await snapshot.dispatchEdit({ kind: "crop", rect });
+          if (!result.ok || result.value.kind !== "crop") throw new Error("crop failed");
+          history.recordCrop({ ...result.value.artifact, newWidthPx: result.value.artifact.widthPx, newHeightPx: result.value.artifact.heightPx });
+        });
+        const cropped = listLayerTree(captureId);
+        for (let cycle = 0; cycle < 2; cycle++) {
+          await act(async () => { await history.undo(); });
+          expect(getCaptureById(captureId)).toMatchObject({ width_px: width, height_px: height });
+          await act(async () => { await history.redo(); });
+          expect(history.canRedo).toBe(false);
+          expect(getCaptureById(captureId)).toMatchObject({ width_px: right ? Math.round(width / 2) : width, height_px: right ? height : Math.round(height / 2) });
+          const restored = listLayerTree(captureId);
+          for (const node of restored) LayerSchema.parse(node);
+          for (const original of cropped.filter((node) => !(node.kind === "vector" && node.shape.kind === "crop"))) {
+            const current = restored.find((node) => node.id === original.id)!;
+            expect(current).toBeDefined();
+            for (let i = 0; i < 6; i++) expect(current.transform[i]).toBeCloseTo(original.transform[i]!, 8);
+            if (current.kind === "raster") expect(current).toMatchObject({ source_ref: source.source_ref, natural_width_px: width, natural_height_px: height });
+            if (current.kind === "vector" && current.shape.kind === "arrow" && original.kind === "vector" && original.shape.kind === "arrow") {
+              for (const point of ["from", "to"] as const) for (const axis of ["x", "y"] as const)
+                expect(current.shape[point][axis]).toBeCloseTo(original.shape[point][axis], 8);
+            }
+            if (current.kind === "effect" && original.kind === "effect") {
+              for (const axis of ["x", "y", "w", "h"] as const) expect(current.clip_rect![axis]).toBeCloseTo(original.clip_rect![axis], 8);
+            }
+          }
+        }
+      });
+    }
+  ), { numRuns: 25 }));
+});
+
 // Preserve 100 schedules in four independent batches, giving each a quarter
 // of the former workload under the default 5s CI timeout.
 for (const batch of [1, 2, 3, 4]) {

@@ -816,10 +816,11 @@ export function useUndoRedo(opts: {
             op.newWidthPx > 0 ? op.previousWidthPx / op.newWidthPx : 1;
           const rectH =
             op.newHeightPx > 0 ? op.previousHeightPx / op.newHeightPx : 1;
-          const cw = op.rect.w;
-          const ch = op.rect.h;
-          const rectX = cw > 0 ? -op.rect.x / cw : 0;
-          const rectY = ch > 0 ? -op.rect.y / ch : 0;
+          // Main rounds the effective extent to integer pixels. Keep the
+          // bounded request for redo and invert its origin using those
+          // committed dimensions, rather than the unrounded request width.
+          const rectX = -op.rect.x * rectW;
+          const rectY = -op.rect.y * rectH;
           await step(async () => {
             await dispatchEdit({
               kind: "crop",

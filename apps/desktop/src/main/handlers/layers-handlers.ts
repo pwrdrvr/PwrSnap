@@ -32,6 +32,7 @@ import { getDb } from "../persistence/db";
 import {
   insertLayer,
   rejectLayer,
+  rejectLayerWithSnapshot,
   reparent,
   setLayerZIndex,
   setLayerZIndexes,
@@ -388,18 +389,19 @@ export function registerLayersHandlers(): void {
   });
 
   bus.register("layers:delete", async (req) => {
-    const captureId = rejectLayer(req.id);
-    if (captureId === null) {
+    const deleted = rejectLayerWithSnapshot(req.id);
+    if (deleted === null) {
       // Already deleted — a redundant call (agents sometimes re-issue
       // delete_layer several times). Idempotent no-op; quiet at debug so the
       // retries don't spam the log. NOT an error, NOT a rejection.
       log.debug("layer delete no-op (already deleted)", { id: req.id });
-      return ok(undefined);
+      return ok({ node: null });
     }
+    const { captureId, node } = deleted;
     log.info("layer soft-deleted", { id: req.id, captureId });
     broadcastLayersChanged(captureId);
     scheduleRepack(captureId);
-    return ok(undefined);
+    return ok({ node });
   });
 
   bus.register("bundle:cropCanvas", async (req, ctx) => {

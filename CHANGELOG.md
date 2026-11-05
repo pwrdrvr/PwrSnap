@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.2.4 - 2026-11-05
+
+This patch improves capture, editing, chat, and update reliability.
+
+- Captures and Recordings - Fixed overlapping requests and late completions
+  interfering with newer capture selections or recording attempts, and bounded
+  recording stop completion so a stalled attempt does not wait indefinitely.
+- Video Preview and Export - Fixed blank paused previews in recordings with
+  sparse frames, and limited presenter preparation to the requested export end
+  while preserving selected audio and held screen frames.
+- Canvas Editing - Fixed stale pointer gestures and duplicate undo replays
+  changing the wrong editing state.
+- AI Chat - Fixed Stop requests, approval submissions, and completed turns
+  losing their state when switching between threads.
+- App Updates - Fixed duplicate and stale installation requests interfering
+  with the current update attempt.
+- Backups - Improved file transfer handling so completion waits for all
+  pending copies, including when a backup is cancelled or a transfer fails.
+- Startup - Improved startup responsiveness by moving rebuildable cache
+  migration into the background without skipping required capture migrations.
+
 ## v1.2.3 - 2026-11-03
 
 This release improves capture responsiveness, reel editing, and update reliability.

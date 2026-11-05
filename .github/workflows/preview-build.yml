@@ -178,12 +178,12 @@ jobs:
     name: Build preview installer (Windows)
     # Same build-preview label gate as the macOS preview above: build only when
     # the label is just applied (labeled) or already present on a new push
-    # (synchronize). Keeps the ~20-30 min Windows pack off every PR/push.
+    # (synchronize). Keeps the ~20-40 min Windows pack off every PR/push.
     if: |
       (github.event.action == 'labeled' && github.event.label.name == 'build-preview') ||
       (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'build-preview'))
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - name: Checkout PR branch
         uses: actions/checkout@v5
@@ -199,14 +199,15 @@ jobs:
 
       # Pull-request code receives no build-repo or signing secrets. Instead,
       # extract the exact FFmpeg binary already shipped inside the public,
-      # signed v1.1.19 installer and pin the whole installer by SHA-256.
+      # signed v1.2.1 installer and pin the whole installer by SHA-256. Its
+      # retained build replaces the v1.1.19 artifact that is no longer retained.
       - name: Stage controlled Windows FFmpeg from release build artifacts
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          FFMPEG_RELEASE_BASE_URL: https://github.com/pwrdrvr/PwrSnap/releases/download/v1.1.19
-          FFMPEG_RELEASE_PAYLOAD: PwrSnap-1.1.19-windows-x64-setup.exe
-          FFMPEG_RELEASE_PAYLOAD_SHA256: 7eed072111f2a1666800b5337ed9814104e05b8c6bacc84155e8a0abc65e821f
+          FFMPEG_RELEASE_BASE_URL: https://github.com/pwrdrvr/PwrSnap/releases/download/v1.2.1
+          FFMPEG_RELEASE_PAYLOAD: PwrSnap-1.2.1-windows-x64-setup.exe
+          FFMPEG_RELEASE_PAYLOAD_SHA256: d3f0209804f8474d6f8bb0d30dd1f6fba55ca7b90661f22b381e4d105aee948f
           FFMPEG_MANIFEST_ASSET: ffmpeg-8.1.1-macos-universal-manifest.json
           FFMPEG_MANIFEST_ASSET_SHA256: fd7fe3f07c9c66b344d293f9a8fd3a48b9b30cf5bc5e441d59eb0f967e4db18d
         run: |
@@ -310,16 +311,16 @@ jobs:
       # Materializes a flat node_modules stage via `pnpm deploy`, injects
       # sharp's win32-x64 slice, keeps only better-sqlite3's win32-x64
       # prebuild, then runs `electron-builder --win nsis --x64`.
-      # Unsigned for now (Authenticode signing is a later task). See
-      # apps/desktop/scripts/package-win.mjs.
+      # Preview artifacts are intentionally unsigned; release.yml owns the
+      # protected Authenticode path. See apps/desktop/scripts/package-win.mjs.
       - name: Build preview installer (unsigned)
         run: pnpm --filter @pwrsnap/desktop package:win
 
       # electron-builder 26.15.3 could produce a successful NSIS build whose
       # BCJ2-filtered payload silently omitted the application at install time.
-      # Inspect the embedded archive filters and exercise the installer itself
-      # so artifact existence alone cannot hide that regression.
-      - name: Verify Windows installer artifact and installed payload
+      # Keep this structural check alongside the causal installed-app smoke:
+      # archive integrity catches a different failure class than runtime load.
+      - name: Verify Windows installer archive integrity
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -395,34 +396,27 @@ jobs:
             throw "Embedded app-64.7z payload failed its integrity test."
           }
 
-          $installDir = Join-Path $env:RUNNER_TEMP "pwrsnap-nsis-smoke"
-          $process = Start-Process `
-            -FilePath $installer.FullName `
-            -ArgumentList @("/S", "/D=$installDir") `
-            -Wait `
-            -PassThru
-          if ($process.ExitCode -ne 0) {
-            throw "NSIS installer exited with code $($process.ExitCode)."
+      - name: Smoke installed Windows application
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dist = Resolve-Path "apps/desktop/release-stage/dist"
+          $installers = @(Get-ChildItem -Path $dist -Filter "*-setup.exe" -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one NSIS installer in $dist; found $($installers.Count)."
           }
+          & ./scripts/release/smoke-installed-windows.ps1 `
+            -InstallerPath $installers[0].FullName `
+            -RequireBundledFfmpeg
 
-          $requiredFiles = @(
-            (Join-Path $installDir "PwrSnap.exe"),
-            (Join-Path $installDir "resources/app.asar"),
-            (Join-Path $installDir "resources/PwrSnapWindowList.exe"),
-            (Join-Path $installDir "resources/PwrSnapFFmpeg.exe"),
-            (Join-Path $installDir "resources/PwrSnapScreenSnapshot.exe")
-          )
-          foreach ($file in $requiredFiles) {
-            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
-              throw "Installed NSIS payload is missing $file."
-            }
-          }
-          if (@(Get-ChildItem -Path $installDir -Filter "*.dll" -File -Recurse).Count -eq 0) {
-            throw "Installed NSIS payload contains no DLLs."
-          }
-          if (@(Get-ChildItem -Path $installDir -Filter "*.node" -File -Recurse).Count -eq 0) {
-            throw "Installed NSIS payload contains no native .node binaries."
-          }
+      - name: Upload installed-app smoke diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: PwrSnap-${{ steps.version.outputs.version }}-windows-smoke-diagnostics
+          path: ${{ runner.temp }}/pwrsnap-windows-smoke-diagnostics-*
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v7

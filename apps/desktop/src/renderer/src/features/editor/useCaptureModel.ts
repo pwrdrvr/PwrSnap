@@ -32,6 +32,7 @@ import {
   type AffineTransform,
   type BundleLayerNode,
   type CaptureRecord,
+  type LayerHistoryReplayId,
   type Overlay,
   type OverlayRow,
   type PwrSnapError,
@@ -41,30 +42,11 @@ import {
 
 export { inverseTransformOverlayByCrop, inverseCropRect, cropRectFromCanvas };
 import { dispatch, subscribe } from "../../lib/pwrsnap";
-import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
 
 // ---- Geometry / patch op types -------------------------------------
 //
-// Phase 3.5 — transform handles + selected-layer style editing. The
-// editor needs two dispatchEdit verbs on top of the upsert / delete /
-// crop set:
-//
-//   • updateGeometry — drag the selected layer's handles. For vector
-//     kinds, merge a kind-specific positional/size patch into
-//     shape.{from,to,rect,point} via layers:upsert (delete-plus-insert
-//     reusing the layer id — the upsert restores the soft-deleted row);
-//     for blur effects, update clip_rect via layers:upsert.
-//
-//   • updateOverlay — generic style patch dispatched by the selected-
-//     layer style editor (popover writes through this when a layer is
-//     selected). Same dispatch shape as updateGeometry — fetch the
-//     layer → merge patch → re-upsert.
-//
-// Both ops require the layer to ALREADY EXIST. The dispatcher first
-// reads the current layer from the in-memory state (no IPC round-trip
-// — the model has it cached), merges the patch, and re-dispatches the
-// upsert. The events:overlays:changed broadcast triggers refetch and
-// the renderer paints the new state.
+// Geometry and style edits merge against the last committed node and use
+// layers:update. One capture-scoped FIFO orders edits, crops and history replay.
 
 /** Normalized [0,1]² point. Same shape as the on-disk Overlay's
  *  `from`/`to`/`point` fields. */
@@ -222,46 +204,31 @@ export type EditUpdateArtifact = EditUpsertArtifact & {
 export type EditCropArtifact = {
   previousWidthPx: number;
   previousHeightPx: number;
+  widthPx: number;
+  heightPx: number;
+  /** Original bounded request for redo. Inversion uses committed pixel dimensions. */
+  rect: CropRect;
 };
 
-/**
- * A per-layer write lane for selected-layer style edits. `updateOverlay`
- * is materialized as `layers:delete` then `layers:upsert`, so concurrent
- * patches against one stable layer id can both delete it and make the
- * later restore collide. Keep the last successfully-restored node here so
- * the next queued patch merges with it rather than a stale model snapshot.
- */
-type OverlayUpdateQueue = {
-  current: BundleLayerNode;
-  pending: number;
-  /** Always fulfills, including after a failed write, so a later user
-   *  change is not stranded behind it. */
-  tail: Promise<void>;
-};
+/** Kept by the history entry until replay is confirmed; a lost response
+ * retries the same main-owned reservation, never a new mutation. */
+export type HistoryReplayIdentity = { current: LayerHistoryReplayId | null; removals?: BundleLayerNode[] };
 
 export type LayerEditOp =
+  | { kind: "historyReplay"; identity: HistoryReplayIdentity; restore: BundleLayerNode[]; removeIds: string[]; expectedRejected?: BundleLayerNode[] }
+  | { kind: "historyAck"; replayId: LayerHistoryReplayId }
   /** v2 upsert. `bumpZIndexToMax` (optional, default false) signals
    *  that the layer is a FRESH DRAW that should land at the top of
    *  the stack — the repo resolves z_index to MAX(existing) + GAP
    *  and ignores `node.z_index`. Fresh-draw callers
    *  (commitArrow / commitRect / etc.) set this to `true`. Update
-   *  paths (delete-plus-insert via updateGeometry / updateOverlay)
-   *  and undo restore leave it OFF so the repo stores `node.z_index`
+   *  paths and undo restore leave it OFF so the repo stores `node.z_index`
    *  verbatim — including 0 (the Send-to-Back regression). */
   | { kind: "upsert"; node: BundleLayerNode; bumpZIndexToMax?: boolean }
   | { kind: "delete"; id: string }
   | { kind: "upsertBatch"; nodes: BundleLayerNode[] }
-  /** v2 crop: writes new canvas dimensions to the captures row via
-   *  `bundle:updateCanvasDimensions`. The rect is normalized to the
-   *  CURRENT canvas; the dispatcher multiplies by the current canvas
-   *  dims to derive the new dims in source pixels.
-   *
-   *  Crop is currently an axis-aligned re-frame from (0, 0) — `rect.x`
-   *  and `rect.y` are ignored. The crop UI honors that today (commits
-   *  whatever rect the user picks; we collapse it to `w × h` here).
-   *  Off-origin crops would also require translating every layer's
-   *  transform; Phase 4-5 layers that on once the editor exposes
-   *  positional crops. For now `w × h` defines the new canvas size. */
+  /** Apply a non-destructive viewport transform in one main transaction.
+   * Negative origins / expanding rectangles are IPC undo or Reset restores. */
   | { kind: "crop"; rect: CropRect }
   /** Phase 3.5 — same semantic as the v1 op, applied to a v2 layer.
    *  For vector kinds, the dispatcher merges the geometry patch into
@@ -275,8 +242,7 @@ export type LayerEditOp =
    *  highlight opacity). */
   | { kind: "updateOverlay"; layerId: string; patch: OverlayPatch }
   /** Z-order change for one layer. Maps directly to `layers:reorder` —
-   *  a single-row UPDATE on `z_index`. Layer id is preserved (unlike
-   *  updateGeometry / updateOverlay which are delete-plus-insert), so
+   *  a single-row UPDATE on `z_index`. Layer id is preserved, so
    *  the caller's selection stays valid without re-anchoring. The
    *  caller computes the new z_index value; the renderer-side helper
    *  uses gaps (e.g. 1000-step) so most reorders avoid touching
@@ -295,16 +261,18 @@ export type CaptureModelError = {
 };
 
 /** Discriminated by the op kind so callers can read the artifact
- *  without restating the op kind. `delete` resolves with `undefined`
- *  artifact (nothing to surface). `upsert` resolves with the fresh
+ *  without restating the op kind. `delete` returns the transaction's
+ *  pre-state, or no artifact for an idempotent no-op. `upsert` resolves with the fresh
  *  row/layer; `crop` resolves with the previous canvas dims (so the
  *  undo stack can stash them and reverse on ⌘Z). `update` (geometry
  *  + style) resolves with both the persisted node and the exact
  *  PRE-PATCH node so undo can derive its inverse from the state the
  *  write actually replaced. */
 export type EditOpResult =
+  | { kind: "historyReplay"; removals?: BundleLayerNode[] }
+  | { kind: "historyAck" }
   | { kind: "upsert"; artifact: EditUpsertArtifact }
-  | { kind: "delete" }
+  | { kind: "delete"; artifact?: EditUpsertArtifact }
   | { kind: "crop"; artifact: EditCropArtifact }
   | { kind: "update"; artifact: EditUpdateArtifact }
   /** Z-order change. Ids don't change (layers:reorder is a true
@@ -653,12 +621,8 @@ export function applyPatchToOverlay(
  *  pixels (the v2 EffectLayer.clip_rect contract). Returns null if
  *  the geometry kind doesn't fit the layer kind.
  *
- *  PRESERVES the layer id, like `applyPatchToLayer`. The op is still a
- *  delete-plus-insert (the `updateGeometry` dispatcher soft-deletes the
- *  old row then upserts this merged node), but reusing `layer.id` keeps
- *  it the SAME logical layer — `layers:upsert` hits the restore path
- *  (un-rejects the just-soft-deleted row) rather than inserting a fresh
- *  row, so there is no PRIMARY KEY collision.
+ *  Preserves the layer id so in-place edits and history replay address
+ *  the same logical annotation.
  *
  *  Why preserve, not churn: minting a fresh id on every drag/resize/
  *  rotate orphaned the undo stack the same way it did for text edits —
@@ -676,8 +640,6 @@ export function applyGeometryToLayer(
   if (layer.kind === "vector") {
     const merged = applyGeometryToOverlay(layer.shape, geometry);
     if (merged === null) return null;
-    // Keep `layer.id` (carried by the spread) — the delete-plus-insert
-    // restore path re-materializes the SAME row. See the doc-block.
     return { ...layer, shape: merged };
   }
   if (layer.kind === "effect") {
@@ -721,12 +683,7 @@ export function applyGeometryToLayer(
  *  fields into `effect.*` (blur style currently). Returns null when the
  *  patch doesn't fit the layer kind.
  *
- *  PRESERVES the layer id. The op is still materialized as a
- *  delete-plus-insert (the `updateOverlay` dispatcher soft-deletes the
- *  old row then upserts this merged node), but reusing `layer.id` keeps
- *  it the SAME logical layer — `layers:upsert` hits the restore path
- *  (un-rejects the just-soft-deleted row, rewrites its columns) rather
- *  than inserting a fresh row.
+ *  Preserves the layer id so prior create/history entries remain valid.
  *
  *  Why preserve, not churn: minting a fresh id on every style/text edit
  *  orphaned the undo stack. A `create` entry recorded when the layer was
@@ -744,8 +701,6 @@ export function applyPatchToLayer(
   if (layer.kind === "vector") {
     const merged = applyPatchToOverlay(layer.shape, patch);
     if (merged === null) return null;
-    // Keep `layer.id` (carried by the spread) — the delete-plus-insert
-    // restore path re-materializes the SAME row. See the doc-block.
     return { ...layer, shape: merged };
   }
   if (layer.kind === "effect") {
@@ -767,10 +722,7 @@ export function applyPatchToLayer(
         // through updateGeometry above.
         ...(rotationUpdate !== undefined ? { rotation: rotationUpdate } : {})
       };
-      // Apply rect part if present (treat as geometry). Keep `layer.id`
-      // (carried by the spread) so the delete-plus-insert restore path
-      // re-materializes the SAME row — same id-stability rationale as
-      // the vector branch above.
+      // Apply the rect part in canvas pixels, preserving layer identity.
       const next: BundleLayerNode = {
         ...layer,
         effect: newEffect,
@@ -827,68 +779,65 @@ export function applyPatchToLayer(
 export function useCaptureModel(captureId: string): CaptureModel {
   const [state, setState] = useState<FetchedState>({ kind: "loading" });
 
-  // Per-refetch sequence guard. Multiple broadcasts (overlays:changed +
-  // captures:changed) can fire in rapid succession during a single
-  // dispatchEdit op (the v2 crop dispatcher emits ~5 broadcasts as it
-  // steps through transform → delete old crop → insert new crop →
-  // update canvas dims). Each broadcast triggers refetch → library:byId
-  // dispatch. The DB reflects different state at each dispatch's
-  // dispatch-time (Steps 0-2 see pre-canvas-update dims; Step 3 sees
-  // post). Real IPC + V8 microtask scheduling don't preserve dispatch
-  // order on resolution — so a stale Step-0 refetch can resolve AFTER
-  // a fresh Step-3 refetch and overwrite state with stale dims.
-  //
-  // The user-visible symptom: crop undo lands canvas at raster-natural
-  // dims (2880) instead of the original pre-crop dims (1728), because
-  // the undo dispatcher reads recordRef.current.width_px from a stale
-  // state (1728 instead of 1037), so newWidth = 1.667 × 1728 = 2880
-  // instead of 1.667 × 1037 = 1729. See pwrdrvr/PwrSnap#110 user
-  // report.
-  //
-  // Fix: bump a monotonic seq at the start of each refetch; capture
-  // the seq locally; before any setState check the seq still matches.
-  // Stale resolutions (whose seq is older than the current) are
-  // dropped — only the LATEST refetch's resolution wins, regardless
-  // of arrival order.
+  // A later read or edit invalidates older in-flight responses. An atomic
+  // crop also installs its committed snapshot before the next queued edit.
   const refetchSeqRef = useRef(0);
+  const publishedReadSeqRef = useRef(0);
+  const pendingRefetchRef = useRef<Promise<void> | null>(null);
 
   // refetch is recreated when captureId changes. v2 is the only
   // bundle format — a record with `bundle_format_version < 2` is a
   // corrupt/unrenderable row, surfaced as an error (there are no v1
   // captures left to read).
   const refetch = useCallback(
-    async (isCancelled: () => boolean): Promise<void> => {
-      refetchSeqRef.current += 1;
-      const mySeq = refetchSeqRef.current;
-      const isStale = (): boolean => mySeq !== refetchSeqRef.current;
-      const recordResult = await dispatch("library:byId", { id: captureId });
-      if (isCancelled() || isStale()) return;
-      if (!recordResult.ok) {
-        setState({ kind: "error", message: recordResult.error.message });
-        return;
-      }
-      if (recordResult.value === null) {
-        setState({
-          kind: "error",
-          message: `capture not found: ${captureId}`
-        });
-        return;
-      }
-      const record = recordResult.value;
-      if (record.bundle_format_version < 2) {
-        setState({
-          kind: "error",
-          message: `unrenderable bundle_format_version: ${record.bundle_format_version}`
-        });
-        return;
-      }
-      const layersResult = await dispatch("layers:list", { captureId });
-      if (isCancelled() || isStale()) return;
-      const layers =
-        layersResult.ok && Array.isArray(layersResult.value)
-          ? layersResult.value
-          : [];
-      setState({ kind: "v2", record, layers });
+    (isCancelled: () => boolean): Promise<void> => {
+      const work = (async (): Promise<void> => {
+        refetchSeqRef.current += 1;
+        const mySeq = refetchSeqRef.current;
+        const isStale = (): boolean => mySeq !== refetchSeqRef.current;
+        const recordResult = await dispatch("library:byId", { id: captureId });
+        if (isCancelled() || isStale()) return;
+        if (!recordResult.ok) {
+          setState({ kind: "error", message: recordResult.error.message });
+          return;
+        }
+        if (recordResult.value === null) {
+          setState({
+            kind: "error",
+            message: `capture not found: ${captureId}`
+          });
+          return;
+        }
+        const record = recordResult.value;
+        if (record.bundle_format_version < 2) {
+          setState({
+            kind: "error",
+            message: `unrenderable bundle_format_version: ${record.bundle_format_version}`
+          });
+          return;
+        }
+        const layersResult = await dispatch("layers:list", { captureId });
+        if (isCancelled() || isStale()) return;
+        const layers =
+          layersResult.ok && Array.isArray(layersResult.value)
+            ? layersResult.value
+            : [];
+        // A transaction reply may have installed a newer snapshot while this
+        // read was in flight. Keep the read alive and reconcile by version.
+        if (recordRef.current?.id === captureId && record.edits_version < recordRef.current.edits_version) return;
+        recordRef.current = record;
+        layersRef.current = layers;
+        publishedReadSeqRef.current = mySeq;
+        for (const [id, cached] of committedLayersRef.current) {
+          if (mySeq > cached.writeSeq) committedLayersRef.current.delete(id);
+        }
+        setState({ kind: "v2", record, layers });
+      })();
+      pendingRefetchRef.current = work;
+      void work.finally(() => {
+        if (pendingRefetchRef.current === work) pendingRefetchRef.current = null;
+      }).catch(() => undefined);
+      return work;
     },
     [captureId]
   );
@@ -945,7 +894,7 @@ export function useCaptureModel(captureId: string): CaptureModel {
   // strand a recorded-but-not-yet-replayed undo entry pointing at a
   // stale function.
   const recordRef = useRef<CaptureRecord | null>(null);
-  if (state.kind === "v2") {
+  if (state.kind === "v2" && state.record.id === captureId) {
     recordRef.current = state.record;
   }
 
@@ -955,35 +904,83 @@ export function useCaptureModel(captureId: string): CaptureModel {
   // cached). Same rationale as `recordRef` above — we want the
   // dispatchEdit reference identity to stay stable across refetches.
   const layersRef = useRef<BundleLayerNode[]>([]);
-  const overlayUpdateQueuesRef = useRef<Map<string, OverlayUpdateQueue>>(new Map());
-  const overlayUpdateQueuesCaptureIdRef = useRef(captureId);
+  const committedLayersRef = useRef(new Map<string, { node: BundleLayerNode; writeSeq: number }>());
+  const committedLayersCaptureIdRef = useRef(captureId);
   // A hook instance can survive a capture switch. A style lane belongs to
   // one capture only; never let a late old-capture row seed the next one.
-  if (overlayUpdateQueuesCaptureIdRef.current !== captureId) {
-    overlayUpdateQueuesRef.current.clear();
-    overlayUpdateQueuesCaptureIdRef.current = captureId;
+  if (committedLayersCaptureIdRef.current !== captureId) {
+    committedLayersRef.current.clear();
+    committedLayersCaptureIdRef.current = captureId;
   }
-  if (state.kind === "v2") {
+  if (state.kind === "v2" && state.record.id === captureId) {
     layersRef.current = state.layers;
-    // Keep a settled lane only until the model has incorporated its exact
-    // restored node. This closes the race between the IPC resolving and
-    // the broadcast/refetch landing, while still allowing a later external
-    // update to become the source for the next local style change.
-    for (const [layerId, queue] of overlayUpdateQueuesRef.current) {
-      if (queue.pending !== 0) continue;
-      const landed = state.layers.find((layer) => layer.id === layerId);
-      if (landed !== undefined && JSON.stringify(landed) === JSON.stringify(queue.current)) {
-        overlayUpdateQueuesRef.current.delete(layerId);
-      }
-    }
   }
 
-  // v2 edit dispatcher. `layers:upsertBatch` isn't in the bus yet
-  // (a later pass expands the bus surface); return a typed
-  // not-yet-supported error rather than silently no-oping.
-  const dispatchEditV2 = useCallback(
-    async (op: LayerEditOp): Promise<Result<EditOpResult, PwrSnapError>> => {
+  // Keep a crop behind earlier layer writes, and merge each later patch
+  // against its committed predecessor. A capture switch closes admission
+  // for queued old work; an already dispatched write may still finish.
+  const editQueueRef = useRef({ captureId, tail: Promise.resolve(), active: true });
+  if (editQueueRef.current.captureId !== captureId) {
+    editQueueRef.current.active = false;
+    editQueueRef.current = { captureId, tail: Promise.resolve(), active: true };
+  }
+  const editQueue = editQueueRef.current;
+  useEffect(() => {
+    editQueue.active = true;
+    return () => { editQueue.active = false; };
+  }, [editQueue]);
+
+  const dispatchEditV2 = useCallback((op: LayerEditOp): Promise<Result<EditOpResult, PwrSnapError>> => {
+    const isCurrentCapture = (): boolean => editQueue.active && editQueueRef.current === editQueue;
+    const work = editQueue.tail.then(async (): Promise<Result<EditOpResult, PwrSnapError>> => {
+      if (!isCurrentCapture()) return err({ kind: "validation", code: "edit_cancelled", message: "capture changed or editor unmounted" });
+      // Full-node patches must incorporate a newer broadcast read already in
+      // flight, rather than invalidate it and overwrite its unseen fields.
+      if (op.kind === "updateGeometry" || op.kind === "updateOverlay") {
+        while (pendingRefetchRef.current !== null) await pendingRefetchRef.current;
+        if (!isCurrentCapture()) return err({ kind: "validation", code: "edit_cancelled", message: "capture changed or editor unmounted" });
+      }
+      if (op.kind !== "historyAck") refetchSeqRef.current += 1;
+      const writeSeq = refetchSeqRef.current;
+      // An accepted read started after this mutation supersedes its cached
+      // predecessor, even when another writer changed it before we read it.
+      // A late mutation reply must not put that older node back in the cache.
+      const cacheCommittedLayer = (node: BundleLayerNode): void => {
+        if (isCurrentCapture() && publishedReadSeqRef.current <= writeSeq)
+          committedLayersRef.current.set(node.id, { node, writeSeq });
+      };
       switch (op.kind) {
+        case "historyReplay": {
+          if (op.identity.current === null) {
+            const reservation = await dispatch("layers:replayHistory", { phase: "reserve", captureId, removeIds: op.removeIds });
+            if (!reservation.ok) return err(reservation.error);
+            if (reservation.value.phase !== "reserved") return err({ kind: "validation", code: "invalid_history_reply", message: "expected history reservation" });
+            op.identity.current = reservation.value.replayId;
+            op.identity.removals = reservation.value.removals;
+          }
+          const result = await dispatch("layers:replayHistory", {
+            phase: "apply", captureId, replayId: op.identity.current,
+            restore: op.restore, removeIds: op.removeIds,
+            ...(op.expectedRejected === undefined ? {} : { expectedRejected: op.expectedRejected }),
+            ...(op.identity.removals === undefined ? {} : { expectedRemovals: op.identity.removals })
+          });
+          if (!result.ok) return err(result.error);
+          if (result.value.phase !== "applied") return err({ kind: "validation", code: "invalid_history_reply", message: "expected committed history" });
+          if (isCurrentCapture()) {
+            committedLayersRef.current.clear();
+            if ((recordRef.current?.edits_version ?? -1) <= result.value.record.edits_version) {
+              recordRef.current = result.value.record;
+              layersRef.current = result.value.layers;
+              setState({ kind: "v2", record: result.value.record, layers: result.value.layers });
+            }
+          }
+          return { ok: true, value: { kind: "historyReplay", removals: op.identity.removals ?? [] } };
+        }
+        case "historyAck": {
+          const result = await dispatch("layers:ackHistoryReplay", { captureId, replayId: op.replayId });
+          if (!result.ok) return err(result.error);
+          return { ok: true, value: { kind: "historyAck" } };
+        }
         case "upsert": {
           const result = await dispatch("layers:upsert", {
             captureId,
@@ -995,6 +992,7 @@ export function useCaptureModel(captureId: string): CaptureModel {
             ...(op.bumpZIndexToMax === true ? { bumpZIndexToMax: true } : {})
           });
           if (!result.ok) return err(result.error);
+          cacheCommittedLayer(result.value);
           return {
             ok: true,
             value: {
@@ -1006,509 +1004,67 @@ export function useCaptureModel(captureId: string): CaptureModel {
         case "delete": {
           const result = await dispatch("layers:delete", { id: op.id });
           if (!result.ok) return err(result.error);
-          return { ok: true, value: { kind: "delete" } };
+          if (isCurrentCapture()) {
+            committedLayersRef.current.delete(op.id);
+            layersRef.current = layersRef.current.filter((layer) => layer.id !== op.id);
+          }
+          return { ok: true, value: { kind: "delete", ...(result.value.node === null ? {} : { artifact: { format: 2, node: result.value.node } }) } };
         }
         case "upsertBatch":
           return err({
             kind: "validation",
             code: "v2_writes_not_yet_supported",
-            message:
-              "layers:upsertBatch is not in the IPC surface yet; Phase 7 ships it"
+            message: "layers:upsertBatch is not in the IPC surface yet; Phase 7 ships it"
           });
         case "crop": {
-          // v2 crop = TWO writes that together form the "I cropped" state:
-          //
-          //   1. A VectorLayer with shape.kind === "crop" inserted in the
-          //      layer tree — same kind as any arrow/rect/text. Idempotent:
-          //      any pre-existing crop VectorLayer is deleted first so we
-          //      end up with exactly ONE active crop. The compose pipeline
-          //      treats this layer as a no-op composite (canvas-dim shrink
-          //      below is what actually clips the image); the layer's job
-          //      is to RECORD the crop in the tree so Reset can wipe it
-          //      via the normal "delete user-facing layers" loop and
-          //      future undo / layer-panel reads can see it.
-          //
-          //   2. captures.{width,height}_px shrink via
-          //      bundle:updateCanvasDimensions — the authoritative canvas
-          //      dims for the bake (sharp's .extract()), library grid,
-          //      export filename, etc. The handler refuses dims exceeding
-          //      raster.natural so this is the validation gate.
-          //
-          // Pre-fix, only (2) happened; the crop was invisible to the layer
-          // tree, which made Reset disabled when only a crop existed and
-          // forced bespoke `recordCropRef` undo plumbing.  See #109.
-          //
-          // Order: layer ops first (best-effort, idempotent), then dim
-          // update. If the dim update fails (e.g. rect would exceed
-          // natural dims), the crop layer has already updated to reflect
-          // the user's intent — they retry and the dim update succeeds
-          // or the validation surfaces. If the dim update succeeds but
-          // the layer ops failed: canvas is cropped but no layer in the
-          // tree, which means Reset still works via the legacy dim-
-          // comparison fallback added in EditToolbar's isV2Cropped.
-          const record = recordRef.current;
-          if (record === null) {
-            return err({
-              kind: "validation",
-              code: "record_not_loaded",
-              message: "crop op dispatched before record resolved"
-            });
-          }
-          // Canvas size shrinks by w × h — this is independent of the
-          // crop's origin (a 60%-wide crop produces a 60%-wide canvas
-          // whether the user dragged the rect from the left edge or
-          // from the middle). The OFFSET (rect.x, rect.y) is applied
-          // separately to the raster layer's transform below, so the
-          // smaller canvas displays the user's chosen REGION of the
-          // source — not the top-left corner.
-          const newWidth = Math.max(
-            1,
-            Math.round(op.rect.w * record.width_px)
-          );
-          const newHeight = Math.max(
-            1,
-            Math.round(op.rect.h * record.height_px)
-          );
-
-          // Step 0: re-normalize every vector layer's coords by the
-          // inverse of the crop rect — overlays in the kept region
-          // stay put visually (absolute pixel position preserved);
-          // overlays in the cropped-away region end up with normalized
-          // coords > 1 (or < 0) and get clipped by the new canvas at
-          // render time. Without this, a text at point.x = 0.95 on an
-          // 800-px canvas (absolute pixel 760) would slide LEFT to
-          // 0.95 of the new 480-px canvas (absolute pixel 456) after
-          // a 60% width crop, instead of being clipped at the right
-          // edge.
-          //
-          // Crop is a VIEWPORT change, not a destructive op (the
-          // user's mental model on pwrdrvr/PwrSnap#110 review).
-          // Overlays outside the cropped viewport must PERSIST as
-          // DATA so undoing the crop restores them. The schema's
-          // NormalizedScalar was widened from .min(0).max(1) to
-          // .finite() specifically to permit out-of-canvas coords;
-          // the renderer (SVG overflow:hidden) and bake pipeline
-          // (sharp composite) clip at paint time. So this loop never
-          // deletes for "out of bounds" — that data has to survive.
-          //
-          // Skip the (current) crop VectorLayer itself — it's about
-          // to be deleted in Step 1 anyway. Effect layers' clip_rect is
-          // in absolute canvas pixels (per the v2 EffectLayer contract):
-          // a (0,0)-anchored crop leaves it unchanged, but an OFF-ORIGIN
-          // crop must translate it by the same offset as the raster —
-          // handled in Step 0.5 below. (This was a real bug: the old
-          // dispatcher assumed off-origin crops were unreachable, so
-          // blurs / highlights drifted off the region they covered after
-          // an off-origin crop, in BOTH the editor and the bake.)
-          // The IPC surface has no `layers:updateOverlay` verb — v2
-          // edits are delete-plus-insert via `layers:delete` +
-          // `layers:upsert` (the v2 updateOverlay dispatcher op does
-          // the same dance internally; we inline it here rather than
-          // recursively re-entering the dispatchEdit closure).
-          // Snapshot the current vector layers before any mutation so
-          // we don't iterate over freshly-inserted post-transform
-          // layers (the layersRef would update on each upsert as the
-          // captures:changed broadcast lands).
-          const vectorsBeforeCrop = layersRef.current.filter(
-            (l): l is BundleLayerNode & { kind: "vector" } =>
-              l.kind === "vector" && l.shape.kind !== "crop"
-          );
-          for (const layer of vectorsBeforeCrop) {
-            const transformed = inverseTransformOverlayByCrop(
-              layer.shape,
-              op.rect
-            );
-            // Always delete the OLD vector layer — it's at pre-crop
-            // coords that don't apply to the new canvas.
-            // eslint-disable-next-line no-await-in-loop
-            const delResult = await dispatch("layers:delete", { id: layer.id });
-            if (!delResult.ok) return err(delResult.error);
-            // `transformed === null` only happens for kinds the helper
-            // refuses to re-emit: CropOverlay (replaced wholesale by
-            // Steps 1-2 below) and degenerate crop rects. Neither
-            // should be reached here — `vectorsBeforeCrop` already
-            // filters out crop shapes, and the dispatcher's outer
-            // validator rejects degenerate rects. Defense in depth:
-            // skip the upsert if we ever do see null, rather than
-            // pushing an invalid layer into the tree.
-            if (transformed === null) continue;
-            // eslint-disable-next-line no-await-in-loop
-            const insResult = await dispatch("layers:upsert", {
-              captureId,
-              layer: { ...layer, shape: transformed }
-            });
-            if (!insResult.ok) {
-              // eslint-disable-next-line no-console
-              console.error("[crop-dispatch v2] upsert failed", {
-                id: layer.id,
-                kind: layer.shape.kind,
-                transformed,
-                error: insResult.error
-              });
-              return err(insResult.error);
-            }
-          }
-
-          // Step 0.5: translate every raster layer's transform by
-          // (-rect.x × oldW, -rect.y × oldH) so the (smaller) new
-          // canvas displays the user's chosen REGION of the source.
-          // Without this, the canvas-dim shrink in Step 3 would just
-          // take the top-left W×H of the source — every off-origin
-          // crop would silently show the wrong region of the image,
-          // and overlays inverse-transformed by Step 0 would no
-          // longer line up with where the user originally placed
-          // them on the visible image.
-          //
-          // Multi-crop composes: the new tx/ty ADDs to the existing
-          // transform's translation (not replaces). So cropping an
-          // already-cropped image accumulates offsets correctly.
-          //
-          // Why the offset is applied to the RASTER's transform (not
-          // by mutating sourceBytes): the source raster's bytes are
-          // immutable across crops — the bundle stores one copy of
-          // the original screenshot, and every "crop" is purely a
-          // viewport change. The compose pipeline (compose-tree.ts'
-          // compositeRasterOntoAccumulator) already handles negative
-          // translation by extracting the visible window of the
-          // source. Same machinery; off-origin just becomes the
-          // common case instead of the edge case.
-          //
-          // Only translate when the crop is actually off-origin.
-          // Edge-aligned crops (rect.x === 0 && rect.y === 0) skip
-          // this step so we don't churn the raster row on simple
-          // top-left crops (no behavior change for that case).
-          const offsetXPx = op.rect.x * record.width_px;
-          const offsetYPx = op.rect.y * record.height_px;
-          if (offsetXPx !== 0 || offsetYPx !== 0) {
-            const rasterLayers = layersRef.current.filter(
-              (l): l is BundleLayerNode & { kind: "raster" } => l.kind === "raster"
-            );
-            for (const raster of rasterLayers) {
-              const newTransform: [
-                number,
-                number,
-                number,
-                number,
-                number,
-                number
-              ] = [
-                raster.transform[0],
-                raster.transform[1],
-                raster.transform[2],
-                raster.transform[3],
-                raster.transform[4] - offsetXPx,
-                raster.transform[5] - offsetYPx
-              ];
-              // eslint-disable-next-line no-await-in-loop
-              const delResult = await dispatch("layers:delete", { id: raster.id });
-              if (!delResult.ok) return err(delResult.error);
-              // eslint-disable-next-line no-await-in-loop
-              const insResult = await dispatch("layers:upsert", {
-                captureId,
-                layer: { ...raster, transform: newTransform }
-              });
-              if (!insResult.ok) {
-                // eslint-disable-next-line no-console
-                console.error("[crop-dispatch v2] raster upsert failed", {
-                  id: raster.id,
-                  newTransform,
-                  error: insResult.error
-                });
-                return err(insResult.error);
-              }
-            }
-
-            // Effect layers (blur / highlight) carry an absolute-canvas-
-            // pixel `clip_rect`. An off-origin crop moves the canvas
-            // origin to (offsetXPx, offsetYPx) of the OLD canvas, so the
-            // clip_rect must shift by the same (-offsetXPx, -offsetYPx)
-            // as the raster transform above — otherwise the effect keeps
-            // its pre-crop coords and drifts off the region it covered
-            // (wrong in BOTH the editor and the bake, since clip_rect
-            // drives both). Crop is a viewport translate, so we DON'T
-            // clamp: a clip_rect pushed partly/fully out of the new
-            // canvas persists as data and is clipped at paint, mirroring
-            // the overlay re-normalization in Step 0. Snapshot is safe to
-            // read here — the raster ops above don't touch effect rows.
-            const effectLayers = layersRef.current.filter(
-              (l): l is BundleLayerNode & { kind: "effect" } => l.kind === "effect"
-            );
-            for (const effect of effectLayers) {
-              if (effect.clip_rect === null) continue;
-              const newClipRect = {
-                x: effect.clip_rect.x - offsetXPx,
-                y: effect.clip_rect.y - offsetYPx,
-                w: effect.clip_rect.w,
-                h: effect.clip_rect.h
-              };
-              // eslint-disable-next-line no-await-in-loop
-              const delResult = await dispatch("layers:delete", { id: effect.id });
-              if (!delResult.ok) return err(delResult.error);
-              // eslint-disable-next-line no-await-in-loop
-              const insResult = await dispatch("layers:upsert", {
-                captureId,
-                layer: { ...effect, clip_rect: newClipRect }
-              });
-              if (!insResult.ok) {
-                // eslint-disable-next-line no-console
-                console.error("[crop-dispatch v2] effect upsert failed", {
-                  id: effect.id,
-                  newClipRect,
-                  error: insResult.error
-                });
-                return err(insResult.error);
-              }
-            }
-          }
-
-          // Step 1: wipe any prior crop VectorLayer (the existing one, if
-          // a re-crop, would otherwise stack alongside the new one and
-          // mean "the user has TWO crops" — not a meaningful state).
-          const existingCrop = layersRef.current.find(
-            (l) => l.kind === "vector" && l.shape.kind === "crop"
-          );
-          if (existingCrop !== undefined) {
-            const delResult = await dispatch("layers:delete", {
-              id: existingCrop.id
-            });
-            if (!delResult.ok) return err(delResult.error);
-          }
-
-          // Step 2: insert the fresh crop VectorLayer under the root
-          // group. Skip silently when the tree has no root group (means
-          // the doctor hasn't run yet; shouldn't happen at this point
-          // but be defensive). Skip surfacing a layer-insert failure as
-          // a hard dispatch error — the user-visible crop IS the canvas
-          // shrink in step 3, and the absence of the layer record only
-          // costs us a layer-tree-aware Reset path (the dim-comparison
-          // fallback in EditToolbar.isV2Cropped still works).
-          const rootId = findRootGroupId(layersRef.current);
-          if (rootId !== null) {
-            const layerResult = overlayToBundleLayerNode(
-              { kind: "crop", rect: op.rect },
-              { width: record.width_px, height: record.height_px },
-              rootId
-            );
-            if (layerResult.ok) {
-              await dispatch("layers:upsert", {
-                captureId,
-                layer: layerResult.layer
-              });
-            }
-          }
-
-          // Step 3: shrink the canvas dims — the authoritative crop signal
-          // for the bake + downstream consumers. Failure here returns err;
-          // the user retries.
-          const result = await dispatch("bundle:updateCanvasDimensions", {
+          const result = await dispatch("bundle:cropCanvas", {
             captureId,
-            widthPx: newWidth,
-            heightPx: newHeight
+            rect: op.rect,
+            ...(op.rect.x < 0 || op.rect.y < 0 || op.rect.w > 1 || op.rect.h > 1
+              ? { restore: true as const }
+              : {})
           });
           if (!result.ok) return err(result.error);
+          if (isCurrentCapture()) {
+            committedLayersRef.current.clear();
+            if ((recordRef.current?.edits_version ?? -1) <= result.value.record.edits_version) {
+              // This snapshot was read inside the crop transaction. Install it
+              // before admitting another edit, even if no broadcast has landed.
+              recordRef.current = result.value.record;
+              layersRef.current = result.value.layers;
+              setState({ kind: "v2", record: result.value.record, layers: result.value.layers });
+            }
+          }
           return {
             ok: true,
             value: {
               kind: "crop",
               artifact: {
                 previousWidthPx: result.value.previousWidthPx,
-                previousHeightPx: result.value.previousHeightPx
+                previousHeightPx: result.value.previousHeightPx,
+                widthPx: result.value.widthPx,
+                heightPx: result.value.heightPx,
+                rect: op.rect
               }
             }
           };
         }
-        case "updateGeometry": {
-          // Phase 3.5 — v2 mirror of the v1 update path. The visible
-          // "edit-in-place" is materialized as a delete-plus-insert
-          // pair (layers:delete then layers:upsert). The merged node
-          // REUSES `op.layerId` (applyGeometryToLayer preserves it), so
-          // the upsert hits layers:upsert's restore path — un-rejects
-          // the just-soft-deleted row rather than colliding on PRIMARY
-          // KEY. Keeping the id stable keeps undo-stack create entries
-          // valid across edits (see applyGeometryToLayer's doc-block).
-          // Vector layers merge into `shape.*`; effect layers
-          // (blur/highlight) merge into `clip_rect` (renormalized to
-          // absolute canvas pixels per the v2 EffectLayer.clip_rect
-          // contract).
-          const record = recordRef.current;
-          if (record === null) {
-            return err({
-              kind: "validation",
-              code: "record_not_loaded",
-              message: "updateGeometry: record not loaded"
-            });
-          }
-          const current = layersRef.current.find((l) => l.id === op.layerId);
-          if (current === undefined) {
-            return err({
-              kind: "validation",
-              code: "layer_not_found",
-              message: `updateGeometry: no layer with id ${op.layerId}`
-            });
-          }
-          const merged = applyGeometryToLayer(current, op.geometry, {
-            width: record.width_px,
-            height: record.height_px
-          });
-          if (merged === null) {
-            return err({
-              kind: "validation",
-              code: "geometry_kind_mismatch",
-              message: `updateGeometry: cannot apply ${op.geometry.kind} geometry to layer kind ${current.kind}`
-            });
-          }
-          if (current.kind === "raster") {
-            // Raster geometry is a pure transform swap on a stable id —
-            // commit it as ONE atomic in-place layers:update. The
-            // delete-plus-upsert dance below exists for vector/effect
-            // shape merges (the upsert restore path); routing rasters
-            // through it was non-atomic (an upsert failure after the
-            // delete stranded the raster soft-deleted with no undo
-            // entry) and doubled the IPC + broadcast-refetch cost of
-            // every drag/nudge commit.
-            const updResult = await dispatch("layers:update", {
-              captureId,
-              layer: merged
-            });
-            if (!updResult.ok) return err(updResult.error);
-            return {
-              ok: true,
-              value: {
-                kind: "update",
-                artifact: {
-                  format: 2,
-                  node: updResult.value,
-                  previousNode: current
-                }
-              }
-            };
-          }
-          const delResult = await dispatch("layers:delete", { id: op.layerId });
-          if (!delResult.ok) return err(delResult.error);
-          const insResult = await dispatch("layers:upsert", {
-            captureId,
-            layer: merged
-          });
-          if (!insResult.ok) return err(insResult.error);
-          // Seed the per-layer style lane with the freshly persisted
-          // node. An updateOverlay that fires before the broadcast
-          // refetch lands — e.g. the auto-border re-sample right after
-          // a drag/nudge commit — must merge against THIS node; without
-          // the seed its fallback base is the STALE layersRef entry
-          // (same id — updateGeometry preserves it) and the patch would
-          // delete+upsert the pre-move geometry back into the DB. The
-          // render-time prune drops the seeded lane once the refetch
-          // catches up, exactly like a lane seeded by updateOverlay.
-          const styleLane = overlayUpdateQueuesRef.current.get(op.layerId);
-          if (styleLane !== undefined) {
-            styleLane.current = insResult.value;
-          } else {
-            overlayUpdateQueuesRef.current.set(op.layerId, {
-              current: insResult.value,
-              pending: 0,
-              tail: Promise.resolve()
-            });
-          }
-          return {
-            ok: true,
-            value: {
-              kind: "update",
-              artifact: {
-                format: 2,
-                node: insResult.value,
-                previousNode: current
-              }
-            }
-          };
-        }
+        case "updateGeometry":
         case "updateOverlay": {
-          // Phase 3.5 — v2 mirror of v1 updateOverlay. For vector
-          // layers we merge into `shape`; for effect layers the
-          // semantic patch maps onto `effect.*` (blur style /
-          // highlight opacity etc.). Same delete-plus-insert pattern
-          // as updateGeometry, but serialized per layer: two rapid
-          // inspector changes must not both delete the same row before
-          // either has restored it.
-          const existingQueue = overlayUpdateQueuesRef.current.get(op.layerId);
-          const current = existingQueue?.current ?? layersRef.current.find((l) => l.id === op.layerId);
-          if (current === undefined) {
-            return err({
-              kind: "validation",
-              code: "layer_not_found",
-              message: `updateOverlay: no layer with id ${op.layerId}`
-            });
-          }
-          const queue = existingQueue ?? {
-            current,
-            pending: 0,
-            tail: Promise.resolve()
-          };
-          if (existingQueue === undefined) {
-            overlayUpdateQueuesRef.current.set(op.layerId, queue);
-          }
-          queue.pending += 1;
-
-          const work = queue.tail.then(async (): Promise<Result<EditOpResult, PwrSnapError>> => {
-            const record = recordRef.current;
-            if (record === null) {
-              return err({
-                kind: "validation",
-                code: "record_not_loaded",
-                message: "updateOverlay: record not loaded"
-              });
-            }
-            // Read `queue.current` only once this lane reaches the front.
-            // A preceding update may already have restored a new shape,
-            // even though the events:overlays:changed refetch has not
-            // updated `layersRef` yet.
-            const previousNode = queue.current;
-            const merged = applyPatchToLayer(previousNode, op.patch, {
-              width: record.width_px,
-              height: record.height_px
-            });
-            if (merged === null) {
-              return err({
-                kind: "validation",
-                code: "patch_kind_mismatch",
-                message: `updateOverlay: patch does not apply to layer kind ${previousNode.kind}`
-              });
-            }
-            const delResult = await dispatch("layers:delete", { id: previousNode.id });
-            if (!delResult.ok) return err(delResult.error);
-            const insResult = await dispatch("layers:upsert", {
-              captureId,
-              layer: merged
-            });
-            if (!insResult.ok) return err(insResult.error);
-            // `applyPatchToLayer` preserves ids today, but store the
-            // returned node rather than assuming that implementation
-            // detail. The following queued style patch needs this exact
-            // post-update state either way.
-            queue.current = insResult.value;
-            return {
-              ok: true,
-              value: {
-                kind: "update",
-                artifact: {
-                  format: 2,
-                  node: insResult.value,
-                  previousNode
-                }
-              }
-            };
-          });
-          // Keep the lane live after an unexpected rejected IPC promise;
-          // callers receive that rejection, but a later UI action can still
-          // attempt a fresh update instead of waiting forever.
-          queue.tail = work.then(
-            () => {
-              queue.pending -= 1;
-            },
-            () => {
-              queue.pending -= 1;
-            }
-          );
-          return work;
+          const record = recordRef.current;
+          if (record === null) return err({ kind: "validation", code: "record_not_loaded", message: "record not loaded" });
+          const previousNode = committedLayersRef.current.get(op.layerId)?.node
+            ?? layersRef.current.find((layer) => layer.id === op.layerId);
+          if (previousNode === undefined) return err({ kind: "validation", code: "layer_not_found", message: `no layer with id ${op.layerId}` });
+          const canvas = { width: record.width_px, height: record.height_px };
+          const merged = op.kind === "updateGeometry"
+            ? applyGeometryToLayer(previousNode, op.geometry, canvas)
+            : applyPatchToLayer(previousNode, op.patch, canvas);
+          if (merged === null) return err({ kind: "validation", code: op.kind === "updateGeometry" ? "geometry_kind_mismatch" : "patch_kind_mismatch", message: `cannot apply ${op.kind} to ${previousNode.kind}` });
+          const result = await dispatch("layers:update", { captureId, layer: merged });
+          if (!result.ok) return err(result.error);
+          cacheCommittedLayer(result.value);
+          return { ok: true, value: { kind: "update", artifact: { format: 2, node: result.value, previousNode } } };
         }
         case "reorder": {
           // Single-row z_index UPDATE via the dedicated layers:reorder
@@ -1519,6 +1075,8 @@ export function useCaptureModel(captureId: string): CaptureModel {
             zIndex: op.zIndex
           });
           if (!result.ok) return err(result.error);
+          const current = committedLayersRef.current.get(op.layerId)?.node ?? layersRef.current.find((layer) => layer.id === op.layerId);
+          if (current !== undefined) cacheCommittedLayer({ ...current, z_index: op.zIndex });
           return { ok: true, value: { kind: "reorder" } };
         }
         default: {
@@ -1531,15 +1089,17 @@ export function useCaptureModel(captureId: string): CaptureModel {
           });
         }
       }
-    },
-    [captureId]
-  );
+    });
+    // A rejected transport must not strand later edits in this session.
+    editQueue.tail = work.then(() => undefined, () => undefined);
+    return work;
+  }, [captureId, editQueue]);
 
   // Project the fetched state into the public CaptureModel. Memoize
   // the LayerView synthesis so the renderer doesn't re-walk the array
   // on every consumer re-render.
   return useMemo<CaptureModel>(() => {
-    if (state.kind === "loading") {
+    if (state.kind === "loading" || (state.kind === "v2" && state.record.id !== captureId)) {
       return { kind: "loading", captureId };
     }
     if (state.kind === "error") {

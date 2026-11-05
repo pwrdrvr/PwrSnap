@@ -98,4 +98,11 @@ describe("forwardOpToStored", () => {
     expect(forwardOpToStored(del, RECT, NW, NH)).toBe(del);
     expect(forwardOpToStored(reo, RECT, NW, NH)).toBe(reo);
   });
+  it("history snapshots stay in stored space and retain their replay identity", () => {
+    const replay: LayerEditOp = { kind: "historyReplay", identity: { current: null }, restore: [vectorNode(0.5, 0.3, 0.12, 0.2)], removeIds: [] };
+    const ack: LayerEditOp = { kind: "historyAck", replayId: { owner: "a".repeat(64), sequence: 1 } };
+    expect(forwardOpToStored(replay, RECT, NW, NH)).toBe(replay);
+    expect(forwardOpToStored(ack, RECT, NW, NH)).toBe(ack);
+  });
+
 });

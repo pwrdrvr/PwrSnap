@@ -955,6 +955,13 @@ export function createMainWindow(): BrowserWindow {
   attachRendererStartupProfiling(window, "library");
   const { webContents } = window;
 
+  // History fences a document on navigation/renderer loss. Re-admit the
+  // next preload epoch after every completed Library load, including reload.
+  webContents.on("did-finish-load", () => {
+    if (window.isDestroyed() || webContents.isDestroyed()) return;
+    allowNextHotkeyRecorderDocument(webContents.id);
+  });
+
   let rendererLoaded = false;
   const rendererHotCpuSlot = createHotCpuProfilerSlot({
     target: "renderer",

@@ -5715,7 +5715,6 @@ function EditorLoaded({
       let allApplied = true;
       for (const change of changes) {
         const display = modelLayers.find((l) => l.id === change.id);
-        const stored = storedLayers.find((l) => l.id === change.id) ?? null;
         if (display === undefined || display.kind !== "vector") {
           allApplied = false;
           continue;
@@ -5757,7 +5756,8 @@ function EditorLoaded({
           continue;
         }
         if (written !== null) added.push(written);
-        removed.push({ row: { id: change.id }, node: stored });
+        if (deleted.value.kind === "delete" && deleted.value.artifact !== undefined)
+          removed.push({ row: { id: change.id }, node: deleted.value.artifact.node });
       }
       if (!undoApplyingRef.current && (removed.length > 0 || added.length > 0)) {
         undo.recordReplace({ removed, added });
@@ -5780,13 +5780,9 @@ function EditorLoaded({
       row: Pick<OverlayRow, "id">,
       opts?: RecordOptions
     ): Promise<void> => {
-      // Find the layer node so recordDelete can re-insert the
-      // structurally-identical layer on undo (preserves parent_id /
-      // z_index / transform[] beyond what's in row.data). Read from the
-      // RAW stored tree so the undo payload carries cropped-space coords
-      // — undo replays through rawDispatchEdit, so a virtual (source-
-      // space) node would be re-inserted at the wrong place.
-      const node = storedLayers.find((l) => l.id === row.id) ?? null;
+      // Record the transaction's actual pre-delete node. A queued write may
+      // have changed it since this render; main also preserves stored crop
+      // coordinates rather than this editor's virtual source-space projection.
       const result = await dispatchEdit({ kind: "delete", id: row.id });
       if (!result.ok) {
         // eslint-disable-next-line no-console
@@ -5803,8 +5799,8 @@ function EditorLoaded({
       // `insideInteraction` check actually fire (untagged pushes
       // never coalesce). Single-delete callers pass no opts; that's
       // fine — the resulting standalone undo entry is correct UX.
-      if (!undoApplyingRef.current) {
-        undo.recordDelete(row, { node, ...(opts ?? {}) });
+      if (!undoApplyingRef.current && result.value.kind === "delete" && result.value.artifact !== undefined) {
+        undo.recordDelete(row, { node: result.value.artifact.node, ...(opts ?? {}) });
       }
     };
     return () => {
@@ -5876,8 +5872,7 @@ function EditorLoaded({
         }
       },
       deleteLayer: async (id) => {
-        // RAW node for the undo payload (replays via rawDispatchEdit).
-        const node = storedLayers.find((l) => l.id === id) ?? null;
+        // Main returns the stored pre-state after preceding queued writes.
         const result = await dispatchEdit({ kind: "delete", id });
         if (!result.ok) {
           // eslint-disable-next-line no-console
@@ -5895,7 +5890,8 @@ function EditorLoaded({
         // through the empty editor history to the Library's
         // capture-restore fallback and resurrected an unrelated
         // trashed capture.
-        if (node !== null && !undoApplyingRef.current) {
+        if (result.value.kind === "delete" && result.value.artifact !== undefined && !undoApplyingRef.current) {
+          const node = result.value.artifact.node;
           const rows = projectV2LayersToOverlayRows(
             [{ ...node, visible: true }],
             record.id,
@@ -7359,12 +7355,6 @@ function EditorLoaded({
           setTool("pointer");
           return;
         }
-        // Snapshot the pre-crop canvas dims BEFORE dispatching so the
-        // undo entry knows what to restore on ⌘Z. Reading after the
-        // dispatch would race the events:captures:changed broadcast
-        // (which refetches the record with the new dims).
-        const previousWidthPx = record.width_px;
-        const previousHeightPx = record.height_px;
         const result = await dispatchEdit({ kind: "crop", rect });
         if (!result.ok) {
           // eslint-disable-next-line no-console
@@ -7372,18 +7362,17 @@ function EditorLoaded({
           return;
         }
         if (result.value.kind === "crop" && !undoApplyingRef.current) {
-          // Compute the post-crop dims the dispatcher just landed.
-          // For v2 it's previous × rect.{w,h} (rounded); for v1 the
-          // canvas doesn't change, but we still record the entry so
-          // ⌘Z removes the just-inserted CropOverlay row.
-          let newWidthPx = previousWidthPx;
-          let newHeightPx = previousHeightPx;
-          if (record.bundle_format_version >= 2) {
-            newWidthPx = Math.max(1, Math.round(rect.w * previousWidthPx));
-            newHeightPx = Math.max(1, Math.round(rect.h * previousHeightPx));
-          }
+          // Use the committed dimensions and rounded viewport from main;
+          // broadcasts or another queued edit may have changed the model.
+          const {
+            previousWidthPx,
+            previousHeightPx,
+            widthPx: newWidthPx,
+            heightPx: newHeightPx,
+            rect: committedRect
+          } = result.value.artifact;
           recordCropRef.current?.({
-            rect,
+            rect: committedRect,
             previousWidthPx,
             previousHeightPx,
             newWidthPx,

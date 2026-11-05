@@ -4370,6 +4370,10 @@ export type CaptureEnrichmentSummary = {
  * shape and the response shape. The handler signature in main/command-bus.ts
  * is generated from this via mapped types.
  */
+/** Main-sealed identity for one IPC document's reserved history operation.
+ * Acknowledgement retires the sequence permanently for that document. */
+export type LayerHistoryReplayId = { owner: string; sequence: number };
+
 export type Commands = {
   // ---- capture ----
   /** Headless region capture. Agents call this; humans go through `capture:interactive`. */
@@ -4828,6 +4832,27 @@ export type Commands = {
     req: { captureId: string; layer: BundleLayerNode; bumpZIndexToMax?: boolean };
     res: BundleLayerNode;
   };
+  /** IPC-main-document only. Reserve before mutation, then atomically replay
+   * a history group. Committed duplicates read current state without writes;
+   * acknowledged/unknown sequences fail closed, never become fresh writes. */
+  "layers:replayHistory": {
+    req: { phase: "reserve"; captureId: string; removeIds?: string[] } | {
+      phase: "apply"; captureId: string; replayId: LayerHistoryReplayId;
+      restore: BundleLayerNode[]; removeIds: string[];
+      /** Conflict preconditions are independent of the desired restore nodes.
+       * Omitted restore expectations default to the targets for first replay;
+       * removal expectations come from reserve and survive lost replies. */
+      expectedRejected?: BundleLayerNode[]; expectedRemovals?: BundleLayerNode[];
+    };
+    res: { phase: "reserved"; replayId: LayerHistoryReplayId; removals: BundleLayerNode[] } | {
+      phase: "applied"; record: CaptureRecord; layers: BundleLayerNode[];
+    };
+  };
+  /** IPC owner only. Frees a receipt while retaining its retirement watermark. */
+  "layers:ackHistoryReplay": {
+    req: { captureId: string; replayId: LayerHistoryReplayId };
+    res: void;
+  };
   /** Update an existing live layer in place, preserving its id and
    *  z-order. Intended for style/geometry edits where the annotation is
    *  conceptually the same object (for example: make this arrow
@@ -4858,7 +4883,7 @@ export type Commands = {
   /** Soft-delete a layer. Cascades rejected_at transitively to every
    *  descendant in one transaction — leaving orphaned-but-live
    *  children would render undefined behavior. */
-  "layers:delete": { req: { id: string }; res: void };
+  "layers:delete": { req: { id: string }; res: { node: BundleLayerNode | null } };
 
   /** Atomically apply a v2 viewport crop: re-normalize existing layers,
    *  insert a crop marker layer, and update the capture canvas
@@ -4868,12 +4893,17 @@ export type Commands = {
       captureId: string;
       rect: { x: number; y: number; w: number; h: number };
       source?: "user" | "codex";
+      /** IPC undo/Reset only: an inverse viewport enclosing the current canvas. */
+      restore?: true;
     };
     res: {
       previousWidthPx: number;
       previousHeightPx: number;
       widthPx: number;
       heightPx: number;
+      /** Committed snapshot, read within the same transaction as the crop. */
+      record: CaptureRecord;
+      layers: BundleLayerNode[];
     };
   };
 

@@ -813,6 +813,21 @@ export function rejectLayer(id: string): string | null {
   return captureId;
 }
 
+/** Read the undo payload in the same transaction that rejects the row. A
+ * renderer snapshot may predate a queued geometry/style write. */
+export function rejectLayerWithSnapshot(id: string): { captureId: string; node: BundleLayerNode } | null {
+  const db = getDb();
+  return db.transaction(() => {
+    const row = db.prepare<[string], { capture_id: string }>(
+      "SELECT capture_id FROM layers WHERE id = ? AND rejected_at IS NULL"
+    ).get(id);
+    if (row === undefined) return null;
+    const node = loadLayer(id);
+    rejectLayer(id);
+    return { captureId: row.capture_id, node };
+  })();
+}
+
 /**
  * Inverse of rejectLayer. Only un-stamps descendants whose
  * rejected_at matches the parent group's stamp — children that were
@@ -901,7 +916,7 @@ function splitNodeForStorage(node: BundleLayerNode): {
   };
 }
 
-function loadLayer(id: string): BundleLayerNode {
+export function loadLayer(id: string): BundleLayerNode {
   const row = getDb()
     .prepare<[string], DbLayerRow>(
       `SELECT id, capture_id, parent_id, kind, z_index, name, visible,

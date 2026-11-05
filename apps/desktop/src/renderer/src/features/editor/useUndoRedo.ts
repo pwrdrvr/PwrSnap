@@ -1,8 +1,8 @@
 // Session-memory undo/redo stack for editor layer edits.
 //
-// The DB doesn't track an edit history per se — every layer change
-// goes through `layers:upsert` / `layers:delete` (via the dispatcher)
-// and bumps the capture's `edits_version`. We don't need persistent
+// The DB doesn't track an edit history per se — layer changes go
+// through the model's dispatcher and the main command bus, and writes
+// bump the capture's `edits_version`. We don't need persistent
 // time-travel; we just need the user to be able to walk back the
 // operations they did in *this* editor session.
 //
@@ -52,6 +52,7 @@ import type {
   CropRect,
   EditOpResult,
   GeometryUpdate,
+  HistoryReplayIdentity,
   LayerEditOp,
   OverlayPatch
 } from "./useCaptureModel";
@@ -116,12 +117,10 @@ export type EditOp =
       newHeightPx: number;
     }
   /** Phase 3.5 — drag of an existing overlay's transform handle, or
-   *  edit of its style via the popover. The update IPC is implemented
-   *  as delete-plus-insert (the overlays/layers surface is INSERT-only
-   *  + id-collision-on-upsert respectively), so each undo/redo cycle
-   *  also lands a fresh id. We track that via `currentIdRef` — a
-   *  mutable id pointer kept inside the EditOp so the next undo/redo
-   *  call targets the latest live row in the chain.
+   *  edit of its style via the popover. The dispatcher updates the
+   *  existing layer in place, preserving identity through undo/redo.
+   *  `currentIdRef` retains the identity accepted by the dispatcher
+   *  for callers and the next replay.
    *
    *  `previousGeometry` / `nextGeometry` carry the pre/post-edit
    *  geometry; undo replays the previous, redo replays the next. Same
@@ -273,12 +272,10 @@ export type UseUndoRedoResult = {
   }) => void;
   /** Phase 3.5 — record a geometry change (transform-handle drag).
    *  `previousGeometry` is the PRE-DRAG geometry, `nextGeometry` is
-   *  the POST-DRAG geometry. `currentIdRef` is a mutable id pointer
-   *  the hook updates after each undo/redo cycle (the update IPC mints
-   *  a fresh id on every replay). Caller initializes it with the
-   *  post-edit layer id (typically `result.value.artifact.node.id`).
-   *  The caller is responsible for updating the selection model to
-   *  follow `currentIdRef.current` on undo/redo. */
+   *  the POST-DRAG geometry. Caller initializes `currentIdRef` with
+   *  the post-edit layer id (typically `result.value.artifact.node.id`).
+   *  The hook refreshes it from dispatcher replies; in-place v2
+   *  updates preserve that id and the caller's selection. */
   recordGeometry: (
     entry: {
       currentIdRef: { current: string };
@@ -718,6 +715,11 @@ export function useUndoRedo(opts: {
     // handler.
   }, []);
 
+  const replayIdentitiesRef = useRef(new WeakMap<EditOp, { direction: "undo" | "redo"; identity: HistoryReplayIdentity }>());
+  // Desired restore targets need not equal the state last deleted: crops can
+  // round coordinates and visibility/z-order can change outside this history.
+  const rejectedStatesRef = useRef(new WeakMap<CreateDeleteItem, BundleLayerNode>());
+
   // Apply a single EditOp's INVERSE through the dispatcher. Shared
   // between undo (inverse of the latest past op) and redo (re-apply the
   // future op = inverse of what undo just did).
@@ -744,58 +746,36 @@ export function useUndoRedo(opts: {
       // We unify by computing the op to dispatch as "if undo, inverse;
       // if redo, op". For create+delete this is a clean inversion; for
       // crop, the inverse is restoring the previous canvas dims.
-      if (op.kind === "create") {
-        const isInverse = direction === "undo";
-        // Loop over every recorded item so multi-create bursts
-        // (paste, duplicate, etc.) restore/redo EVERY layer, not
-        // just the most recent. Pre-fix the EditOp held a single
-        // row and the coalesce path swapped it on each push —
-        // earlier rows in a burst were silently lost.
-        for (const item of op.items) {
-          if (isInverse) {
-            // Delete the just-created layer.
-            // eslint-disable-next-line no-await-in-loop
-            await step(async () => { await dispatchEdit({ kind: "delete", id: item.row.id }); });
-            continue;
-          }
-          // redo of create — re-upsert. The node carries its z_index;
-          // layers:upsert defaults to preserving it (no
-          // bumpZIndexToMax), so the redone layer lands at its original
-          // logical position. `item.node` is always set for v2 creates;
-          // the `null` fallback is dead but kept for the recorder's
-          // optional-node shape.
-          const node = item.node;
-          if (node !== null) {
-            // eslint-disable-next-line no-await-in-loop
-            await step(async () => { await dispatchEdit({ kind: "upsert", node }); });
+      if (op.kind === "create" || op.kind === "delete" || op.kind === "replace") {
+        const restore = op.kind === "replace"
+          ? (direction === "undo" ? op.removed : op.added)
+          : ((op.kind === "delete") === (direction === "undo") ? op.items : []);
+        const remove = op.kind === "replace"
+          ? (direction === "undo" ? op.added : op.removed)
+          : ((op.kind === "create") === (direction === "undo") ? op.items : []);
+        const nodes = restore.flatMap((item) => item.node === null ? [] : [item.node]);
+        if (nodes.length === 0 && remove.length === 0) return;
+        let replay = replayIdentitiesRef.current.get(op);
+        if (replay === undefined || replay.direction !== direction) {
+          replay = { direction, identity: { current: null } };
+          replayIdentitiesRef.current.set(op, replay);
+        }
+        const expectedRejected = restore.flatMap((item) => item.node === null ? [] : [rejectedStatesRef.current.get(item) ?? item.node]);
+        const result = await dispatchEdit({ kind: "historyReplay", identity: replay.identity, restore: nodes, removeIds: remove.map((item) => item.row.id), expectedRejected });
+        if (result.ok && result.value.kind === "historyReplay") {
+          const removedById = new Map((result.value.removals ?? []).map((node) => [node.id, node]));
+          for (const item of remove) {
+            const rejected = removedById.get(item.row.id);
+            if (rejected !== undefined) rejectedStatesRef.current.set(item, rejected);
           }
         }
-        return;
-      }
-      if (op.kind === "delete") {
-        const isInverse = direction === "undo";
-        // Same loop discipline as create above. The user-reported
-        // bug ("I selected two text items, hit delete, only ONE
-        // came back on undo and the other CANNOT BE RECOVERED")
-        // was the pre-fix shape losing earlier items when push()
-        // coalesced — fixed by accumulating into items[] and
-        // looping here.
-        for (const item of op.items) {
-          if (isInverse) {
-            // Undo of delete — re-create the layer. The node carries
-            // its original z_index so the restored layer comes back
-            // where it was, not on top (layers:upsert preserves
-            // node.z_index when bumpZIndexToMax isn't set).
-            const node = item.node;
-            if (node !== null) {
-              // eslint-disable-next-line no-await-in-loop
-              await step(async () => { await dispatchEdit({ kind: "upsert", node }); });
-            }
-            continue;
-          }
-          // redo of delete — re-delete.
-          // eslint-disable-next-line no-await-in-loop
-          await step(async () => { await dispatchEdit({ kind: "delete", id: item.row.id }); });
+        replayIdentitiesRef.current.delete(op);
+        const replayId = replay.identity.current;
+        if (replayId !== null) {
+          // Receipt cleanup cannot turn a confirmed replay into an apparent
+          // failure. A lost/rejected ACK leaves bounded evidence in main;
+          // its sequence is retired even if the acknowledgement is repeated.
+          void dispatchEditRef.current({ kind: "historyAck", replayId }).catch(() => undefined);
         }
         return;
       }
@@ -836,10 +816,11 @@ export function useUndoRedo(opts: {
             op.newWidthPx > 0 ? op.previousWidthPx / op.newWidthPx : 1;
           const rectH =
             op.newHeightPx > 0 ? op.previousHeightPx / op.newHeightPx : 1;
-          const cw = op.rect.w;
-          const ch = op.rect.h;
-          const rectX = cw > 0 ? -op.rect.x / cw : 0;
-          const rectY = ch > 0 ? -op.rect.y / ch : 0;
+          // Main rounds the effective extent to integer pixels. Keep the
+          // bounded request for redo and invert its origin using those
+          // committed dimensions, rather than the unrounded request width.
+          const rectX = -op.rect.x * rectW;
+          const rectY = -op.rect.y * rectH;
           await step(async () => {
             await dispatchEdit({
               kind: "crop",
@@ -854,11 +835,8 @@ export function useUndoRedo(opts: {
         return;
       }
       if (op.kind === "geometry") {
-        // Phase 3.5 — dispatch updateGeometry against the chain's
-        // CURRENT id (the post-edit id from the last cycle). The
-        // dispatcher delete-plus-inserts a new row; we capture the
-        // fresh id and write it back onto currentIdRef so the next
-        // undo/redo targets the latest live row.
+        // Dispatch against the accepted layer identity and retain it
+        // for the next replay. The v2 update preserves the row's id.
         //
         // Loop over EVERY item so multi-drag undo restores every
         // layer's geometry, not just the first. Same items[]
@@ -895,25 +873,6 @@ export function useUndoRedo(opts: {
             op.currentIdRef.current = result.value.artifact.node.id;
           }
         });
-        return;
-      }
-      if (op.kind === "replace") {
-        // Put the other side back before taking this side away, so a
-        // replay that fails halfway leaves a duplicate rather than a
-        // hole. Upserts keep each node's own z_index.
-        const restore = direction === "undo" ? op.removed : op.added;
-        const take = direction === "undo" ? op.added : op.removed;
-        for (const item of restore) {
-          const node = item.node;
-          if (node !== null) {
-            // eslint-disable-next-line no-await-in-loop
-            await step(async () => { await dispatchEdit({ kind: "upsert", node }); });
-          }
-        }
-        for (const item of take) {
-          // eslint-disable-next-line no-await-in-loop
-          await step(async () => { await dispatchEdit({ kind: "delete", id: item.row.id }); });
-        }
         return;
       }
       // Exhaustiveness check — any new EditOp kind without a branch

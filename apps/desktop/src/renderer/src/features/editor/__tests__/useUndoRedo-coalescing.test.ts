@@ -30,11 +30,27 @@ import {
 } from "vitest";
 import type { BundleLayerNode, OverlayRow } from "@pwrsnap/shared";
 
+import type { LayerEditOp } from "../useCaptureModel";
+
 import {
   useUndoRedo,
   type UndoRedoDispatchEdit,
   type UseUndoRedoResult
 } from "../useUndoRedo";
+
+// Project a single atomic history request into its intended mutations for
+// coalescing/content assertions. The SQLite integration suite checks the actual
+// command count, transaction boundary, live-ID conflicts and replay receipts.
+function replayedEdits(mock: { mock: { calls: [LayerEditOp][] } }): [LayerEditOp][] {
+  return mock.mock.calls.flatMap(([op]): [LayerEditOp][] => {
+    if (op.kind === "historyReplay") return [
+      ...op.restore.map((node): [LayerEditOp] => [{ kind: "upsert", node }]),
+      ...op.removeIds.map((id): [LayerEditOp] => [{ kind: "delete", id }])
+    ];
+    if (op.kind === "historyAck") return [];
+    return [[op]];
+  });
+}
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -45,7 +61,7 @@ let nowSpy: MockInstance<() => number>;
 let virtualNow = 0;
 
 // Default v2 dispatchEdit spy — every undo/redo op flows through it.
-// Tests assert against `dispatchEditMock.mock.calls`. Content-check
+// Tests assert against `replayedEdits(dispatchEditMock)`. Content-check
 // tests can install their own dispatchEdit via the Probe.
 const dispatchEditMock = vi.fn<UndoRedoDispatchEdit>();
 
@@ -60,6 +76,7 @@ beforeEach(() => {
   let n = 0;
   dispatchEditMock.mockImplementation(async (op) => {
     n += 1;
+    if (op.kind === "historyReplay" || op.kind === "historyAck") return { ok: true, value: { kind: op.kind } };
     if (op.kind === "upsert") {
       return { ok: true, value: { kind: "upsert", artifact: { format: 2, node: op.node } } };
     }
@@ -156,7 +173,7 @@ async function drainUndo(
 /** Ids the recorded dispatches restored (undo of a delete / redo of a
  *  create), in call order. */
 function upsertedIds(mock: typeof dispatchEditMock): string[] {
-  return mock.mock.calls
+  return replayedEdits(mock)
     .map((c) => c[0])
     .filter((op): op is Extract<typeof op, { kind: "upsert" }> => op.kind === "upsert")
     .map((op) => op.node.id);
@@ -165,7 +182,7 @@ function upsertedIds(mock: typeof dispatchEditMock): string[] {
 /** Ids the recorded dispatches removed (undo of a create / redo of a
  *  delete), in call order. */
 function deletedIds(mock: typeof dispatchEditMock): string[] {
-  return mock.mock.calls
+  return replayedEdits(mock)
     .map((c) => c[0])
     .filter((op): op is Extract<typeof op, { kind: "delete" }> => op.kind === "delete")
     .map((op) => op.id);
@@ -632,7 +649,7 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
       await api!.undo();
     });
 
-    const upsertNodes = dispatchEditMock.mock.calls
+    const upsertNodes = replayedEdits(dispatchEditMock)
       .map((c) => c[0])
       .filter((op): op is Extract<typeof op, { kind: "upsert" }> => op.kind === "upsert")
       .map((op) => op.node);
@@ -709,7 +726,7 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
     });
 
     // Two restores, EACH carrying its original node z_index.
-    const upsertNodes = dispatchEditMock.mock.calls
+    const upsertNodes = replayedEdits(dispatchEditMock)
       .map((c) => c[0])
       .filter((op): op is Extract<typeof op, { kind: "upsert" }> => op.kind === "upsert")
       .map((op) => op.node);
@@ -767,7 +784,7 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
     // Default replace mode → only the LAST recorded delete makes it
     // into the entry's items[]. This is the bug class the flag
     // exists to opt out of for different-layer bursts.
-    const upsertNodes = dispatchEditMock.mock.calls
+    const upsertNodes = replayedEdits(dispatchEditMock)
       .map((c) => c[0])
       .filter((op): op is Extract<typeof op, { kind: "upsert" }> => op.kind === "upsert");
     expect(upsertNodes).toHaveLength(1);
@@ -831,7 +848,7 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
     });
 
     // All three pasted ids should have been delete-dispatched.
-    const deletedIds = dispatchEditMock.mock.calls
+    const deletedIds = replayedEdits(dispatchEditMock)
       .map((c) => c[0])
       .filter((op): op is Extract<typeof op, { kind: "delete" }> => op.kind === "delete")
       .map((op) => op.id);

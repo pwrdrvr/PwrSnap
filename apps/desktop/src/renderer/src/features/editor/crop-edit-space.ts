@@ -111,6 +111,8 @@ export function forwardOpToStored(
       return { ...op, geometry: forwardGeometry(op.geometry, rect, naturalW, naturalH) };
     case "updateOverlay":
       return { ...op, patch: forwardPatch(op.patch, rect) };
+    case "historyReplay":
+    case "historyAck":
     case "delete":
     case "crop":
     case "reorder":

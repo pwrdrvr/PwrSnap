@@ -15,6 +15,7 @@ import type { CaptureDuplicateJob, CaptureEditSummary } from "./capture-duplicat
 import type { CaptureEnrichment, AiRunStatus } from "./ai-enrichment-schemas";
 import type { AiEnrichmentRateLimit } from "./ai-enrichment-rate-limit";
 import type { SizzleTimeline, SizzleTimelineInput, SizzleAsset } from "./sizzle-timeline";
+import type { SizzleNarrationCueInput } from "./sizzle-narration-alignment";
 import type { SizzleLaunchTemplateInput } from "./sizzle-launch-template";
 
 export type CaptureInvocationOrigin =
@@ -5986,6 +5987,14 @@ export type Commands = {
   "sizzle:importAsset": { req: { id: string; path: string }; res: SizzleAsset };
   "sizzle:importCapture": { req: { id: string; captureId: string }; res: SizzleAsset };
   "sizzle:applyLaunchTemplate": { req: { id: string; template: SizzleLaunchTemplateInput; expectedModifiedAt: string }; res: SizzleProject };
+  "sizzle:alignNarration": {
+    req: { id: string; cues: SizzleNarrationCueInput[]; tailFrames?: number; expectedModifiedAt: string };
+    res: { project: SizzleProject; timing: SizzleSpeechTiming };
+  };
+  "sizzle:runNarrationAlignmentJob": {
+    req: { project: SizzleProject; cues: SizzleNarrationCueInput[]; tailFrames: number };
+    res: { timeline: SizzleTimeline; timing: SizzleSpeechTiming };
+  };
   "sizzle:setTimeline": { req: { id: string; timeline: SizzleTimelineInput; expectedModifiedAt: string }; res: SizzleProject };
   "sizzle:setBindings": { req: { id: string; bindings: Record<string, string | number>; expectedModifiedAt: string }; res: SizzleProject };
   "sizzle:inspectFrames": { req: { id: string; frames: number[] }; res: { outputPath: string; widthPx: number; heightPx: number; renderId: string } };

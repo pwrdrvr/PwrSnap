@@ -1,4 +1,4 @@
-import type { SizzleTimelineInput, SizzleLaunchTemplateInput } from "@pwrsnap/shared";
+import type { SizzleTimelineInput, SizzleLaunchTemplateInput, SizzleNarrationCueInput } from "@pwrsnap/shared";
 import {
   err,
   formatCaptureEditSummary,
@@ -708,6 +708,13 @@ export class LocalAgentToolService {
       return ok({ threadId: thread.threadId, status: thread.status, assistantSummary: history.ok ? lastAssistantText(history.value.messages) : null });
     }
     return ok({ threadId: thread.threadId, status: thread.status });
+  }
+
+  async sizzleAlignNarration(input: { projectId: string; cues: SizzleNarrationCueInput[]; tailFrames?: number; expectedModifiedAt: string }, ctx: LocalAgentToolContext): Promise<Result<unknown, PwrSnapError>> {
+    const result = await bus.dispatch("sizzle:alignNarration", { id: input.projectId, cues: input.cues, expectedModifiedAt: input.expectedModifiedAt, ...(input.tailFrames === undefined ? {} : { tailFrames: input.tailFrames }) }, ctx.commandContext);
+    if (!result.ok) return result;
+    const { outputPath, ...project } = result.value.project;
+    return ok({ ...project, hasOutput: outputPath !== null, narrationTiming: result.value.timing });
   }
 
   async sizzleTemplate(input: { projectId: string; template: SizzleLaunchTemplateInput; expectedModifiedAt: string }, ctx: LocalAgentToolContext): Promise<Result<unknown, PwrSnapError>> {

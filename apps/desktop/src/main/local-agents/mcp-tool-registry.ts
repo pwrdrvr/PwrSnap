@@ -3,6 +3,8 @@ import type { LocalAgentCapability, PwrSnapError } from "@pwrsnap/shared";
 import {
   SizzleTimelineSchema,
   SizzleLaunchTemplateSchema,
+  SizzleNarrationCuesSchema,
+  type SizzleNarrationCueInput,
   type SizzleLaunchTemplateInput,
   type SizzleTimelineInput,
   err,
@@ -268,6 +270,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
     },
     ctx: LocalAgentToolContext
   ) => Promise<Result<unknown, PwrSnapError>>;
+  sizzleAlignNarration?: (input: { projectId: string; cues: SizzleNarrationCueInput[]; tailFrames?: number; expectedModifiedAt: string }, ctx: LocalAgentToolContext) => Promise<Result<unknown, PwrSnapError>>;
   sizzleTemplate?: (input: { projectId: string; template: SizzleLaunchTemplateInput; expectedModifiedAt: string }, ctx: LocalAgentToolContext) => Promise<Result<unknown, PwrSnapError>>;
   sizzleImportCapture?: (input: { projectId: string; captureId: string }, ctx: LocalAgentToolContext) => Promise<Result<unknown, PwrSnapError>>;
   sizzleAudioQa?: (input: { projectId: string }, ctx: LocalAgentToolContext) => Promise<Result<unknown, PwrSnapError>>;
@@ -696,9 +699,16 @@ export function createDefaultLocalAgentMcpTools(deps: {
       dispatch: deps.captureFamily
     });
   }
+  if (deps.sizzleAlignNarration) tools.push({
+    name: "pwrsnap_sizzle_align_narration", title: "Align Reel to Continuous Narration",
+    description: "Preferred for a layered launch reel: generate or reuse its ONE complete narration take, measure word timestamps with Sizzle's existing sequence timing engine, and move visual scene boundaries to phrase starts or ends. Supply one cue for every scene after the first. Does not slice, fade, speed-fit, or trim narration at visual boundaries. Saves measured frame durations and returns word timings; preview and full render then use the same timeline. Missing or reordered phrases fail for explicit correction. May bill speech generation and transcription through the configured OpenAI credential. Re-run after changing spoken bindings. Requires current expectedModifiedAt.",
+    inputSchema: { projectId: z.string().min(1), expectedModifiedAt: z.string().min(1), cues: SizzleNarrationCuesSchema, tailFrames: z.number().int().min(0).max(300).optional() },
+    requiredCapabilities: ["sizzle.compose"],
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }, dispatch: deps.sizzleAlignNarration
+  });
   if (deps.sizzleTemplate) tools.push({
     name: "pwrsnap_sizzle_apply_launch_template", title: "Apply Launch Reel Template",
-    description: "Build a layered 32.5-second launch format from product copy and imported assets. Prefer narrationText or voiceoverAsset for ONE continuous voiceover across all scenes. Per-scene voiceoverAssets/narration arrays are only for explicitly requested independent takes. Image zoom is off. Visual slots here are fixed; use the existing sequence composition tools for narration-led visual beats with word/phrase anchors. Includes sample-free music. Saves data; synthesis and rendering start only when requested.",
+    description: "Build a layered 32.5-second launch format from product copy and imported assets. Prefer narrationText or voiceoverAsset for ONE continuous voiceover across all scenes. Per-scene voiceoverAssets/narration arrays are only for explicitly requested independent takes. Image zoom is off. Then call pwrsnap_sizzle_align_narration with phrase cues to replace the initial visual slots with measured narration timing. Existing sequence compositions use the same phrase engine. Includes sample-free music. Saves data; synthesis and rendering start only when requested.",
     inputSchema: { projectId: z.string().min(1), expectedModifiedAt: z.string().min(1), template: SizzleLaunchTemplateSchema }, requiredCapabilities: ["sizzle.compose"],
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }, dispatch: deps.sizzleTemplate
   });

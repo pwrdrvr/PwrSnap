@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { app } from "electron";
 import type {
   SizzleSequenceTranscriptPhrase,
+  SizzleTimelineAudio,
   SizzleSpeechTiming,
   SizzleSpeechTimingWarning,
   SizzleTtsModel,
@@ -31,17 +32,20 @@ type RawTranscribedWord = {
 export type SpeechTimingTranscriber = (args: {
   apiKey: string;
   audioPath: string;
+  signal?: AbortSignal;
 }) => Promise<RawTranscribedWord[]>;
 
 export type SpeechTimingRequest = {
   provider: SizzleTtsProvider;
-  model: SizzleTtsModel;
-  voice: SizzleVoice;
+  model: SizzleTtsModel | Extract<SizzleTimelineAudio["source"], { kind: "speech" }>["model"];
+  voice: SizzleVoice | Extract<SizzleTimelineAudio["source"], { kind: "speech" }>["voice"];
   text: string;
   audioPath: string;
   durationSec: number;
   apiKey: string | null;
   transcribe?: SpeechTimingTranscriber;
+  signal?: AbortSignal;
+  requirePrecise?: boolean;
 };
 
 export type SpeechTimingResult = SizzleSpeechTiming & {
@@ -51,6 +55,7 @@ export type SpeechTimingResult = SizzleSpeechTiming & {
 export async function resolveSpeechTiming(
   req: SpeechTimingRequest
 ): Promise<SpeechTimingResult> {
+  req.signal?.throwIfAborted();
   const text = req.text.trim();
   const warnings: SizzleSpeechTimingWarning[] = [];
   const audioHash = await hashFile(req.audioPath).catch((cause) => {
@@ -62,14 +67,16 @@ export async function resolveSpeechTiming(
   });
   const cachePath = join(speechTimingCacheDir(), `${speechTimingCacheKey(req, audioHash)}.json`);
   const cached = audioHash.length > 0 ? await readCachedTiming(cachePath) : null;
-  if (cached !== null) return { ...cached, cached: true };
+  req.signal?.throwIfAborted();
+  if (cached !== null && (!req.requirePrecise || cached.quality === "precise")) return { ...cached, cached: true };
 
   let timing: SizzleSpeechTiming | null = null;
   if (req.provider === "openai" && req.apiKey !== null && req.apiKey.length > 0) {
     try {
       const words = await (req.transcribe ?? transcribeWithOpenAi)({
         apiKey: req.apiKey,
-        audioPath: req.audioPath
+        audioPath: req.audioPath,
+        ...(req.signal ? { signal: req.signal } : {})
       });
       const normalized = normalizeTranscribedWords(words, req.durationSec);
       if (normalized.length > 0) {
@@ -87,6 +94,7 @@ export async function resolveSpeechTiming(
         });
       }
     } catch (cause) {
+      req.signal?.throwIfAborted();
       warnings.push({
         code: "precise_failed",
         message: `Precise narration timing failed: ${messageOf(cause)}`
@@ -99,6 +107,7 @@ export async function resolveSpeechTiming(
     });
   }
 
+  req.signal?.throwIfAborted();
   timing ??= approximateSpeechTiming(text, req.durationSec, warnings);
   if (audioHash.length > 0) {
     await writeCachedTiming(cachePath, timing).catch((cause) => {
@@ -240,7 +249,10 @@ export function speechTimingCacheKey(
 async function transcribeWithOpenAi(args: {
   apiKey: string;
   audioPath: string;
+  signal?: AbortSignal;
 }): Promise<RawTranscribedWord[]> {
+  const info = await stat(args.audioPath);
+  if (info.size > 24 * 1024 ** 2) throw new Error("Narration timing input exceeds 24 MiB");
   const audio = await readFile(args.audioPath);
   const form = new FormData();
   form.append("file", new Blob([audio], { type: "audio/mpeg" }), "narration.mp3");
@@ -250,11 +262,14 @@ async function transcribeWithOpenAi(args: {
   const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
     method: "POST",
     headers: { Authorization: `Bearer ${args.apiKey}` },
-    body: form
+    body: form,
+    redirect: "error",
+    signal: args.signal
+      ? AbortSignal.any([args.signal, AbortSignal.timeout(120_000)])
+      : AbortSignal.timeout(120_000)
   });
   if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`OpenAI transcription HTTP ${res.status}: ${body.slice(0, 160)}`);
+    throw new Error(`OpenAI transcription HTTP ${res.status}`);
   }
   const body = (await res.json()) as {
     words?: Array<{ word?: unknown; start?: unknown; end?: unknown }>;

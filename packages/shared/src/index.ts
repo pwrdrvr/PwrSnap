@@ -32,6 +32,7 @@ export * from "./sizzle-sequence-timeline";
 export * from "./sizzle-timeline";
 export * from "./sizzle-timeline-svg";
 export * from "./sizzle-launch-template";
+export * from "./sizzle-narration-alignment";
 export * from "./export-ladder";
 export * from "./local-agent-policy";
 export * from "./desktop-platform";

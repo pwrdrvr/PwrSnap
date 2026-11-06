@@ -23,15 +23,20 @@ projects without a `timeline`.
 5. Apply `pwrsnap_sizzle_apply_launch_template`, or send a complete timeline
    through `pwrsnap_sizzle_update`. Both require `expectedModifiedAt` from the
    read. A concurrent change produces a refusal; read again before retrying.
-6. Inspect a frame or contact sheet with `pwrsnap_sizzle_inspect_frames` and
+6. For a narration-led reel, call `pwrsnap_sizzle_align_narration` with the
+   current revision and one phrase cue per scene after the first. It generates
+   or reuses one complete take, measures words with Sizzle's sequence timing
+   engine, and saves ordinary frame durations. This may bill speech and timing
+   transcription. Narration stays whole and untrimmed. See the example below.
+7. Inspect a frame or contact sheet with `pwrsnap_sizzle_inspect_frames` and
    an array of 1–12 absolute frame indices. This uses the movie renderer and
    does not synthesize audio. Inspect text fit and source framing here.
-7. Call the existing `pwrsnap_sizzle_render_preview` or `_render_full`.
+8. Call the existing `pwrsnap_sizzle_render_preview` or `_render_full`.
    Completed renders return protected MCP media plus scene-cache counts and
    narration fit/QA reports. Pass the typed resource link to the client's
    media handler. Full output is visible under the OS videos folder's
    `PwrSnap` directory and playable in the Library/Sizzle viewer.
-8. `pwrsnap_sizzle_audio_qa` transcribes the final mixed track, compares it
+9. `pwrsnap_sizzle_audio_qa` transcribes the final mixed track, compares it
    with the render's saved script when available, and measures loudness/peak.
    This explicitly requested step may spend a transcription request; identical
    audio reuses its transcript cache. It does not regenerate VO or pictures.
@@ -120,9 +125,13 @@ protection/typed confirmation, result sequence, and logo/end card.
 
 Supply product name/tagline/URL, copy for those scenes, feature labels, a
 numeric metric, terminal lines, and imported assets for the logo, overview,
-features, workflow, safety, and result. Optional `handoffImage` adds a wipe;
-`resultSequence` supplies progress screenshots; `workflowVideo` substitutes a
-live clip for the workflow still. The returned timeline can be edited freely.
+features, workflow, safety, and result. Each role accepts a live clip instead
+of a still: `overviewVideo`, `featuresVideo`, `workflowVideo`, `safetyVideo`, and
+`resultVideo`. Videos take precedence when both are supplied. `handoffVideo`
+or `handoffImage` adds a wipe; `resultSequence` supplies progress screenshots.
+Images have no default zoom. Keep real recordings as video layers; a still
+with camera motion does not replace a recording. The returned timeline can be
+edited freely, including source starts and playback rate.
 
 Prefer `narrationText` (one complete script) or `voiceoverAsset` (one complete
 recording). This creates one voice track across all visual scenes; moving a
@@ -133,17 +142,43 @@ The older nine `voiceoverAssets` or nine `narration` strings remain available
 for explicitly timed, independent takes. Omit all narration sources for a reel
 without voiceover. Narration strings may reference bindings such as
 `{{metricValue}}`. `voice`, `delivery`, and `pronunciation` control generated
-speech. Applying the template only saves data: paid synthesis begins on render.
+speech. Applying the template only saves data: paid synthesis begins on explicit
+alignment or rendering.
 The optional music bed uses a fixed seed, 128 BPM, and explicit drop/final hits.
 
 For narration-led capture workflows, Sizzle's existing **sequence scene** is
-the primary model: one continuous narration with visual beats anchored to
-transcribed phrases or offsets. Use the composition tools' sequence operations
-for that workflow. The layered launch template currently has fixed visual
-slots; it does not automatically resolve word anchors. A continuous voice track
-is supported here, but does not make that missing alignment feature equivalent
-to the existing sequence planner. Real app recordings should supply the demo
-shots; animating a screenshot is not a substitute for recorded app activity.
+the primary model: one narration with visual beats anchored to measured
+phrases. The layered timeline now uses that same word timing and phrase matcher
+through `pwrsnap_sizzle_align_narration`:
+
+```json
+{
+  "projectId": "sz_example",
+  "expectedModifiedAt": "<revision returned by get/template>",
+  "cues": [
+    {"sceneId": "context", "phrase": "He also runs Shopify"},
+    {"sceneId": "handoff", "phrase": "we've got it from here"},
+    {"sceneId": "features", "phrase": "Power Disk", "occurrence": 1},
+    {"sceneId": "benchmark", "phrase": "Over 33 million files"},
+    {"sceneId": "workflow", "phrase": "Your AI agent"},
+    {"sceneId": "safety", "phrase": "Home folders"},
+    {"sceneId": "result", "phrase": "Watch it all go"},
+    {"sceneId": "end", "phrase": "Power Disk", "occurrence": 2}
+  ],
+  "tailFrames": 30
+}
+```
+
+Each cue supports `edge: "start" | "end"`, a 1-based `occurrence`, and
+`offsetSec`. The first picture starts at zero. The final picture extends through
+the measured narration plus `tailFrames` (default 15, maximum 300). Layer windows
+and timed reveals scale to their new scenes; music hits move with their picture
+positions. Audio is one uninterrupted take at its generated/recorded speed.
+The response includes measured word timings and the saved project revision.
+Missing phrases, approximate timing, and reversed cue order fail explicitly;
+use the measured transcript spelling (for example `33` rather than `thirty
+three`) when correcting a phrase. Re-run alignment after changing spoken
+bindings. Preview, frame inspection, and final export all read the saved result.
 
 ## Audio and QA
 

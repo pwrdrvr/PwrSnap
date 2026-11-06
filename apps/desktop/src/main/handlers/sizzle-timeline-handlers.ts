@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import {
   SizzleTimelineSchema,
+  SizzleNarrationCuesSchema,
   buildSizzleLaunchTemplate,
   ok,
   err,
@@ -53,6 +54,59 @@ export function registerSizzleTimelineHandlers(
   store: SizzleStore,
   changed: () => Promise<void>
 ): void {
+  bus.register("sizzle:alignNarration", async (req, ctx) => {
+    const project = typeof req?.id === "string" ? await store.get(req.id) : null;
+    if (!project?.timeline)
+      return err({
+        kind: "validation",
+        code: "timeline_required",
+        message: "A versioned timeline is required"
+      });
+    const cues = SizzleNarrationCuesSchema.safeParse(req.cues);
+    if (!cues.success || req.expectedModifiedAt !== project.modifiedAt)
+      return err({
+        kind: "validation",
+        code: "invalid_alignment",
+        message: "Supply valid phrase cues and the current project revision"
+      });
+    const cancellationKey = `sizzle-alignment:${randomUUID()}`;
+    const cancel = (): void => {
+      bus.cancel(cancellationKey);
+      relayCancellationToPeer(cancellationKey);
+    };
+    const pending = bus.dispatch(
+      "sizzle:runNarrationAlignmentJob",
+      { project, cues: cues.data, tailFrames: req.tailFrames ?? 15 },
+      { principal: "bridge", cancellationKey }
+    );
+    await Promise.resolve();
+    ctx.signal.addEventListener("abort", cancel, { once: true });
+    if (ctx.signal.aborted) cancel();
+    try {
+      const aligned = await pending;
+      if (!aligned.ok) return aligned;
+      ctx.signal.throwIfAborted();
+      const updated = await store.setTimeline(
+        req.id,
+        aligned.value.timeline,
+        req.expectedModifiedAt
+      );
+      await changed();
+      return ok({ project: updated, timing: aligned.value.timing });
+    } catch (cause) {
+      return err({
+        kind: "validation",
+        code: "alignment_update_failed",
+        message:
+          cause instanceof Error
+            ? cause.message.slice(0, 500)
+            : "Narration alignment update failed"
+      });
+    } finally {
+      ctx.signal.removeEventListener("abort", cancel);
+      cancel();
+    }
+  });
   bus.register("sizzle:audioQa", async (req, ctx) => {
     const project =
       typeof req?.id === "string" ? await store.get(req.id) : null;

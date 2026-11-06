@@ -10,6 +10,8 @@ describe("timeline permission boundaries", () => {
       expect(satisfiesLocalAgentCommandRequirement(capabilities, requirement)).toBe(capabilities.includes("sizzle.compose") && capabilities.includes("sizzle.assets.import"));
     }));
     expect(localAgentCommandRequirement("sizzle:runTimelineJob", {})).toBeNull();
+    expect(localAgentCommandRequirement("sizzle:runNarrationAlignmentJob", {})).toBeNull();
+    expect(localAgentCommandRequirement("sizzle:alignNarration", {})).toEqual({ all: ["sizzle.compose"] });
     expect(localAgentCommandRequirement("video:export", {})).toBeNull();
   });
   test("capture snapshots require edited-media access, while value edits do not grant media reads", () => {

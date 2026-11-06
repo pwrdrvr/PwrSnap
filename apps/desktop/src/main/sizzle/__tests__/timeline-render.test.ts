@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -255,6 +255,74 @@ describe("timeline cache and fixed narration slots", () => {
 });
 
 describe.skipIf(!available)("timeline media oracle (nonheaded)", () => {
+  it("keeps a quiet word ending when trimming silence from an already tight take", async () => {
+    const root = await temporary();
+    const source = join(root, "quiet-ending.wav");
+    // A loud syllable followed by a 100 ms, -54 dBFS consonant. The
+    // consonant is below the silence detector, but is still part of speech.
+    execFileSync(ffmpeg, [
+      "-v",
+      "error",
+      "-y",
+      "-f",
+      "lavfi",
+      "-i",
+      "aevalsrc=if(between(t\\,0.2\\,0.7)\\,0.1*sin(2*PI*440*t)\\,if(between(t\\,0.7\\,0.8)\\,0.002*sin(2*PI*1600*t)\\,0)):s=48000:d=1",
+      "-c:a",
+      "pcm_s16le",
+      source,
+    ]);
+    const assetsRoot = join(root, "assets"),
+      cacheRoot = join(root, "cache");
+    const asset = await importTimelineAsset(assetsRoot, source, ffmpeg);
+    const t = SizzleTimelineSchema.parse({
+      ...timeline(),
+      scenes: [{ id: "voice", durationFrames: 30, layers: [] }],
+      audio: [
+        {
+          id: "voice",
+          startFrame: 0,
+          durationFrames: 30,
+          trimSilence: true,
+          source: { kind: "asset", assetId: asset.id },
+        },
+      ],
+    });
+    await prepareTimelineAudio({
+      timeline: t,
+      assets: [asset],
+      assetsRoot,
+      cacheRoot,
+      ffmpeg,
+      apiKey: null,
+    });
+    const prepared = (await readdir(cacheRoot)).find((name) =>
+      /^track-.*\.wav$/.test(name),
+    )!;
+    const pcm = execFileSync(ffmpeg, [
+      "-v",
+      "error",
+      "-i",
+      join(cacheRoot, prepared),
+      "-f",
+      "s16le",
+      "-ac",
+      "1",
+      "-ar",
+      "48000",
+      "-",
+    ]);
+    let lastLoud = 0,
+      lastQuiet = 0;
+    for (let i = 0; i < pcm.length / 2; i++) {
+      const sample = Math.abs(pcm.readInt16LE(i * 2));
+      if (sample > 500) lastLoud = i;
+      if (sample > 10) lastQuiet = i;
+    }
+    // This oracle checks the output waveform, not the filter string or ASR
+    // guessing a complete word from a clipped prefix.
+    expect((lastQuiet - lastLoud) / 48000).toBeGreaterThan(0.09);
+  }, 30_000);
   it("sends delivery and pronunciation controls, verifies speech, and caches unchanged takes", async () => {
     const root = await temporary();
     const wavPath = join(root, "take.wav");

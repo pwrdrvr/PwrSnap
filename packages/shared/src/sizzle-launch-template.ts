@@ -17,13 +17,18 @@ export const SizzleLaunchTemplateSchema = z
       .regex(/^#[a-fA-F0-9]{6}$/)
       .default("#ff8a1f"),
     logo: asset,
-    overview: asset,
+    overview: asset.optional(),
     handoffImage: asset.optional(),
-    featuresImage: asset,
-    workflowImage: asset,
+    overviewVideo: asset.optional(),
+    handoffVideo: asset.optional(),
+    featuresVideo: asset.optional(),
+    safetyVideo: asset.optional(),
+    resultVideo: asset.optional(),
+    featuresImage: asset.optional(),
+    workflowImage: asset.optional(),
     workflowVideo: asset.optional(),
-    safetyImage: asset,
-    resultImage: asset,
+    safetyImage: asset.optional(),
+    resultImage: asset.optional(),
     resultSequence: z.array(asset).min(1).max(8).optional(),
     intro: copy,
     context: copy,
@@ -78,6 +83,10 @@ export const SizzleLaunchTemplateSchema = z
     music: z.boolean().default(true)
   })
   .strict()
+  .refine(data => Boolean((data.overview || data.overviewVideo) &&
+    (data.featuresImage || data.featuresVideo) && (data.workflowImage || data.workflowVideo) &&
+    (data.safetyImage || data.safetyVideo) && (data.resultImage || data.resultVideo || data.resultSequence)),
+    "Supply an image or live video for every visual role")
   .refine(
     (data) =>
       [
@@ -142,6 +151,13 @@ export function buildSizzleLaunchTemplate(
     fadeInFrames: 7,
     fadeOutFrames: 6
   });
+  const media = (
+    id: string, still: string | undefined, video: string | undefined,
+    x = 160, y = 70, width = 1600, height = 900
+  ): Extract<Layer, { kind: "image" | "video" }> => video
+    ? { kind: "video", id, assetId: video, x, y, width, height,
+        radius: 18, fadeInFrames: 7, fadeOutFrames: 6, endBehavior: "freeze" }
+    : image(id, still!, x, y, width, height);
   const rect = (
     id: string,
     x: number,
@@ -173,7 +189,7 @@ export function buildSizzleLaunchTemplate(
       id: "intro",
       durationFrames: 102,
       layers: [
-        image("overview", d.overview),
+        media("overview", d.overview, d.overviewVideo),
         darken,
         txt("headline", "{{intro}}", 120, 650, 1680, 110)
       ]
@@ -182,7 +198,7 @@ export function buildSizzleLaunchTemplate(
       id: "context",
       durationFrames: 74,
       layers: [
-        image("overview", d.overview),
+        media("overview", d.overview, d.overviewVideo),
         darken,
         txt("headline", "{{context}}", 110, 360, 1000, 100),
         ...d.features.slice(0, 4).flatMap((feature, i) => [
@@ -211,11 +227,11 @@ export function buildSizzleLaunchTemplate(
       id: "handoff",
       durationFrames: 67,
       layers: [
-        image("overview", d.overview),
-        ...(d.handoffImage
+        media("overview", d.overview, d.overviewVideo),
+        ...((d.handoffImage || d.handoffVideo)
           ? [
               {
-                ...image("reveal", d.handoffImage),
+                ...media("reveal", d.handoffImage, d.handoffVideo),
                 startFrame: 32,
                 wipeFrames: 20
               }
@@ -232,7 +248,7 @@ export function buildSizzleLaunchTemplate(
       id: "features",
       durationFrames: 149,
       layers: [
-        image("settings", d.featuresImage, 1000, 210, 850, 600),
+        media("settings", d.featuresImage, d.featuresVideo, 1000, 210, 850, 600),
         image("logo", d.logo, 80, 80, 150, 150),
         txt("product", "{{productName}}", 260, 90, 700, 100),
         ...d.features.map(
@@ -289,18 +305,7 @@ export function buildSizzleLaunchTemplate(
       id: "workflow",
       durationFrames: 119,
       layers: [
-        d.workflowVideo
-          ? {
-              kind: "video",
-              id: "workflow",
-              assetId: d.workflowVideo,
-              x: 900,
-              y: 150,
-              width: 960,
-              height: 600,
-              fadeInFrames: 7
-            }
-          : image("workflow", d.workflowImage, 900, 150, 960, 600),
+        media("workflow", d.workflowImage, d.workflowVideo, 900, 150, 960, 600),
         {
           kind: "terminal",
           id: "terminal",
@@ -320,7 +325,7 @@ export function buildSizzleLaunchTemplate(
       id: "safety",
       durationFrames: 157,
       layers: [
-        image("safety", d.safetyImage, 960, 200, 880, 540),
+        media("safety", d.safetyImage, d.safetyVideo, 960, 200, 880, 540),
         {
           kind: "terminal",
           id: "terminal",
@@ -352,11 +357,11 @@ export function buildSizzleLaunchTemplate(
       id: "result",
       durationFrames: 120,
       layers: [
-        ...(d.resultSequence ?? [d.resultImage]).map((assetId, i, list) => ({
+        ...(d.resultVideo ? [media("result-video", undefined, d.resultVideo)] : (d.resultSequence ?? [d.resultImage!]).map((assetId, i, list) => ({
           ...image(`result${i}`, assetId),
           startFrame: Math.floor((i * 120) / list.length),
           endFrame: Math.min(120, Math.floor(((i + 1) * 120) / list.length) + 7)
-        })),
+        }))),
         rect("caption-bg", 0, 890, 1920, 190, "#000000cc"),
         {
           ...txt("caption", "{{resultCaption}}", 60, 920, 1800, 72, d.accent),

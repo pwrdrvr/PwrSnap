@@ -222,6 +222,17 @@ describe("Sizzle's deterministic timeline contract", () => {
       resultCaption: "Done",
       narration: Array.from({ length: 9 }, () => "{{metricValue}} files"),
     };
+    const live = buildSizzleLaunchTemplate({ ...data,
+      overview: undefined, featuresImage: undefined, workflowImage: undefined,
+      safetyImage: undefined, resultImage: undefined,
+      overviewVideo: id, featuresVideo: id, workflowVideo: id,
+      safetyVideo: id, resultVideo: id, handoffVideo: id
+    });
+    const appLayers = live.scenes.flatMap(scene => scene.layers).filter(layer =>
+      (layer.kind === "image" || layer.kind === "video") && layer.id !== "logo");
+    expect(appLayers.length).toBeGreaterThan(5);
+    expect(appLayers.every(layer => layer.kind === "video")).toBe(true);
+    expect(() => buildSizzleLaunchTemplate({ ...data, overview: undefined })).toThrow("visual role");
     const t = buildSizzleLaunchTemplate(data);
     expect(sizzleTimelineFrames(t)).toBe(975);
     expect(t.scenes).toHaveLength(9);

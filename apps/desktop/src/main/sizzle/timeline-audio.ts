@@ -27,7 +27,7 @@ export type TimelineAudioReport = {
   transcript?: string;
   qa: "matched" | "not_requested";
 };
-export const TIMELINE_AUDIO_VERSION = 3;
+export const TIMELINE_AUDIO_VERSION = 4;
 const hash = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const exists = async (path: string): Promise<boolean> =>
@@ -373,6 +373,54 @@ async function speech(
   return { path, spokenText };
 }
 
+/** Materialize the complete, untrimmed narration for word alignment. The
+ * same content-addressed speech take is reused by subsequent renders. */
+export async function resolveTimelineNarrationSource(args: {
+  timeline: SizzleTimeline;
+  assets: SizzleAsset[];
+  assetsRoot: string;
+  cacheRoot: string;
+  apiKey: string | null;
+  signal?: AbortSignal;
+}): Promise<{ path: string; text: string; track: SizzleTimelineAudio }> {
+  const voices = args.timeline.audio.filter((track) => track.role === "voice");
+  const track = voices[0];
+  if (
+    voices.length !== 1 ||
+    !track ||
+    track.startFrame !== 0 ||
+    track.source.kind === "synth" ||
+    (track.source.kind === "asset" && track.source.trimStartSec !== 0)
+  )
+    throw new Error(
+      "Narration alignment requires one complete voice track starting at zero"
+    );
+  await mkdir(args.cacheRoot, { recursive: true });
+  if (track.source.kind === "speech") {
+    if (!args.apiKey)
+      throw new Error("Set an OpenAI API key before generating narration");
+    const result = await speech(
+      track.source,
+      args.timeline.bindings,
+      args.cacheRoot,
+      args.apiKey,
+      args.signal
+    );
+    return { path: result.path, text: result.spokenText, track };
+  }
+  const assetId = track.source.assetId;
+  const source = args.assets.find((asset) => asset.id === assetId);
+  if (!source || !["audio", "video"].includes(source.kind))
+    throw new Error("Narration asset is missing");
+  return {
+    path: timelineAssetPath(args.assetsRoot, source),
+    text: track.expectedText
+      ? resolveSizzleText(track.expectedText, args.timeline.bindings)
+      : "",
+    track
+  };
+}
+
 export async function prepareTimelineAudio(args: {
   timeline: SizzleTimeline;
   assets: SizzleAsset[];
@@ -475,8 +523,10 @@ export async function prepareTimelineAudio(args: {
       const probe = await probeTimelineMedia(ffmpeg, input, signal);
       if (track.role === "voice" && probe.durationSec - sourceStart > 600)
         throw new Error(`Narration source exceeds 10 minutes: ${track.id}`);
+      // Retain quiet consonants and breath tails below the detector threshold.
+      // Repeated trimming of already-tight takes must preserve their endings.
       const trim = track.trimSilence
-        ? ",silenceremove=start_periods=1:start_duration=0.03:start_threshold=-45dB,areverse,silenceremove=start_periods=1:start_duration=0.03:start_threshold=-45dB,areverse"
+        ? ",silenceremove=start_periods=1:start_duration=0.03:start_threshold=-45dB:start_silence=0.15,areverse,silenceremove=start_periods=1:start_duration=0.03:start_threshold=-45dB:start_silence=0.15,areverse"
         : "";
       await timelineProcess(
         ffmpeg,
@@ -534,7 +584,7 @@ export async function prepareTimelineAudio(args: {
           );
       }
       const filters = [
-        `atempo=${playbackRate.toFixed(8)}`,
+        ...(playbackRate === 1 ? [] : [`atempo=${playbackRate.toFixed(8)}`]),
         `apad=whole_dur=${slotSec}`,
         `atrim=duration=${slotSec}`,
         `volume=${track.volume}`

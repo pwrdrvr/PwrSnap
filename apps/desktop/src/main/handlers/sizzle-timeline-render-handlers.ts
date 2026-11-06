@@ -8,6 +8,7 @@ import {
   SizzleTimelineSchema,
   SizzleAssetSchema,
   validateSizzleTimelineAssets,
+  SizzleNarrationCuesSchema,
   sizzleTimelineFrames
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
@@ -26,10 +27,74 @@ import {
 } from "../sizzle/timeline-audio";
 import { renderTimelineInChild } from "../sizzle/timeline-worker-client";
 import { TIMELINE_RENDER_VERSION } from "../sizzle/timeline-render";
+import { alignTimelineNarration } from "../sizzle/timeline-narration";
 import { inspectTimelineAudio } from "../sizzle/timeline-audio-qa";
 
 /** Register with the agent process, which owns every cache deleter's gate. */
 export function registerSizzleTimelineRenderHandlers(): void {
+  bus.register("sizzle:runNarrationAlignmentJob", async (req, ctx) => {
+    if (ctx.principal !== "bridge")
+      return err({
+        kind: "permission",
+        code: "internal_job",
+        message: "Narration alignment must enter through the Sizzle handlers"
+      });
+    try {
+      const timeline = SizzleTimelineSchema.parse(req.project.timeline);
+      const assets = SizzleAssetSchema.array()
+        .max(500)
+        .parse(req.project.assets ?? []);
+      const cues = SizzleNarrationCuesSchema.parse(req.cues);
+      if (
+        !Number.isInteger(req.tailFrames) ||
+        req.tailFrames < 0 ||
+        req.tailFrames > 300
+      )
+        throw new Error("Narration end padding must be 0–300 frames");
+      validateSizzleTimelineAssets(timeline, assets);
+      const ffmpeg = resolveFfmpegPath();
+      if (!ffmpeg) throw new Error("Narration alignment requires FFmpeg");
+      const key = createHash("sha256")
+        .update(
+          JSON.stringify({ timeline, assets, cues, tailFrames: req.tailFrames })
+        )
+        .digest("hex");
+      return await runGatedCacheWrite(
+        "sizzle-narration-alignment",
+        key,
+        async (signal) => {
+          const apiKey = await new DesktopSecretStore({
+            filePath: join(getDataRoot(), "pwrsnap-secrets.bin")
+          }).getValue("openaiApiKey");
+          return ok(
+            await alignTimelineNarration({
+              timeline,
+              assets,
+              cues,
+              tailFrames: req.tailFrames,
+              assetsRoot: getSizzleAssetsRoot(),
+              cacheRoot: join(getCacheRoot(), "sizzle-timeline", "audio"),
+              ffmpeg,
+              apiKey,
+              signal
+            })
+          );
+        },
+        ctx.signal
+      );
+    } catch (cause) {
+      const message =
+        cause instanceof Error &&
+        /^(Narration |Set an OpenAI|Speech generation failed)/.test(cause.message)
+          ? cause.message.slice(0, 700)
+          : "Narration alignment failed; check the complete voice track and phrase cues";
+      return err({
+        kind: "render",
+        code: ctx.signal.aborted ? "cancelled" : "narration_alignment_failed",
+        message
+      });
+    }
+  });
   bus.register("sizzle:runAudioQaJob", async (req, ctx) => {
     if (ctx.principal !== "bridge")
       return err({

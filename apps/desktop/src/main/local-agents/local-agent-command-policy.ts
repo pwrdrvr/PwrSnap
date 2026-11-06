@@ -104,6 +104,7 @@ export function localAgentCommandRequirement(
     case "sizzle:setTimeline":
     case "sizzle:setBindings":
     case "sizzle:applyLaunchTemplate":
+    case "sizzle:alignNarration":
     case "codex:sizzleChat:create":
     case "codex:sizzleChat:list":
     case "codex:sizzleChat:send":

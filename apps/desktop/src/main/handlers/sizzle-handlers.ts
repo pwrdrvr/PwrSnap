@@ -1,4 +1,5 @@
 import { prepareSceneAvatar } from "../sizzle/avatar-preparation";
+import { registerSizzleTimelineHandlers, dispatchTimelineJob } from "./sizzle-timeline-handlers";
 import { BrowserWindow, app, shell } from "electron";
 import { join } from "node:path";
 import { mkdir, readFile, stat } from "node:fs/promises";
@@ -437,6 +438,7 @@ export function registerSizzleHandlers(
 ): void {
   const store = getSizzleStore();
   const renderPlatform = runtime.platform ?? process.platform;
+  registerSizzleTimelineHandlers(store, pushProjectsChanged);
 
   async function readProject(
     id: string,
@@ -1043,6 +1045,22 @@ export function registerSizzleHandlers(
     const project = projectResult.value;
     if (project === null) {
       return err({ kind: "validation", code: "not_found", message: `Project ${v.id} not found` });
+    }
+    if (project.timeline !== undefined) {
+      if (req.mode !== undefined && req.mode !== "preview" && req.mode !== "full") return err({ kind: "validation", code: "invalid_render_mode", message: "render mode must be preview or full" });
+      const mode = req.mode ?? "full";
+      broadcastRenderProgress({ projectId: project.id, phase: "compose", message: "Rendering timeline", ratio: 0.1 });
+      const rendered = await dispatchTimelineJob(project, mode, ctx);
+      if (!rendered.ok) {
+        broadcastRenderProgress({ projectId: project.id, phase: "failed", message: rendered.error.message, ratio: 0, error: { code: rendered.error.code, message: rendered.error.message } });
+        return rendered;
+      }
+      if (mode === "full") {
+        await store.update(project.id, { outputPath: rendered.value.outputPath, lastRenderedAt: new Date().toISOString() });
+        await pushProjectsChanged();
+      }
+      broadcastRenderProgress({ projectId: project.id, phase: "done", message: `Rendered ${rendered.value.renderedScenes} scenes; reused ${rendered.value.cachedScenes}`, ratio: 1 });
+      return ok(rendered.value);
     }
     if (project.scenes.length === 0) {
       return err({

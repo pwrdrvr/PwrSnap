@@ -27,6 +27,8 @@ export type CommandOwner = "agent" | "library";
 
 /** Exact names that override prefix rules. */
 const EXACT_OWNERS: Readonly<Record<string, CommandOwner>> = {
+  "sizzle:runTimelineJob": "agent",
+  "sizzle:runAudioQaJob": "agent",
   // Window verbs live with the windows they open. Forwarding one of
   // these from the agent is precisely what spawns the library process
   // on demand.

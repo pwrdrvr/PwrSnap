@@ -160,6 +160,7 @@ import {
 import { registerStorageHandlers } from "./handlers/storage-handlers";
 import { registerCaptureStorageHandlers } from "./handlers/capture-storage-handlers";
 import { registerSizzleHandlers } from "./handlers/sizzle-handlers";
+import { registerSizzleTimelineRenderHandlers } from "./handlers/sizzle-timeline-render-handlers";
 import { registerCartHandlers } from "./handlers/cart-handlers";
 import { getSizzleStore } from "./sizzle/sizzle-store";
 import {
@@ -1753,6 +1754,8 @@ export function bootstrapApp(): void {
       // (PWRSNAP_USER_DATA without PWRSNAP_E2E) keep observing the
       // real captures library, which is their whole point.
       app.setPath("documents", join(customUserData, "Documents"));
+      // Reel imports and full exports must be as isolated as captures.
+      app.setPath("videos", join(customUserData, "Movies"));
       // The sticky permission-denial fallback writes to `~/PwrSnap`.
       // HOME is already overridden by the fixture, but setting Electron's
       // resolved path explicitly closes any platform caching gap that could
@@ -2068,6 +2071,7 @@ export function bootstrapApp(): void {
       registerClipboardHandlers();
       registerFloatOverHandlers();
       registerRecordingHandlers();
+      registerSizzleTimelineRenderHandlers();
       // Renderer-dispatchable entry into the interactive video-record
       // flow (selector → recording:start), used by the tray's Record
       // button and the Library's Video chip. The `videoCapture` global

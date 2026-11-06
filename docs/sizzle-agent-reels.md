@@ -114,9 +114,10 @@ their scene. Text is escaped and cannot introduce SVG or execute code.
 | `video` | The same framing plus source start, playback rate, and freeze/loop end behavior. Video audio is an explicit independent audio track. |
 
 Bindings resolve in text, counter endpoints, narration, and expected
-transcripts. String bindings may reference other bindings, with cycle/depth
-and expansion limits. `{{name|number}}` adds English number separators;
-`{{name}}` uses the plain value.
+transcripts. String bindings may reference other bindings, with cycles refused,
+a maximum depth of 20 and 16,000 expanded characters. Each dependency resolves
+once per text expansion, including shared empty values. `{{name|number}}` adds
+English number separators; `{{name}}` uses the plain value.
 
 To revise a benchmark, call `pwrsnap_sizzle_set_bindings` with just the changed
 values and current revision. The next render reuses visual scenes whose
@@ -207,6 +208,9 @@ Each audio track declares `id`, `role` (`voice`, `music`, or `sound`),
 bounded tempo adjustment up to `maxSpeed` (default 1.35). Voice tracks cannot
 select `trim` or `loop`; those are explicit policies for music/sound. Optional
 silence trimming removes the leading/trailing silence before fitting.
+Voice sources are limited to ten minutes; music and sound sources retain their
+complete duration for `strict`/`speed` fitting, including sources longer than
+ten minutes.
 
 Generated narration is transcribed and compared with its spoken script.
 Pronunciation-hint names are checked separately so a single wrong product name
@@ -227,6 +231,9 @@ Music ducks under voice by default. The mix targets −14 LUFS and −1 dBTP wit
 FFmpeg loudness normalization; `mix` controls the target and ducking. Full
 exports include adjacent `.timeline.json` and `.report.json` files. Frame
 inspection, preview, and full movies share the same absolute-frame renderer.
+Variable-rate recordings retain the frame held across a source trim boundary.
+Frame inspection prepares only the distinct requested source frames of active
+video layers; freeze and loop holds reuse those frames within the request.
 
 Scene caching currently re-renders an affected scene as a unit. It does not
 patch arbitrary individual frames inside that scene. Cuts between scenes and

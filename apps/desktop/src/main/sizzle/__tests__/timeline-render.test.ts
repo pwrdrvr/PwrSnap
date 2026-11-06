@@ -184,6 +184,9 @@ describe("timeline cache and fixed narration slots", () => {
   });
 
   it("fits speech only within the permitted rate and otherwise fails explicitly", () => {
+    const boundarySlot = 5.930769278415253;
+    expect(fitTimelineAudio(boundarySlot * 1.35, boundarySlot, "speed", 1.35))
+      .toBe(1.35);
     fc.assert(
       fc.property(
         fc.double({ min: 1, max: 30, noNaN: true }),

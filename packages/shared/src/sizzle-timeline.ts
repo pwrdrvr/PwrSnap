@@ -382,30 +382,57 @@ export function sizzleTimelineFrames(timeline: SizzleTimeline): number {
 
 export function resolveSizzleText(
   value: string,
-  bindings: SizzleTimeline["bindings"]
+  bindings: SizzleTimeline["bindings"],
 ): string {
-  const visit = (text: string, active: ReadonlySet<string>): string => {
-    const result = text.replace(
-      /\{\{([\w-]+)(\|number)?\}\}/g,
-      (_, key: string, format: string | undefined) => {
+  type Expansion = { text: string; depth: number; numeric?: number };
+  // Resolve each graph node once, including empty expansions. Depth travels
+  // with cached results so a shallow earlier reference cannot bypass the
+  // maximum path depth when that same node is reached through a longer path.
+  const memo = new Map<string, Expansion>();
+  const visit = (text: string, active: ReadonlySet<string>): Expansion => {
+    const chunks: string[] = [];
+    let length = 0,
+      depth = 0,
+      cursor = 0;
+    const append = (chunk: string): void => {
+      length += chunk.length;
+      if (length > 16_000)
+        throw new Error("Resolved text exceeds 16000 characters");
+      chunks.push(chunk);
+    };
+    for (const match of text.matchAll(/\{\{([\w-]+)(\|number)?\}\}/g)) {
+      const key = match[1]!;
+      if (active.has(key) || active.size >= 20)
+        throw new Error("Bindings must be acyclic with a maximum depth of 20");
+      append(text.slice(cursor, match.index));
+      let expansion = memo.get(key);
+      if (!expansion) {
         const resolved = Object.hasOwn(bindings, key)
           ? bindings[key]
           : undefined;
         if (resolved === undefined) throw new Error(`Unknown binding: ${key}`);
-        if (active.has(key) || active.size >= 20)
-          throw new Error(
-            "Bindings must be acyclic with a maximum depth of 20"
-          );
         if (typeof resolved === "number")
-          return format ? resolved.toLocaleString("en-US") : String(resolved);
-        return visit(resolved, new Set([...active, key]));
+          expansion = { text: String(resolved), numeric: resolved, depth: 1 };
+        else {
+          const child = visit(resolved, new Set([...active, key]));
+          expansion = { text: child.text, depth: child.depth + 1 };
+        }
+        memo.set(key, expansion);
       }
-    );
-    if (result.length > 16_000)
-      throw new Error("Resolved text exceeds 16000 characters");
-    return result;
+      if (active.size + expansion.depth > 20)
+        throw new Error("Bindings must be acyclic with a maximum depth of 20");
+      depth = Math.max(depth, expansion.depth);
+      append(
+        match[2] && expansion.numeric !== undefined
+          ? expansion.numeric.toLocaleString("en-US")
+          : expansion.text,
+      );
+      cursor = match.index + match[0].length;
+    }
+    append(text.slice(cursor));
+    return { text: chunks.join(""), depth };
   };
-  return visit(value, new Set());
+  return visit(value, new Set()).text;
 }
 
 export function resolveSizzleNumber(

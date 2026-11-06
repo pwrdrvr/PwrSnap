@@ -27,7 +27,7 @@ export type TimelineAudioReport = {
   transcript?: string;
   qa: "matched" | "not_requested";
 };
-export const TIMELINE_AUDIO_VERSION = 4;
+export const TIMELINE_AUDIO_VERSION = 5;
 const hash = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const exists = async (path: string): Promise<boolean> =>
@@ -49,11 +49,13 @@ export function fitTimelineAudio(
   if (durationSec <= slotSec + 0.015 || fit === "trim" || fit === "loop")
     return 1;
   const rate = durationSec / slotSec;
-  if (fit !== "speed" || rate > maxSpeed)
+  // Compare capacities before division: an exactly permitted duration can
+  // round to a quotient just above maxSpeed (for example 1.3500000000000003).
+  if (fit !== "speed" || durationSec > slotSec * maxSpeed)
     throw new Error(
       `Audio needs ${durationSec.toFixed(2)} s for a ${slotSec.toFixed(2)} s slot; required speed ${rate.toFixed(3)} exceeds the chosen fit policy`
     );
-  return rate;
+  return Math.min(rate, maxSpeed);
 }
 
 export function timelineTranscriptMatches(
@@ -544,7 +546,7 @@ export async function prepareTimelineAudio(args: {
           String(
             track.fit === "trim" || track.fit === "loop"
               ? slotSec
-              : Math.min(600, probe.durationSec)
+              : probe.durationSec - sourceStart
           ),
           "-af",
           `aresample=48000,aformat=channel_layouts=stereo${trim}`,

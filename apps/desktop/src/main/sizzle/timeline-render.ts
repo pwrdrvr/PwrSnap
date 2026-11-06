@@ -21,7 +21,7 @@ import {
 import { timelineAssetPath, timelineImageData } from "./timeline-assets";
 import { timelineProcess } from "./timeline-process";
 
-export const TIMELINE_RENDER_VERSION = 1;
+export const TIMELINE_RENDER_VERSION = 2;
 export type TimelineRenderRequest = {
   timeline: SizzleTimeline;
   assets: SizzleAsset[];
@@ -79,7 +79,13 @@ type SceneMedia = {
   images: Map<string, string>;
   videos: Map<
     string,
-    { directory: string; count: number; loop: boolean; startFrame: number }
+    {
+      frames: Map<number, string>;
+      count: number;
+      loop: boolean;
+      startFrame: number;
+      endFrame: number;
+    }
   >;
 };
 
@@ -88,12 +94,10 @@ async function prepareSceneMedia(
   scene: SizzleTimeline["scenes"][number],
   scratch: string,
   signal?: AbortSignal,
+  requestedFrames?: readonly number[],
 ): Promise<SceneMedia> {
   const images = new Map<string, string>();
-  const videos = new Map<
-    string,
-    { directory: string; count: number; loop: boolean; startFrame: number }
-  >();
+  const videos: SceneMedia["videos"] = new Map();
   const byId = new Map(request.assets.map((asset) => [asset.id, asset]));
   for (const layer of scene.layers) {
     signal?.throwIfAborted();
@@ -106,8 +110,6 @@ async function prepareSceneMedia(
     else {
       if (layer.sourceStartSec >= asset.durationSec)
         throw new Error(`Video starts past source end: ${layer.id}`);
-      const directory = join(scratch, layer.id);
-      await mkdir(directory, { recursive: true });
       const count = Math.max(
         1,
         Math.min(
@@ -118,6 +120,27 @@ async function prepareSceneMedia(
           ),
         ),
       );
+      const endFrame = layer.endFrame ?? scene.durationFrames;
+      const indices =
+        requestedFrames === undefined
+          ? undefined
+          : [
+              ...new Set(
+                requestedFrames
+                  .filter(
+                    (frame) => frame >= layer.startFrame && frame < endFrame,
+                  )
+                  .map((frame) => {
+                    const local = frame - layer.startFrame;
+                    return layer.endBehavior === "loop"
+                      ? local % count
+                      : Math.min(local, count - 1);
+                  }),
+              ),
+            ].sort((a, b) => a - b);
+      if (indices?.length === 0) continue;
+      const directory = join(scratch, layer.id);
+      await mkdir(directory, { recursive: true });
       const maxWidth = Math.max(
         2,
         Math.min(
@@ -145,31 +168,57 @@ async function prepareSceneMedia(
           "-y",
           "-protocol_whitelist",
           "file,pipe",
-          "-ss",
-          String(layer.sourceStartSec),
           "-i",
           timelineAssetPath(request.assetsRoot, asset),
           "-an",
           "-vf",
-          `setpts=(PTS-STARTPTS)/${layer.playbackRate},fps=${request.timeline.fps},scale=${maxWidth}:${maxHeight}:force_original_aspect_ratio=decrease`,
+          [
+            // Repeat held VFR frames before trimming. Input-side -ss drops a
+            // frame held across the seek point and moves the next change early.
+            // Sampling at fps/rate also preserves slow-motion source detail.
+            `fps=${request.timeline.fps / layer.playbackRate}`,
+            // Keep the planned final frame available despite container duration
+            // rounding; sparse and full renders must share freeze/loop indices.
+            `tpad=stop_mode=clone:stop_duration=${1 + (count * layer.playbackRate) / request.timeline.fps}`,
+            `trim=start=${layer.sourceStartSec}`,
+            `trim=end_frame=${indices ? indices.at(-1)! + 1 : count}`,
+            // Use an output-frame timebase before retiming. A faster playback
+            // rate otherwise rounds adjacent timestamps together on the
+            // source sampling timebase and FFmpeg drops those frames.
+            `settb=1/${request.timeline.fps}`,
+            "setpts=N",
+            ...(indices
+              ? [
+                  `select=${indices.map((index) => `eq(n\\,${index})`).join("+")}`,
+                ]
+              : []),
+            `scale=${maxWidth}:${maxHeight}:force_original_aspect_ratio=decrease`,
+          ].join(","),
           "-frames:v",
-          String(count),
+          String(indices?.length ?? count),
+          "-enc_time_base",
+          `1/${request.timeline.fps}`,
+          "-fps_mode",
+          "vfr",
           "-q:v",
           "2",
           join(directory, "%06d.jpg"),
         ],
         signal,
       );
-      const files = (await readdir(directory)).filter((file) =>
-        /^\d{6}\.jpg$/.test(file),
-      );
-      if (!files.length)
-        throw new Error(`Video yielded no frames: ${layer.id}`);
+      const files = (await readdir(directory))
+        .filter((file) => /^\d{6}\.jpg$/.test(file))
+        .sort();
+      if (files.length !== (indices?.length ?? count))
+        throw new Error(`Video yielded incomplete frames: ${layer.id}`);
       videos.set(layer.id, {
-        directory,
-        count: files.length,
+        frames: new Map(
+          files.map((file, i) => [indices?.[i] ?? i, join(directory, file)]),
+        ),
+        count,
         loop: layer.endBehavior === "loop",
         startFrame: layer.startFrame,
+        endFrame,
       });
     }
   }
@@ -184,12 +233,16 @@ async function sceneFrame(
 ): Promise<Buffer> {
   const images = new Map(media.images);
   for (const [id, video] of media.videos) {
-    const local = Math.max(0, frame - video.startFrame);
-    const index =
-      (video.loop ? local % video.count : Math.min(local, video.count - 1)) + 1;
+    if (frame < video.startFrame || frame >= video.endFrame) continue;
+    const local = frame - video.startFrame;
+    const index = video.loop
+      ? local % video.count
+      : Math.min(local, video.count - 1);
+    const path = video.frames.get(index);
+    if (!path) throw new Error(`Video frame was not prepared: ${id}`);
     images.set(
       id,
-      `data:image/jpeg;base64,${(await readFile(join(video.directory, `${String(index).padStart(6, "0")}.jpg`))).toString("base64")}`,
+      `data:image/jpeg;base64,${(await readFile(path)).toString("base64")}`,
     );
   }
   const svg = sizzleSceneSvg({
@@ -230,15 +283,31 @@ export async function renderSizzleTimeline(
         );
       const thumbs: Buffer[] = [];
       const prepared = new Map<string, SceneMedia>();
-      for (const frame of request.frames) {
-        signal?.throwIfAborted();
+      const byScene = new Map<
+        string,
+        { scene: SizzleTimeline["scenes"][number]; frames: number[] }
+      >();
+      const placements = request.frames.map((frame) => {
         let start = 0;
         const raw = request.timeline.scenes.find((scene) => {
           if (frame < start + scene.durationFrames) return true;
           start += scene.durationFrames;
           return false;
         })!;
-        const scene = resolveSizzleScene(raw, request.timeline.bindings);
+        let group = byScene.get(raw.id);
+        if (!group) {
+          group = {
+            scene: resolveSizzleScene(raw, request.timeline.bindings),
+            frames: [],
+          };
+          byScene.set(raw.id, group);
+        }
+        group.frames.push(frame - start);
+        return { group, frame: frame - start };
+      });
+      for (const { group, frame } of placements) {
+        signal?.throwIfAborted();
+        const { scene } = group;
         let media = prepared.get(scene.id);
         if (!media) {
           media = await prepareSceneMedia(
@@ -246,10 +315,11 @@ export async function renderSizzleTimeline(
             scene,
             join(scratch, scene.id),
             signal,
+            group.frames,
           );
           prepared.set(scene.id, media);
         }
-        thumbs.push(await sceneFrame(request, scene, frame - start, media));
+        thumbs.push(await sceneFrame(request, scene, frame, media));
       }
       const columns = Math.min(3, thumbs.length),
         rows = Math.ceil(thumbs.length / columns);

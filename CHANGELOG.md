@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.2.5 - 2026-11-06
+
+This release expands agent-assisted reel creation and makes editor changes
+more dependable.
+
+- Sizzle Timelines - Added agent-editable timelines with local media imports,
+  layered animation, precise frame timing, and a reusable launch-reel template.
+  Frame inspection and movie export use the same rendering path.
+- Reel Narration - Added whole-take auditioning and narration alignment to
+  measured words and phrases, with delivery controls and transcript checks.
+- Reel Audio - Added supplied or generated music, voice ducking, and loudness
+  normalization for timeline movie exports.
+- Canvas Editing - Fixed crops and grouped layer edits applying only partly
+  after a failure, and made undo and redo retain failed edits for a safe retry
+  without replaying the same change twice.
+
 ## v1.2.4 - 2026-11-05
 
 This patch improves capture, editing, chat, and update reliability.

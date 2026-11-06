@@ -233,5 +233,35 @@ describe("Sizzle's deterministic timeline contract", () => {
     expect(
       buildSizzleLaunchTemplate({ ...data, metricValue: 99 }).scenes,
     ).toEqual(t.scenes);
+    const continuous = buildSizzleLaunchTemplate({
+      ...data,
+      narration: undefined,
+      narrationText: "One voiceover spanning every visual scene."
+    });
+    expect(
+      continuous.audio.filter((track) => track.role === "voice")
+    ).toMatchObject([
+      {
+        id: "narration",
+        startFrame: 0,
+        durationFrames: 975,
+        fit: "strict",
+        trimSilence: false
+      }
+    ]);
+    expect(() =>
+      buildSizzleLaunchTemplate({
+        ...data,
+        narrationText: "Conflicting sources"
+      })
+    ).toThrow();
+    const recorded = buildSizzleLaunchTemplate({
+      ...data,
+      narration: undefined,
+      voiceoverAsset: id
+    });
+    expect(
+      recorded.audio.filter((track) => track.role === "voice")
+    ).toHaveLength(1);
   });
 });

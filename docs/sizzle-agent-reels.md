@@ -124,11 +124,26 @@ features, workflow, safety, and result. Optional `handoffImage` adds a wipe;
 `resultSequence` supplies progress screenshots; `workflowVideo` substitutes a
 live clip for the workflow still. The returned timeline can be edited freely.
 
-Choose either nine `voiceoverAssets` or nine `narration` strings, or omit both
-for a reel without voiceover. Narration strings may reference bindings such as
+Prefer `narrationText` (one complete script) or `voiceoverAsset` (one complete
+recording). This creates one voice track across all visual scenes; moving a
+visual boundary does not split, trim, or fade that narration. An overlong take
+is refused rather than cut off. Image zoom is off by default.
+
+The older nine `voiceoverAssets` or nine `narration` strings remain available
+for explicitly timed, independent takes. Omit all narration sources for a reel
+without voiceover. Narration strings may reference bindings such as
 `{{metricValue}}`. `voice`, `delivery`, and `pronunciation` control generated
 speech. Applying the template only saves data: paid synthesis begins on render.
 The optional music bed uses a fixed seed, 128 BPM, and explicit drop/final hits.
+
+For narration-led capture workflows, Sizzle's existing **sequence scene** is
+the primary model: one continuous narration with visual beats anchored to
+transcribed phrases or offsets. Use the composition tools' sequence operations
+for that workflow. The layered launch template currently has fixed visual
+slots; it does not automatically resolve word anchors. A continuous voice track
+is supported here, but does not make that missing alignment feature equivalent
+to the existing sequence planner. Real app recordings should supply the demo
+shots; animating a screenshot is not a substitute for recorded app activity.
 
 ## Audio and QA
 

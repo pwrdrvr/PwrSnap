@@ -698,7 +698,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
   }
   if (deps.sizzleTemplate) tools.push({
     name: "pwrsnap_sizzle_apply_launch_template", title: "Apply Launch Reel Template",
-    description: "Build the reusable 32.5-second launch format from product copy and imported asset IDs: intro, context cards, handoff, features, bound metric counter, terminal/demo, protection/typing, result sequence, and logo end card. Optional existing voiceover assets or generated narration fit the nine fixed slots. Includes a deterministic sample-free music bed. Saves editable timeline data; does not generate speech or render until requested.",
+    description: "Build a layered 32.5-second launch format from product copy and imported assets. Prefer narrationText or voiceoverAsset for ONE continuous voiceover across all scenes. Per-scene voiceoverAssets/narration arrays are only for explicitly requested independent takes. Image zoom is off. Visual slots here are fixed; use the existing sequence composition tools for narration-led visual beats with word/phrase anchors. Includes sample-free music. Saves data; synthesis and rendering start only when requested.",
     inputSchema: { projectId: z.string().min(1), expectedModifiedAt: z.string().min(1), template: SizzleLaunchTemplateSchema }, requiredCapabilities: ["sizzle.compose"],
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }, dispatch: deps.sizzleTemplate
   });

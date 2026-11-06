@@ -38,6 +38,19 @@ export const SizzleLaunchTemplateSchema = z
     safetyLines: z.array(copy).min(1).max(4),
     confirmation: copy,
     resultCaption: copy,
+    narrationText: z
+      .string()
+      .min(1)
+      .max(4096)
+      .optional()
+      .describe(
+        "Preferred: one continuous voiceover for the entire reel, independent of visual scene boundaries."
+      ),
+    voiceoverAsset: asset
+      .optional()
+      .describe(
+        "One complete narration recording. Visual scene changes never trim this track."
+      ),
     voiceoverAssets: z.array(asset).length(9).optional(),
     narration: z.array(z.string().min(1).max(4000)).length(9).optional(),
     pronunciation: z
@@ -66,8 +79,14 @@ export const SizzleLaunchTemplateSchema = z
   })
   .strict()
   .refine(
-    (data) => !(data.voiceoverAssets && data.narration),
-    "Choose existing voiceover assets or generated narration"
+    (data) =>
+      [
+        data.voiceoverAssets,
+        data.narration,
+        data.voiceoverAsset,
+        data.narrationText
+      ].filter((value) => value !== undefined).length <= 1,
+    "Choose one continuous narration source or explicitly timed per-scene takes"
   );
 export type SizzleLaunchTemplateInput = z.input<
   typeof SizzleLaunchTemplateSchema
@@ -118,7 +137,7 @@ export function buildSizzleLaunchTemplate(
     width,
     height,
     zoomFrom: 1,
-    zoomTo: 1.05,
+    zoomTo: 1,
     radius: 18,
     fadeInFrames: 7,
     fadeOutFrames: 6
@@ -365,6 +384,25 @@ export function buildSizzleLaunchTemplate(
     }
   ];
   const audio: NonNullable<SizzleTimelineInput["audio"]> = [];
+  if (d.voiceoverAsset || d.narrationText) {
+    audio.push({
+      id: "narration",
+      role: "voice",
+      startFrame: 0,
+      durationFrames: 975,
+      fit: "strict",
+      trimSilence: false,
+      source: d.voiceoverAsset
+        ? { kind: "asset", assetId: d.voiceoverAsset }
+        : {
+            kind: "speech",
+            text: d.narrationText!,
+            voice: d.voice,
+            instructions: d.delivery,
+            pronunciation: d.pronunciation
+          }
+    });
+  }
   for (let i = 0; i < 9; i++) {
     const startFrame = boundaries[i]! + (i === 0 ? 9 : 0);
     const assetId = d.voiceoverAssets?.[i],

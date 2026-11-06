@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import { ok, resolveLocalAgentPolicy } from "@pwrsnap/shared";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { z } from "zod";
@@ -21,6 +22,7 @@ import { DesktopSettingsService } from "../../settings/desktop-settings-service"
 import { LocalAgentGrantService } from "../local-agent-grants";
 import { LocalAgentMcpServer } from "../mcp-server";
 import { NativeMcpBridge } from "../../ai/mcp/native-mcp-bridge";
+import { bus } from "../../command-bus";
 import type { LocalAgentConsentDecision } from "../local-agent-consent-broker";
 const executable = fileURLToPath(
   new URL(
@@ -265,6 +267,49 @@ test("mixed release versions use the desktop interface and preserve descriptions
   const result = await client.callTool({ name: "fixture_search", arguments: { query: "hello" } });
   expect(result.isError).not.toBe(true);
   expect(dispatch).toHaveBeenCalledOnce();
+});
+
+test("main's Sizzle catalog and protected media use the same production handlers over stdio and IPC HTTP", async () => {
+  await server.stop();
+  decision = { decision: "allow", sessionName: "Sizzle stdio", roleId: null,
+    capabilities: ["sizzle.compose", "sizzle.assets.import", "sizzle.preview.read", "sizzle.full.read"] };
+  server = new LocalAgentMcpServer({ settings, grantService: grants, requestConsent: consent,
+    secrets: new DesktopSecretStore({ filePath: settingsPath + ".secrets" }),
+    bridgeFactory: (onConnection) => new NativeMcpBridge({ executable, endpoint, allowHttp: true, onConnection }) });
+  const { writeFile } = await import("node:fs/promises");
+  const mediaPath = settingsPath + ".png";
+  const bytes = Buffer.from("private Sizzle contact sheet");
+  await writeFile(mediaPath, bytes);
+  const inspect = vi.fn(async () => ok({ outputPath: mediaPath, widthPx: 1920, heightPx: 1080, renderId: "frames" }));
+  bus.installLocalAgentAuthorizer((id) => grants.authorizeClient(id));
+  bus.register("sizzle:inspectFrames", inspect);
+  try {
+    await server.start();
+    const client = await connect();
+    const tools = (await client.listTools()).tools;
+    for (const suffix of ["get", "audio_qa", "prepare_narration", "align_narration", "apply_launch_template",
+      "import_capture", "import", "update", "set_bindings", "inspect_frames"])
+      expect(tools.map((tool) => tool.name)).toContain(`pwrsnap_sizzle_${suffix}`);
+    decision = { ...decision, sessionName: "Sizzle IPC HTTP" };
+    const { token } = await server.bootstrapHttp(new AbortController().signal);
+    const send = httpHost();
+    const initialized = await send(initializeHttp, { authorization: `Bearer ${token}` });
+    const headers = { authorization: `Bearer ${token}`, "mcp-session-id": initialized.headers["mcp-session-id"] as string };
+    const listed = await send({ jsonrpc: "2.0", id: 2, method: "tools/list" }, headers);
+    expect(httpMessage(listed.text).result).toEqual({ tools });
+    const result = await client.callTool({ name: "pwrsnap_sizzle_inspect_frames", arguments: { projectId: "project", frames: [0] } });
+    expect(result.isError).not.toBe(true);
+    expect(inspect).toHaveBeenCalledOnce();
+    const link = CallToolResultSchema.parse(result).content.find((item) => item.type === "resource_link");
+    expect(link?.type).toBe("resource_link");
+    if (link?.type !== "resource_link") throw new Error("Expected MCP media link");
+    expect(link.uri).toMatch(/^pwrsnap:\/\//);
+    const media = await client.readResource({ uri: link.uri });
+    expect(media.contents).toEqual([{ uri: link.uri, mimeType: "image/png", blob: bytes.toString("base64") }]);
+  } finally {
+    bus.unregister("sizzle:inspectFrames");
+    bus.uninstallLocalAgentAuthorizerForTests();
+  }
 });
 test("schema validation and capability boundaries stay desktop-owned", async () => {
   const client = await connect();

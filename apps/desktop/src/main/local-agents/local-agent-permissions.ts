@@ -25,6 +25,7 @@ export const LOCAL_AGENT_CAPABILITY_DETAILS: Record<LocalAgentCapability, string
   "capture.edit": "Changes captures by sending edit instructions through PwrSnap-owned AI threads.",
   "trash.write": "Moves captures out of the library and into recoverable PwrSnap Trash.",
   "sizzle.compose": "Creates and changes reel projects through PwrSnap-owned AI threads.",
+  "sizzle.assets.import": "Reads local image, video, and audio files and stores managed copies for reel composition.",
   "sizzle.preview.read": "Reads low-resolution rendered reel media.",
   "sizzle.full.read": "Reads full-resolution rendered reel media."
 };

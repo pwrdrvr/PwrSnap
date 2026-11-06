@@ -1395,7 +1395,7 @@ export function registerSizzleHandlers(
       return err(e);
     }
 
-    const totalSec = sceneInputs.reduce((acc, s) => acc + s.durationSec, 0);
+    const totalSec = sceneInputs.reduce((acc, s) => acc + (s.audioDurationSec ?? s.durationSec), 0);
     if (renderMode === "full") {
       await store.update(project.id, {
         outputPath,

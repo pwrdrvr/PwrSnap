@@ -151,6 +151,94 @@ skipIfCantInvokeFfmpeg("sizzle composer (ffmpeg-invoking, macOS-only)", () => {
     };
   }
 
+  it.each(["separate takes", "continuous sequence"])(
+    "crossfades preserve the spoken tail for %s",
+    async (mode) => {
+      const scenes: SceneInput[] = [];
+      const continuous = join(tmpDir, "continuous-narration.wav");
+      if (mode === "continuous sequence") {
+        expect(
+          spawnSync(FFMPEG!, [
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=880:duration=3:sample_rate=44100",
+            continuous
+          ]).status
+        ).toBe(0);
+      }
+      for (let i = 0; i < 3; i++) {
+        const audioPath = join(tmpDir, `narration-tail-${i}.wav`);
+        const tone = spawnSync(FFMPEG!, [
+          "-y",
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-f",
+          "lavfi",
+          "-i",
+          `sine=frequency=${440 + i * 220}:duration=1:sample_rate=44100`,
+          audioPath
+        ]);
+        expect(tone.status).toBe(0);
+        scenes.push({
+          kind: "image",
+          imagePath: await makeImage(
+            `narration-tail-${i}.png`,
+            ["red", "green", "blue"][i]!
+          ),
+          audioPath: mode === "continuous sequence" ? continuous : audioPath,
+          durationSec: mode === "continuous sequence" && i > 0 ? 1.4 : 1,
+          ...(mode === "continuous sequence"
+            ? { audioStartSec: i, audioDurationSec: 1 }
+            : {}),
+          transition: i === 0 ? "cut" : "crossfade"
+        });
+      }
+      const outputPath = join(tmpDir, "complete-narration.mp4");
+      await compose({
+        scenes,
+        outputPath,
+        width: 320,
+        height: 180,
+        fps: 30,
+        platform: "darwin"
+      });
+      expect(probeOutput(outputPath).durationSec).toBeGreaterThanOrEqual(2.95);
+      const decoded = spawnSync(FFMPEG!, [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        outputPath,
+        "-vn",
+        "-ar",
+        "8000",
+        "-ac",
+        "1",
+        "-f",
+        "s16le",
+        "pipe:1"
+      ]);
+      expect(decoded.status).toBe(0);
+      const samples = decoded.stdout.subarray(
+        Math.round(2.8 * 8000) * 2,
+        Math.round(2.95 * 8000) * 2
+      );
+      expect(samples.length).toBe(2400);
+      let power = 0;
+      for (let i = 0; i < samples.length; i += 2)
+        power += samples.readInt16LE(i) ** 2;
+      expect(Math.sqrt(power / (samples.length / 2))).toBeGreaterThan(500);
+    },
+    60_000
+  );
+
+
   it(
     "produces video whose frame count and duration match all input scenes (not just the first)",
     async () => {
@@ -749,8 +837,8 @@ describe("buildCompositionArgs — xfade transition chain", () => {
     // chain's timeline that crossfade begins. With 4 scenes × 2s
     // duration × 0.4s crossfade overlap, the offsets are:
     //   boundary 0→1: chainEnd 2.0s, offset = 2.0 - 0.4 = 1.6
-    //   boundary 1→2: chainEnd 3.6s (2 + 2 - 0.4), offset = 3.2
-    //   boundary 2→3: chainEnd 5.2s, offset = 4.8
+    //   boundary 1→2: chainEnd 4.0s (2 + 2.4 - 0.4), offset = 3.6
+    //   boundary 2→3: chainEnd 6.0s, offset = 5.6
     // Walk the offsets and assert strict ordering — a regression that
     // computes offset from raw scene-start (not chain-end) would
     // collapse them to constant 1.6.
@@ -761,6 +849,8 @@ describe("buildCompositionArgs — xfade transition chain", () => {
     expect(offsets[2]).toBeGreaterThan(offsets[1]!);
     // Sanity: first offset ≈ first scene duration - SIZZLE_CROSSFADE_SEC.
     expect(offsets[0]).toBeCloseTo(2 - 0.4, 2);
+    expect(offsets[1]).toBeCloseTo(4 - 0.4, 2);
+    expect(offsets[2]).toBeCloseTo(6 - 0.4, 2);
   });
 
   it("video scene inputs use -ss before -i (input-side trim, fast seek)", () => {

@@ -202,22 +202,16 @@ export async function probeDurationSec(audioPath: string): Promise<number> {
  *     • `transition: "cut"` → a 2-input `concat` (drops to a hard
  *       cut, no audio drift, chain duration is the sum).
  *
- * - Audio comes from the concat-demuxer input that follows the scene
- *   inputs. Audio sees only cuts — every scene's `audioPath` is
- *   stitched end-to-end. With crossfades the audio is ~SIZZLE_CROSSFADE_SEC
- *   per xfade longer than video; `-shortest` truncates to the
- *   shorter, so the trailing silence at the end of the last audio
- *   gets clipped. Acceptable for narration-paced content; audio-side
- *   crossfade (`acrossfade`) is a future enhancement.
- *
- * - `-shortest` rounds total length to min(video, audio). Per-scene
- *   audio durations are tuned to match per-scene video durations
- *   (`measured + 0.35s` tail) so the trim is small.
+ * - Narration owns the time axis. An incoming visual gets enough extra
+ *   frames for its transition overlap; the overlap never removes time
+ *   from audio. Sequence beats already include this visual handle and
+ *   are not extended twice. Audio remains a straight, continuous concat.
  */
 export function buildCompositionArgs(req: ComposeRequest): string[] {
+  const scenes = preserveNarrationDurations(req.scenes);
   const encoder = videoEncoderForPlatform(req.platform);
   const args: string[] = ["-y", "-hide_banner"];
-  for (const scene of req.scenes) {
+  for (const scene of scenes) {
     if (scene.kind === "image") {
       // Single-frame input. zoompan time-stretches in the filter graph.
       args.push("-i", scene.imagePath);
@@ -241,14 +235,14 @@ export function buildCompositionArgs(req: ComposeRequest): string[] {
       );
     }
   }
-  for (const scene of req.scenes) {
+  for (const scene of scenes) {
     args.push("-i", scene.audioPath);
   }
 
   const filters: string[] = [];
 
   // === Per-scene normalization filters ===
-  req.scenes.forEach((scene, i) => {
+  scenes.forEach((scene, i) => {
     if (scene.kind === "image") {
       const nFrames = Math.max(2, Math.round(scene.durationSec * req.fps));
       const directionIn = i % 2 === 0;
@@ -315,8 +309,8 @@ export function buildCompositionArgs(req: ComposeRequest): string[] {
   // Left-fold over scenes: chain[0] = v0; for each next scene apply
   // its transition (xfade for crossfade, concat for cut). Final label
   // is `chainOut`.
-  const finalLabel = buildTransitionChain(req.scenes, filters);
-  const finalAudioLabel = buildAudioConcat(req.scenes, filters);
+  const finalLabel = buildTransitionChain(scenes, filters);
+  const finalAudioLabel = buildAudioConcat(scenes, filters);
   args.push(
     "-filter_complex",
     filters.join(";"),
@@ -352,6 +346,34 @@ export function buildCompositionArgs(req: ComposeRequest): string[] {
     req.outputPath
   );
   return args;
+}
+
+/** Visual overlap must not shorten independently prepared narration. */
+function preserveNarrationDurations(scenes: SceneInput[]): SceneInput[] {
+  let chainEnd = 0;
+  return scenes.map((scene, index) => {
+    const audioDurationSec = scene.audioDurationSec ?? scene.durationSec;
+    const fade = index > 0 ? xfadeForTransition(scene.transition) : null;
+    const overlap = fade
+      ? Math.min(fade.durationSec, chainEnd, scene.durationSec)
+      : 0;
+    const durationSec = Math.max(scene.durationSec, audioDurationSec + overlap);
+    chainEnd += durationSec - overlap;
+    return {
+      ...scene,
+      audioDurationSec,
+      durationSec,
+      // Preserve the original short-scene clamp after extending its picture.
+      ...(fade && overlap < fade.durationSec
+        ? {
+            transition: {
+              type: sizzleTransitionType(scene.transition),
+              durationSec: overlap
+            }
+          }
+        : {})
+    };
+  });
 }
 
 function hasCutSpans(scene: VideoSceneInput): scene is VideoSceneInput & { spans: VideoRange[] } {
@@ -630,7 +652,7 @@ export async function compose(req: ComposeRequest): Promise<void> {
     fps: req.fps,
     totalSec: req.scenes.reduce((acc, s) => acc + s.durationSec, 0).toFixed(2)
   });
-  const totalSec = req.scenes.reduce((acc, s) => acc + s.durationSec, 0);
+  const totalSec = req.scenes.reduce((acc, s) => acc + (s.audioDurationSec ?? s.durationSec), 0);
   await runFfmpeg(ffmpeg, args, totalSec, req.onProgress, req.signal);
 }
 

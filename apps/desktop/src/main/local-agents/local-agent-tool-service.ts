@@ -1,3 +1,4 @@
+import type { SizzleTimelineInput, SizzleLaunchTemplateInput } from "@pwrsnap/shared";
 import {
   err,
   formatCaptureEditSummary,
@@ -570,6 +571,9 @@ export class LocalAgentToolService {
         }
         project = toggled.value;
       }
+      if (captureIds.length === 0 && input.brief === undefined) {
+        return ok({ projectId: project.id, name: project.name, sceneCount: 0, threadId: null, turnId: null });
+      }
       const chat = await bus.dispatch(
         "codex:sizzleChat:create",
         {
@@ -699,7 +703,57 @@ export class LocalAgentToolService {
         message: "the requested Sizzle thread is not anchored to this project"
       });
     }
+    if (thread.status.kind === "idle") {
+      const history = await bus.dispatch("codex:sizzleChat:history", { threadId: thread.threadId }, ctx.commandContext);
+      return ok({ threadId: thread.threadId, status: thread.status, assistantSummary: history.ok ? lastAssistantText(history.value.messages) : null });
+    }
     return ok({ threadId: thread.threadId, status: thread.status });
+  }
+
+  async sizzleTemplate(input: { projectId: string; template: SizzleLaunchTemplateInput; expectedModifiedAt: string }, ctx: LocalAgentToolContext): Promise<Result<unknown, PwrSnapError>> {
+    const result = await bus.dispatch("sizzle:applyLaunchTemplate", { id: input.projectId, template: input.template, expectedModifiedAt: input.expectedModifiedAt }, ctx.commandContext);
+    return result.ok ? this.sizzleGet({ projectId: input.projectId }, ctx) : result;
+  }
+
+  async sizzleImportCapture(input: { projectId: string; captureId: string }, ctx: LocalAgentToolContext): Promise<Result<unknown, PwrSnapError>> {
+    return bus.dispatch("sizzle:importCapture", { id: input.projectId, captureId: input.captureId }, ctx.commandContext);
+  }
+
+  async sizzleAudioQa(input: { projectId: string }, ctx: LocalAgentToolContext): Promise<Result<unknown, PwrSnapError>> {
+    return bus.dispatch("sizzle:audioQa", { id: input.projectId }, ctx.commandContext);
+  }
+
+  async sizzleGet(input: { projectId: string }, ctx: LocalAgentToolContext): Promise<Result<unknown, PwrSnapError>> {
+    const result = await bus.dispatch("sizzle:get", { id: input.projectId }, ctx.commandContext);
+    if (!result.ok) return result;
+    const { outputPath, ...project } = result.value;
+    return ok({ ...project, hasOutput: outputPath !== null });
+  }
+
+  async sizzleImport(input: { projectId: string; path: string }, ctx: LocalAgentToolContext): Promise<Result<unknown, PwrSnapError>> {
+    return bus.dispatch("sizzle:importAsset", { id: input.projectId, path: input.path }, ctx.commandContext);
+  }
+
+  async sizzleUpdate(input: { projectId: string; timeline: SizzleTimelineInput; expectedModifiedAt: string }, ctx: LocalAgentToolContext): Promise<Result<unknown, PwrSnapError>> {
+    const updated = await bus.dispatch("sizzle:setTimeline", { id: input.projectId, timeline: input.timeline, expectedModifiedAt: input.expectedModifiedAt }, ctx.commandContext);
+    if (!updated.ok) return updated;
+    return this.sizzleGet({ projectId: input.projectId }, ctx);
+  }
+
+  async sizzleInspect(input: { projectId: string; frames: number[] }, ctx: LocalAgentToolContext): Promise<Result<unknown, PwrSnapError>> {
+    const rendered = await bus.dispatch("sizzle:inspectFrames", { id: input.projectId, frames: input.frames }, ctx.commandContext);
+    if (!rendered.ok) return rendered;
+    const resource = this.resources.register({
+      uri: `pwrsnap://sizzle/${encodeURIComponent(input.projectId)}/frames/${clientScopedId(rendered.value.renderId, ctx.clientId)}`,
+      name: "Sizzle frames", mimeType: "image/png", requiredCapabilities: ["sizzle.preview.read"], ownerClientId: ctx.clientId,
+      resolvePath: async () => rendered.value.outputPath
+    });
+    return ok(withMcpResourceLink({ resourceUri: resource.uri, widthPx: rendered.value.widthPx, heightPx: rendered.value.heightPx, mimeType: "image/png" }, { uri: this.deliveryUri(resource, ctx.clientId), name: resource.name, mimeType: resource.mimeType }));
+  }
+
+  async sizzleBindings(input: { projectId: string; bindings: Record<string, string | number>; expectedModifiedAt: string }, ctx: LocalAgentToolContext): Promise<Result<unknown, PwrSnapError>> {
+    const result = await bus.dispatch("sizzle:setBindings", { id: input.projectId, bindings: input.bindings, expectedModifiedAt: input.expectedModifiedAt }, ctx.commandContext);
+    return result.ok ? this.sizzleGet({ projectId: input.projectId }, ctx) : result;
   }
 
   async sizzleRender(
@@ -736,7 +790,8 @@ export class LocalAgentToolService {
           durationSec: rendered.value.durationSec,
           widthPx: rendered.value.widthPx,
           heightPx: rendered.value.heightPx,
-          mimeType: "video/mp4"
+          mimeType: "video/mp4",
+          ...(rendered.value.cachedScenes === undefined ? {} : { cachedScenes: rendered.value.cachedScenes, renderedScenes: rendered.value.renderedScenes, audioReports: rendered.value.audioReports })
         },
         {
           uri: deliveryUri,

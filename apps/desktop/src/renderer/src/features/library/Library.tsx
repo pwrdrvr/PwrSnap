@@ -468,8 +468,8 @@ function CellThumb({
   // sizzle:open instead of OPEN_FOCUS for project cells.
   if (capture.kind === "project" && project !== null) {
     const coverCaptureId = resolveSizzleProjectCoverCaptureId(project);
-    const sceneCount = project.scenes.length;
-    const totalSec = project.scenes.reduce((acc, s) => {
+    const sceneCount = project.timeline?.scenes.length ?? project.scenes.length;
+    const totalSec = project.timeline ? project.timeline.scenes.reduce((n, scene) => n + scene.durationFrames, 0) / project.timeline.fps : project.scenes.reduce((acc, s) => {
       const explicit = s.durationOverrideSec;
       if (typeof explicit === "number" && explicit > 0) return acc + explicit;
       const trim = s.mediaTrim;

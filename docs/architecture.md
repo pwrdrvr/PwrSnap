@@ -280,6 +280,42 @@ those paths and the camera directories derived from the copy id. Recovery
 never lists the captures root
 (`capture/file-copy.ts`, `capture/duplicate-jobs.ts`).
 
+## Agent-authored Sizzle timelines
+
+Sizzle supports a versioned, deterministic composition contract alongside its
+existing narrated capture scenes. A timeline owns its canvas, frame rate,
+fixed integer-frame scene slots, ordered visual layers, bindings, and
+independently placed audio tracks. It accepts data, never executable HTML,
+JavaScript, expressions, or arbitrary network URLs. Changing a spoken line
+must fit its slot or fail explicitly; it cannot silently move later scenes.
+
+Agents can read and update timelines directly through MCP, import local media
+with a separate permission, snapshot edited library captures, apply the
+reusable launch template, and inspect frames. Project revisions are compared
+inside the serialized store write, so concurrent edits fail instead of
+overwriting one another. Chat is an optional author of the same data.
+
+Imported sources are immutable managed copies under the OS videos directory's
+`PwrSnap/Assets`, independent of the screenshot captures-location preference.
+A library import snapshots current edits, including recording cuts and the
+selected export audio; later capture edits do not alter that snapshot.
+Full movies and their timeline/diagnostic JSON land in `Videos/PwrSnap`
+(`Movies/PwrSnap` on macOS).
+
+The built-in compositor evaluates absolute frames into escaped SVG, rasterizes
+with Sharp in a Node utility process, and encodes through the existing vetted
+OS H.264 encoders and native AAC. Frame inspection and movie generation share
+that renderer. Scene caches depend on resolved visual data; audio edits and
+unrelated binding changes reuse those pictures. Audio preparation handles
+provided takes or explicitly configured speech, bounded slot fitting,
+transcription checks, supplied or seeded sample-free music, ducking, and final
+loudness normalization. Speech credentials remain in DesktopSecretStore.
+
+The agent process owns these jobs, including their child lifetime, so long
+cache writes participate in the same admission gate as cache cleanup. The
+Library process owns the project editor and persistence. See
+[the agent reel guide](sizzle-agent-reels.md) for the shipped contract.
+
 ## AI uses the user's chosen agent or direct API
 
 Built-in Codex and ACP connections remain available. Users can also configure
@@ -452,11 +488,10 @@ measured against a seeded large library rather than a handful of captures.
 
 ## Direction — open and deliberately unresolved
 
-- **Sizzle composition engine.** The reel composer ships, but the original
-  plan named Remotion as its engine and that was retracted on license
-  grounds. Remotion is on the do-not-look list in AGENTS.md §"Dependency
-  licensing" — do not read its source, docs, or examples. A replacement
-  engine is an open research item.
+- **Sizzle composition.** The built-in timeline compositor above and the
+  existing narrated-scene composer cover the shipped surfaces. Remotion
+  remains on the do-not-look list in AGENTS.md §"Dependency licensing";
+  neither compositor depends on a restricted video framework.
 - **Windows.** Ships signed, with a known backlog tracked in
   [docs/windows/port-status.md](windows/port-status.md) §Status. No Arm64
   package yet; no distributed Linux desktop build.

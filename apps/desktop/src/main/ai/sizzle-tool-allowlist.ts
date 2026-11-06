@@ -15,6 +15,7 @@ import { nanoid } from "nanoid";
 import { join } from "node:path";
 import { z } from "zod";
 import {
+  SizzleTimelineSchema,
   type CaptureRecord,
   type CaptureEnrichment,
   type CaptureSearchRequest,
@@ -274,6 +275,9 @@ async function projectView(p: SizzleProject): Promise<unknown> {
     ttsProvider: p.ttsProvider,
     resolution: p.resolution,
     lastRenderedAt: p.lastRenderedAt,
+    modifiedAt: p.modifiedAt,
+    timeline: p.timeline ?? null,
+    assets: p.assets ?? [],
     scenes
   };
 }
@@ -346,6 +350,7 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
     if (project === null) {
       return { ok: false, error: "No Sizzle project is linked to this chat." };
     }
+    if (project.timeline) return { ok: false, error: "This reel uses a versioned timeline. Use timeline_set or bindings_set; legacy scene edits do not apply." };
     const next = transform(project.scenes, project);
     if (!Array.isArray(next)) return { ok: false, error: next.error };
     // Return the PERSISTED project (the store sanitizes scenes on write),
@@ -360,6 +365,26 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
   };
 
   const tools = [
+    defineTool({
+      namespace: "pwrsnap_sizzle", name: "timeline_set",
+      description: "Replace this reel's versioned deterministic timeline. Read project_get first and pass its modifiedAt. Use fixed frame slots, imported asset IDs, layered animation primitives, and independent audio tracks. Does not render or spend TTS budget.",
+      argsSchema: z.object({ timeline: SizzleTimelineSchema, expectedModifiedAt: z.string().min(1) }),
+      dispatch: async (args, ctx) => {
+        const project = await loadProject(ctx.threadId);
+        if (!project) return { ok: false, error: "No Sizzle project is linked to this chat." };
+        return runVerb("sizzle:setTimeline", { id: project.id, timeline: args.timeline, expectedModifiedAt: args.expectedModifiedAt });
+      }
+    }),
+    defineTool({
+      namespace: "pwrsnap_sizzle", name: "bindings_set",
+      description: "Update this reel's named values without rewriting scenes. Read project_get first and pass its modifiedAt. Captions, counters and generated narration that reference the same binding update together; the next render reuses unaffected scenes.",
+      argsSchema: z.object({ bindings: z.record(z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/), z.union([z.string().max(4000), z.number().finite()])), expectedModifiedAt: z.string().min(1) }),
+      dispatch: async (args, ctx) => {
+        const project = await loadProject(ctx.threadId);
+        if (!project) return { ok: false, error: "No Sizzle project is linked to this chat." };
+        return runVerb("sizzle:setBindings", { id: project.id, bindings: args.bindings, expectedModifiedAt: args.expectedModifiedAt });
+      }
+    }),
     defineTool({
       namespace: "pwrsnap_sizzle",
       name: "library_search",

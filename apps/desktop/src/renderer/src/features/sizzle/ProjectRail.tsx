@@ -154,7 +154,9 @@ function ProjectRow({
   onOpenMenu: (event: ReactMouseEvent<HTMLElement>) => void;
   onDuplicate: () => void;
 }): ReactElement {
-  const clipLabel = `${project.scenes.length} clip${project.scenes.length === 1 ? "" : "s"}`;
+  const count = project.timeline?.scenes.length ?? project.scenes.length;
+  const unit = project.timeline ? "scene" : "clip";
+  const clipLabel = `${count} ${unit}${count === 1 ? "" : "s"}`;
   const updatedLabel = isDifferentProjectDate(project.createdAt, project.modifiedAt)
     ? `Updated ${formatProjectDate(project.modifiedAt)}`
     : null;

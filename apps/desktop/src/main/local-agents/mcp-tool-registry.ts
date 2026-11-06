@@ -1,6 +1,10 @@
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import type { LocalAgentCapability, PwrSnapError } from "@pwrsnap/shared";
 import {
+  SizzleTimelineSchema,
+  SizzleLaunchTemplateSchema,
+  type SizzleLaunchTemplateInput,
+  type SizzleTimelineInput,
   err,
   ok,
   VIDEO_ACTIVITY_GUIDANCE,
@@ -264,6 +268,14 @@ export function createDefaultLocalAgentMcpTools(deps: {
     },
     ctx: LocalAgentToolContext
   ) => Promise<Result<unknown, PwrSnapError>>;
+  sizzleTemplate?: (input: { projectId: string; template: SizzleLaunchTemplateInput; expectedModifiedAt: string }, ctx: LocalAgentToolContext) => Promise<Result<unknown, PwrSnapError>>;
+  sizzleImportCapture?: (input: { projectId: string; captureId: string }, ctx: LocalAgentToolContext) => Promise<Result<unknown, PwrSnapError>>;
+  sizzleAudioQa?: (input: { projectId: string }, ctx: LocalAgentToolContext) => Promise<Result<unknown, PwrSnapError>>;
+  sizzleGet?: (input: { projectId: string }, ctx: LocalAgentToolContext) => Promise<Result<unknown, PwrSnapError>>;
+  sizzleImport?: (input: { projectId: string; path: string }, ctx: LocalAgentToolContext) => Promise<Result<unknown, PwrSnapError>>;
+  sizzleUpdate?: (input: { projectId: string; timeline: SizzleTimelineInput; expectedModifiedAt: string }, ctx: LocalAgentToolContext) => Promise<Result<unknown, PwrSnapError>>;
+  sizzleBindings?: (input: { projectId: string; bindings: Record<string, string | number>; expectedModifiedAt: string }, ctx: LocalAgentToolContext) => Promise<Result<unknown, PwrSnapError>>;
+  sizzleInspect?: (input: { projectId: string; frames: number[] }, ctx: LocalAgentToolContext) => Promise<Result<unknown, PwrSnapError>>;
   sizzleSend?: (
     input: { projectId: string; instruction: string; threadId?: string | undefined },
     ctx: LocalAgentToolContext
@@ -684,14 +696,63 @@ export function createDefaultLocalAgentMcpTools(deps: {
       dispatch: deps.captureFamily
     });
   }
+  if (deps.sizzleTemplate) tools.push({
+    name: "pwrsnap_sizzle_apply_launch_template", title: "Apply Launch Reel Template",
+    description: "Build the reusable 32.5-second launch format from product copy and imported asset IDs: intro, context cards, handoff, features, bound metric counter, terminal/demo, protection/typing, result sequence, and logo end card. Optional existing voiceover assets or generated narration fit the nine fixed slots. Includes a deterministic sample-free music bed. Saves editable timeline data; does not generate speech or render until requested.",
+    inputSchema: { projectId: z.string().min(1), expectedModifiedAt: z.string().min(1), template: SizzleLaunchTemplateSchema }, requiredCapabilities: ["sizzle.compose"],
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }, dispatch: deps.sizzleTemplate
+  });
+  if (deps.sizzleImportCapture) tools.push({
+    name: "pwrsnap_sizzle_import_capture", title: "Import Library Capture into Reel",
+    description: "Take a managed snapshot of the current edited image or video found through library search. Video trims/cuts and the user's selected export audio apply. Returns an assetId for the timeline. A snapshot keeps a reel reproducible when its source is edited later.",
+    inputSchema: { projectId: z.string().min(1), captureId: z.string().min(1) }, requiredCapabilities: ["sizzle.compose", "capture.composite.read"],
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }, dispatch: deps.sizzleImportCapture
+  });
+  if (deps.sizzleAudioQa) tools.push({
+    name: "pwrsnap_sizzle_audio_qa", title: "Verify Rendered Reel Audio",
+    description: "Transcribe the final mixed audio of the most recent full render, compare with its saved narration when available, and measure integrated loudness/true peak. Does not regenerate speech or video. Requires the configured OpenAI key and may perform a billable transcription request; unchanged audio reuses its transcript. Returns text and measurements, not a filesystem path.",
+    inputSchema: { projectId: z.string().min(1) }, requiredCapabilities: ["sizzle.full.read"],
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }, dispatch: deps.sizzleAudioQa
+  });
+  if (deps.sizzleGet) tools.push({
+    name: "pwrsnap_sizzle_get", title: "Read Sizzle Project",
+    description: "Read the complete editable timeline, managed assets, and modifiedAt revision. Read before updating; no composition model call is needed.",
+    inputSchema: { projectId: z.string().min(1) }, requiredCapabilities: ["sizzle.compose"],
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }, dispatch: deps.sizzleGet
+  });
+  if (deps.sizzleImport) tools.push({
+    name: "pwrsnap_sizzle_import", title: "Import Sizzle Asset",
+    description: "Copy an explicitly chosen local image, MOV/MP4 recording, or audio file into managed Sizzle storage. Returns an assetId for timeline layers or audio tracks. Requires the separate local-media import grant. Source files are unchanged.",
+    inputSchema: { projectId: z.string().min(1), path: z.string().min(1).max(4096) }, requiredCapabilities: ["sizzle.compose", "sizzle.assets.import"],
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }, dispatch: deps.sizzleImport
+  });
+  if (deps.sizzleUpdate) tools.push({
+    name: "pwrsnap_sizzle_update", title: "Set Sizzle Timeline",
+    description: "Save a version 1 deterministic timeline without an LLM composition turn. Scenes have fixed integer-frame durations and ordered visual layers (image, video, rect, text, counter, typing, terminal). Audio tracks have independent absolute frame slots. {{name}} and {{name|number}} reference bindings; counters accept {binding:name}. Use the modifiedAt from sizzle_get as expectedModifiedAt; concurrent changes are rejected. Does not synthesize or render.",
+    inputSchema: { projectId: z.string().min(1), expectedModifiedAt: z.string().min(1), timeline: SizzleTimelineSchema }, requiredCapabilities: ["sizzle.compose"],
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }, dispatch: deps.sizzleUpdate
+  });
+  if (deps.sizzleBindings) tools.push({
+    name: "pwrsnap_sizzle_set_bindings", title: "Update Sizzle Values",
+    description: "Update named timeline values without resending the scene list or calling a composition model. A shared value updates all dependent captions, counters, and spoken text. Use expectedModifiedAt from sizzle_get. The next render reuses unaffected scenes and narration.",
+    inputSchema: { projectId: z.string().min(1), expectedModifiedAt: z.string().min(1), bindings: z.record(z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/), z.union([z.string().max(4000), z.number().finite()])) },
+    requiredCapabilities: ["sizzle.compose"], annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }, dispatch: deps.sizzleBindings
+  });
+  if (deps.sizzleInspect) tools.push({
+    name: "pwrsnap_sizzle_inspect_frames", title: "Inspect Sizzle Frames",
+    description: "Render one frame or a contact sheet of up to 12 absolute timeline frame indices. Uses the same renderer as final movies; does not generate speech or render the whole movie. Returns protected PNG media.",
+    inputSchema: { projectId: z.string().min(1), frames: z.array(z.number().int().min(0).max(35999)).min(1).max(12) }, requiredCapabilities: ["sizzle.preview.read"],
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }, dispatch: deps.sizzleInspect
+  });
   if (deps.sizzleCreate !== undefined) {
+    // Creation without captures supports projects authored through the deterministic timeline API.
     tools.push({
       name: "pwrsnap_sizzle_create",
       title: "Create PwrSnap Sizzle Reel",
-      description: "Create a Sizzle project from captures and optionally start its PwrSnap-owned composition chat. Returns a compact project receipt for follow-up tools.",
+      description: "Create a Sizzle project. Omit captureIds for a project authored through sizzle_import, sizzle_get, and sizzle_update. Supplying captures and a brief supports the existing composition chat.",
       inputSchema: {
         name: z.string().trim().min(1).max(200),
-        captureIds: z.array(z.string().min(1)).min(1).max(200),
+        captureIds: z.array(z.string().min(1)).max(200).default([]),
         brief: z.string().trim().min(1).max(20_000).optional(),
         provider: z.string().trim().min(1).max(200).optional(),
         model: z.string().trim().min(1).max(200).optional()

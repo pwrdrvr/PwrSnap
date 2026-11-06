@@ -547,6 +547,34 @@
    would let focus shift the column sideways with no way back, the same
    trap `.szl__main` had vertically. Nothing overflows at the minimum window
    with the default chat width, so no scrollbar shows. */
+.szl__timeline-preview {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px;
+}
+.szl__timeline-preview img,
+.szl__timeline-preview video {
+  display: block;
+  width: 100%;
+  max-height: 55vh;
+  object-fit: contain;
+  background: var(--bg-app);
+}
+.szl__timeline-preview label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+}
+.szl__timeline-preview input { flex: 1; }
+.szl__timeline-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 16px 20px;
+  border-top: 1px solid var(--border-subtle);
+}
 .szl__editor {
   flex: 1;
   display: flex;

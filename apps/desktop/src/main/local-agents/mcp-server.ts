@@ -293,6 +293,14 @@ export class LocalAgentMcpServer {
         captureExport: (input, ctx) => toolService.captureExport(input, ctx),
         imageEditSend: (input, ctx) => toolService.imageEditSend(input, ctx),
         sizzleCreate: (input, ctx) => toolService.sizzleCreate(input, ctx),
+        sizzleGet: (input, ctx) => toolService.sizzleGet(input, ctx),
+        sizzleAudioQa: (input, ctx) => toolService.sizzleAudioQa(input, ctx),
+        sizzleTemplate: (input, ctx) => toolService.sizzleTemplate(input, ctx),
+        sizzleImportCapture: (input, ctx) => toolService.sizzleImportCapture(input, ctx),
+        sizzleImport: (input, ctx) => toolService.sizzleImport(input, ctx),
+        sizzleUpdate: (input, ctx) => toolService.sizzleUpdate(input, ctx),
+        sizzleBindings: (input, ctx) => toolService.sizzleBindings(input, ctx),
+        sizzleInspect: (input, ctx) => toolService.sizzleInspect(input, ctx),
         sizzleSend: (input, ctx) => toolService.sizzleSend(input, ctx),
         sizzleStatus: (input, ctx) => toolService.sizzleStatus(input, ctx),
         sizzleRenderPreview: (input, ctx) =>
@@ -1171,7 +1179,7 @@ export class LocalAgentMcpServer {
         subjectId: projectId
       });
     } else if (
-      toolName === "pwrsnap_sizzle_render_full" &&
+      (toolName === "pwrsnap_sizzle_render_full" || toolName === "pwrsnap_sizzle_audio_qa") &&
       projectId !== null
     ) {
       audits.push({

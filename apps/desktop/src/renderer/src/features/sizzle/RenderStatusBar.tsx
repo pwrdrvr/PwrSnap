@@ -21,11 +21,11 @@ export function isRendering(status: RenderStatus): boolean {
   return status.phase !== "idle" && status.phase !== "done" && status.phase !== "failed";
 }
 
-export function RenderStatusBar({ status }: { status: RenderStatus }): ReactElement {
+export function RenderStatusBar({ status, idleText = "Add a scene, write a script line, then render." }: { status: RenderStatus; idleText?: string }): ReactElement {
   if (status.phase === "idle") {
     return (
       <span className="szl__status szl__status--idle">
-        Add a scene, write a script line, then render.
+        {idleText}
       </span>
     );
   }

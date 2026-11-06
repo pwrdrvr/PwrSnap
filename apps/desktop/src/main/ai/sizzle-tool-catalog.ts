@@ -17,6 +17,8 @@ import { missingChatToolContext } from "./chat-turn-tool-context";
 
 /** Friendly present-tense labels for Sizzle tool activity chips. */
 export const SIZZLE_TOOL_LABELS: Record<string, string> = {
+  timeline_set: "Updated the timeline",
+  bindings_set: "Updated reel values",
   library_search: "Searched the library",
   library_get_metadata: "Read capture details",
   project_get: "Read the reel",

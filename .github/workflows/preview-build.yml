@@ -184,6 +184,11 @@ jobs:
       (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'build-preview'))
     runs-on: windows-latest
     timeout-minutes: 30
+    env:
+      # Hosted Windows system-drive temp I/O can stall; use the runner work volume.
+      TEMP: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
+
     steps:
       - name: Checkout PR branch
         uses: actions/checkout@v5

@@ -27,6 +27,7 @@ export type TimelineAudioReport = {
   transcript?: string;
   qa: "matched" | "not_requested";
 };
+export const TIMELINE_AUDIO_VERSION = 2;
 const hash = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const exists = async (path: string): Promise<boolean> =>
@@ -57,7 +58,8 @@ export function fitTimelineAudio(
 
 export function timelineTranscriptMatches(
   expected: string,
-  actual: string
+  actual: string,
+  requiredAliases: readonly [string, string][] = []
 ): boolean {
   const tokens = (text: string): string[] =>
     text
@@ -66,8 +68,37 @@ export function timelineTranscriptMatches(
       .replace(/[^\p{L}\p{N}\s]/gu, "")
       .split(/\s+/)
       .filter(Boolean);
-  const a = tokens(expected),
+  let a = tokens(expected),
     b = tokens(actual);
+  const starts = (words: string[], phrase: string[], at: number): boolean =>
+    phrase.length > 0 && phrase.every((word, i) => words[at + i] === word);
+  const rewrite = (words: string[], from: string[], to: string[]): string[] => {
+    if (!from.length) return words;
+    const result: string[] = [];
+    for (let i = 0; i < words.length; ) {
+      if (starts(words, from, i)) {
+        result.push(...to);
+        i += from.length;
+      } else {
+        result.push(words[i]!);
+        i++;
+      }
+    }
+    return result;
+  };
+  // Brand/pronunciation hints are exact requirements. An overall word-error
+  // allowance must not hide "Disk Free" inside an otherwise correct sentence.
+  for (const [original, spoken] of requiredAliases) {
+    const from = tokens(original),
+      to = tokens(spoken);
+    if (!to.length) continue;
+    a = rewrite(a, from, to);
+    b = rewrite(b, from, to);
+    b = rewrite(b, [to.join("")], to);
+    const count = (words: string[]): number =>
+      words.reduce((sum, _word, at) => sum + Number(starts(words, to, at)), 0);
+    if (count(b) < count(a)) return false;
+  }
   if (!a.length || !b.length) return false;
   let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
   for (let i = 1; i <= a.length; i++) {
@@ -181,7 +212,10 @@ async function speech(
     speed: source.speed,
     response_format: "wav"
   };
-  const path = join(root, `speech-${hash({ body, takeId: source.takeId })}.wav`);
+  const path = join(
+    root,
+    `speech-${hash({ body, takeId: source.takeId })}.wav`
+  );
   if (!(await exists(path))) {
     const response = await fetch("https://api.openai.com/v1/audio/speech", {
       method: "POST",
@@ -294,7 +328,7 @@ export async function prepareTimelineAudio(args: {
     }
     const slotSec = track.durationFrames / timeline.fps;
     const key = hash({
-      version: 1,
+      version: TIMELINE_AUDIO_VERSION,
       track,
       bindings:
         track.source.kind === "speech"
@@ -367,7 +401,17 @@ export async function prepareTimelineAudio(args: {
           cacheRoot,
           signal
         );
-        if (!timelineTranscriptMatches(expectedText, transcript))
+        const script =
+          track.source.kind === "speech"
+            ? resolveSizzleText(track.source.text, timeline.bindings)
+            : "";
+        const aliases: [string, string][] =
+          track.source.kind === "speech"
+            ? Object.entries(track.source.pronunciation).filter(([original]) =>
+                script.includes(original)
+              )
+            : [];
+        if (!timelineTranscriptMatches(expectedText, transcript, aliases))
           throw new Error(
             `Narration QA failed for ${track.id}; recognized text differs from the expected script`
           );

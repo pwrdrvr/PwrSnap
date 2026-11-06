@@ -29,8 +29,7 @@ test("agent timeline imports, frame inspection, fixed slots, and cached revision
       id,
       path: source
     });
-    expect(imported.ok).toBe(true);
-    if (!imported.ok) return;
+    if (!imported.ok) throw new Error(JSON.stringify(imported.error));
     const current = await app.dispatch("sizzle:get", { id });
     if (!current.ok) throw new Error(current.error.message);
     const saved = await app.dispatch("sizzle:setTimeline", {

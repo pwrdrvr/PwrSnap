@@ -20,7 +20,10 @@ import { runGatedCacheWrite } from "../persistence/derived-cache-gate";
 import { DesktopSecretStore } from "../settings/desktop-secret-store";
 import { resolveFfmpegPath } from "../recording/ffmpeg-resolver";
 import { assertSizzleRenderPlatform } from "../sizzle/composer";
-import { prepareTimelineAudio } from "../sizzle/timeline-audio";
+import {
+  prepareTimelineAudio,
+  TIMELINE_AUDIO_VERSION
+} from "../sizzle/timeline-audio";
 import { renderTimelineInChild } from "../sizzle/timeline-worker-client";
 import { TIMELINE_RENDER_VERSION } from "../sizzle/timeline-render";
 import { inspectTimelineAudio } from "../sizzle/timeline-audio-qa";
@@ -100,6 +103,7 @@ export function registerSizzleTimelineRenderHandlers(): void {
         .update(
           JSON.stringify({
             version: TIMELINE_RENDER_VERSION,
+            audioVersion: TIMELINE_AUDIO_VERSION,
             projectId: req.project.id,
             timeline,
             assets: req.project.assets,

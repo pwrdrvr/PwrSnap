@@ -151,6 +151,8 @@ select `trim` or `loop`; those are explicit policies for music/sound. Optional
 silence trimming removes the leading/trailing silence before fitting.
 
 Generated narration is transcribed and compared with its spoken script.
+Pronunciation-hint names are checked separately so a single wrong product name
+cannot pass merely because the rest of a long sentence matched.
 `expectedText` enables the same check for a supplied take. A mismatch fails
 the render so an agent can correct the take; it does not quietly retry paid
 generation. Successful reports include measured duration, slot duration,

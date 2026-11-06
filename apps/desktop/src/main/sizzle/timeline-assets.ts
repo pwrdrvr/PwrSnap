@@ -37,7 +37,7 @@ let imports: Promise<unknown> = Promise.resolve();
 export function importTimelineAsset(
   root: string,
   path: string,
-  ffmpeg: string,
+  ffmpeg: string | null,
   signal?: AbortSignal,
 ): Promise<SizzleAsset> {
   // A pending macOS folder grant must not consume every libuv filesystem
@@ -55,7 +55,7 @@ export function importTimelineAsset(
 async function performImport(
   root: string,
   path: string,
-  ffmpeg: string,
+  ffmpeg: string | null,
   signal?: AbortSignal,
 ): Promise<SizzleAsset> {
   const extension = extname(path).toLowerCase();
@@ -119,6 +119,7 @@ async function performImport(
       if (!width || !height) throw new Error("Image dimensions unavailable");
       kind = "image";
     } else {
+      if (!ffmpeg) throw new Error("FFmpeg is required for audio or video imports");
       const probe = await probeTimelineMedia(ffmpeg, staging, signal);
       if (!probe.durationSec || probe.durationSec > 86400)
         throw new Error("Media duration must be between zero and 24 hours");

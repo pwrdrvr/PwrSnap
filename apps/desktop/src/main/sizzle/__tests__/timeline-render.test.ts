@@ -72,6 +72,25 @@ try {
 }
 
 describe("timeline cache and fixed narration slots", () => {
+  it("never hides a pronunciation error in a long otherwise-correct line", () => {
+    fc.assert(
+      fc.property(fc.integer({ min: 20, max: 80 }), (length) => {
+        const tail = Array.from({ length }, () => "safe").join(" ");
+        expect(
+          timelineTranscriptMatches(
+            `Power Disk ${tail}`,
+            `Power Desk ${tail}`,
+            [["PwrDisk", "Power Disk"]]
+          )
+        ).toBe(false);
+        expect(
+          timelineTranscriptMatches(`Power Disk ${tail}`, `PwrDisk ${tail}`, [
+            ["PwrDisk", "Power Disk"]
+          ])
+        ).toBe(true);
+      })
+    );
+  });
   it("synthesizes the same PCM music for the same seed and gives it an exact sample count", async () => {
     const args = { durationSec: 0.1, bpm: 128, dropSec: 0.02, seed: 7 };
     const first = await synthesizeTimelineMusic(args);
@@ -177,7 +196,8 @@ describe("timeline cache and fixed narration slots", () => {
       .png()
       .toBuffer();
     await writeFile(path, source);
-    const asset = await importTimelineAsset(assetsRoot, path, ffmpeg);
+    // Still images use Sharp and must remain importable without an encoder.
+    const asset = await importTimelineAsset(assetsRoot, path, null);
     expect(asset).toMatchObject({
       kind: "image",
       width: 80,

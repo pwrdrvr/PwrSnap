@@ -154,7 +154,6 @@ export function registerSizzleTimelineHandlers(
             );
       if (!exported.ok) return exported;
       const ffmpeg = resolveFfmpegPath();
-      if (!ffmpeg) throw new Error("FFmpeg missing");
       const asset = await importTimelineAsset(
         timelineAssetsRoot(),
         exported.value.path,
@@ -292,12 +291,6 @@ export function registerSizzleTimelineHandlers(
         message: "Sizzle project not found"
       });
     const ffmpeg = resolveFfmpegPath();
-    if (!ffmpeg)
-      return err({
-        kind: "render",
-        code: "ffmpeg_missing",
-        message: "FFmpeg is unavailable"
-      });
     try {
       const asset = await importTimelineAsset(
         timelineAssetsRoot(),

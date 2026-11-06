@@ -84,6 +84,7 @@ describe("CI completion reporters", () => {
       if (change === "replace") tests[1] = makeTest("c");
       if (change === "duplicate") tests[1] = makeTest("a");
       for (const test of tests) {
+        test.module = module;
         reporter.onTestCaseReady(test);
         reporter.onTestCaseResult(test);
       }
@@ -91,6 +92,64 @@ describe("CI completion reporters", () => {
       reporter.onTestRunEnd([module], [], "passed");
       expect(JSON.parse(readFileSync(destination, "utf8")).complete, change).toBe(change === "none" || change === "reorder");
     }
+  });
+
+  it("accepts a pending Vitest descendant only when its suite was skipped at collection and the result event arrived", async () => {
+    for (const scenario of ["declared-skip", "skipped-test", "unrun", "late-skip", "missing-result", "failed-hook"]) {
+      const destination = reportFile();
+      const project = { name: "desktop-main" };
+      const specification = { project, moduleId: "/test" };
+      const parent = { type: "suite", options: { mode: scenario === "declared-skip" || scenario === "missing-result" ? "skip" : "run" }, parent: { type: "module" } };
+      const test = { id: "a", fullName: "suite > a", parent,
+        options: { mode: scenario === "skipped-test" ? "skip" : "run" }, result: () => ({ state: "pending" }) };
+      const module = { ...specification, errors: () => [], children: {
+        allSuites: () => [{ errors: () => scenario === "failed-hook" ? [new Error("hook")] : [] }],
+        allTests: () => [test]
+      } };
+      const reporter = new VitestReporter();
+      reporter.onInit({ config: { shard: null } });
+      await reporter.onTestRunStart([specification]);
+      reporter.onTestModuleCollected(module);
+      if (scenario === "late-skip") parent.options.mode = "skip";
+      test.module = module;
+      reporter.onTestCaseReady(test);
+      if (scenario !== "missing-result") reporter.onTestCaseResult(test);
+      reporter.onTestModuleEnd(module);
+      reporter.onTestRunEnd([module], [], "passed");
+      const report = JSON.parse(readFileSync(destination, "utf8"));
+      const permitted = scenario === "declared-skip" || scenario === "skipped-test";
+      expect(report.complete, scenario).toBe(permitted);
+      expect(report.suites[0].tests[0].state, scenario).toBe(permitted ? "skipped" : "pending");
+      if (scenario === "failed-hook") expect(report.suites[0].errors).toBe(1);
+    }
+  });
+
+  it("does not reuse a result event from another module with the same test ID", async () => {
+    const destination = reportFile();
+    const project = { name: "desktop-main" };
+    const first = { project, moduleId: "/first" };
+    const second = { project, moduleId: "/second" };
+    const parent = { type: "suite", options: { mode: "skip" }, parent: { type: "module" } };
+    const makeModule = (specification, state) => {
+      const test = { id: "same", fullName: "test", parent, options: { mode: "run" }, result: () => ({ state }) };
+      const module = { ...specification, errors: () => [], children: { allSuites: () => [], allTests: () => [test] } };
+      test.module = module;
+      return { module, test };
+    };
+    const a = makeModule(first, "skipped");
+    const b = makeModule(second, "pending");
+    const reporter = new VitestReporter();
+    reporter.onInit({ config: { shard: null } });
+    await reporter.onTestRunStart([first, second]);
+    for (const { module } of [a, b]) reporter.onTestModuleCollected(module);
+    reporter.onTestCaseReady(a.test);
+    reporter.onTestCaseResult(a.test);
+    for (const { module } of [a, b]) reporter.onTestModuleEnd(module);
+    reporter.onTestRunEnd([a.module, b.module], [], "passed");
+    const report = JSON.parse(readFileSync(destination, "utf8"));
+    expect(report.complete).toBe(false);
+    expect(report.suites[1].tests[0].state).toBe("pending");
+    expect(report.suites[1].tests[0].completed).toBe(false);
   });
 
   it("compares Playwright's selected test IDs before and after execution", () => {

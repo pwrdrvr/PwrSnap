@@ -9,6 +9,14 @@ function selectionName(test) {
   return names.join(" ");
 }
 
+function moduleKey(module) {
+  return JSON.stringify([module.project.name, module.moduleId]);
+}
+
+function testKey(module, id) {
+  return JSON.stringify([module.project.name, module.moduleId, id]);
+}
+
 // Keep this report separate from the JSON timings report and from console logs.
 export default class CiRetryReporter {
   planned = [];
@@ -16,6 +24,7 @@ export default class CiRetryReporter {
   collected = [];
   startedTests = new Set();
   finishedTests = new Set();
+  collectedSkips = new Map();
 
   onInit(context) {
     this.context = context;
@@ -32,22 +41,33 @@ export default class CiRetryReporter {
   }
 
   onTestModuleEnd(module) {
-    this.finished.push(JSON.stringify([module.project.name, module.moduleId]));
+    this.finished.push(moduleKey(module));
   }
 
   onTestModuleCollected(module) {
-    this.collected.push({
-      key: JSON.stringify([module.project.name, module.moduleId]),
-      ids: [...module.children.allTests()].map((test) => test.id),
-    });
+    const key = moduleKey(module);
+    const tests = [...module.children.allTests()];
+    this.collected.push({ key, ids: tests.map((test) => test.id) });
+    // Vitest can report a descendant of a skipped suite as pending at the end
+    // even after sending its result event. Record the explicit skip before
+    // execution; a later hook failure or interruption cannot manufacture it.
+    const skipped = new Set();
+    for (const test of tests) {
+      let declaredSkip = test.options.mode === "skip" || test.options.mode === "todo";
+      for (let parent = test.parent; parent?.type === "suite"; parent = parent.parent) {
+        if (parent.options.mode === "skip" || parent.options.mode === "todo") declaredSkip = true;
+      }
+      if (declaredSkip) skipped.add(test.id);
+    }
+    this.collectedSkips.set(key, skipped);
   }
 
   onTestCaseReady(test) {
-    this.startedTests.add(test.id);
+    this.startedTests.add(testKey(test.module, test.id));
   }
 
   onTestCaseResult(test) {
-    this.finishedTests.add(test.id);
+    this.finishedTests.add(testKey(test.module, test.id));
   }
 
   onTestRunEnd(modules, unhandledErrors, reason) {
@@ -56,17 +76,20 @@ export default class CiRetryReporter {
     const suites = modules.map((module) => ({
       project: module.project.name,
       file: module.moduleId,
-      key: JSON.stringify([module.project.name, module.moduleId]),
+      key: moduleKey(module),
       errors: module.errors().length
         + [...module.children.allSuites()].reduce((sum, suite) => sum + suite.errors().length, 0),
       tests: [...module.children.allTests()].map((test) => ({
         id: test.id,
         name: test.fullName,
         selectionName: selectionName(test),
-        state: test.result().state,
+        state: test.result().state === "pending"
+          && this.finishedTests.has(testKey(module, test.id))
+          && this.collectedSkips.get(moduleKey(module))?.has(test.id)
+          ? "skipped" : test.result().state,
         mode: test.options.mode,
-        started: this.startedTests.has(test.id),
-        completed: this.finishedTests.has(test.id),
+        started: this.startedTests.has(testKey(module, test.id)),
+        completed: this.finishedTests.has(testKey(module, test.id)),
       })),
     }));
     mkdirSync(path.dirname(destination), { recursive: true });

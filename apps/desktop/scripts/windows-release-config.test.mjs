@@ -301,21 +301,20 @@ describe("Windows release configuration", () => {
     expect(preview.match(/GH_TOKEN: \$\{\{ github.token \}\}/g) ?? []).toHaveLength(2);
     expect(preview).not.toMatch(/\$\{\{\s*(?:secrets|vars)\./);
 
-    expect(
-      preview.match(
-        /FFMPEG_RELEASE_BASE_URL:\s*https:\/\/github\.com\/pwrdrvr\/PwrSnap\/releases\/download\/v1\.1\.19/g,
-      ) ?? [],
-    ).toHaveLength(2);
-    expect(preview).toContain("PwrSnap-1.1.19-universal-mac.zip");
-    expect(preview).toContain(
+    const macPreview = preview.match(/^  preview:\n[\s\S]*?(?=^  [\w-]+:\n|$(?![\s\S]))/m)?.[0] ?? "";
+    const windowsPreview = preview.match(/^  preview-windows:\n[\s\S]*?(?=^  [\w-]+:\n|$(?![\s\S]))/m)?.[0] ?? "";
+    expect(macPreview).toContain("FFMPEG_RELEASE_BASE_URL: https://github.com/pwrdrvr/PwrSnap/releases/download/v1.1.19");
+    expect(macPreview).toContain("PwrSnap-1.1.19-universal-mac.zip");
+    expect(macPreview).toContain(
       "0bf4690e07456acd5bb309c3a74f6ca45538eb1f3ff47f7f56d7f9720b32e0c5",
     );
-    expect(preview).toContain(
+    expect(macPreview).toContain(
       "8b1a77b5990eaa20770259e28bb415ec7dddd3db4f9137676722a64c3f441daa",
     );
-    expect(preview).toContain("PwrSnap-1.1.19-windows-x64-setup.exe");
-    expect(preview).toContain(
-      "7eed072111f2a1666800b5337ed9814104e05b8c6bacc84155e8a0abc65e821f",
+    expect(windowsPreview).toContain("FFMPEG_RELEASE_BASE_URL: https://github.com/pwrdrvr/PwrSnap/releases/download/v1.2.2");
+    expect(windowsPreview).toContain("PwrSnap-1.2.2-windows-x64-setup.exe");
+    expect(windowsPreview).toContain(
+      "c265c16042f077a161bf32fe1c1b5decd246913883d4ff1582113dcbd59dbadf",
     );
     expect(preview.match(/FFMPEG_RELEASE_PAYLOAD_SHA256:\s*[0-9a-f]{64}/g) ?? []).toHaveLength(2);
     expect(preview).toContain("shasum -a 256");

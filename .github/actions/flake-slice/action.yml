@@ -1,0 +1,42 @@
+name: Record test slice
+description: Save a compact test slice report for consolidation.
+inputs:
+  kind:
+    description: Slice report input.
+    required: true
+  platform:
+    description: Slice report input.
+    required: true
+  lane:
+    description: Slice report input.
+    required: true
+  directory:
+    description: Slice report input.
+    required: true
+  first-outcome:
+    description: Slice report input.
+    required: true
+  retry-outcome:
+    description: Slice report input.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Write compact slice report
+      shell: bash
+      env:
+        FLAKE_KIND: ${{ inputs.kind }}
+        FLAKE_PLATFORM: ${{ inputs.platform }}
+        FLAKE_LANE: ${{ inputs.lane }}
+        FLAKE_SAMPLE: "1"
+        FLAKE_FIRST_OUTCOME: ${{ inputs.first-outcome }}
+        FLAKE_RETRY_OUTCOME: ${{ inputs.retry-outcome }}
+        PWRSNAP_CI_RETRY_DIR: ${{ inputs.directory }}
+      run: node scripts/ci/write-flake-report.mjs slice
+    - uses: actions/upload-artifact@v7
+      with:
+        name: flake-slice-${{ github.run_attempt }}-${{ inputs.kind }}-${{ inputs.platform }}-${{ inputs.lane }}
+        path: .local/ci/flake-slice.json
+        include-hidden-files: true
+        if-no-files-found: error
+        retention-days: 7

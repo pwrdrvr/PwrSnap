@@ -98,6 +98,13 @@ describe("Windows E2E UTF-8 launcher", () => {
     });
   });
 
+  test("uses the prepared Playwright runner for the selected Windows retry", () => {
+    const command = windowsE2ECommand("win32", { PWRSNAP_E2E_RETRY: "1" });
+    expect(command.arguments[3]).toContain("exec playwright test");
+    expect(command.arguments[3]).toContain("--last-failed");
+    expect(command.arguments[3]).not.toContain("test:desktop-e2e");
+  });
+
   test("returns the child command's failure exit code", async () => {
     const stdout = captureText();
     const stderr = captureText();

@@ -22,16 +22,21 @@ export function windowsE2ECommand(
   platform = process.platform,
   environment = process.env
 ) {
+  const retry = environment.PWRSNAP_E2E_RETRY === "1";
   if (platform === "win32") {
     return {
       command: environment.ComSpec || "cmd.exe",
-      arguments: ["/d", "/s", "/c", "pnpm.cmd run test:desktop-e2e"]
+      arguments: ["/d", "/s", "/c", retry
+        ? "pnpm.cmd --filter @pwrsnap/desktop exec playwright test -c playwright.config.ts --last-failed --retries=0 --trace=retain-on-failure"
+        : "pnpm.cmd run test:desktop-e2e"]
     };
   }
 
   return {
     command: "pnpm",
-    arguments: ["run", "test:desktop-e2e"]
+    arguments: retry
+      ? ["--filter", "@pwrsnap/desktop", "exec", "playwright", "test", "-c", "playwright.config.ts", "--last-failed", "--retries=0", "--trace=retain-on-failure"]
+      : ["run", "test:desktop-e2e"]
   };
 }
 

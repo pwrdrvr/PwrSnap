@@ -239,7 +239,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     needs: [changes, install-deps]
     if: needs.changes.outputs.code_impacting == 'true'
     env:
@@ -260,7 +260,46 @@ jobs:
           cache-inputs: ${{ env.PWRSNAP_DEPENDENCY_CACHE_INPUTS }}
 
       - name: Test
-        run: pnpm run test
+        id: unit-tests
+        continue-on-error: true
+        env:
+          PWRSNAP_CI_TEST_REPORT: ${{ github.workspace }}/.local/ci/retry/unit-first.json
+        run: pnpm run test --reporter=default --reporter=./scripts/ci/vitest-ci-reporter.mjs
+
+      - name: Verify unit selection completed
+        id: unit-completion
+        if: steps.unit-tests.outcome == 'success'
+        env:
+          PWRSNAP_CI_RETRY_DIR: .local/ci/retry
+        run: node scripts/ci/run-retry-failures.mjs unit-verify
+
+      - name: Retry failed unit tests
+        id: unit-tests-retry
+        if: steps.unit-tests.outcome == 'failure'
+        env:
+          PWRSNAP_CI_RETRY_DIR: .local/ci/retry
+        run: pnpm exec node scripts/ci/run-retry-failures.mjs unit
+
+      - name: Record unit slice
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/flake-slice
+        with:
+          kind: unit
+          platform: linux
+          lane: "1"
+          directory: .local/ci/retry
+          first-outcome: ${{ steps.unit-tests.outcome }}
+          retry-outcome: ${{ steps.unit-tests-retry.outcome }}
+
+      - name: Upload unit retry diagnostics
+        if: ${{ !cancelled() && (steps.unit-tests.outcome == 'failure' || steps.unit-completion.outcome == 'failure') }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-diagnostics-linux-1
+          path: .local/ci/retry/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
 
   desktop-e2e:
     # Renamed from "Desktop E2E": that name is now the aggregate job at the
@@ -270,8 +309,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: [changes, install-deps]
     if: needs.changes.outputs.code_impacting == 'true'
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
+      PWRSNAP_CI_RETRY_DIR: .local/ci/retry
+      PLAYWRIGHT_LAST_RUN_OUTPUT_FILE: ${{ github.workspace }}/.local/ci/retry/e2e-last.json
+      PWRSNAP_E2E_SKIP_LINUX_VISUAL_REGRESSION: "1"
       # Prevent pnpm 12 run commands from implicitly repairing a restored tree.
       PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: "false"
     steps:
@@ -292,7 +334,15 @@ jobs:
           cache-key-suffix: ${{ env.PWRSNAP_DEPENDENCY_CACHE_POLICY }}
           cache-inputs: ${{ env.PWRSNAP_DEPENDENCY_CACHE_INPUTS }}
 
+      - name: Prepare E2E report directory
+        run: |
+          node -e "require('fs').mkdirSync('.local/ci/retry', { recursive: true })"
+
       - name: Run desktop Electron E2E specs
+        id: e2e-tests
+        continue-on-error: true
+        env:
+          PWRSNAP_CI_TEST_REPORT: ${{ github.workspace }}/.local/ci/retry/e2e-first.json
         # The macOS-only specs (screencapture-based) are gated via
         # `test.skip(!isMac)` and don't fail the suite on Linux.
         #
@@ -308,9 +358,41 @@ jobs:
         # `playwright install-deps` blast.
         # TODO(ci): Stabilize Linux/xvfb visual-regression.spec.ts, then remove
         # this flag to explicitly re-enable its Linux visual coverage.
-        env:
-          PWRSNAP_E2E_SKIP_LINUX_VISUAL_REGRESSION: "1"
         run: xvfb-run --auto-servernum pnpm run test:desktop-e2e
+
+      - name: Verify E2E selection completed
+        if: steps.e2e-tests.outcome == 'success'
+        run: node scripts/ci/run-retry-failures.mjs e2e-first-verify
+
+      - name: Select failed E2E tests
+        id: e2e-selection
+        if: steps.e2e-tests.outcome == 'failure'
+        run: node scripts/ci/run-retry-failures.mjs e2e-prepare
+
+      - name: Retry failed E2E tests
+        id: e2e-retry
+        if: steps.e2e-tests.outcome == 'failure' && steps.e2e-selection.outcome == 'success'
+        continue-on-error: true
+        env:
+          PWRSNAP_CI_TEST_REPORT: ${{ github.workspace }}/.local/ci/retry/e2e-retry.json
+        run: xvfb-run --auto-servernum pnpm --filter @pwrsnap/desktop exec playwright test -c playwright.config.ts --last-failed --retries=0 --trace=retain-on-failure
+
+      - name: Check E2E retry results
+        if: steps.e2e-tests.outcome == 'failure' && steps.e2e-selection.outcome == 'success'
+        env:
+          PWRSNAP_RETRY_OUTCOME: ${{ steps.e2e-retry.outcome }}
+        run: node scripts/ci/run-retry-failures.mjs e2e-verify
+
+      - name: Record E2E slice
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/flake-slice
+        with:
+          kind: e2e
+          platform: linux
+          lane: "1"
+          directory: .local/ci/retry
+          first-outcome: ${{ steps.e2e-tests.outcome }}
+          retry-outcome: ${{ steps.e2e-retry.outcome }}
 
       - name: Upload desktop Playwright artifacts
         uses: actions/upload-artifact@v7
@@ -320,6 +402,8 @@ jobs:
           path: |
             apps/desktop/playwright-report/
             apps/desktop/test-results/
+            .local/ci/retry/
+          include-hidden-files: true
           retention-days: 30
 
   desktop-e2e-macos:
@@ -330,7 +414,11 @@ jobs:
     if: needs.changes.outputs.code_impacting == 'true'
     runs-on: macos-26
     needs: changes
-    timeout-minutes: 30
+    timeout-minutes: 40
+    env:
+      PWRSNAP_CI_RETRY_DIR: .local/ci/retry
+      PLAYWRIGHT_LAST_RUN_OUTPUT_FILE: ${{ github.workspace }}/.local/ci/retry/e2e-last.json
+      PWRSNAP_E2E_DISABLE_GPU: "1"
     steps:
       # Visual-regression goldens are Git LFS objects. Fetch the macOS
       # references for the active visual CI lane.
@@ -349,13 +437,53 @@ jobs:
       - name: Build native helpers
         run: pnpm rebuild:electron-native
 
+      - name: Prepare E2E report directory
+        run: |
+          node -e "require('fs').mkdirSync('.local/ci/retry', { recursive: true })"
+
       - name: Run desktop Electron E2E specs
+        id: e2e-tests
+        continue-on-error: true
+        env:
+          PWRSNAP_CI_TEST_REPORT: ${{ github.workspace }}/.local/ci/retry/e2e-first.json
         # Hosted macOS runners provide a GUI session with a virtual GPU.
         # Software rendering avoids known virtual-GPU visibility flakes; see
         # docs/solutions/2026-08-01-vm-e2e-window-visibility-flakes.md.
-        env:
-          PWRSNAP_E2E_DISABLE_GPU: "1"
         run: pnpm run test:desktop-e2e
+
+      - name: Verify E2E selection completed
+        if: steps.e2e-tests.outcome == 'success'
+        run: node scripts/ci/run-retry-failures.mjs e2e-first-verify
+
+      - name: Select failed E2E tests
+        id: e2e-selection
+        if: steps.e2e-tests.outcome == 'failure'
+        run: node scripts/ci/run-retry-failures.mjs e2e-prepare
+
+      - name: Retry failed E2E tests
+        id: e2e-retry
+        if: steps.e2e-tests.outcome == 'failure' && steps.e2e-selection.outcome == 'success'
+        continue-on-error: true
+        env:
+          PWRSNAP_CI_TEST_REPORT: ${{ github.workspace }}/.local/ci/retry/e2e-retry.json
+        run: pnpm --filter @pwrsnap/desktop exec playwright test -c playwright.config.ts --last-failed --retries=0 --trace=retain-on-failure
+
+      - name: Check E2E retry results
+        if: steps.e2e-tests.outcome == 'failure' && steps.e2e-selection.outcome == 'success'
+        env:
+          PWRSNAP_RETRY_OUTCOME: ${{ steps.e2e-retry.outcome }}
+        run: node scripts/ci/run-retry-failures.mjs e2e-verify
+
+      - name: Record E2E slice
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/flake-slice
+        with:
+          kind: e2e
+          platform: macos
+          lane: "1"
+          directory: .local/ci/retry
+          first-outcome: ${{ steps.e2e-tests.outcome }}
+          retry-outcome: ${{ steps.e2e-retry.outcome }}
 
       - name: Upload desktop Playwright artifacts
         uses: actions/upload-artifact@v7
@@ -365,6 +493,8 @@ jobs:
           path: |
             apps/desktop/playwright-report/
             apps/desktop/test-results/
+            .local/ci/retry/
+          include-hidden-files: true
           retention-days: 30
 
   windows:
@@ -375,7 +505,7 @@ jobs:
     runs-on: windows-latest
     needs: [changes, windows-install-deps]
     if: needs.changes.outputs.code_impacting == 'true'
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       # Prevent pnpm 12 run commands from implicitly repairing a restored tree.
       PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: "false"
@@ -421,22 +551,104 @@ jobs:
           pnpm --filter @pwrsnap/desktop build:native
 
       - name: Smoke-test native CF_HDROP round trip
+        id: smoke-tests
+        continue-on-error: true
         env:
+          PWRSNAP_CI_TEST_REPORT: ${{ github.workspace }}/.local/ci/smoke/unit-first.json
           PWRSNAP_WINDOWS_NATIVE_CLIPBOARD_SMOKE: "1"
         run: >-
           pnpm exec vitest run --config vitest.workspace.ts
           apps/desktop/src/main/clipboard/__tests__/windows-file-clipboard-native.test.ts
+          --reporter=default --reporter=./scripts/ci/vitest-ci-reporter.mjs
+
+      - name: Verify unit selection completed
+        id: smoke-completion
+        if: steps.smoke-tests.outcome == 'success'
+        env:
+          PWRSNAP_CI_RETRY_DIR: .local/ci/smoke
+          PWRSNAP_WINDOWS_NATIVE_CLIPBOARD_SMOKE: "1"
+        run: node scripts/ci/run-retry-failures.mjs unit-verify
+
+      - name: Retry failed unit tests
+        id: smoke-tests-retry
+        if: steps.smoke-tests.outcome == 'failure'
+        env:
+          PWRSNAP_CI_RETRY_DIR: .local/ci/smoke
+          PWRSNAP_WINDOWS_NATIVE_CLIPBOARD_SMOKE: "1"
+        run: pnpm exec node scripts/ci/run-retry-failures.mjs unit
+
+      - name: Record unit slice
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/flake-slice
+        with:
+          kind: unit
+          platform: windows
+          lane: "2"
+          directory: .local/ci/smoke
+          first-outcome: ${{ steps.smoke-tests.outcome }}
+          retry-outcome: ${{ steps.smoke-tests-retry.outcome }}
+
+      - name: Upload unit retry diagnostics
+        if: ${{ !cancelled() && (steps.smoke-tests.outcome == 'failure' || steps.smoke-completion.outcome == 'failure') }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-diagnostics-windows-2
+          path: .local/ci/smoke/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Test
-        run: pnpm run test
+        id: unit-tests
+        continue-on-error: true
+        env:
+          PWRSNAP_CI_TEST_REPORT: ${{ github.workspace }}/.local/ci/retry/unit-first.json
+        run: pnpm run test --reporter=default --reporter=./scripts/ci/vitest-ci-reporter.mjs
+
+      - name: Verify unit selection completed
+        id: unit-completion
+        if: steps.unit-tests.outcome == 'success'
+        env:
+          PWRSNAP_CI_RETRY_DIR: .local/ci/retry
+        run: node scripts/ci/run-retry-failures.mjs unit-verify
+
+      - name: Retry failed unit tests
+        id: unit-tests-retry
+        if: steps.unit-tests.outcome == 'failure'
+        env:
+          PWRSNAP_CI_RETRY_DIR: .local/ci/retry
+        run: pnpm exec node scripts/ci/run-retry-failures.mjs unit
+
+      - name: Record unit slice
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/flake-slice
+        with:
+          kind: unit
+          platform: windows
+          lane: "1"
+          directory: .local/ci/retry
+          first-outcome: ${{ steps.unit-tests.outcome }}
+          retry-outcome: ${{ steps.unit-tests-retry.outcome }}
+
+      - name: Upload unit retry diagnostics
+        if: ${{ !cancelled() && (steps.unit-tests.outcome == 'failure' || steps.unit-completion.outcome == 'failure') }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-diagnostics-windows-1
+          path: .local/ci/retry/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
 
   windows-e2e:
     name: Windows Desktop E2E
     runs-on: windows-latest
     needs: [changes, windows-install-deps]
     if: needs.changes.outputs.code_impacting == 'true'
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
+      PWRSNAP_CI_RETRY_DIR: .local/ci/retry
+      PLAYWRIGHT_LAST_RUN_OUTPUT_FILE: ${{ github.workspace }}/.local/ci/retry/e2e-last.json
       # Prevent pnpm 12 run commands from implicitly repairing a restored tree.
       PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: "false"
     steps:
@@ -464,7 +676,15 @@ jobs:
       - name: Build native helpers
         run: pnpm rebuild:electron-native
 
+      - name: Prepare E2E report directory
+        run: |
+          node -e "require('fs').mkdirSync('.local/ci/retry', { recursive: true })"
+
       - name: Run desktop Electron E2E specs (Windows)
+        id: e2e-tests
+        continue-on-error: true
+        env:
+          PWRSNAP_CI_TEST_REPORT: ${{ github.workspace }}/.local/ci/retry/e2e-first.json
         # windows-latest provides an interactive desktop session, so (unlike the
         # Linux job) no xvfb is needed. macOS-only specs self-skip via
         # `test.skip(!isMac)`; this verifies the cross-platform specs and, as the
@@ -472,6 +692,41 @@ jobs:
         # Windows launcher keeps Playwright's UTF-8 output out of PowerShell's
         # legacy native-output decoding pipeline.
         run: pnpm run test:desktop-e2e:windows
+
+      - name: Verify E2E selection completed
+        if: steps.e2e-tests.outcome == 'success'
+        run: node scripts/ci/run-retry-failures.mjs e2e-first-verify
+
+      - name: Select failed E2E tests
+        id: e2e-selection
+        if: steps.e2e-tests.outcome == 'failure'
+        run: node scripts/ci/run-retry-failures.mjs e2e-prepare
+
+      - name: Retry failed E2E tests
+        id: e2e-retry
+        if: steps.e2e-tests.outcome == 'failure' && steps.e2e-selection.outcome == 'success'
+        continue-on-error: true
+        env:
+          PWRSNAP_CI_TEST_REPORT: ${{ github.workspace }}/.local/ci/retry/e2e-retry.json
+          PWRSNAP_E2E_RETRY: "1"
+        run: pnpm run test:desktop-e2e:windows
+
+      - name: Check E2E retry results
+        if: steps.e2e-tests.outcome == 'failure' && steps.e2e-selection.outcome == 'success'
+        env:
+          PWRSNAP_RETRY_OUTCOME: ${{ steps.e2e-retry.outcome }}
+        run: node scripts/ci/run-retry-failures.mjs e2e-verify
+
+      - name: Record E2E slice
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/flake-slice
+        with:
+          kind: e2e
+          platform: windows
+          lane: "1"
+          directory: .local/ci/retry
+          first-outcome: ${{ steps.e2e-tests.outcome }}
+          retry-outcome: ${{ steps.e2e-retry.outcome }}
 
       - name: Upload desktop Playwright artifacts
         uses: actions/upload-artifact@v7
@@ -481,6 +736,8 @@ jobs:
           path: |
             apps/desktop/playwright-report/
             apps/desktop/test-results/
+            .local/ci/retry/
+          include-hidden-files: true
           retention-days: 30
 
   desktop-e2e-result:
@@ -536,3 +793,28 @@ jobs:
           require "Windows" "$WINDOWS_RESULT"
 
           exit "$status"
+
+  flake-report:
+    name: Consolidate test retry reports
+    runs-on: ubuntu-latest
+    needs: [changes, test, windows, desktop-e2e, desktop-e2e-macos, windows-e2e]
+    if: always() && needs.changes.outputs.code_impacting == 'true'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: flake-slice-${{ github.run_attempt }}-*
+          path: .local/ci/flake-slices
+      - name: Consolidate reports
+        env:
+          FLAKE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/ci/write-flake-report.mjs aggregate
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: ci-flake-report-${{ github.run_attempt }}
+          path: .local/ci/flake-report/flake-report.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30

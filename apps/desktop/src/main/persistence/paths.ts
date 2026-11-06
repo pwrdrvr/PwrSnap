@@ -171,6 +171,12 @@ export function getCacheRoot(): string {
   return join(getDataRoot(), "render-cache");
 }
 
+/** Managed launch-media sources remain visible and independent of changes to
+ * the screenshot captures-location preference. Originals are never modified. */
+export function getSizzleAssetsRoot(): string {
+  return join(app.getPath("videos"), "PwrSnap", "Assets");
+}
+
 export function getPendingSourceCaptureDir(captureId: string): string {
   return join(getDataRoot(), "pending-sources", captureId);
 }

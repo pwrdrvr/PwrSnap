@@ -33,6 +33,7 @@ const CAPABILITY_LABELS: Record<LocalAgentCapability, string> = {
   "capture.edit": "Edit images",
   "trash.write": "Move to Trash",
   "sizzle.compose": "Compose Sizzles",
+  "sizzle.assets.import": "Import Sizzle media",
   "sizzle.preview.read": "Read Sizzle previews",
   "sizzle.full.read": "Read full Sizzles"
 };
@@ -45,6 +46,7 @@ const CAPABILITY_DETAILS: Record<LocalAgentCapability, string> = {
   "capture.edit": "Change a capture through PwrSnap-owned edit commands.",
   "trash.write": "Move a capture to recoverable PwrSnap Trash.",
   "sizzle.compose": "Create and update Sizzle compositions.",
+  "sizzle.assets.import": "Read local image, video, and audio files into Sizzle projects.",
   "sizzle.preview.read": "Render preview-quality Sizzle media.",
   "sizzle.full.read": "Render full-resolution Sizzle media."
 };

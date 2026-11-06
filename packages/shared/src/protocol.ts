@@ -14,6 +14,8 @@ import type { BundleLayerNode } from "./bundle-manifest-schema-v2";
 import type { CaptureDuplicateJob, CaptureEditSummary } from "./capture-duplicate";
 import type { CaptureEnrichment, AiRunStatus } from "./ai-enrichment-schemas";
 import type { AiEnrichmentRateLimit } from "./ai-enrichment-rate-limit";
+import type { SizzleTimeline, SizzleTimelineInput, SizzleAsset } from "./sizzle-timeline";
+import type { SizzleLaunchTemplateInput } from "./sizzle-launch-template";
 
 export type CaptureInvocationOrigin =
   | "global_hotkey.quick_capture"
@@ -1369,6 +1371,7 @@ export type LocalAgentCapability =
   | "capture.edit"
   | "trash.write"
   | "sizzle.compose"
+  | "sizzle.assets.import"
   | "sizzle.preview.read"
   | "sizzle.full.read";
 
@@ -1380,6 +1383,7 @@ export const LOCAL_AGENT_CAPABILITIES = [
   "capture.edit",
   "trash.write",
   "sizzle.compose",
+  "sizzle.assets.import",
   "sizzle.preview.read",
   "sizzle.full.read"
 ] as const satisfies readonly LocalAgentCapability[];
@@ -1942,6 +1946,9 @@ export type SizzleScene = {
 };
 
 export type SizzleProject = {
+  /** Versioned composition contract; absent keeps the existing narrated-scene editor. */
+  timeline?: SizzleTimeline;
+  assets?: SizzleAsset[];
   id: string;
   name: string;
   createdAt: string;
@@ -5975,6 +5982,21 @@ export type Commands = {
   "sizzle:open": { req: { projectId?: string }; res: void };
   "sizzle:list": { req: Record<string, never>; res: { projects: SizzleProject[] } };
   "sizzle:create": { req: { name: string }; res: SizzleProject };
+  "sizzle:get": { req: { id: string }; res: SizzleProject };
+  "sizzle:importAsset": { req: { id: string; path: string }; res: SizzleAsset };
+  "sizzle:importCapture": { req: { id: string; captureId: string }; res: SizzleAsset };
+  "sizzle:applyLaunchTemplate": { req: { id: string; template: SizzleLaunchTemplateInput; expectedModifiedAt: string }; res: SizzleProject };
+  "sizzle:setTimeline": { req: { id: string; timeline: SizzleTimelineInput; expectedModifiedAt: string }; res: SizzleProject };
+  "sizzle:setBindings": { req: { id: string; bindings: Record<string, string | number>; expectedModifiedAt: string }; res: SizzleProject };
+  "sizzle:inspectFrames": { req: { id: string; frames: number[] }; res: { outputPath: string; widthPx: number; heightPx: number; renderId: string } };
+  "sizzle:timelineFrame": { req: { id: string; frame: number }; res: { pngBase64: string } };
+  "sizzle:audioQa": { req: { id: string }; res: { transcript: string; expectedText: string | null; matches: boolean | null; integratedLufs: number | null; truePeakDb: number | null } };
+  "sizzle:runAudioQaJob": { req: { outputPath: string }; res: Commands["sizzle:audioQa"]["res"] };
+  /** Internal, agent-owned job: shares the cache cleanup admission gate. */
+  "sizzle:runTimelineJob": {
+    req: { project: SizzleProject; mode: "preview" | "full"; frames?: number[] };
+    res: { outputPath: string; durationSec: number; renderId: string; widthPx: number; heightPx: number; cachedScenes: number; renderedScenes: number; audioReports: Array<{ trackId: string; inputDurationSec: number; slotDurationSec: number; playbackRate: number; transcript?: string; qa: "matched" | "not_requested" }> };
+  };
   "sizzle:duplicate": {
     req: { id: string; name?: string; forkChat?: boolean };
     res: SizzleProject;
@@ -6000,6 +6022,9 @@ export type Commands = {
       renderId: string;
       widthPx: number;
       heightPx: number;
+      cachedScenes?: number;
+      renderedScenes?: number;
+      audioReports?: Commands["sizzle:runTimelineJob"]["res"]["audioReports"];
     };
   };
   "sizzle:revealOutput": { req: { id: string }; res: void };

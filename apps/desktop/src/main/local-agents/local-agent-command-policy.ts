@@ -101,6 +101,9 @@ export function localAgentCommandRequirement(
     case "sizzle:delete":
     case "sizzle:toggleScene":
     case "sizzle:update":
+    case "sizzle:setTimeline":
+    case "sizzle:setBindings":
+    case "sizzle:applyLaunchTemplate":
     case "codex:sizzleChat:create":
     case "codex:sizzleChat:list":
     case "codex:sizzleChat:send":
@@ -112,9 +115,18 @@ export function localAgentCommandRequirement(
       return { all: ["sizzle.compose"] };
 
     case "sizzle:list":
+    case "sizzle:get":
       return {
         any: ["sizzle.compose", "sizzle.preview.read", "sizzle.full.read"]
       };
+
+    case "sizzle:importAsset":
+      return { all: ["sizzle.compose", "sizzle.assets.import"] };
+    case "sizzle:importCapture":
+      return { all: ["sizzle.compose", "capture.composite.read"] };
+    case "sizzle:inspectFrames":
+    case "sizzle:timelineFrame":
+      return { all: ["sizzle.preview.read"] };
 
     case "sizzle:render":
       return {
@@ -122,6 +134,9 @@ export function localAgentCommandRequirement(
           ? "sizzle.preview.read"
           : "sizzle.full.read"]
       };
+
+    case "sizzle:audioQa":
+      return { all: ["sizzle.full.read"] };
 
     default:
       return null;

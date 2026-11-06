@@ -95,6 +95,7 @@ export const LOCAL_AGENT_CAPABILITY_DANGER: Record<
   "capture.edit": "sensitive",
   "trash.write": "destructive",
   "sizzle.compose": "sensitive",
+  "sizzle.assets.import": "sensitive",
   "sizzle.preview.read": "sensitive",
   "sizzle.full.read": "destructive"
 };

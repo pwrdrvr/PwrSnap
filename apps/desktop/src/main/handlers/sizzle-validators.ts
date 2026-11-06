@@ -119,6 +119,8 @@ function isResolution(v: unknown): v is SizzleProject["resolution"] {
  *  in a `sizzle:update` patch is treated as a hostile or buggy call
  *  and rejected. */
 const SERVER_OWNED_FIELDS = new Set([
+  "timeline",
+  "assets",
   "id",
   "createdAt",
   "modifiedAt",

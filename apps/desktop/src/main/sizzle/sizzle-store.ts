@@ -1,4 +1,4 @@
-import { AvatarStyleSchema } from "@pwrsnap/shared";
+import { AvatarStyleSchema, SizzleTimelineSchema, SizzleAssetSchema, validateSizzleTimelineAssets, type SizzleTimeline, type SizzleAsset } from "@pwrsnap/shared";
 import { copyFile, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
@@ -175,7 +175,7 @@ export class SizzleStore {
         scenes,
         id: prev.id,
         createdAt: prev.createdAt,
-        modifiedAt: new Date().toISOString()
+        modifiedAt: new Date(Math.max(Date.now(), Date.parse(prev.modifiedAt) + 1)).toISOString()
       };
       blob.projects[idx] = next;
       await this.writeBlob(blob);
@@ -188,6 +188,35 @@ export class SizzleStore {
       const blob = await this.readBlob();
       blob.projects = blob.projects.filter((p) => p.id !== id);
       await this.writeBlob(blob);
+    });
+  }
+
+  async addAsset(id: string, asset: SizzleAsset, expectedModifiedAt?: string): Promise<SizzleProject> {
+    return this.serialize(async () => {
+      const blob = await this.readBlob();
+      const project = blob.projects.find(p => p.id === id);
+      if (!project) throw new SizzleProjectNotFoundError(id);
+      if (expectedModifiedAt !== undefined && project.modifiedAt !== expectedModifiedAt) throw new Error("Project changed; read it again before preparing narration");
+      if ((project.assets?.length ?? 0) >= 500 && !project.assets?.some(a => a.id === asset.id)) throw new Error("A project may contain at most 500 assets");
+      project.assets = [...(project.assets ?? []).filter(a => a.id !== asset.id), SizzleAssetSchema.parse(asset)];
+      project.modifiedAt = new Date(Math.max(Date.now(), Date.parse(project.modifiedAt) + 1)).toISOString();
+      await this.writeBlob(blob);
+      return project;
+    });
+  }
+
+  async setTimeline(id: string, timeline: SizzleTimeline, expectedModifiedAt: string): Promise<SizzleProject> {
+    return this.serialize(async () => {
+      const blob = await this.readBlob();
+      const project = blob.projects.find(p => p.id === id);
+      if (!project) throw new SizzleProjectNotFoundError(id);
+      if (project.modifiedAt !== expectedModifiedAt) throw new Error("Project changed; read it again before updating the timeline");
+      const validated = SizzleTimelineSchema.parse(timeline);
+      validateSizzleTimelineAssets(validated, project.assets ?? []);
+      project.timeline = validated;
+      project.modifiedAt = new Date(Math.max(Date.now(), Date.parse(project.modifiedAt) + 1)).toISOString();
+      await this.writeBlob(blob);
+      return project;
     });
   }
 
@@ -236,6 +265,8 @@ export class SizzleStore {
       // doing `scene.mediaTrim.endSec` etc.
       let normalizedNeedsPersist = false;
       for (const project of parsed.projects) {
+        if (project.timeline !== undefined) project.timeline = SizzleTimelineSchema.parse(project.timeline);
+        if (project.assets !== undefined) project.assets = SizzleAssetSchema.array().max(500).parse(project.assets);
         if (Array.isArray(project.scenes)) {
           project.scenes = sanitizeScenes(project.scenes);
         }

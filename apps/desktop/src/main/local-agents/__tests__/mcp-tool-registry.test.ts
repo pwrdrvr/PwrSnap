@@ -234,6 +234,8 @@ describe("createDefaultLocalAgentMcpTools", () => {
       captureExport: noop,
       imageEditSend: noop,
       sizzleCreate: noop,
+      sizzleAlignNarration: noop,
+      sizzlePrepareNarration: noop,
       sizzleSend: noop,
       sizzleStatus: noop,
       sizzleRenderPreview: noop,
@@ -259,6 +261,8 @@ describe("createDefaultLocalAgentMcpTools", () => {
       "pwrsnap_capture_edit_summary",
       "pwrsnap_capture_families",
       "pwrsnap_capture_family",
+      "pwrsnap_sizzle_prepare_narration",
+      "pwrsnap_sizzle_align_narration",
       "pwrsnap_sizzle_create",
       "pwrsnap_sizzle_send",
       "pwrsnap_sizzle_status",
@@ -266,6 +270,13 @@ describe("createDefaultLocalAgentMcpTools", () => {
       "pwrsnap_sizzle_render_full"
     ]);
 
+    const alignment = tools.find(tool => tool.name === "pwrsnap_sizzle_align_narration")!;
+    const request = { projectId: "sz_demo", expectedModifiedAt: "revision",
+      cues: [{ sceneId: "scan", phrase: "scan", edge: "end", occurrence: 2 }] };
+    expect(z.object(alignment.inputSchema).safeParse(request).success).toBe(true);
+    expect(z.object(alignment.inputSchema).safeParse({ ...request, tailFrames: 301 }).success).toBe(false);
+    expect(validateToolCapability(alignment, ctx(["sizzle.compose"]), request).ok).toBe(true);
+    expect(validateToolCapability(alignment, ctx(["sizzle.preview.read"]), request).ok).toBe(false);
     const resource = tools.find((tool) => tool.name === "pwrsnap_capture_resource");
     expect(resource?.requiredCapabilitiesForInput?.({
       captureId: "cap_1",

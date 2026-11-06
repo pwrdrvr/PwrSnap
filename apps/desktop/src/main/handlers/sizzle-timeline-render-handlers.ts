@@ -1,0 +1,361 @@
+import { app } from "electron";
+import { mkdir, writeFile, rename, unlink } from "node:fs/promises";
+import { join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  ok,
+  err,
+  SizzleTimelineSchema,
+  SizzleAssetSchema,
+  validateSizzleTimelineAssets,
+  SizzleNarrationCuesSchema,
+  sizzleTimelineFrames
+} from "@pwrsnap/shared";
+import { bus } from "../command-bus";
+import {
+  getCacheRoot,
+  getSizzleAssetsRoot,
+  getDataRoot
+} from "../persistence/paths";
+import { runGatedCacheWrite } from "../persistence/derived-cache-gate";
+import { DesktopSecretStore } from "../settings/desktop-secret-store";
+import { resolveFfmpegPath } from "../recording/ffmpeg-resolver";
+import { assertSizzleRenderPlatform } from "../sizzle/composer";
+import {
+  prepareTimelineAudio,
+  TIMELINE_AUDIO_VERSION
+} from "../sizzle/timeline-audio";
+import { renderTimelineInChild } from "../sizzle/timeline-worker-client";
+import { TIMELINE_RENDER_VERSION } from "../sizzle/timeline-render";
+import { importTimelineAsset } from "../sizzle/timeline-assets";
+import { alignTimelineNarration, prepareTimelineNarration } from "../sizzle/timeline-narration";
+import { inspectTimelineAudio } from "../sizzle/timeline-audio-qa";
+
+/** Register with the agent process, which owns every cache deleter's gate. */
+export function registerSizzleTimelineRenderHandlers(): void {
+  bus.register("sizzle:runNarrationPreparationJob", async (req, ctx) => {
+    if (ctx.principal !== "bridge")
+      return err({
+        kind: "permission",
+        code: "internal_job",
+        message: "Narration preparation must enter through the Sizzle handlers"
+      });
+    try {
+      const timeline = SizzleTimelineSchema.parse(req.project.timeline);
+      const assets = SizzleAssetSchema.array()
+        .max(500)
+        .parse(req.project.assets ?? []);
+      validateSizzleTimelineAssets(timeline, assets);
+      const ffmpeg = resolveFfmpegPath();
+      if (!ffmpeg) throw new Error("Narration preparation requires FFmpeg");
+      const key = createHash("sha256")
+        .update(JSON.stringify({ timeline, assets }))
+        .digest("hex");
+      return await runGatedCacheWrite(
+        "sizzle-narration-preparation",
+        key,
+        async (signal) => {
+          const apiKey = await new DesktopSecretStore({
+            filePath: join(getDataRoot(), "pwrsnap-secrets.bin")
+          }).getValue("openaiApiKey");
+          const prepared = await prepareTimelineNarration({
+            timeline,
+            assets,
+            assetsRoot: getSizzleAssetsRoot(),
+            cacheRoot: join(getCacheRoot(), "sizzle-timeline", "audio"),
+            ffmpeg,
+            apiKey,
+            signal
+          });
+          const asset = await importTimelineAsset(
+            getSizzleAssetsRoot(),
+            prepared.path,
+            ffmpeg,
+            signal
+          );
+          return ok({
+            asset,
+            expectedText: prepared.text || null,
+            timing: prepared.timing
+          });
+        },
+        ctx.signal
+      );
+    } catch (cause) {
+      const message =
+        cause instanceof Error &&
+        /^(Narration |Set an OpenAI|Speech generation failed)/.test(cause.message)
+          ? cause.message.slice(0, 700)
+          : "Narration preparation failed; check the complete voice track and speech credentials";
+      return err({
+        kind: "render",
+        code: ctx.signal.aborted ? "cancelled" : "narration_preparation_failed",
+        message
+      });
+    }
+  });
+  bus.register("sizzle:runNarrationAlignmentJob", async (req, ctx) => {
+    if (ctx.principal !== "bridge")
+      return err({
+        kind: "permission",
+        code: "internal_job",
+        message: "Narration alignment must enter through the Sizzle handlers"
+      });
+    try {
+      const timeline = SizzleTimelineSchema.parse(req.project.timeline);
+      const assets = SizzleAssetSchema.array()
+        .max(500)
+        .parse(req.project.assets ?? []);
+      const cues = SizzleNarrationCuesSchema.parse(req.cues);
+      if (
+        !Number.isInteger(req.tailFrames) ||
+        req.tailFrames < 0 ||
+        req.tailFrames > 300
+      )
+        throw new Error("Narration end padding must be 0–300 frames");
+      validateSizzleTimelineAssets(timeline, assets);
+      const ffmpeg = resolveFfmpegPath();
+      if (!ffmpeg) throw new Error("Narration alignment requires FFmpeg");
+      const key = createHash("sha256")
+        .update(
+          JSON.stringify({ timeline, assets, cues, tailFrames: req.tailFrames })
+        )
+        .digest("hex");
+      return await runGatedCacheWrite(
+        "sizzle-narration-alignment",
+        key,
+        async (signal) => {
+          const apiKey = await new DesktopSecretStore({
+            filePath: join(getDataRoot(), "pwrsnap-secrets.bin")
+          }).getValue("openaiApiKey");
+          return ok(
+            await alignTimelineNarration({
+              timeline,
+              assets,
+              cues,
+              tailFrames: req.tailFrames,
+              assetsRoot: getSizzleAssetsRoot(),
+              cacheRoot: join(getCacheRoot(), "sizzle-timeline", "audio"),
+              ffmpeg,
+              apiKey,
+              signal
+            })
+          );
+        },
+        ctx.signal
+      );
+    } catch (cause) {
+      const message =
+        cause instanceof Error &&
+        /^(Narration |Set an OpenAI|Speech generation failed)/.test(cause.message)
+          ? cause.message.slice(0, 700)
+          : "Narration alignment failed; check the complete voice track and phrase cues";
+      return err({
+        kind: "render",
+        code: ctx.signal.aborted ? "cancelled" : "narration_alignment_failed",
+        message
+      });
+    }
+  });
+  bus.register("sizzle:runAudioQaJob", async (req, ctx) => {
+    if (ctx.principal !== "bridge")
+      return err({
+        kind: "permission",
+        code: "internal_job",
+        message: "Audio QA must enter through the Sizzle handlers"
+      });
+    const ffmpeg = resolveFfmpegPath();
+    if (!ffmpeg)
+      return err({
+        kind: "render",
+        code: "ffmpeg_missing",
+        message: "FFmpeg is unavailable"
+      });
+    try {
+      const key = createHash("sha256").update(req.outputPath).digest("hex");
+      return await runGatedCacheWrite(
+        "sizzle-audio-qa",
+        key,
+        async (signal) => {
+          const apiKey = await new DesktopSecretStore({
+            filePath: join(getDataRoot(), "pwrsnap-secrets.bin")
+          }).getValue("openaiApiKey");
+          if (!apiKey)
+            throw new Error(
+              "Set an OpenAI API key before transcribing the mixed audio"
+            );
+          return ok(
+            await inspectTimelineAudio({
+              outputPath: req.outputPath,
+              cacheRoot: getCacheRoot(),
+              ffmpeg,
+              apiKey,
+              signal
+            })
+          );
+        },
+        ctx.signal
+      );
+    } catch (cause) {
+      const message =
+        cause instanceof Error &&
+        /^(Set an OpenAI|Audio QA is|Narration transcription failed)/.test(
+          cause.message
+        )
+          ? cause.message
+          : "Could not verify the mixed audio";
+      return err({ kind: "render", code: "audio_qa_failed", message });
+    }
+  });
+  bus.register("sizzle:runTimelineJob", async (req, ctx) => {
+    if (ctx.principal !== "bridge")
+      return err({
+        kind: "permission",
+        code: "internal_job",
+        message: "Timeline jobs must enter through the Sizzle command handlers"
+      });
+    try {
+      if (!/^sz_[a-zA-Z0-9_-]{1,80}$/.test(req.project.id))
+        throw new Error("Invalid project identity");
+      req.project.assets = SizzleAssetSchema.array()
+        .max(500)
+        .parse(req.project.assets ?? []);
+      assertSizzleRenderPlatform(process.platform);
+      const platform = process.platform as "darwin" | "win32";
+      const timeline = SizzleTimelineSchema.parse(req.project.timeline);
+      validateSizzleTimelineAssets(timeline, req.project.assets ?? []);
+      const ffmpeg = resolveFfmpegPath();
+      // A still-only contact sheet uses Sharp, not a media encoder. Keep that
+      // authoring/review path available in development without an FFmpeg sidecar.
+      if (
+        !ffmpeg &&
+        (!req.frames ||
+          timeline.scenes.some((scene) =>
+            scene.layers.some((layer) => layer.kind === "video")
+          ))
+      )
+        return err({
+          kind: "render",
+          code: "ffmpeg_missing",
+          message: "FFmpeg is required to render movies or inspect video layers"
+        });
+      const renderId = createHash("sha256")
+        .update(
+          JSON.stringify({
+            version: TIMELINE_RENDER_VERSION,
+            audioVersion: TIMELINE_AUDIO_VERSION,
+            projectId: req.project.id,
+            timeline,
+            assets: req.project.assets,
+            mode: req.mode,
+            frames: req.frames
+          })
+        )
+        .digest("hex");
+      return await runGatedCacheWrite(
+        `sizzle:${req.project.id}`,
+        renderId,
+        async (signal) => {
+          const cacheRoot = join(getCacheRoot(), "sizzle-timeline");
+          const outputRoot =
+            req.frames || req.mode === "preview"
+              ? cacheRoot
+              : join(app.getPath("videos"), "PwrSnap");
+          await mkdir(outputRoot, { recursive: true });
+          const scale =
+            req.frames || req.mode === "preview"
+              ? Math.min(1, 640 / timeline.width)
+              : 1;
+          const width = Math.max(
+              2,
+              Math.round((timeline.width * scale) / 2) * 2
+            ),
+            height = Math.max(2, Math.round((timeline.height * scale) / 2) * 2);
+          const outputPath = join(
+            outputRoot,
+            `${req.project.name.replace(/[^\p{L}\p{N} _-]/gu, "_").slice(0, 80) || "Sizzle"}-${req.project.id}-${renderId.slice(0, 12)}.${req.frames ? "png" : "mp4"}`
+          );
+          const assetsRoot = getSizzleAssetsRoot();
+          let apiKey: string | null = null;
+          if (
+            !req.frames &&
+            timeline.audio.some(
+              (a) => a.source.kind === "speech" || a.expectedText
+            )
+          )
+            apiKey = await new DesktopSecretStore({
+              filePath: join(getDataRoot(), "pwrsnap-secrets.bin")
+            }).getValue("openaiApiKey");
+          const audio = req.frames
+            ? { reports: [] }
+            : await prepareTimelineAudio({
+                timeline,
+                assets: req.project.assets ?? [],
+                assetsRoot,
+                cacheRoot: join(cacheRoot, "audio"),
+                ffmpeg: ffmpeg!,
+                apiKey,
+                signal
+              });
+          const rendered = await renderTimelineInChild(
+            {
+              timeline,
+              assets: req.project.assets ?? [],
+              assetsRoot,
+              cacheRoot,
+              outputPath,
+              width,
+              height,
+              ffmpeg: ffmpeg ?? "",
+              platform,
+              ...(audio.path ? { audioPath: audio.path } : {}),
+              ...(req.frames ? { frames: req.frames } : {})
+            },
+            signal
+          );
+          const result = {
+            outputPath,
+            durationSec: sizzleTimelineFrames(timeline) / timeline.fps,
+            renderId,
+            widthPx: rendered.widthPx,
+            heightPx: rendered.heightPx,
+            cachedScenes: rendered.cachedScenes,
+            renderedScenes: rendered.renderedScenes,
+            audioReports: audio.reports
+          };
+          if (!req.frames && req.mode === "full") {
+            // User-visible source and diagnostics accompany the final movie.
+            for (const [suffix, value] of [
+              ["timeline", timeline],
+              ["report", { ...result, outputPath: undefined }]
+            ] as const) {
+              const destination = `${outputPath}.${suffix}.json`,
+                temporary = `${destination}.${randomUUID()}.partial`;
+              try {
+                await writeFile(temporary, JSON.stringify(value, null, 2));
+                await rename(temporary, destination);
+              } finally {
+                await unlink(temporary).catch(() => undefined);
+              }
+            }
+          }
+          return ok(result);
+        },
+        ctx.signal
+      );
+    } catch (cause) {
+      const safe =
+        cause instanceof Error &&
+        /^(Audio needs|Narration QA failed|Set an OpenAI|Spoken text|Audio has no|Narration source|Speech generation failed|Narration transcription failed)/.test(
+          cause.message
+        )
+          ? cause.message
+          : "Timeline rendering failed; check the assets, time slots, and configured speech credentials";
+      return err({
+        kind: "render",
+        code: ctx.signal.aborted ? "cancelled" : "timeline_render_failed",
+        message: safe
+      });
+    }
+  });
+}

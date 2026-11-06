@@ -1035,3 +1035,34 @@ describe("LocalAgentToolService families", () => {
     });
   });
 });
+
+describe("deterministic Sizzle project access", () => {
+  test("creates an empty project without another model turn or chat", async () => {
+    const calls: string[] = [];
+    register("sizzle:create", async () => { calls.push("create"); return ok({ id: "sz_empty", name: "Launch", scenes: [] }); });
+    const result = await service().sizzleCreate({ name: "Launch", captureIds: [] }, context());
+    expect(result).toEqual(ok({ projectId: "sz_empty", name: "Launch", sceneCount: 0, threadId: null, turnId: null }));
+    expect(calls).toEqual(["create"]);
+  });
+
+  test("returns editable project state without a filesystem output path", async () => {
+    register("sizzle:get", async () => ok({ id: "sz_timeline", modifiedAt: "revision", timeline: { version: 1 }, assets: [], outputPath: "/private/user/movie.mp4" }));
+    const result = await service().sizzleGet({ projectId: "sz_timeline" }, context());
+    expect(result).toEqual(ok({ id: "sz_timeline", modifiedAt: "revision", timeline: { version: 1 }, assets: [], hasOutput: true }));
+    expect(JSON.stringify(result)).not.toContain("/private/user");
+  });
+
+  test("denies file import before reaching its handler when only compose is granted", async () => {
+    let called = false;
+    register("sizzle:importAsset", async () => { called = true; return ok({}); });
+    const result = await service().sizzleImport({ projectId: "sz_timeline", path: "/not/read.mp4" }, context());
+    expect(result.ok).toBe(false);
+    expect(called).toBe(false);
+  });
+
+  test("returns the completed composition reply from idle status", async () => {
+    register("codex:sizzleChat:list", async () => ok({ threads: [thread({ id: "chat", anchor: "sz_1", modifiedAt: "2026-11-05", status: { kind: "idle" } })] }));
+    register("codex:sizzleChat:history", async () => ok({ messages: [{ id: "answer", role: "assistant", content: [{ kind: "text", text: "Updated the counter binding." }], createdAt: 1 }] }));
+    expect(await service().sizzleStatus({ projectId: "sz_1", threadId: "chat" }, context())).toEqual(ok({ threadId: "chat", status: { kind: "idle" }, assistantSummary: "Updated the counter binding." }));
+  });
+});

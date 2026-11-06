@@ -34,6 +34,7 @@ import {
   useChatWidthCap
 } from "./ChatResizer";
 import { Editor } from "./Editor";
+import { TimelineEditor } from "./TimelineEditor";
 import {
   PROJECT_CONTEXT_MENU_HEIGHT,
   PROJECT_CONTEXT_MENU_WIDTH,
@@ -390,7 +391,7 @@ export function SizzleApp({
           <EmptyState />
         ) : (
           <div className="szl__workspace" ref={setWorkspace}>
-            <Editor
+            {active.timeline ? <TimelineEditor key={active.id} project={active} status={status} onRender={() => void onRender()} onReveal={() => void onReveal()} /> : <Editor
               project={active}
               captures={captures}
               saveState={saveState}
@@ -417,7 +418,7 @@ export function SizzleApp({
               selectedSceneId={selectedSceneId}
               onSelectSceneId={setSelectedSceneId}
               inspectorHost={inspectorHost}
-            />
+            />}
             {showChat || inspectorOpen ? (
               // The right rail: chat above, the clip inspector as a bottom
               // drawer (plan §4.6) — beside the chat, never replacing it.

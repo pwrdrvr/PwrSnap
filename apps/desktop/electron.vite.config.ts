@@ -198,6 +198,7 @@ export default defineConfig(({ command }) => {
         rollupOptions: {
           input: {
             index: resolve(__dirname, "src/main/index.ts"),
+            "sizzle-timeline-worker": resolve(__dirname, "src/main/workers/sizzle-timeline-worker.ts"),
             // Its own input so every entry imports it as a separate chunk.
             // ESM evaluates that chunk before the hoisted `import sharp`;
             // inlined into an entry chunk it would run after it. See

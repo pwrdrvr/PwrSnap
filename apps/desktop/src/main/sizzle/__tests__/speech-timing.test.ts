@@ -32,6 +32,29 @@ afterEach(async () => {
 });
 
 describe("resolveSpeechTiming", () => {
+  it("retries measured timing instead of permanently reusing an approximate cache entry", async () => {
+    const request = { provider: "openai", model: "tts-1-hd", voice: "onyx",
+      text: "Start scan done", audioPath, durationSec: 3 } as const;
+    expect((await resolveSpeechTiming({ ...request, apiKey: null })).quality).toBe("approximate");
+    const transcribe = vi.fn(async () => [
+      { word: "Start", startSec: 0.1, endSec: 0.4 },
+      { word: "scan", startSec: 1, endSec: 1.4 },
+      { word: "done", startSec: 2, endSec: 2.5 }
+    ]);
+    const precise = await resolveSpeechTiming({ ...request, apiKey: "test", requirePrecise: true, transcribe });
+    expect(precise.quality).toBe("precise");
+    expect(precise.words.map(word => word.startSec)).toEqual([0.1, 1, 2]);
+    expect((await resolveSpeechTiming({ ...request, apiKey: "test", requirePrecise: true, transcribe })).quality).toBe("precise");
+    expect(transcribe).toHaveBeenCalledTimes(1);
+  });
+  it("does not turn a cancelled timing request into approximate success", async () => {
+    const controller = new AbortController();
+    await expect(resolveSpeechTiming({ provider: "openai", model: "tts-1-hd", voice: "onyx",
+      text: "Start scan", audioPath, durationSec: 3, apiKey: "test", signal: controller.signal,
+      transcribe: async () => { controller.abort(); throw new Error("cancelled"); }
+    })).rejects.toThrow();
+  });
+
   it("returns precise word timings from the injected transcriber", async () => {
     const timing = await resolveSpeechTiming({
       provider: "openai",

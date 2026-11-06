@@ -112,12 +112,14 @@ beforeEach(() => {
 });
 
 describe("buildSizzleToolAllowlist", () => {
-  it("exposes all 17 tools under the pwrsnap_sizzle namespace", () => {
+  it("exposes all 19 tools under the pwrsnap_sizzle namespace", () => {
     const allow = boundAllowlist();
-    expect(allow).toHaveLength(17);
+    expect(allow).toHaveLength(19);
     expect(allow.every((t) => t.namespace === "pwrsnap_sizzle")).toBe(true);
     expect(allow.map((t) => t.name)).toEqual(
       expect.arrayContaining([
+        "timeline_set",
+        "bindings_set",
         "library_search",
         "library_get_metadata",
         "project_get",
@@ -153,7 +155,7 @@ describe("buildSizzleToolAllowlist", () => {
     if (namespace?.type !== "namespace") {
       throw new Error("expected the Sizzle catalog to contain one namespace");
     }
-    expect(namespace.tools).toHaveLength(17);
+    expect(namespace.tools).toHaveLength(19);
     expect(namespace.tools.every((tool) => tool.type === "function")).toBe(true);
   });
 

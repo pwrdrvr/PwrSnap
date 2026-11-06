@@ -1,5 +1,27 @@
 import { describe, expect, test } from "vitest";
-import { localAgentCommandRequirement } from "../local-agent-command-policy";
+import { localAgentCommandRequirement, satisfiesLocalAgentCommandRequirement } from "../local-agent-command-policy";
+import { LOCAL_AGENT_CAPABILITIES } from "@pwrsnap/shared";
+import fc from "fast-check";
+
+describe("timeline permission boundaries", () => {
+  test("file import requires both composition and explicit local file access, for every permission set", () => {
+    const requirement = localAgentCommandRequirement("sizzle:importAsset", {})!;
+    fc.assert(fc.property(fc.subarray([...LOCAL_AGENT_CAPABILITIES]), capabilities => {
+      expect(satisfiesLocalAgentCommandRequirement(capabilities, requirement)).toBe(capabilities.includes("sizzle.compose") && capabilities.includes("sizzle.assets.import"));
+    }));
+    expect(localAgentCommandRequirement("sizzle:runTimelineJob", {})).toBeNull();
+    expect(localAgentCommandRequirement("sizzle:runNarrationAlignmentJob", {})).toBeNull();
+    expect(localAgentCommandRequirement("sizzle:runNarrationPreparationJob", {})).toBeNull();
+    expect(localAgentCommandRequirement("sizzle:prepareNarration", {})).toEqual({ all: ["sizzle.compose", "sizzle.preview.read"] });
+    expect(localAgentCommandRequirement("sizzle:alignNarration", {})).toEqual({ all: ["sizzle.compose"] });
+    expect(localAgentCommandRequirement("video:export", {})).toBeNull();
+  });
+  test("capture snapshots require edited-media access, while value edits do not grant media reads", () => {
+    expect(localAgentCommandRequirement("sizzle:importCapture", {})).toEqual({ all: ["sizzle.compose", "capture.composite.read"] });
+    expect(localAgentCommandRequirement("sizzle:setBindings", {})).toEqual({ all: ["sizzle.compose"] });
+    expect(localAgentCommandRequirement("sizzle:inspectFrames", {})).toEqual({ all: ["sizzle.preview.read"] });
+  });
+});
 
 describe("local-agent chat command policy", () => {
   test.each([

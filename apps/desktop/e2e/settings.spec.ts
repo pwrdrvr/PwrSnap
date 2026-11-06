@@ -256,7 +256,10 @@ test("local-agent authorization graph renders named Sessions, roles, and limits"
 
     await expect(settingsWindow.locator(".pss__auth-node.is-session")).toHaveCount(2);
     await expect(settingsWindow.locator(".pss__auth-node.is-role")).toHaveCount(6);
-    await expect(settingsWindow.locator(".pss__auth-node.is-permission")).toHaveCount(9);
+    await expect(settingsWindow.locator(".pss__auth-node.is-permission")).toHaveCount(10);
+    await expect(
+      settingsWindow.getByRole("heading", { name: "Import Sizzle media", exact: true })
+    ).toBeVisible();
     await expect(settingsWindow.locator(".pss__usage-grid")).toContainText("Full-res images");
 
     if (process.env.PWRSNAP_VISUAL_CAPTURE === "1") {

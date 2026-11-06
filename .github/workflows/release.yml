@@ -429,6 +429,13 @@ jobs:
       contents: read
       id-token: none
     steps:
+      # Hosted Windows system-drive temp I/O can stall; use the runner work volume.
+      - name: Move temporary files to runner temp
+        shell: pwsh
+        run: |
+          "TEMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Checkout repository
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
@@ -497,6 +504,13 @@ jobs:
       contents: read
       id-token: none
     steps:
+      # Hosted Windows system-drive temp I/O can stall; use the runner work volume.
+      - name: Move temporary files to runner temp
+        shell: pwsh
+        run: |
+          "TEMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Download Windows signing input
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:

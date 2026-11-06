@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { isUnitRunComplete } from "./retry-failures.mjs";
+import { unitCompletionProblems } from "./retry-failures.mjs";
 
 function selectionName(test) {
   if (!test.name) return test.fullName; // Reporter fixtures may supply only fullName.
@@ -71,10 +71,13 @@ export default class CiRetryReporter {
     }));
     mkdirSync(path.dirname(destination), { recursive: true });
     const completedModules = new Set(this.finished);
+    const problems = unitCompletionProblems({ reason, planned: this.planned, finished: this.finished, modules: suites, collected: this.collected });
     writeFileSync(destination, JSON.stringify({
-      complete: isUnitRunComplete({ reason, planned: this.planned, finished: this.finished, modules: suites, collected: this.collected }),
+      complete: problems.length === 0,
       reason,
       completion: {
+        problems: problems.slice(0, 20),
+        problemCount: problems.length,
         plannedModules: this.planned.length,
         finishedModules: this.finished.length,
         collectedTests: this.collected.reduce((sum, item) => sum + item.ids.length, 0),

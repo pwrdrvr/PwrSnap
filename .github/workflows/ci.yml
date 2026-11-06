@@ -260,6 +260,7 @@ jobs:
         run: pnpm run test --reporter=default --reporter=./scripts/ci/vitest-ci-reporter.mjs
 
       - name: Verify unit selection completed
+        id: unit-completion
         if: steps.unit-tests.outcome == 'success'
         env:
           PWRSNAP_CI_RETRY_DIR: .local/ci/retry
@@ -284,7 +285,7 @@ jobs:
           retry-outcome: ${{ steps.unit-tests-retry.outcome }}
 
       - name: Upload unit retry diagnostics
-        if: ${{ !cancelled() && steps.unit-tests.outcome == 'failure' }}
+        if: ${{ !cancelled() && (steps.unit-tests.outcome == 'failure' || steps.unit-completion.outcome == 'failure') }}
         uses: actions/upload-artifact@v7
         with:
           name: unit-diagnostics-linux-1
@@ -547,6 +548,7 @@ jobs:
           --reporter=default --reporter=./scripts/ci/vitest-ci-reporter.mjs
 
       - name: Verify unit selection completed
+        id: smoke-completion
         if: steps.smoke-tests.outcome == 'success'
         env:
           PWRSNAP_CI_RETRY_DIR: .local/ci/smoke
@@ -573,7 +575,7 @@ jobs:
           retry-outcome: ${{ steps.smoke-tests-retry.outcome }}
 
       - name: Upload unit retry diagnostics
-        if: ${{ !cancelled() && steps.smoke-tests.outcome == 'failure' }}
+        if: ${{ !cancelled() && (steps.smoke-tests.outcome == 'failure' || steps.smoke-completion.outcome == 'failure') }}
         uses: actions/upload-artifact@v7
         with:
           name: unit-diagnostics-windows-2
@@ -590,6 +592,7 @@ jobs:
         run: pnpm run test --reporter=default --reporter=./scripts/ci/vitest-ci-reporter.mjs
 
       - name: Verify unit selection completed
+        id: unit-completion
         if: steps.unit-tests.outcome == 'success'
         env:
           PWRSNAP_CI_RETRY_DIR: .local/ci/retry
@@ -614,7 +617,7 @@ jobs:
           retry-outcome: ${{ steps.unit-tests-retry.outcome }}
 
       - name: Upload unit retry diagnostics
-        if: ${{ !cancelled() && steps.unit-tests.outcome == 'failure' }}
+        if: ${{ !cancelled() && (steps.unit-tests.outcome == 'failure' || steps.unit-completion.outcome == 'failure') }}
         uses: actions/upload-artifact@v7
         with:
           name: unit-diagnostics-windows-1

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { groupUnitRetries, isUnitRunComplete, planE2eRetry, planUnitRetry, verifyE2eRetry, verifyInitialE2eRun, verifyInitialUnitRun, verifyUnitRetry } from "./retry-failures.mjs";
+import { groupUnitRetries, isUnitRunComplete, unitCompletionProblems, planE2eRetry, planUnitRetry, verifyE2eRetry, verifyInitialE2eRun, verifyInitialUnitRun, verifyUnitRetry } from "./retry-failures.mjs";
 
 const test = (id, name, state = "failed") => ({ id, name, state });
 const report = (tests, overrides = {}) => ({
@@ -20,6 +20,14 @@ describe("unit retry selection", () => {
     expect(isUnitRunComplete({ ...run, modules: [{ ...module, tests: [{ state: "pending", completed: false }] }] })).toBe(false);
     expect(isUnitRunComplete({ ...run, modules: [{ ...module, tests: [{ state: "skipped", mode: "run", started: false, completed: true }] }] })).toBe(false);
     expect(isUnitRunComplete({ ...run, modules: [{ ...module, tests: [{ id: "test", state: "skipped", mode: "skip", started: true, completed: true }] }] })).toBe(true);
+  });
+
+  it("reports missing collection events and substituted test IDs without accepting them", () => {
+    const module = { key: "project:file", tests: [{ id: "actual", state: "passed", completed: true }] };
+    const run = { reason: "passed", planned: [module.key], finished: [module.key], modules: [module], collected: [{ key: module.key, ids: ["different"] }] };
+    expect(unitCompletionProblems(run)).toContain("Test IDs differ: project:file");
+    expect(isUnitRunComplete(run)).toBe(false);
+    expect(unitCompletionProblems({ ...run, collected: [] })).toContain("Collected 0 modules for 1 planned modules");
   });
 
   it("rejects a successful-looking unit command when its report is incomplete", () => {

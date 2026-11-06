@@ -5,29 +5,39 @@ export function sameTestIds(expected, actual) {
     && ids.size === 0;
 }
 
-export function isUnitRunComplete({ reason, planned, finished, modules, collected }) {
+export function unitCompletionProblems({ reason, planned, finished, modules, collected }) {
+  const problems = [];
+  const fail = (message) => problems.push(message);
   if ((reason !== "passed" && reason !== "failed") || !Array.isArray(planned) || !planned.length
-    || !Array.isArray(finished) || !Array.isArray(modules) || !Array.isArray(collected)) return false;
+    || !Array.isArray(finished) || !Array.isArray(modules) || !Array.isArray(collected)) return ["Missing inventory or interrupted run"];
   const expected = new Set(planned);
-  if (expected.size !== planned.length || finished.length !== expected.size || modules.length !== expected.size
-    || new Set(finished).size !== expected.size || finished.some((key) => !expected.has(key))) return false;
+  if (expected.size !== planned.length) fail("Duplicate planned modules");
+  if (finished.length !== expected.size || new Set(finished).size !== expected.size || finished.some((key) => !expected.has(key))) fail("Finished modules differ from inventory");
+  if (modules.length !== expected.size) fail(`Reported ${modules.length} modules for ${expected.size} planned modules`);
   const selectedTests = new Map();
   for (const item of collected) {
-    if (!expected.has(item.key) || selectedTests.has(item.key)) return false;
+    if (!expected.has(item.key) || selectedTests.has(item.key)) fail(`Unexpected or duplicate collected module: ${item.key}`);
     selectedTests.set(item.key, item.ids);
   }
-  if (selectedTests.size !== expected.size) return false;
+  if (selectedTests.size !== expected.size) fail(`Collected ${selectedTests.size} modules for ${expected.size} planned modules`);
   const found = new Set();
   for (const module of modules) {
-    if (!expected.has(module.key) || found.has(module.key) || !Array.isArray(module.tests)) return false;
+    if (!expected.has(module.key) || found.has(module.key) || !Array.isArray(module.tests)) {
+      fail(`Unexpected or duplicate reported module: ${module.key}`);
+      continue;
+    }
     found.add(module.key);
-    if (!sameTestIds(selectedTests.get(module.key), module.tests.map((test) => test.id))) return false;
+    if (!sameTestIds(selectedTests.get(module.key), module.tests.map((test) => test.id))) fail(`Test IDs differ: ${module.key}`);
     for (const test of module.tests) {
       if (!test.completed || !["passed", "failed", "skipped"].includes(test.state)
-        || (test.state === "skipped" && test.mode === "run" && !test.started)) return false;
+        || (test.state === "skipped" && test.mode === "run" && !test.started)) fail(`Unfinished test: ${module.key} ${test.id} ${test.state} ${test.mode} started=${test.started} completed=${test.completed}`);
     }
   }
-  return true;
+  return problems;
+}
+
+export function isUnitRunComplete(run) {
+  return unitCompletionProblems(run).length === 0;
 }
 
 export function unitRetryNamePattern(tests) {

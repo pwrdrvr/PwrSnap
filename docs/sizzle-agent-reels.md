@@ -153,6 +153,10 @@ silence trimming removes the leading/trailing silence before fitting.
 Generated narration is transcribed and compared with its spoken script.
 Pronunciation-hint names are checked separately so a single wrong product name
 cannot pass merely because the rest of a long sentence matched.
+QA accepts the identical spoken forms “disk”/“disc” and joined brand spellings
+from transcription. A refusal includes the expected and recognized text.
+Integer metrics must match independently of the sentence's general word-error
+allowance; English number words and digit forms are normalized for that check.
 `expectedText` enables the same check for a supplied take. A mismatch fails
 the render so an agent can correct the take; it does not quietly retry paid
 generation. Successful reports include measured duration, slot duration,

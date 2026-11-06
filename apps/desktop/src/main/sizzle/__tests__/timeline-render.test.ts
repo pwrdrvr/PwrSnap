@@ -72,6 +72,49 @@ try {
 }
 
 describe("timeline cache and fixed narration slots", () => {
+  it("verifies narrated integers independently of sentence length and ASR number spelling", () => {
+    expect(timelineTranscriptMatches("one two three", "six")).toBe(false);
+    fc.assert(
+      fc.property(fc.integer({ min: 1, max: 99 }), (value) => {
+        const tail = Array.from({ length: 50 }, () => "safe").join(" ");
+        expect(
+          timelineTranscriptMatches(
+            `${value} percent ${tail}`,
+            `${value + 1} percent ${tail}`
+          )
+        ).toBe(false);
+      })
+    );
+    expect(
+      timelineTranscriptMatches(
+        "33,524,125 files",
+        "thirty-three million five hundred twenty-four thousand one hundred twenty-five files"
+      )
+    ).toBe(true);
+    expect(
+      timelineTranscriptMatches(
+        "11 percent of your disk",
+        "eleven percent of your disc"
+      )
+    ).toBe(true);
+  });
+  it("accepts disk/disc homophone spelling from live transcription without accepting a different name", () => {
+    const aliases: [string, string][] = [["PwrDisk", "Power Disk"]];
+    expect(
+      timelineTranscriptMatches(
+        "Power Disk. Get your disk back.",
+        "PowerDisc. Get your disc back.",
+        aliases
+      )
+    ).toBe(true);
+    expect(
+      timelineTranscriptMatches(
+        "Power Disk. Get your disk back.",
+        "PowerDesk. Get your disc back.",
+        aliases
+      )
+    ).toBe(false);
+  });
   it("never hides a pronunciation error in a long otherwise-correct line", () => {
     fc.assert(
       fc.property(fc.integer({ min: 20, max: 80 }), (length) => {

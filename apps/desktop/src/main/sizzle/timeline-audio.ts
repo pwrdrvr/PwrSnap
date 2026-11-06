@@ -27,7 +27,7 @@ export type TimelineAudioReport = {
   transcript?: string;
   qa: "matched" | "not_requested";
 };
-export const TIMELINE_AUDIO_VERSION = 2;
+export const TIMELINE_AUDIO_VERSION = 3;
 const hash = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const exists = async (path: string): Promise<boolean> =>
@@ -61,13 +61,111 @@ export function timelineTranscriptMatches(
   actual: string,
   requiredAliases: readonly [string, string][] = []
 ): boolean {
-  const tokens = (text: string): string[] =>
-    text
+  const tokens = (text: string): string[] => {
+    const words = text
       .toLowerCase()
       .normalize("NFKC")
+      .replace(/[−-](?=\d)/g, " minus ")
+      .replace(/-/g, " ")
       .replace(/[^\p{L}\p{N}\s]/gu, "")
       .split(/\s+/)
-      .filter(Boolean);
+      .filter(Boolean)
+      // ASR cannot distinguish these identical pronunciations. This is a
+      // spelling normalization, never fuzzy matching of a hinted brand name.
+      .map((word) =>
+        word === "disc" ? "disk" : word === "discs" ? "disks" : word
+      );
+    // Narration may be transcribed as digits or spoken English. Canonicalize
+    // integer phrases before checking them: one wrong metric must not fit
+    // inside the sentence's general word-error allowance.
+    const small = new Map([
+      ...[
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen"
+      ].map((word, value) => [word, value] as const),
+      ...[
+        "twenty",
+        "thirty",
+        "forty",
+        "fifty",
+        "sixty",
+        "seventy",
+        "eighty",
+        "ninety"
+      ].map((word, i) => [word, (i + 2) * 10] as const)
+    ]);
+    const scales = new Map([
+      ["thousand", 1000],
+      ["million", 1_000_000],
+      ["billion", 1_000_000_000],
+      ["trillion", 1_000_000_000_000]
+    ]);
+    const numeric = (word: string | undefined): boolean =>
+      Boolean(
+        word &&
+        (small.has(word) ||
+          scales.has(word) ||
+          word === "hundred" ||
+          /^\d+$/.test(word))
+      );
+    const result: string[] = [];
+    for (let at = 0; at < words.length;) {
+      const negative =
+        (words[at] === "minus" || words[at] === "negative") &&
+        numeric(words[at + 1]);
+      let end = at + Number(negative),
+        current = 0,
+        total = 0,
+        seen = false;
+      while (end < words.length) {
+        const word = words[end]!;
+        if (word === "and" && seen && numeric(words[end + 1])) {
+          end++;
+          continue;
+        }
+        if (!numeric(word)) break;
+        const previous = words[end - 1];
+        if (
+          seen &&
+          previous &&
+          (small.has(previous) || /^\d+$/.test(previous)) &&
+          (small.has(word) || /^\d+$/.test(word)) &&
+          !((small.get(previous) ?? 0) >= 20 && (small.get(word) ?? 100) < 10)
+        )
+          break;
+        if (word === "hundred") current = (seen ? current : 1) * 100;
+        else if (scales.has(word)) {
+          total += (seen ? current : 1) * scales.get(word)!;
+          current = 0;
+        } else current += small.get(word) ?? Number(word);
+        seen = true;
+        end++;
+      }
+      if (seen && Number.isSafeInteger(total + current)) {
+        result.push(String((negative ? -1 : 1) * (total + current)));
+        at = end;
+      } else result.push(words[at++]!);
+    }
+    return result;
+  };
   let a = tokens(expected),
     b = tokens(actual);
   const starts = (words: string[], phrase: string[], at: number): boolean =>
@@ -75,7 +173,7 @@ export function timelineTranscriptMatches(
   const rewrite = (words: string[], from: string[], to: string[]): string[] => {
     if (!from.length) return words;
     const result: string[] = [];
-    for (let i = 0; i < words.length; ) {
+    for (let i = 0; i < words.length;) {
       if (starts(words, from, i)) {
         result.push(...to);
         i += from.length;
@@ -95,10 +193,24 @@ export function timelineTranscriptMatches(
     a = rewrite(a, from, to);
     b = rewrite(b, from, to);
     b = rewrite(b, [to.join("")], to);
+    b = rewrite(
+      b,
+      [
+        to
+          .map((word) =>
+            word === "disk" ? "disc" : word === "disks" ? "discs" : word
+          )
+          .join("")
+      ],
+      to
+    );
     const count = (words: string[]): number =>
       words.reduce((sum, _word, at) => sum + Number(starts(words, to, at)), 0);
     if (count(b) < count(a)) return false;
   }
+  const numbers = (words: string[]): string =>
+    words.filter((word) => /^-?\d+$/.test(word)).join(" ");
+  if (numbers(a) !== numbers(b)) return false;
   if (!a.length || !b.length) return false;
   let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
   for (let i = 1; i <= a.length; i++) {
@@ -112,6 +224,17 @@ export function timelineTranscriptMatches(
     previous = current;
   }
   return previous[b.length]! / Math.max(a.length, b.length) <= 0.15;
+}
+
+export function timelinePronunciationAliases(
+  source: SizzleTimelineAudio["source"],
+  bindings: SizzleTimeline["bindings"]
+): [string, string][] {
+  if (source.kind !== "speech") return [];
+  const script = resolveSizzleText(source.text, bindings);
+  return Object.entries(source.pronunciation).filter(([original]) =>
+    script.includes(original)
+  );
 }
 
 export async function transcribeTimelineAudio(
@@ -401,19 +524,13 @@ export async function prepareTimelineAudio(args: {
           cacheRoot,
           signal
         );
-        const script =
-          track.source.kind === "speech"
-            ? resolveSizzleText(track.source.text, timeline.bindings)
-            : "";
-        const aliases: [string, string][] =
-          track.source.kind === "speech"
-            ? Object.entries(track.source.pronunciation).filter(([original]) =>
-                script.includes(original)
-              )
-            : [];
+        const aliases = timelinePronunciationAliases(
+          track.source,
+          timeline.bindings
+        );
         if (!timelineTranscriptMatches(expectedText, transcript, aliases))
           throw new Error(
-            `Narration QA failed for ${track.id}; recognized text differs from the expected script`
+            `Narration QA failed for ${track.id}; expected ${JSON.stringify(expectedText.slice(0, 300))}; heard ${JSON.stringify(transcript.slice(0, 300))}`
           );
       }
       const filters = [

@@ -10,6 +10,42 @@ as the record of that assessment. The integrated implementation is described
 in [the agent reel guide](../sizzle-agent-reels.md) and
 [the architecture](../architecture.md#agent-authored-sizzle-timelines).
 
+## Integrated implementation trial
+
+The new nine-scene launch template rebuilt the supplied example as a
+975-frame, 1920 × 1080, 30 fps movie. It uses managed copies of the exact source
+images, layered text/counter/terminal/typing primitives, independent narration
+slots, and a seeded sample-free music bed. The rebuild called the production
+timeline/audio renderer from a local harness; the installed application's MCP
+server still exposes the earlier build. New MCP contracts have automated service
+and permission coverage, rather than a claimed live upgrade of that server.
+
+A benchmark-binding revision rendered one scene and reused eight. Replacing
+narration reused all nine visual scenes. Live speech and transcription checks
+also found stale supplied takes: the original fifth WAV says 34 million, and
+the seventh says 5 percent. Two replacement takes now say **over 33 million**
+and **11 percent**, respectively. The first needed a measured 1.215× tempo fit
+to its 2.733-second slot; later slots did not move. The mixed export's transcript
+matches its saved script and measures **−14.41 LUFS / −1.02 dBTP**.
+
+Live ASR spelled the correctly pronounced product “PowerDisc.” Regression
+coverage now accepts that homophone spelling while refusing a different hinted
+name or integer metric, independently of the overall word-error allowance.
+Unchanged speech and transcript requests were demonstrably cached.
+
+The managed macOS VM passed asset import, project readback/update, contact-sheet
+rendering, and timeline UI review. Its movie test is explicitly skipped because
+that development VM has no FFmpeg binary. Real nonheaded tests and the full
+rebuild used the installed PwrSnap LGPL sidecar, including actual moving-video
+fixtures, fitted audio, and the render utility process. No operator-desktop
+BrowserWindow was opened. Live application footage was not present in the
+supplied source; motion support was verified with a generated MOV fixture.
+
+Story/copy choices and source recording remain agent work. Incremental visual
+rendering is at scene granularity, and text uses explicit sizes and line breaks.
+The new render contract is suitable for this worked example without reading or
+depending on restricted composition frameworks.
+
 ## Initial recommendation (superseded by the operator's follow-up)
 
 Use the existing HTML reel as the basis of a reusable launch-video template

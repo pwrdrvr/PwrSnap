@@ -9,7 +9,8 @@ import {
 import { timelineProcess, probeTimelineMedia } from "./timeline-process";
 import {
   cachedTimelineTranscript,
-  timelineTranscriptMatches
+  timelineTranscriptMatches,
+  timelinePronunciationAliases
 } from "./timeline-audio";
 
 export async function inspectTimelineAudio(args: {
@@ -103,11 +104,18 @@ export async function inspectTimelineAudio(args: {
       : [];
     const expectedText =
       parts.length && parts.every((p) => p !== null) ? parts.join(" ") : null;
+    const aliases = timeline.success
+      ? timeline.data.audio
+          .filter((track) => track.role === "voice")
+          .flatMap((track) =>
+            timelinePronunciationAliases(track.source, timeline.data.bindings)
+          )
+      : [];
     return {
       transcript,
       expectedText,
       matches: expectedText
-        ? timelineTranscriptMatches(expectedText, transcript)
+        ? timelineTranscriptMatches(expectedText, transcript, aliases)
         : null,
       integratedLufs:
         measured && Number.isFinite(Number(measured.input_i))

@@ -163,12 +163,14 @@ jobs:
     timeout-minutes: 15
     needs: changes
     if: needs.changes.outputs.code_impacting == 'true'
-    env:
-      # Hosted Windows system-drive temp I/O can stall; use the runner work volume.
-      TEMP: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
-
     steps:
+      # Hosted Windows system-drive temp I/O can stall; use the runner work volume.
+      - name: Move temporary files to runner temp
+        shell: pwsh
+        run: |
+          "TEMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Checkout repository
         uses: actions/checkout@v5
 
@@ -375,12 +377,16 @@ jobs:
     if: needs.changes.outputs.code_impacting == 'true'
     timeout-minutes: 20
     env:
-      # Hosted Windows system-drive temp I/O can stall; use the runner work volume.
-      TEMP: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
       # Prevent pnpm 12 run commands from implicitly repairing a restored tree.
       PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: "false"
     steps:
+      # Hosted Windows system-drive temp I/O can stall; use the runner work volume.
+      - name: Move temporary files to runner temp
+        shell: pwsh
+        run: |
+          "TEMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Checkout repository
         uses: actions/checkout@v5
 
@@ -431,12 +437,16 @@ jobs:
     if: needs.changes.outputs.code_impacting == 'true'
     timeout-minutes: 30
     env:
-      # Hosted Windows system-drive temp I/O can stall; use the runner work volume.
-      TEMP: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
       # Prevent pnpm 12 run commands from implicitly repairing a restored tree.
       PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: "false"
     steps:
+      # Hosted Windows system-drive temp I/O can stall; use the runner work volume.
+      - name: Move temporary files to runner temp
+        shell: pwsh
+        run: |
+          "TEMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Checkout repository
         uses: actions/checkout@v5
 

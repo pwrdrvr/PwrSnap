@@ -13,13 +13,16 @@ describe("hosted Windows temporary storage", () => {
       for (const [, name, job] of jobs) {
         if (!/^    runs-on: windows-(?:latest|\d+)\s*$/m.test(job)) continue;
         windowsJobs.push(`${file}:${name}`);
-        const jobEnv = job.match(/^    env:\n((?:^      .*\n|^\s*\n)+)/m)?.[1] ?? "";
+        const firstStep = job.match(
+          /^    steps:\n(?:      #.*\n)*      - name: Move temporary files to runner temp\n([\s\S]*?)(?=^      - |$(?![\s\S]))/m
+        )?.[1] ?? "";
+        expect(firstStep, `${file}:${name} first step`).toContain("        shell: pwsh\n        run: |\n");
         for (const variable of ["TEMP", "TMP"]) {
-          expect(jobEnv, `${file}:${name} ${variable}`).toMatch(
-            new RegExp(`^      ${variable}: \\$\\{\\{ runner\\.temp \\}\\}$`, "m")
+          expect(firstStep, `${file}:${name} ${variable}`).toContain(
+            `          "${variable}=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append\n`
           );
-          // A step-level override would shadow the job environment.
-          expect([...job.matchAll(new RegExp(`^\\s+${variable}:`, "gm"))]).toHaveLength(1);
+          // Job- or step-level env would shadow GITHUB_ENV on subsequent steps.
+          expect(job).not.toMatch(new RegExp(`^\\s+${variable}:`, "m"));
         }
       }
     }

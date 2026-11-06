@@ -20,13 +20,16 @@ export default defineConfig({
     : {}),
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
-  retries: process.env.CI ? 1 : 0,
+  retries: 0,
   workers: 1,
   outputDir: "./test-results",
   reporter: process.env.CI
     ? [
         ["html", { outputFolder: "playwright-report", open: "never" }],
-        ["list"]
+        ["list"],
+        ...(process.env.PWRSNAP_CI_TEST_REPORT
+          ? [["../../scripts/ci/playwright-ci-reporter.mjs"] as [string]]
+          : [])
       ]
     : "list",
   use: {

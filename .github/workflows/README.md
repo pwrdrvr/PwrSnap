@@ -101,3 +101,19 @@ It replaces `PwrSnap-windows-x64-setup.exe` (#463), which named an architecture
 no download button mentions and never resolved at `releases/latest/download`:
 it shipped from v1.1.0-alpha.6 onward while v1.0.3 held the Latest marker, and
 neither pwrsnap.com nor docs.pwrsnap.com ever linked it.
+
+## CI test retries
+
+The unit and desktop E2E jobs run their full selection first. Each selection
+has a budget of 20 initially failed tests; a subsequent step retries only those
+tests, once, in the same job. Collection, setup, hook, infrastructure and
+incomplete-run failures cannot be cleared by a retry. Vitest's file and name
+filters are checked before execution; Playwright uses its generated failed IDs.
+
+`ci-flake-report-<attempt>/flake-report.json` consolidates the initial failures
+and retry outcomes. Windows unit lane 2 is the native clipboard smoke test;
+lane 1 is the full unit selection. Missing and incomplete slices are explicit
+and fail the report job. A partial job rerun has a new attempt number, so its
+report also identifies slices missing from that attempt. Detailed first and
+retry reports and Playwright diagnostics remain in the per-job artifacts.
+An entirely cancelled workflow cannot guarantee a consolidated artifact.

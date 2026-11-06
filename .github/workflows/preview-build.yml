@@ -206,14 +206,14 @@ jobs:
 
       # Pull-request code receives no build-repo or signing secrets. Instead,
       # extract the exact FFmpeg binary already shipped inside the public,
-      # signed v1.1.19 installer and pin the whole installer by SHA-256.
+      # signed v1.2.2 installer and pin the whole installer by SHA-256.
       - name: Stage controlled Windows FFmpeg from release build artifacts
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          FFMPEG_RELEASE_BASE_URL: https://github.com/pwrdrvr/PwrSnap/releases/download/v1.1.19
-          FFMPEG_RELEASE_PAYLOAD: PwrSnap-1.1.19-windows-x64-setup.exe
-          FFMPEG_RELEASE_PAYLOAD_SHA256: 7eed072111f2a1666800b5337ed9814104e05b8c6bacc84155e8a0abc65e821f
+          FFMPEG_RELEASE_BASE_URL: https://github.com/pwrdrvr/PwrSnap/releases/download/v1.2.2
+          FFMPEG_RELEASE_PAYLOAD: PwrSnap-1.2.2-windows-x64-setup.exe
+          FFMPEG_RELEASE_PAYLOAD_SHA256: c265c16042f077a161bf32fe1c1b5decd246913883d4ff1582113dcbd59dbadf
           FFMPEG_MANIFEST_ASSET: ffmpeg-8.1.1-macos-universal-manifest.json
           FFMPEG_MANIFEST_ASSET_SHA256: fd7fe3f07c9c66b344d293f9a8fd3a48b9b30cf5bc5e441d59eb0f967e4db18d
         run: |

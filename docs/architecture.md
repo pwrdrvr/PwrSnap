@@ -311,7 +311,9 @@ provided takes or explicitly configured speech, bounded slot fitting,
 transcription checks, supplied or seeded sample-free music, ducking, and final
 loudness normalization. Continuous narration can set visual boundaries through
 the existing sequence word-timing engine and phrase matcher. Alignment saves
-measured frame durations; visual cuts never slice or fade the voice track. Speech credentials remain in DesktopSecretStore.
+measured frame durations; visual cuts never slice or fade the voice track.
+Narration preparation can also save a managed, untrimmed audio asset for
+audition and offline reuse, without replacing the project’s speech recipe. Speech credentials remain in DesktopSecretStore.
 
 The agent process owns these jobs, including their child lifetime, so long
 cache writes participate in the same admission gate as cache cleanup. The

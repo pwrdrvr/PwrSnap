@@ -27,11 +27,73 @@ import {
 } from "../sizzle/timeline-audio";
 import { renderTimelineInChild } from "../sizzle/timeline-worker-client";
 import { TIMELINE_RENDER_VERSION } from "../sizzle/timeline-render";
-import { alignTimelineNarration } from "../sizzle/timeline-narration";
+import { importTimelineAsset } from "../sizzle/timeline-assets";
+import { alignTimelineNarration, prepareTimelineNarration } from "../sizzle/timeline-narration";
 import { inspectTimelineAudio } from "../sizzle/timeline-audio-qa";
 
 /** Register with the agent process, which owns every cache deleter's gate. */
 export function registerSizzleTimelineRenderHandlers(): void {
+  bus.register("sizzle:runNarrationPreparationJob", async (req, ctx) => {
+    if (ctx.principal !== "bridge")
+      return err({
+        kind: "permission",
+        code: "internal_job",
+        message: "Narration preparation must enter through the Sizzle handlers"
+      });
+    try {
+      const timeline = SizzleTimelineSchema.parse(req.project.timeline);
+      const assets = SizzleAssetSchema.array()
+        .max(500)
+        .parse(req.project.assets ?? []);
+      validateSizzleTimelineAssets(timeline, assets);
+      const ffmpeg = resolveFfmpegPath();
+      if (!ffmpeg) throw new Error("Narration preparation requires FFmpeg");
+      const key = createHash("sha256")
+        .update(JSON.stringify({ timeline, assets }))
+        .digest("hex");
+      return await runGatedCacheWrite(
+        "sizzle-narration-preparation",
+        key,
+        async (signal) => {
+          const apiKey = await new DesktopSecretStore({
+            filePath: join(getDataRoot(), "pwrsnap-secrets.bin")
+          }).getValue("openaiApiKey");
+          const prepared = await prepareTimelineNarration({
+            timeline,
+            assets,
+            assetsRoot: getSizzleAssetsRoot(),
+            cacheRoot: join(getCacheRoot(), "sizzle-timeline", "audio"),
+            ffmpeg,
+            apiKey,
+            signal
+          });
+          const asset = await importTimelineAsset(
+            getSizzleAssetsRoot(),
+            prepared.path,
+            ffmpeg,
+            signal
+          );
+          return ok({
+            asset,
+            expectedText: prepared.text || null,
+            timing: prepared.timing
+          });
+        },
+        ctx.signal
+      );
+    } catch (cause) {
+      const message =
+        cause instanceof Error &&
+        /^(Narration |Set an OpenAI|Speech generation failed)/.test(cause.message)
+          ? cause.message.slice(0, 700)
+          : "Narration preparation failed; check the complete voice track and speech credentials";
+      return err({
+        kind: "render",
+        code: ctx.signal.aborted ? "cancelled" : "narration_preparation_failed",
+        message
+      });
+    }
+  });
   bus.register("sizzle:runNarrationAlignmentJob", async (req, ctx) => {
     if (ctx.principal !== "bridge")
       return err({

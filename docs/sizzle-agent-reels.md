@@ -23,20 +23,28 @@ projects without a `timeline`.
 5. Apply `pwrsnap_sizzle_apply_launch_template`, or send a complete timeline
    through `pwrsnap_sizzle_update`. Both require `expectedModifiedAt` from the
    read. A concurrent change produces a refusal; read again before retrying.
-6. For a narration-led reel, call `pwrsnap_sizzle_align_narration` with the
+6. Optionally call `pwrsnap_sizzle_prepare_narration` with the current revision
+   to generate/verify the whole take before rendering. It returns protected
+   playable WAV audio, `asset.id`, `expectedText`, measured words, and the new
+   revision. The managed asset survives cache cleanup. It does not change the
+   speech recipe or pictures. To lock a take for offline use, update the voice
+   source to `{kind: "asset", assetId: "<returned asset.id>"}`; keep the speech
+   source when later binding changes should regenerate narration. This requires
+   `sizzle.compose` and `sizzle.preview.read`, and may bill speech/transcription.
+7. For a narration-led reel, call `pwrsnap_sizzle_align_narration` with the
    current revision and one phrase cue per scene after the first. It generates
    or reuses one complete take, measures words with Sizzle's sequence timing
    engine, and saves ordinary frame durations. This may bill speech and timing
    transcription. Narration stays whole and untrimmed. See the example below.
-7. Inspect a frame or contact sheet with `pwrsnap_sizzle_inspect_frames` and
+8. Inspect a frame or contact sheet with `pwrsnap_sizzle_inspect_frames` and
    an array of 1–12 absolute frame indices. This uses the movie renderer and
    does not synthesize audio. Inspect text fit and source framing here.
-8. Call the existing `pwrsnap_sizzle_render_preview` or `_render_full`.
+9. Call the existing `pwrsnap_sizzle_render_preview` or `_render_full`.
    Completed renders return protected MCP media plus scene-cache counts and
    narration fit/QA reports. Pass the typed resource link to the client's
    media handler. Full output is visible under the OS videos folder's
    `PwrSnap` directory and playable in the Library/Sizzle viewer.
-9. `pwrsnap_sizzle_audio_qa` transcribes the final mixed track, compares it
+10. `pwrsnap_sizzle_audio_qa` transcribes the final mixed track, compares it
    with the render's saved script when available, and measures loudness/peak.
    This explicitly requested step may spend a transcription request; identical
    audio reuses its transcript cache. It does not regenerate VO or pictures.
@@ -225,3 +233,36 @@ patch arbitrary individual frames inside that scene. Cuts between scenes and
 layer transitions inside fixed slots preserve the audio axis. No arbitrary
 HTML/JS, external media URLs, restricted composition frameworks, or runtime
 Python dependency are involved.
+
+## MCP coverage of the launch workflow
+
+The public tools cover the operations used by the local reel-building script.
+Timeline JSON is the composition input; no executable timeline/render script
+needs to be supplied by an agent.
+
+| Operation | Public MCP surface |
+| --- | --- |
+| Start an empty project, inspect assets/revision | `sizzle_create`, `sizzle_get` |
+| Import PNG/MOV/MP4/WAV files | `sizzle_import` (explicit local-media permission) |
+| Find, inspect, trim dead time from a library recording | `library_search`, `video_inspect`, `video_edit`, `sizzle_import_capture` |
+| Place live clips, choose source ranges/speed, preserve aspect | `sizzle_update` → video layers |
+| Captions, counters, typing, terminal text, camera/wipes | `sizzle_update` → visual layers; optional `sizzle_apply_launch_template` |
+| One narration, voice/delivery/pronunciation, requested speed and fresh takes | Speech source fields through `sizzle_update` / launch template |
+| Prepare/audition a take; retain a reusable audio asset and all word timings | `sizzle_prepare_narration` |
+| Phrase start/end, occurrence and offset → saved picture boundaries | `sizzle_align_narration` |
+| Supplied or sample-free music, hit timing, ducking, loudness | Audio sources and `mix` through `sizzle_update` |
+| Revise bound metrics/captions/VO and reuse unaffected scenes | `sizzle_set_bindings`, re-align spoken changes, then render; responses report cache counts |
+| Review frames/contact sheets; audition/render previews | `sizzle_inspect_frames`, `sizzle_render_preview`; protected media links |
+| Full movie, user-visible output, final mixed-audio transcript/loudness | `sizzle_render_full`, `sizzle_audio_qa` |
+
+Tool names above omit the common `pwrsnap_` prefix. Recording an external app
+and transferring its footage remain capture/VM tasks. The original local
+script's cache-file copy for narration is replaced by `sizzle_prepare_narration`.
+
+The desktop protocol test is `e2e/sizzle-mcp.spec.ts`: a real MCP SDK client
+registers with OAuth, approves the actual native consent window, exchanges a
+PKCE code, and calls these tools on the built app. It intercepts inference in
+the isolated test process, rather than copying provider credentials to the VM.
+The media pipeline, persistence, permissions, and protected delivery are real.
+Set `PWRSNAP_E2E_REQUIRE_SIZZLE_MCP=1` with a vetted macOS FFmpeg path to require
+that audit rather than allowing the standard no-encoder development skip.

@@ -270,6 +270,7 @@ export function createDefaultLocalAgentMcpTools(deps: {
     },
     ctx: LocalAgentToolContext
   ) => Promise<Result<unknown, PwrSnapError>>;
+  sizzlePrepareNarration?: (input: { projectId: string; expectedModifiedAt: string }, ctx: LocalAgentToolContext) => Promise<Result<unknown, PwrSnapError>>;
   sizzleAlignNarration?: (input: { projectId: string; cues: SizzleNarrationCueInput[]; tailFrames?: number; expectedModifiedAt: string }, ctx: LocalAgentToolContext) => Promise<Result<unknown, PwrSnapError>>;
   sizzleTemplate?: (input: { projectId: string; template: SizzleLaunchTemplateInput; expectedModifiedAt: string }, ctx: LocalAgentToolContext) => Promise<Result<unknown, PwrSnapError>>;
   sizzleImportCapture?: (input: { projectId: string; captureId: string }, ctx: LocalAgentToolContext) => Promise<Result<unknown, PwrSnapError>>;
@@ -699,12 +700,19 @@ export function createDefaultLocalAgentMcpTools(deps: {
       dispatch: deps.captureFamily
     });
   }
+  if (deps.sizzlePrepareNarration) tools.push({
+    name: "pwrsnap_sizzle_prepare_narration", title: "Prepare and Audition Sizzle Narration",
+    description: "Generate or reuse the project's one complete voiceover, verify its spoken text and measured word timestamps, and save an immutable audio asset. Returns protected playable WAV audio, assetId metadata, expectedText, word timings and the new project revision. Does not fit, trim or slice speech, change visual boundaries, or replace the existing narration recipe. To keep a take for offline rendering, use the returned asset.id as the voice source through sizzle_update. May bill speech generation and transcription using the configured OpenAI credential. Unchanged takes reuse their caches.",
+    inputSchema: { projectId: z.string().min(1), expectedModifiedAt: z.string().min(1) },
+    requiredCapabilities: ["sizzle.compose", "sizzle.preview.read"],
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }, dispatch: deps.sizzlePrepareNarration
+  });
   if (deps.sizzleAlignNarration) tools.push({
     name: "pwrsnap_sizzle_align_narration", title: "Align Reel to Continuous Narration",
     description: "Preferred for a layered launch reel: generate or reuse its ONE complete narration take, measure word timestamps with Sizzle's existing sequence timing engine, and move visual scene boundaries to phrase starts or ends. Supply one cue for every scene after the first. Does not slice, fade, speed-fit, or trim narration at visual boundaries. Saves measured frame durations and returns word timings; preview and full render then use the same timeline. Missing or reordered phrases fail for explicit correction. May bill speech generation and transcription through the configured OpenAI credential. Re-run after changing spoken bindings. Requires current expectedModifiedAt.",
     inputSchema: { projectId: z.string().min(1), expectedModifiedAt: z.string().min(1), cues: SizzleNarrationCuesSchema, tailFrames: z.number().int().min(0).max(300).optional() },
     requiredCapabilities: ["sizzle.compose"],
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }, dispatch: deps.sizzleAlignNarration
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }, dispatch: deps.sizzleAlignNarration
   });
   if (deps.sizzleTemplate) tools.push({
     name: "pwrsnap_sizzle_apply_launch_template", title: "Apply Launch Reel Template",

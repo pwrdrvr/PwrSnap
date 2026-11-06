@@ -11,6 +11,8 @@ describe("timeline permission boundaries", () => {
     }));
     expect(localAgentCommandRequirement("sizzle:runTimelineJob", {})).toBeNull();
     expect(localAgentCommandRequirement("sizzle:runNarrationAlignmentJob", {})).toBeNull();
+    expect(localAgentCommandRequirement("sizzle:runNarrationPreparationJob", {})).toBeNull();
+    expect(localAgentCommandRequirement("sizzle:prepareNarration", {})).toEqual({ all: ["sizzle.compose", "sizzle.preview.read"] });
     expect(localAgentCommandRequirement("sizzle:alignNarration", {})).toEqual({ all: ["sizzle.compose"] });
     expect(localAgentCommandRequirement("video:export", {})).toBeNull();
   });

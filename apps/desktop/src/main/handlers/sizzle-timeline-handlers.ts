@@ -54,6 +54,58 @@ export function registerSizzleTimelineHandlers(
   store: SizzleStore,
   changed: () => Promise<void>
 ): void {
+  bus.register("sizzle:prepareNarration", async (req, ctx) => {
+    const project = typeof req?.id === "string" ? await store.get(req.id) : null;
+    if (!project?.timeline)
+      return err({
+        kind: "validation",
+        code: "timeline_required",
+        message: "A versioned timeline is required"
+      });
+    if (req.expectedModifiedAt !== project.modifiedAt)
+      return err({
+        kind: "validation",
+        code: "project_changed",
+        message: "Read the current project revision before preparing narration"
+      });
+    const cancellationKey = `sizzle-narration:${randomUUID()}`;
+    const cancel = (): void => {
+      bus.cancel(cancellationKey);
+      relayCancellationToPeer(cancellationKey);
+    };
+    const pending = bus.dispatch(
+      "sizzle:runNarrationPreparationJob",
+      { project },
+      { principal: "bridge", cancellationKey }
+    );
+    await Promise.resolve();
+    ctx.signal.addEventListener("abort", cancel, { once: true });
+    if (ctx.signal.aborted) cancel();
+    try {
+      const prepared = await pending;
+      if (!prepared.ok) return prepared;
+      ctx.signal.throwIfAborted();
+      const updated = await store.addAsset(
+        req.id,
+        prepared.value.asset,
+        req.expectedModifiedAt
+      );
+      await changed();
+      return ok({ project: updated, ...prepared.value });
+    } catch (cause) {
+      return err({
+        kind: "validation",
+        code: "narration_update_failed",
+        message:
+          cause instanceof Error
+            ? cause.message.slice(0, 500)
+            : "Could not save prepared narration"
+      });
+    } finally {
+      ctx.signal.removeEventListener("abort", cancel);
+      cancel();
+    }
+  });
   bus.register("sizzle:alignNarration", async (req, ctx) => {
     const project = typeof req?.id === "string" ? await store.get(req.id) : null;
     if (!project?.timeline)

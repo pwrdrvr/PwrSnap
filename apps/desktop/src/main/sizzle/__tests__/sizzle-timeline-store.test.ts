@@ -45,6 +45,22 @@ describe("persisted timeline revision model", () => {
     ).rejects.toThrow("changed");
   });
 
+  it("adds a prepared take only if its original project revision still matches", async () => {
+    await fc.assert(fc.asyncProperty(fc.boolean(), async (assetFirst) => {
+      const { live, path } = await store();
+      const created = await live.create("Reel");
+      const asset = { id: "a".repeat(64), name: "Narration", kind: "audio" as const,
+        extension: ".wav" as const, byteSize: 44, durationSec: 2, width: 0, height: 0 };
+      const writeTimeline = () => live.setTimeline(created.id, timeline, created.modifiedAt);
+      const writeAsset = () => live.addAsset(created.id, asset, created.modifiedAt);
+      const outcomes = await Promise.allSettled((assetFirst ? [writeAsset, writeTimeline] : [writeTimeline, writeAsset]).map(write => write()));
+      expect(outcomes.filter(outcome => outcome.status === "fulfilled")).toHaveLength(1);
+      const persisted = await new SizzleStore({ filePath: path }).get(created.id);
+      expect(Boolean(persisted?.timeline)).toBe(!assetFirst);
+      expect(persisted?.assets ?? []).toHaveLength(Number(assetFirst));
+    }), { numRuns: 10 });
+  });
+
   it("admits exactly one writer from a shared revision, and survives a process restart", async () => {
     await fc.assert(
       fc.asyncProperty(

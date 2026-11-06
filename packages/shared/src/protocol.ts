@@ -5987,6 +5987,14 @@ export type Commands = {
   "sizzle:importAsset": { req: { id: string; path: string }; res: SizzleAsset };
   "sizzle:importCapture": { req: { id: string; captureId: string }; res: SizzleAsset };
   "sizzle:applyLaunchTemplate": { req: { id: string; template: SizzleLaunchTemplateInput; expectedModifiedAt: string }; res: SizzleProject };
+  "sizzle:prepareNarration": {
+    req: { id: string; expectedModifiedAt: string };
+    res: { project: SizzleProject; asset: SizzleAsset; expectedText: string | null; timing: SizzleSpeechTiming };
+  };
+  "sizzle:runNarrationPreparationJob": {
+    req: { project: SizzleProject };
+    res: { asset: SizzleAsset; expectedText: string | null; timing: SizzleSpeechTiming };
+  };
   "sizzle:alignNarration": {
     req: { id: string; cues: SizzleNarrationCueInput[]; tailFrames?: number; expectedModifiedAt: string };
     res: { project: SizzleProject; timing: SizzleSpeechTiming };

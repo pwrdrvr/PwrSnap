@@ -405,6 +405,31 @@ let localAgentMcpLifecycle: LocalAgentMcpLifecycle | null = null;
 let disposeLocalAgentMcpSettingsListener: (() => void) | null = null;
 let localAgentConsentBroker: LocalAgentConsentBroker | null = null;
 
+/** E2E can exercise the production server on an ephemeral loopback port.
+ * The normal E2E launch still never binds the operator's fixed MCP port. */
+function createLocalAgentMcpServer(port?: number): LocalAgentMcpServer {
+  const { service, secrets } = getDesktopSettingsServices();
+  return new LocalAgentMcpServer({
+    ...(port === undefined ? {} : { port }),
+    settings: service,
+    secrets,
+    grantService: getLocalAgentGrantService(),
+    auditService: getLocalAgentAuditService(),
+    requestConsent: (request) => {
+      const broker = localAgentConsentBroker;
+      if (broker === null) {
+        return Promise.resolve({
+          decision: "deny",
+          sessionName: "",
+          roleId: null,
+          capabilities: []
+        });
+      }
+      return broker.request(request);
+    }
+  });
+}
+
 /** Apply the persisted local-agent master gate without weakening RBAC. The
  * diagnostic env override remains a hard-off switch and E2E never binds the
  * host's real MCP port. */
@@ -416,26 +441,9 @@ async function wireLocalAgentMcpLifecycle(): Promise<void> {
   ) {
     return;
   }
-  const { service, secrets } = getDesktopSettingsServices();
+  const { service } = getDesktopSettingsServices();
   const lifecycle = new LocalAgentMcpLifecycle({
-    createServer: () => new LocalAgentMcpServer({
-      settings: service,
-      secrets,
-      grantService: getLocalAgentGrantService(),
-      auditService: getLocalAgentAuditService(),
-      requestConsent: (request) => {
-        const broker = localAgentConsentBroker;
-        if (broker === null) {
-          return Promise.resolve({
-            decision: "deny",
-            sessionName: "",
-            roleId: null,
-            capabilities: []
-          });
-        }
-        return broker.request(request);
-      }
-    }),
+    createServer: () => createLocalAgentMcpServer(),
     onStartError: (cause) => {
       const message = cause instanceof Error ? cause.message : String(cause);
       getMainLogger("pwrsnap:local-agent-mcp").error(
@@ -2413,6 +2421,7 @@ export function bootstrapApp(): void {
     }
 
     if (isE2E) {
+      let testMcpServer: LocalAgentMcpServer | null = null;
       // E2E test bridge. Playwright's `electronApp.evaluate(fn, arg)`
       // runs `fn` in the main process; specs reach into the bus via
       // `globalThis.__PWRSNAP_TEST__.dispatch(name, req)` so a single
@@ -2426,6 +2435,16 @@ export function bootstrapApp(): void {
       // Vite's "dynamically imported but also statically imported"
       // warnings on every dev/build run.
       const testBridge = {
+        // No alternate auth path: the test must register an OAuth client,
+        // approve native consent, and exchange a PKCE code through this server.
+        startLocalAgentMcp: async () => {
+          testMcpServer ??= createLocalAgentMcpServer(0);
+          return testMcpServer.start();
+        },
+        stopLocalAgentMcp: async () => {
+          await testMcpServer?.stop();
+          testMcpServer = null;
+        },
         dispatch: <Name extends string>(name: Name, req: unknown) =>
           bus.dispatch(name as never, req as never, { principal: "ipc" }),
         // UI-only grant metadata seed. Linux/xvfb has no system keychain, so

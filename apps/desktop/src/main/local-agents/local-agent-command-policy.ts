@@ -105,6 +105,9 @@ export function localAgentCommandRequirement(
     case "sizzle:setBindings":
     case "sizzle:applyLaunchTemplate":
     case "sizzle:alignNarration":
+      return { all: ["sizzle.compose"] };
+    case "sizzle:prepareNarration":
+      return { all: ["sizzle.compose", "sizzle.preview.read"] };
     case "codex:sizzleChat:create":
     case "codex:sizzleChat:list":
     case "codex:sizzleChat:send":

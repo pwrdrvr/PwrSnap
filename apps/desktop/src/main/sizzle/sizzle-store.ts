@@ -191,11 +191,12 @@ export class SizzleStore {
     });
   }
 
-  async addAsset(id: string, asset: SizzleAsset): Promise<SizzleProject> {
+  async addAsset(id: string, asset: SizzleAsset, expectedModifiedAt?: string): Promise<SizzleProject> {
     return this.serialize(async () => {
       const blob = await this.readBlob();
       const project = blob.projects.find(p => p.id === id);
       if (!project) throw new SizzleProjectNotFoundError(id);
+      if (expectedModifiedAt !== undefined && project.modifiedAt !== expectedModifiedAt) throw new Error("Project changed; read it again before preparing narration");
       if ((project.assets?.length ?? 0) >= 500 && !project.assets?.some(a => a.id === asset.id)) throw new Error("A project may contain at most 500 assets");
       project.assets = [...(project.assets ?? []).filter(a => a.id !== asset.id), SizzleAssetSchema.parse(asset)];
       project.modifiedAt = new Date(Math.max(Date.now(), Date.parse(project.modifiedAt) + 1)).toISOString();

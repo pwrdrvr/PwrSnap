@@ -13,6 +13,8 @@ import {
 } from "@pwrsnap/shared";
 import { createHash } from "node:crypto";
 import { duplicateAndAwaitCommit } from "../capture/await-duplicate";
+import { getSizzleAssetsRoot } from "../persistence/paths";
+import { timelineAssetPath } from "../sizzle/timeline-assets";
 import { bus } from "../command-bus";
 import {
   LocalAgentMcpResourceRegistry,
@@ -708,6 +710,21 @@ export class LocalAgentToolService {
       return ok({ threadId: thread.threadId, status: thread.status, assistantSummary: history.ok ? lastAssistantText(history.value.messages) : null });
     }
     return ok({ threadId: thread.threadId, status: thread.status });
+  }
+
+  async sizzlePrepareNarration(input: { projectId: string; expectedModifiedAt: string }, ctx: LocalAgentToolContext): Promise<Result<unknown, PwrSnapError>> {
+    const result = await bus.dispatch("sizzle:prepareNarration", { id: input.projectId, expectedModifiedAt: input.expectedModifiedAt }, ctx.commandContext);
+    if (!result.ok) return result;
+    const { project: saved, ...prepared } = result.value;
+    const { outputPath, ...project } = saved;
+    const resource = this.resources.register({
+      uri: `pwrsnap://sizzle/${encodeURIComponent(input.projectId)}/narration/${clientScopedId(prepared.asset.id, ctx.clientId)}`,
+      name: "Prepared Sizzle narration", mimeType: "audio/wav", ownerClientId: ctx.clientId,
+      requiredCapabilities: ["sizzle.preview.read"],
+      resolvePath: async () => timelineAssetPath(getSizzleAssetsRoot(), prepared.asset)
+    });
+    return ok(withMcpResourceLink({ ...project, hasOutput: outputPath !== null, ...prepared },
+      { uri: this.deliveryUri(resource, ctx.clientId), name: resource.name, mimeType: resource.mimeType }));
   }
 
   async sizzleAlignNarration(input: { projectId: string; cues: SizzleNarrationCueInput[]; tailFrames?: number; expectedModifiedAt: string }, ctx: LocalAgentToolContext): Promise<Result<unknown, PwrSnapError>> {

@@ -295,6 +295,7 @@ export class LocalAgentMcpServer {
         sizzleCreate: (input, ctx) => toolService.sizzleCreate(input, ctx),
         sizzleGet: (input, ctx) => toolService.sizzleGet(input, ctx),
         sizzleAudioQa: (input, ctx) => toolService.sizzleAudioQa(input, ctx),
+        sizzlePrepareNarration: (input, ctx) => toolService.sizzlePrepareNarration(input, ctx),
         sizzleAlignNarration: (input, ctx) => toolService.sizzleAlignNarration(input, ctx),
         sizzleTemplate: (input, ctx) => toolService.sizzleTemplate(input, ctx),
         sizzleImportCapture: (input, ctx) => toolService.sizzleImportCapture(input, ctx),

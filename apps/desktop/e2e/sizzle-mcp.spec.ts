@@ -102,6 +102,7 @@ async function authorize(
     .windows()
     .find((win) => win.url().includes("local-agent-consent"))!;
   await consent.getByRole("radio", { name: /Custom role/ }).check();
+  await expect(consent.getByRole("checkbox")).toHaveCount(capabilities.length);
   for (const checkbox of await consent.getByRole("checkbox").all())
     await checkbox.check();
   await consent
@@ -203,6 +204,8 @@ test("MCP authors, aligns, reviews, renders and revises a continuous narrated re
       "testsrc2=size=320x180:rate=30:duration=2.4",
       "-c:v",
       "h264_videotoolbox",
+      "-allow_sw",
+      "1",
       "-pix_fmt",
       "yuv420p",
       videoPath,

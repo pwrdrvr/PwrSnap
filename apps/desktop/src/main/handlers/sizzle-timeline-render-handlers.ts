@@ -98,7 +98,20 @@ export function registerSizzleTimelineRenderHandlers(): void {
       const timeline = SizzleTimelineSchema.parse(req.project.timeline);
       validateSizzleTimelineAssets(timeline, req.project.assets ?? []);
       const ffmpeg = resolveFfmpegPath();
-      if (!ffmpeg) throw new Error("FFmpeg unavailable");
+      // A still-only contact sheet uses Sharp, not a media encoder. Keep that
+      // authoring/review path available in development without an FFmpeg sidecar.
+      if (
+        !ffmpeg &&
+        (!req.frames ||
+          timeline.scenes.some((scene) =>
+            scene.layers.some((layer) => layer.kind === "video")
+          ))
+      )
+        return err({
+          kind: "render",
+          code: "ffmpeg_missing",
+          message: "FFmpeg is required to render movies or inspect video layers"
+        });
       const renderId = createHash("sha256")
         .update(
           JSON.stringify({
@@ -153,7 +166,7 @@ export function registerSizzleTimelineRenderHandlers(): void {
                 assets: req.project.assets ?? [],
                 assetsRoot,
                 cacheRoot: join(cacheRoot, "audio"),
-                ffmpeg,
+                ffmpeg: ffmpeg!,
                 apiKey,
                 signal
               });
@@ -166,7 +179,7 @@ export function registerSizzleTimelineRenderHandlers(): void {
               outputPath,
               width,
               height,
-              ffmpeg,
+              ffmpeg: ffmpeg ?? "",
               platform,
               ...(audio.path ? { audioPath: audio.path } : {}),
               ...(req.frames ? { frames: req.frames } : {})

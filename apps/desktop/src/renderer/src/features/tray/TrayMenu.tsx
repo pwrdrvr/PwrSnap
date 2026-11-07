@@ -498,6 +498,20 @@ export function TrayMenu() {
     if (lastSnap === undefined) return undefined;
     return copyImagePreset(lastSnap.id, preset);
   };
+  // One card list for the cards and their shortcuts, so ⌘1–⌘3 cannot
+  // copy a rung its card shows as unavailable.
+  const lastSnapCopyCards =
+    lastSnap === undefined || lastSnapIsVideo
+      ? []
+      : resolveImageCopyCards({
+          widthPx: lastSnap.width_px,
+          heightPx: lastSnap.height_px,
+          devicePixelRatio: lastSnap.device_pixel_ratio,
+          byteSize: lastSnap.byte_size,
+          strategy: exportStrategy,
+          metrics: lastSnapMetrics,
+          platform: window.pwrsnapApi?.platform
+        });
   useSurfaceCopyShortcuts({
     assetKind: lastSnap?.kind ?? null,
     enabled: lastSnap !== undefined,
@@ -506,7 +520,9 @@ export function TrayMenu() {
       if (lastSnap === undefined) return;
       if (shortcut.kind === "image") {
         if (lastSnap.kind !== "image") return;
-        copyImagePreset(lastSnap.id, shortcut.preset);
+        const card = lastSnapCopyCards.find((c) => c.preset === shortcut.preset);
+        if (card === undefined || card.disabled) return;
+        void copyImagePreset(lastSnap.id, shortcut.preset);
         return;
       }
       if (lastSnap.kind !== "video") return;
@@ -806,18 +822,10 @@ export function TrayMenu() {
               <div className="ps-tray__last-copy">
                 {/* Same cards as the toast and the Library: the shared
                     resolver adds the DPI ladder's Retina / scale tags. */}
-                {resolveImageCopyCards({
-                  widthPx: lastSnap.width_px,
-                  heightPx: lastSnap.height_px,
-                  devicePixelRatio: lastSnap.device_pixel_ratio,
-                  byteSize: lastSnap.byte_size,
-                  strategy: exportStrategy,
-                  metrics: lastSnapMetrics,
-                  platform: window.pwrsnapApi?.platform
-                }).map((card) => {
+                {lastSnapCopyCards.map((card) => {
                   return (
                     <CopyButton
-                      key={card.preset}
+                      key={`${lastSnap.id}:${card.preset}`}
                       preset={card.preset}
                       label={card.label}
                       dim={card.dim}

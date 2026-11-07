@@ -307,6 +307,9 @@ export function CopyButton({
   const copyPulseRef = useRef(copyPulse);
 
   const showCopied = (): void => {
+    // A success (a click's or a shortcut pulse's) replaces any earlier
+    // failure on this card.
+    setCopyError(null);
     setCopied(true);
     if (timerRef.current !== null) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {

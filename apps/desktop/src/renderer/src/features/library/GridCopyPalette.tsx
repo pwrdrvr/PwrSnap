@@ -554,7 +554,7 @@ export function GridCopyPalette({
               platform: window.pwrsnapApi?.platform
             }).map((card) => (
               <CopyButton
-                key={card.preset}
+                key={`${record.id}:${card.preset}`}
                 preset={card.preset}
                 label={card.label}
                 dim={card.dim}

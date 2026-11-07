@@ -120,4 +120,31 @@ describe("CopyButton copy outcome", () => {
     expect(chip.classList.contains("is-error")).toBe(true);
     expect(chip.getAttribute("data-tip")).toBe("Couldn’t copy the path: render failed");
   });
+
+  test("a later success replaces Failed, including a shortcut pulse", async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const render = (copyPulse: number): void =>
+      root!.render(
+        createElement(CopyButton, {
+          preset: "high",
+          label: "High",
+          dim: "1931 × 1410",
+          bytes: "270 KB",
+          copyPulse,
+          onCopy: async () => ({ ok: false, error: { message: "render failed" } })
+        })
+      );
+    await act(async () => render(0));
+    const el = container;
+    await act(async () => card(el).click());
+    expect(card(el).classList.contains("is-error")).toBe(true);
+
+    // ⌘3 copied it from main; the pulse is the success signal.
+    await act(async () => render(1));
+    expect(card(el).classList.contains("is-copied")).toBe(true);
+    expect(card(el).classList.contains("is-error")).toBe(false);
+    expect(card(el).textContent).not.toContain("Failed");
+  });
 });

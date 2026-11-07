@@ -520,6 +520,18 @@ describe("float-over dock", () => {
       expect(window.setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);
     });
 
+    it("hit-tests the layout the renderer reported last, not the first", () => {
+      const window = showToast();
+      cursorAt(window, 200, 440);
+      passThrough(true, window.webContents, [TOAST]);
+      // The toast grows (a new layout epoch) while the pointer rests on
+      // the strip; the renderer re-reports with the taller drawn part.
+      passThrough(true, window.webContents, [{ x: 0, y: 0, width: 392, height: 470 }]);
+      vi.advanceTimersByTime(200);
+      // y=440 is now drawn, so clicks come back.
+      expect(window.setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);
+    });
+
     it("stops watching once the window parks", () => {
       const window = showToast();
       cursorAt(window, 200, 440);

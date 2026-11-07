@@ -750,6 +750,16 @@ function wireFloatOverPassThroughChannel(): void {
     if (process.platform !== "darwin" && process.platform !== "win32") return;
     if (!takingMouse) return;
     const through = (payload as { through?: unknown } | null)?.through === true;
+    if (through && passThrough) {
+      // Already click-through. The renderer re-reports after its layout
+      // changes (a new layout epoch), and the watch must hit-test the
+      // layout on screen now, not the one it was handed first.
+      passThroughSolid = parsePassThroughSolid(
+        (payload as { solid?: unknown }).solid,
+        singleton.webContents.zoomFactor
+      );
+      return;
+    }
     if (through === passThrough) return;
     passThrough = through;
     if (through) {

@@ -1,3 +1,4 @@
+import { mcpExecutablePath, quoteMcpExecutable } from "../ai/mcp/mcp-executable";
 import { registerCustomModelHandlers } from "./custom-model-handlers";
 // Lazy module-level singletons because `app.getPath("userData")` is
 // unavailable at module load (tests mock `electron` without an app
@@ -370,6 +371,8 @@ export function registerSettingsWindowHandlers(): void {
  *  (single writer, always-resident process). */
 export function registerSettingsDataHandlers(options: {
   readLocalAgentMcpListenerStatus?: () => LocalAgentMcpListenerStatus;
+  readLocalAgentHttpUrl?: () => string | undefined;
+  bootstrapLocalAgentHttp?: (signal: AbortSignal) => Promise<{ token: string; expiresAt: string; httpUrl: string }>;
   hotkeyRegistrationManager?: HotkeyRegistrationCoordinator;
   shortcutPlatform?: ShortcutPlatform;
 } = {}): void {
@@ -653,11 +656,20 @@ export function registerSettingsDataHandlers(options: {
       return ok({
         grants,
         roles,
+        relayCommand: quoteMcpExecutable(mcpExecutablePath()),
+        ...(options.readLocalAgentHttpUrl?.() ? { httpUrl: options.readLocalAgentHttpUrl!()! } : {}),
         listenerStatus: options.readLocalAgentMcpListenerStatus?.() ?? { state: "off" }
       });
     } catch (cause) {
       return err(toLocalAgentError(cause));
     }
+  });
+
+  bus.register("localAgents:httpBootstrap", async (_req, context) => {
+    if ((context.principal !== "ipc" && context.principal !== "bridge") || !options.bootstrapLocalAgentHttp)
+      return err({ kind: "permission", code: "native_http_bootstrap_required", message: "Create this Session from PwrSnap Settings and approve its native consent window" });
+    try { return ok(await options.bootstrapLocalAgentHttp(context.signal)); }
+    catch (cause) { return err(toLocalAgentError(cause)); }
   });
 
   bus.register("localAgents:roleCreate", async (req) => {

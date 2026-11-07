@@ -26,13 +26,12 @@ import {
   LocalAgentGrantService,
   secretNameForClient
 } from "../local-agent-grants";
-import { LocalAgentOAuthProvider } from "../local-agent-oauth";
 
 // Model-based test for removing revoked Sessions (Settings → Local Agents).
 // The rule: removal deletes a revoked Session's saved entry and nothing else.
 // It never ends or restores access, never touches an active Session, never
-// erases audit history, and never makes PwrSnap forget an agent's OAuth
-// registration while that agent might ask for approval again.
+// erases audit history. Legacy registrations remain metadata only; native
+// Sessions never acquire credentials or registrations through removal.
 
 const CLIENTS = ["lag_oauth_a", "lag_oauth_b", "lag_oauth_c"] as const;
 const NAMES = ["PwrAgent", "Claude Code"] as const;
@@ -81,7 +80,7 @@ function stores(dir: string): { settings: DesktopSettingsService; secrets: Deskt
 }
 
 describe("removing revoked local-agent Sessions", () => {
-  test("model: removal deletes only revoked entries, restores nothing, and keeps registrations", async () => {
+  test.each(["legacy", "native"] as const)("model: %s removal deletes only revoked entries and restores nothing", async (kind) => {
     await fc.assert(
       fc.asyncProperty(fc.array(op, { minLength: 1, maxLength: 14 }), async (ops) => {
         const dir = mkdtempSync(join(tmpdir(), "pwrsnap-la-removal-"));
@@ -102,17 +101,16 @@ describe("removing revoked local-agent Sessions", () => {
             const name = NAMES[step.name] as string;
             const clientId = CLIENTS[step.client] as string;
             const nameTaken = model.some((s) => s.state === "active" && s.name === name);
-            const result = service.issueOAuthGrant({
-              name,
-              capabilities: ["library.read"],
-              oauthClient: oauthClient(clientId)
-            });
+            const result = kind === "legacy"
+              ? service.issueOAuthGrant({ name, capabilities: ["library.read"], oauthClient: oauthClient(clientId) })
+              : service.openNativeSession({ name, capabilities: ["library.read"] })
+                .then((grant) => ({ grant, token: "" }));
             if (nameTaken) {
               await expect(result).rejects.toMatchObject({ code: "duplicate_name" });
               continue;
             }
             const issued = await result;
-            registered.add(clientId);
+            if (kind === "legacy") registered.add(clientId);
             model.push({ id: issued.grant.id, name, clientId, token: issued.token, state: "active" });
             await audit.record({
               clientId: issued.grant.id,
@@ -156,29 +154,30 @@ describe("removing revoked local-agent Sessions", () => {
         // Check every invariant against a fresh read from disk, as after a restart.
         const reopened = stores(dir);
         const restarted = new LocalAgentGrantService(reopened);
-        const provider = new LocalAgentOAuthProvider({
-          grantService: restarted,
-          resourceUrl: new URL("http://127.0.0.1:51729/mcp")
-        });
         const listed = await restarted.list();
         const listedIds = new Set(listed.map((grant) => grant.id));
         for (const s of model) {
-          const auth = await restarted.authenticate({ clientId: s.id, token: s.token });
+          const authorized = kind === "legacy"
+            ? (await restarted.authenticate({ clientId: s.id, token: s.token })).ok
+            : (await restarted.authorizeClient(s.id)) !== null;
           if (s.state === "active") {
-            expect(auth.ok).toBe(true);
+            expect(authorized).toBe(true);
             expect(listedIds.has(s.id)).toBe(true);
           } else {
-            expect(auth.ok).toBe(false);
+            expect(authorized).toBe(false);
             expect(await reopened.secrets.getValue(secretNameForClient(s.id))).toBeNull();
             expect(listedIds.has(s.id)).toBe(s.state === "revoked");
           }
         }
         expect(listed).toHaveLength(model.filter((s) => s.state !== "removed").length);
-        // Every agent that ever registered can still start an approval.
+        // Metadata survives removal, without restoring an OAuth endpoint.
         for (const clientId of registered) {
-          expect(await provider.clientsStore.getClient(clientId)).toMatchObject({
-            client_id: clientId
-          });
+          expect(await restarted.findOAuthClient(clientId)).toEqual(oauthClient(clientId));
+        }
+        if (kind === "native") {
+          expect((await reopened.settings.read()).localAgents.retainedOAuthClients).toEqual([]);
+          for (const session of model)
+            expect(await reopened.secrets.getValue(secretNameForClient(session.id))).toBeNull();
         }
         const settingsNow = await reopened.settings.read();
         // A registration a live Session holds is not duplicated in the kept list.

@@ -6,8 +6,10 @@ import "./startup-profile-boot";
 // Linux it steers sharp to its WebAssembly build before sharp loads. See
 // sharp-wasm-steer.ts.
 import { sharpWasmSteerDecision } from "./sharp-wasm-steer";
-import { access } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { NativeMcpBridge } from "./ai/mcp/native-mcp-bridge";
+import { mcpExecutablePath } from "./ai/mcp/mcp-executable";
 import {
   app,
   BaseWindow,
@@ -193,7 +195,6 @@ import {
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
 import {
-  LOCAL_AGENT_MCP_PORT,
   LocalAgentMcpServer
 } from "./local-agents/mcp-server";
 import { LocalAgentMcpLifecycle } from "./local-agents/local-agent-mcp-lifecycle";
@@ -405,12 +406,14 @@ let localAgentMcpLifecycle: LocalAgentMcpLifecycle | null = null;
 let disposeLocalAgentMcpSettingsListener: (() => void) | null = null;
 let localAgentConsentBroker: LocalAgentConsentBroker | null = null;
 
-/** E2E can exercise the production server on an ephemeral loopback port.
- * The normal E2E launch still never binds the operator's fixed MCP port. */
-function createLocalAgentMcpServer(port?: number): LocalAgentMcpServer {
+/** E2E uses a private endpoint while retaining production native consent. */
+function createLocalAgentMcpServer(endpoint?: string): LocalAgentMcpServer {
   const { service, secrets } = getDesktopSettingsServices();
   return new LocalAgentMcpServer({
-    ...(port === undefined ? {} : { port }),
+    ...(endpoint === undefined ? {} : {
+      bridgeFactory: (onConnection) =>
+        new NativeMcpBridge({ endpoint, allowHttp: true, onConnection })
+    }),
     settings: service,
     secrets,
     grantService: getLocalAgentGrantService(),
@@ -432,7 +435,7 @@ function createLocalAgentMcpServer(port?: number): LocalAgentMcpServer {
 
 /** Apply the persisted local-agent master gate without weakening RBAC. The
  * diagnostic env override remains a hard-off switch and E2E never binds the
- * host's real MCP port. */
+ * host's real MCP endpoint. */
 async function wireLocalAgentMcpLifecycle(): Promise<void> {
   if (
     isE2E ||
@@ -442,20 +445,23 @@ async function wireLocalAgentMcpLifecycle(): Promise<void> {
     return;
   }
   const { service } = getDesktopSettingsServices();
+  // Revocation broadcasts must finish before the lifecycle subscribes. Doing
+  // this inside start() makes its broadcast await a transition behind itself.
+  await getLocalAgentGrantService().expireNativeSessions();
   const lifecycle = new LocalAgentMcpLifecycle({
     createServer: () => createLocalAgentMcpServer(),
     onStartError: (cause) => {
       const message = cause instanceof Error ? cause.message : String(cause);
       getMainLogger("pwrsnap:local-agent-mcp").error(
         "local-agent MCP server failed to start",
-        { port: LOCAL_AGENT_MCP_PORT, message }
+        { transport: "local_ipc", message }
       );
       void dialog.showMessageBox({
         type: "error",
         title: "Local agent access unavailable",
-        message: `PwrSnap could not use local port ${LOCAL_AGENT_MCP_PORT}.`,
+        message: "PwrSnap could not start its local MCP connection.",
         detail:
-          "Another process may already be using PwrSnap's MCP port. " +
+          "Another desktop may own the local endpoint, or the bundled relay may be unavailable. " +
           "Resolve the conflict, then turn local-agent access off and back on.",
         buttons: ["OK"],
         defaultId: 0,
@@ -2044,6 +2050,11 @@ export function bootstrapApp(): void {
       registerSettingsDataHandlers({
         readLocalAgentMcpListenerStatus: () =>
           localAgentMcpLifecycle?.getStatus() ?? { state: "off" },
+        readLocalAgentHttpUrl: () => localAgentMcpLifecycle?.httpUrl(),
+        bootstrapLocalAgentHttp: async (signal) => {
+          if (!localAgentMcpLifecycle) throw new Error("Open PwrSnap and enable Local agents first");
+          return localAgentMcpLifecycle.bootstrapHttp(signal);
+        },
         shortcutPlatform,
         ...(!isE2E && !startupProfilingEnabled()
           ? { hotkeyRegistrationManager }
@@ -2422,6 +2433,8 @@ export function bootstrapApp(): void {
 
     if (isE2E) {
       let testMcpServer: LocalAgentMcpServer | null = null;
+      let testMcpDirectory: string | null = null;
+      let testMcpEndpoint: string | null = null;
       // E2E test bridge. Playwright's `electronApp.evaluate(fn, arg)`
       // runs `fn` in the main process; specs reach into the bus via
       // `globalThis.__PWRSNAP_TEST__.dispatch(name, req)` so a single
@@ -2435,15 +2448,24 @@ export function bootstrapApp(): void {
       // Vite's "dynamically imported but also statically imported"
       // warnings on every dev/build run.
       const testBridge = {
-        // No alternate auth path: the test must register an OAuth client,
-        // approve native consent, and exchange a PKCE code through this server.
+        // The stdio host must approve the real native consent window.
         startLocalAgentMcp: async () => {
-          testMcpServer ??= createLocalAgentMcpServer(0);
-          return testMcpServer.start();
+          if (testMcpServer === null) {
+            testMcpDirectory = await mkdtemp(join(app.getPath("temp"), "psm-"));
+            testMcpEndpoint = process.platform === "win32"
+              ? `\\\\.\\pipe\\pwrsnap-e2e-${testMcpDirectory.split(/[\\/]/).pop()}`
+              : join(testMcpDirectory, "m.sock");
+            testMcpServer = createLocalAgentMcpServer(testMcpEndpoint);
+          }
+          await testMcpServer.start();
+          return { endpoint: testMcpEndpoint!, executable: mcpExecutablePath() };
         },
         stopLocalAgentMcp: async () => {
           await testMcpServer?.stop();
           testMcpServer = null;
+          if (testMcpDirectory !== null) await rm(testMcpDirectory, { recursive: true, force: true });
+          testMcpDirectory = null;
+          testMcpEndpoint = null;
         },
         dispatch: <Name extends string>(name: Name, req: unknown) =>
           bus.dispatch(name as never, req as never, { principal: "ipc" }),

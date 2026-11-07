@@ -11,6 +11,7 @@ import {
 import {
   LOCAL_AGENT_CAPABILITIES,
   LOCAL_AGENT_CAPABILITY_DANGER,
+  resolveLocalAgentPolicy,
   type LocalAgentAuditEntry,
   type LocalAgentCapability,
   type LocalAgentClientGrant,
@@ -67,26 +68,16 @@ const USAGE_LABELS: Record<LocalAgentUsageAction, string> = {
   delete: "Trash moves"
 };
 
-const LOCAL_AGENT_MCP_URL = "http://127.0.0.1:51729/mcp";
-
-/** The connect recipes Settings hands out — see docs/mcp-third-party-agents.md
- *  for what each does and how they were verified. `--scope user` because
- *  `claude mcp add` otherwise registers the server for the terminal's current
- *  directory only, which a paste from Settings never intends. */
-const CONNECT_RECIPES = [
-  {
-    id: "claude-code",
-    label: "Claude Code",
-    command:
-      `claude mcp add --scope user --transport http pwrsnap ${LOCAL_AGENT_MCP_URL}\n` +
-      "claude mcp login pwrsnap"
-  },
-  {
-    id: "codex",
-    label: "Codex CLI",
-    command: `codex mcp add pwrsnap --url ${LOCAL_AGENT_MCP_URL} --oauth-client-registration dcr`
-  }
-] as const;
+function connectRecipes(command: string) {
+  return [
+    {
+      id: "claude-code",
+      label: "Claude Code",
+      command: `claude mcp add --scope user --transport stdio pwrsnap -- ${command}`
+    },
+    { id: "codex", label: "Codex CLI", command: `codex mcp add pwrsnap -- ${command}` }
+  ];
+}
 
 type GraphPath = {
   id: string;
@@ -105,6 +96,12 @@ type RoleDraft = {
 };
 
 export function LocalAgentsPage(): ReactElement {
+  const [relayCommand, setRelayCommand] = useState("pwrsnap-mcp");
+  const [httpUrl, setHttpUrl] = useState<string | null>(null);
+  const [httpInputId, setHttpInputId] = useState("pwrsnap-http-token");
+  const [httpCredential, setHttpCredential] = useState<{ token: string; expiresAt: string } | null>(null);
+  const [bootstrappingHttp, setBootstrappingHttp] = useState(false);
+  const recipes = connectRecipes(relayCommand);
   const { settings, patch } = useSettingsContext();
   const [grants, setGrants] = useState<LocalAgentClientGrant[]>([]);
   const [roles, setRoles] = useState<LocalAgentRoleProfile[]>([]);
@@ -137,6 +134,10 @@ export function LocalAgentsPage(): ReactElement {
   const nodeRefs = useRef(new Map<string, HTMLElement>());
   const [paths, setPaths] = useState<GraphPath[]>([]);
   const mcpEnabled = settings?.localAgents.enabled ?? false;
+  const httpConfiguration = JSON.stringify({
+    servers: { pwrsnap: { type: "http", url: httpUrl, headers: { Authorization: `Bearer \${input:${httpInputId}}` } } },
+    inputs: [{ type: "promptString", id: httpInputId, description: "PwrSnap HTTP Session credential", password: true }]
+  }, null, 2);
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -148,12 +149,14 @@ export function LocalAgentsPage(): ReactElement {
       setGrants(result.value.grants);
       setRoles(result.value.roles);
       setListenerStatus(result.value.listenerStatus);
+      setRelayCommand(result.value.relayCommand ?? "pwrsnap-mcp");
+      setHttpUrl(result.value.httpUrl ?? null);
       setSelectedSessionId((current) =>
         current !== null && result.value.grants.some((grant) => grant.id === current)
           ? current
-          : result.value.grants.find((grant) => grant.revokedAt === null)?.id ??
+          : (result.value.grants.find((grant) => grant.revokedAt === null)?.id ??
             result.value.grants[0]?.id ??
-            null
+            null)
       );
       setError(null);
     } else {
@@ -166,6 +169,28 @@ export function LocalAgentsPage(): ReactElement {
     }
     setLoading(false);
   }, []);
+
+  useEffect(() => {
+    if (httpCredential === null) return;
+    const timer = setTimeout(() => setHttpCredential(null), Math.max(0, Date.parse(httpCredential.expiresAt) - Date.now()));
+    return () => clearTimeout(timer);
+  }, [httpCredential]);
+  useEffect(() => { if (!mcpEnabled) setHttpCredential(null); }, [mcpEnabled]);
+  const bootstrapHttp = async (): Promise<void> => {
+    setBootstrappingHttp(true);
+    setHttpCredential(null);
+    const result = await dispatch("localAgents:httpBootstrap", {});
+    if (result.ok) {
+      setHttpCredential(result.value);
+      setHttpUrl(result.value.httpUrl);
+      // A fresh input reference prompts again instead of sending a host's
+      // cached credential from a closed Session. It contains no secret.
+      setHttpInputId(`pwrsnap-http-${Date.parse(result.value.expiresAt).toString(36)}`);
+      setError(null);
+    }
+    else setError(result.error.message);
+    setBootstrappingHttp(false);
+  };
 
   const setMcpEnabled = async (enabled: boolean): Promise<void> => {
     setTogglingAccess(true);
@@ -182,7 +207,12 @@ export function LocalAgentsPage(): ReactElement {
 
   useEffect(() => {
     void load();
-  }, [load, settings?.localAgents.grants, settings?.localAgents.roles, settings?.localAgents.audit]);
+  }, [
+    load,
+    settings?.localAgents.grants,
+    settings?.localAgents.roles,
+    settings?.localAgents.audit
+  ]);
 
   const selectedSession = useMemo(
     () => grants.find((grant) => grant.id === selectedSessionId) ?? null,
@@ -199,6 +229,15 @@ export function LocalAgentsPage(): ReactElement {
     () => roles.find((role) => role.id === selectedRoleId) ?? null,
     [roles, selectedRoleId]
   );
+
+  const selectedPolicy = useMemo(() => {
+    if (selectedSession === null || selectedSession.roleId !== selectedRoleId) return null;
+    const result = resolveLocalAgentPolicy(
+      { enabled: mcpEnabled, grants, roles, audit: [], retainedOAuthClients: [] },
+      selectedSession.id
+    );
+    return result.ok ? result.policy : null;
+  }, [selectedSession, selectedRoleId, mcpEnabled, grants, roles]);
 
   useEffect(() => {
     if (selectedSessionId === null) {
@@ -250,7 +289,8 @@ export function LocalAgentsPage(): ReactElement {
     };
 
     for (const grant of grants) {
-      const roleExists = grant.roleId !== undefined && roles.some((role) => role.id === grant.roleId);
+      const roleExists =
+        grant.roleId !== undefined && roles.some((role) => role.id === grant.roleId);
       if (grant.revokedAt !== null || !roleExists) {
         connect(
           `session-reject:${grant.id}`,
@@ -276,12 +316,13 @@ export function LocalAgentsPage(): ReactElement {
           `role:${role.id}`,
           `permission:${permission}`,
           "allow",
-          role.id === selectedRoleId
+          role.id === selectedRoleId &&
+            (selectedPolicy === null || selectedPolicy.capabilities.includes(permission))
         );
       }
     }
     setPaths(next);
-  }, [grants, roles, selectedRoleId, selectedSessionId]);
+  }, [grants, roles, selectedRoleId, selectedSessionId, selectedPolicy]);
 
   useLayoutEffect(() => {
     recalculatePaths();
@@ -313,7 +354,7 @@ export function LocalAgentsPage(): ReactElement {
   const listenerCopy = !mcpEnabled
     ? { badge: "MCP off", tag: "off" }
     : listenerStatus.state === "listening"
-      ? { badge: LOCAL_AGENT_MCP_URL, tag: "listening on loopback" }
+      ? { badge: "Local IPC MCP", tag: "stdio relay + IPC HTTP" }
       : listenerStatus.state === "starting"
         ? { badge: "MCP starting", tag: "starting" }
         : listenerStatus.state === "stopping"
@@ -326,7 +367,9 @@ export function LocalAgentsPage(): ReactElement {
     setSaving(true);
     const result = await dispatch("localAgents:assignRole", { sessionId, roleId });
     if (result.ok) {
-      setGrants((current) => current.map((grant) => grant.id === sessionId ? result.value : grant));
+      setGrants((current) =>
+        current.map((grant) => (grant.id === sessionId ? result.value : grant))
+      );
       setSelectedSessionId(sessionId);
       setSelectedRoleId(roleId);
       setError(null);
@@ -408,16 +451,19 @@ export function LocalAgentsPage(): ReactElement {
       return;
     }
     setSaving(true);
-    const result = roleDraft.id === null
-      ? await dispatch("localAgents:roleCreate", parsed.value)
-      : await dispatch("localAgents:roleUpdate", {
-          id: roleDraft.id,
-          patch: parsed.value
-        });
+    const result =
+      roleDraft.id === null
+        ? await dispatch("localAgents:roleCreate", parsed.value)
+        : await dispatch("localAgents:roleUpdate", {
+            id: roleDraft.id,
+            patch: parsed.value
+          });
     if (result.ok) {
-      setRoles((current) => roleDraft.id === null
-        ? [...current, result.value]
-        : current.map((role) => role.id === result.value.id ? result.value : role));
+      setRoles((current) =>
+        roleDraft.id === null
+          ? [...current, result.value]
+          : current.map((role) => (role.id === result.value.id ? result.value : role))
+      );
       setSelectedRoleId(result.value.id);
       setRoleDraft(null);
       setError(null);
@@ -472,13 +518,15 @@ export function LocalAgentsPage(): ReactElement {
           <div className="pss__main-eyebrow">Access control</div>
           <h1 className="pss__main-title">Authorization graph</h1>
           <p className="pss__main-sub">
-            Bind each named MCP Session to one role. Permissions are additive inside a
-            role; history and sliding-window limits narrow how much an agent can see or do.
-            Click a Session or role to trace its path.
+            Bind each named MCP Session to one role. Permissions are additive inside a role; history
+            and sliding-window limits narrow how much an agent can see or do. Click a Session or
+            role to trace its path.
           </p>
         </div>
         <div className="pss__main-actions">
-          <span className="pss__main-count" aria-live="polite">{activeCount} approved</span>
+          <span className="pss__main-count" aria-live="polite">
+            {activeCount} approved
+          </span>
           <span className={`pss__badge${listenerStatus.state === "listening" ? " is-accent" : ""}`}>
             {listenerCopy.badge}
           </span>
@@ -508,9 +556,11 @@ export function LocalAgentsPage(): ReactElement {
             <>
               <p className="pss__row-sub">
                 Run one of these in a terminal. The agent opens PwrSnap's approval window; pick a
-                Session Name and role there. Nothing else to install.
+                Session Name and role there. Keep PwrSnap running. After a disconnect, reconnect
+                manually in the host. Replace existing TCP HTTP connections with stdio or direct
+                IPC HTTP below; approve a new Session.
               </p>
-              {CONNECT_RECIPES.map((recipe) => {
+              {recipes.map((recipe) => {
                 const feedback = copyFeedback?.id === recipe.id ? copyFeedback.status : null;
                 const label =
                   feedback === "copied" ? "Copied" : feedback === "failed" ? "Copy failed" : "Copy";
@@ -546,16 +596,52 @@ export function LocalAgentsPage(): ReactElement {
         </div>
       </Card>
 
+      <Card eyebrow="DIRECT IPC HTTP" title="VS Code">
+        <div className="pss__connect">
+          <p className="pss__row-sub">
+            VS Code can use HTTP over the same local socket or pipe. Create a Session here and
+            approve its role in PwrSnap's native window. Copy the fresh configuration, start the server,
+            and paste the credential into VS Code's secret input within two minutes. Keep PwrSnap
+            running. After disconnection, create a new Session and copy its new configuration manually.
+          </p>
+          {httpUrl !== null && listenerStatus.state === "listening" ? <>
+            <pre className="pss__pair-command">{httpConfiguration}</pre>
+            <div className="pss__pair-recipe-hdr"><button type="button" className="pss__key-btn" onClick={() => void copyRecipe("http-config", httpConfiguration)}>
+              {copyFeedback?.id === "http-config" && copyFeedback.status === "copied" ? "Copied VS Code configuration" : "Copy VS Code configuration"}
+            </button>
+            <button type="button" className="pss__key-btn" disabled={bootstrappingHttp} onClick={() => void bootstrapHttp()}>
+              {bootstrappingHttp ? "Waiting for native approval…" : "Create HTTP Session"}
+            </button></div>
+            {httpCredential !== null && <div role="status">
+              <p className="pss__row-sub">Credential ready to copy. It initializes one Session and cannot resume a closed Session.</p>
+              <div className="pss__pair-recipe-hdr"><button type="button" className="pss__key-btn" onClick={() => void copyRecipe("http-credential", httpCredential.token)}>{copyFeedback?.id === "http-credential" && copyFeedback.status === "copied" ? "Copied HTTP credential" : "Copy HTTP credential"}</button>
+              <button type="button" className="pss__key-btn" onClick={() => setHttpCredential(null)}>Hide credential</button></div>
+            </div>}
+          </> : <p className="pss__row-sub">Enable local-agent access to get the direct IPC URL.</p>}
+          <p className="pss__row-sub">Browser OAuth over IPC is unsupported. Old HTTP tokens and approvals do not migrate. Other hosts should use the stdio relay above.</p>
+        </div>
+      </Card>
+
       <div className="pss__auth-legend" aria-label="Authorization graph legend">
-        <span><i className="is-allow" /> allowed path</span>
-        <span><i className="is-reject" /> rejected Session</span>
-        <button type="button" className="pss__key-btn" onClick={() => setRoleDraft(newRoleDraft(selectedRole))}>
+        <span>
+          <i className="is-allow" /> allowed path
+        </span>
+        <span>
+          <i className="is-reject" /> rejected Session
+        </span>
+        <button
+          type="button"
+          className="pss__key-btn"
+          onClick={() => setRoleDraft(newRoleDraft(selectedRole))}
+        >
           + New custom role
         </button>
       </div>
 
       <section className="pss__auth-shell">
-        {loading ? <div className="pss__auth-empty">Loading authorization policy…</div> : (
+        {loading ? (
+          <div className="pss__auth-empty">Loading authorization policy…</div>
+        ) : (
           <div className="pss__auth-scroll">
             <div className="pss__auth-graph" ref={graphRef}>
               <svg className="pss__auth-lines" aria-hidden="true">
@@ -746,7 +832,10 @@ export function LocalAgentsPage(): ReactElement {
                 ))}
                 <div ref={(node) => registerNode("reject", node)} className="pss__auth-end-state">
                   <span>×</span>
-                  <div><b>Rejected</b><small>Revoked or invalid role</small></div>
+                  <div>
+                    <b>Rejected</b>
+                    <small>Revoked or invalid role</small>
+                  </div>
                 </div>
               </GraphColumn>
 
@@ -759,7 +848,14 @@ export function LocalAgentsPage(): ReactElement {
                     onClick={() => setSelectedRoleId(role.id)}
                   >
                     <div className="pss__auth-node-top">
-                      <span className="pss__auth-node-icon">{role.permissions.some((permission) => LOCAL_AGENT_CAPABILITY_DANGER[permission] === "destructive") ? "!" : "R"}</span>
+                      <span className="pss__auth-node-icon">
+                        {role.permissions.some(
+                          (permission) =>
+                            LOCAL_AGENT_CAPABILITY_DANGER[permission] === "destructive"
+                        )
+                          ? "!"
+                          : "R"}
+                      </span>
                       <div>
                         <h3>{role.name}</h3>
                         <p>{role.description}</p>
@@ -767,7 +863,10 @@ export function LocalAgentsPage(): ReactElement {
                       <span className="pss__badge">{role.builtIn ? "built-in" : "custom"}</span>
                     </div>
                     <div className="pss__auth-node-meta">
-                      <span>{historyLabel(role.maxCaptureAgeDays)} · {role.permissions.length} permissions</span>
+                      <span>
+                        {historyLabel(role.maxCaptureAgeDays)} · {role.permissions.length}{" "}
+                        permissions
+                      </span>
                       <button
                         type="button"
                         onClick={(event) => {
@@ -785,10 +884,19 @@ export function LocalAgentsPage(): ReactElement {
               <GraphColumn title="Permissions & limits" count={LOCAL_AGENT_CAPABILITIES.length}>
                 <div className="pss__auth-constraint">
                   <span>History</span>
-                  <b>{selectedRole === null ? "Select a role" : historyLabel(selectedRole.maxCaptureAgeDays)}</b>
+                  <b>
+                    {selectedRole === null
+                      ? "Select a role"
+                      : historyLabel(
+                          selectedPolicy?.maxCaptureAgeDays ?? selectedRole.maxCaptureAgeDays
+                        )}
+                  </b>
                 </div>
                 {LOCAL_AGENT_CAPABILITIES.map((permission) => {
-                  const allowed = selectedRole?.permissions.includes(permission) === true;
+                  const allowed =
+                    selectedPolicy !== null
+                      ? selectedPolicy.capabilities.includes(permission)
+                      : selectedRole?.permissions.includes(permission) === true;
                   const danger = LOCAL_AGENT_CAPABILITY_DANGER[permission];
                   return (
                     <article
@@ -810,25 +918,40 @@ export function LocalAgentsPage(): ReactElement {
         )}
       </section>
 
-      {selectedSession !== null && selectedRole !== null ? (
-        <Card eyebrow="LIVE SCOPE" title={`${selectedSession.name} · ${selectedRole.name}`}>
+      {selectedSession !== null && selectedPolicy !== null ? (
+        <Card eyebrow="LIVE SCOPE" title={`${selectedSession.name} · ${selectedPolicy.roleName}`}>
           <Row
             label="Capture history"
-            sub="Searches and direct resource reads are checked against this moving horizon."
+            sub={
+              selectedSession.nativeConsent === undefined
+                ? "Searches and direct resource reads are checked against this moving horizon."
+                : "This Session retains its approved limits. Reconnect and approve a new Session to widen access."
+            }
           >
-            <span className="pss__badge is-accent">{historyLabel(selectedRole.maxCaptureAgeDays)}</span>
+            <span className="pss__badge is-accent">
+              {historyLabel(selectedPolicy.maxCaptureAgeDays)}
+            </span>
           </Row>
           <div className="pss__usage-grid">
             {USAGE_ACTIONS.map((action) => {
               const snapshot = usage.find((entry) => entry.action === action);
-              const budget = selectedRole.budgets[action];
+              const budget = selectedPolicy.budgets[action];
               const used = snapshot?.used ?? 0;
               const limit = snapshot?.limit ?? budget.limit;
               return (
                 <div key={action} className="pss__usage-item">
-                  <div><span>{USAGE_LABELS[action]}</span><b>{used} / {limit}</b></div>
-                  <div className="pss__usage-track"><i style={{ width: `${Math.min(100, used / limit * 100)}%` }} /></div>
-                  <small>rolling {formatWindow(snapshot?.windowSeconds ?? budget.windowSeconds)}</small>
+                  <div>
+                    <span>{USAGE_LABELS[action]}</span>
+                    <b>
+                      {used} / {limit}
+                    </b>
+                  </div>
+                  <div className="pss__usage-track">
+                    <i style={{ width: `${Math.min(100, (used / limit) * 100)}%` }} />
+                  </div>
+                  <small>
+                    rolling {formatWindow(snapshot?.windowSeconds ?? budget.windowSeconds)}
+                  </small>
                 </div>
               );
             })}
@@ -854,7 +977,10 @@ export function LocalAgentsPage(): ReactElement {
       ) : null}
 
       {error !== null ? (
-        <div className="pss__auth-error" role="alert"><b>Local agent update failed</b><span>{error}</span></div>
+        <div className="pss__auth-error" role="alert">
+          <b>Local agent update failed</b>
+          <span>{error}</span>
+        </div>
       ) : null}
 
       <Card eyebrow="ACTIVITY" title="Recent agent actions" defaultCollapsed>
@@ -862,15 +988,19 @@ export function LocalAgentsPage(): ReactElement {
           <Row label="No agent activity" sub="Protected media and mutation actions appear here.">
             <span className="pss__badge">none</span>
           </Row>
-        ) : audit.map((entry) => (
-          <Row
-            key={entry.id}
-            label={auditActionLabel(entry)}
-            sub={`${grantName(entry.clientId, grants)} · ${entry.subjectId} · ${formatDate(entry.occurredAt)}`}
-          >
-            <span className={`pss__badge${entry.outcome === "failure" ? " is-danger" : ""}`}>{entry.outcome}</span>
-          </Row>
-        ))}
+        ) : (
+          audit.map((entry) => (
+            <Row
+              key={entry.id}
+              label={auditActionLabel(entry)}
+              sub={`${grantName(entry.clientId, grants)} · ${entry.subjectId} · ${formatDate(entry.occurredAt)}`}
+            >
+              <span className={`pss__badge${entry.outcome === "failure" ? " is-danger" : ""}`}>
+                {entry.outcome}
+              </span>
+            </Row>
+          ))
+        )}
       </Card>
     </>
   );
@@ -887,7 +1017,10 @@ function GraphColumn({
 }): ReactElement {
   return (
     <div className="pss__auth-column">
-      <div className="pss__auth-column-hdr"><span>{title}</span><b>{count}</b></div>
+      <div className="pss__auth-column-hdr">
+        <span>{title}</span>
+        <b>{count}</b>
+      </div>
       <div className="pss__auth-column-body">{children}</div>
     </div>
   );
@@ -927,15 +1060,38 @@ function RoleEditor({
   return (
     <section className="pss__role-editor">
       <div className="pss__role-editor-hdr">
-        <div><span>Custom role</span><h2>{draft.id === null ? "Create role" : "Edit role"}</h2></div>
-        <button type="button" onClick={onCancel} aria-label="Close role editor">×</button>
+        <div>
+          <span>Custom role</span>
+          <h2>{draft.id === null ? "Create role" : "Edit role"}</h2>
+        </div>
+        <button type="button" onClick={onCancel} aria-label="Close role editor">
+          ×
+        </button>
       </div>
       <div className="pss__role-editor-fields">
-        <label>Name<input className="pss__input" value={draft.name} onChange={(event) => onChange({ ...draft, name: event.target.value })} /></label>
-        <label>Description<input className="pss__input" value={draft.description} onChange={(event) => onChange({ ...draft, description: event.target.value })} /></label>
+        <label>
+          Name
+          <input
+            className="pss__input"
+            value={draft.name}
+            onChange={(event) => onChange({ ...draft, name: event.target.value })}
+          />
+        </label>
+        <label>
+          Description
+          <input
+            className="pss__input"
+            value={draft.description}
+            onChange={(event) => onChange({ ...draft, description: event.target.value })}
+          />
+        </label>
         <label>
           Capture history
-          <select className="pss__input" value={draft.maxCaptureAgeDays} onChange={(event) => onChange({ ...draft, maxCaptureAgeDays: event.target.value })}>
+          <select
+            className="pss__input"
+            value={draft.maxCaptureAgeDays}
+            onChange={(event) => onChange({ ...draft, maxCaptureAgeDays: event.target.value })}
+          >
             <option value="7">Last 7 days</option>
             <option value="14">Last 14 days</option>
             <option value="30">Last 30 days</option>
@@ -952,12 +1108,14 @@ function RoleEditor({
               <input
                 type="checkbox"
                 checked={draft.permissions.includes(permission)}
-                onChange={(event) => onChange({
-                  ...draft,
-                  permissions: event.target.checked
-                    ? [...draft.permissions, permission]
-                    : draft.permissions.filter((item) => item !== permission)
-                })}
+                onChange={(event) =>
+                  onChange({
+                    ...draft,
+                    permissions: event.target.checked
+                      ? [...draft.permissions, permission]
+                      : draft.permissions.filter((item) => item !== permission)
+                  })
+                }
               />
               <span>{CAPABILITY_LABELS[permission]}</span>
             </label>
@@ -970,15 +1128,54 @@ function RoleEditor({
           {USAGE_ACTIONS.map((action) => (
             <div key={action}>
               <b>{USAGE_LABELS[action]}</b>
-              <label>Limit<input className="pss__input" inputMode="numeric" value={draft.budgets[action].limit} onChange={(event) => updateBudget(action, "limit", event.target.value)} /></label>
-              <label>Hours<input className="pss__input" inputMode="numeric" value={draft.budgets[action].windowHours} onChange={(event) => updateBudget(action, "windowHours", event.target.value)} /></label>
+              <label>
+                Limit
+                <input
+                  className="pss__input"
+                  inputMode="numeric"
+                  value={draft.budgets[action].limit}
+                  onChange={(event) => updateBudget(action, "limit", event.target.value)}
+                />
+              </label>
+              <label>
+                Hours
+                <input
+                  className="pss__input"
+                  inputMode="numeric"
+                  value={draft.budgets[action].windowHours}
+                  onChange={(event) => updateBudget(action, "windowHours", event.target.value)}
+                />
+              </label>
             </div>
           ))}
         </div>
       </div>
       <div className="pss__role-editor-actions">
-        {onDelete !== undefined ? <button type="button" className="pss__key-btn is-danger" disabled={saving} onClick={onDelete}>{confirmDelete ? "Confirm delete" : "Delete role"}</button> : <span />}
-        <div><button type="button" className="pss__key-btn" onClick={onCancel}>Cancel</button><button type="button" className="pss__key-btn is-primary" disabled={saving} onClick={onSave}>{saving ? "Saving…" : "Save role"}</button></div>
+        {onDelete !== undefined ? (
+          <button
+            type="button"
+            className="pss__key-btn is-danger"
+            disabled={saving}
+            onClick={onDelete}
+          >
+            {confirmDelete ? "Confirm delete" : "Delete role"}
+          </button>
+        ) : (
+          <span />
+        )}
+        <div>
+          <button type="button" className="pss__key-btn" onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="pss__key-btn is-primary"
+            disabled={saving}
+            onClick={onSave}
+          >
+            {saving ? "Saving…" : "Save role"}
+          </button>
+        </div>
       </div>
     </section>
   );
@@ -1000,25 +1197,38 @@ function newRoleDraft(role: LocalAgentRoleProfile | null, duplicate = true): Rol
     description: source.description,
     permissions: [...source.permissions],
     maxCaptureAgeDays: source.maxCaptureAgeDays === null ? "all" : String(source.maxCaptureAgeDays),
-    budgets: Object.fromEntries(USAGE_ACTIONS.map((action) => [action, {
-      limit: String(source.budgets[action].limit),
-      windowHours: String(source.budgets[action].windowSeconds / 3600)
-    }])) as RoleDraft["budgets"]
+    budgets: Object.fromEntries(
+      USAGE_ACTIONS.map((action) => [
+        action,
+        {
+          limit: String(source.budgets[action].limit),
+          windowHours: String(source.budgets[action].windowSeconds / 3600)
+        }
+      ])
+    ) as RoleDraft["budgets"]
   };
 }
 
-function parseRoleDraft(draft: RoleDraft):
+function parseRoleDraft(
+  draft: RoleDraft
+):
   | { ok: true; value: Omit<LocalAgentRoleProfile, "id" | "builtIn"> }
   | { ok: false; message: string } {
   const name = draft.name.trim();
   if (name.length === 0) return { ok: false, message: "Role name is required." };
-  if (draft.permissions.length === 0) return { ok: false, message: "Select at least one permission." };
+  if (draft.permissions.length === 0)
+    return { ok: false, message: "Select at least one permission." };
   const budgets = {} as LocalAgentRoleBudgets;
   for (const action of USAGE_ACTIONS) {
     const limit = Number(draft.budgets[action].limit);
     const windowHours = Number(draft.budgets[action].windowHours);
-    if (!Number.isInteger(limit) || limit < 1) return { ok: false, message: `${USAGE_LABELS[action]} limit must be a positive whole number.` };
-    if (!Number.isFinite(windowHours) || windowHours < 1 / 60) return { ok: false, message: `${USAGE_LABELS[action]} window must be at least one minute.` };
+    if (!Number.isInteger(limit) || limit < 1)
+      return {
+        ok: false,
+        message: `${USAGE_LABELS[action]} limit must be a positive whole number.`
+      };
+    if (!Number.isFinite(windowHours) || windowHours < 1 / 60)
+      return { ok: false, message: `${USAGE_LABELS[action]} window must be at least one minute.` };
     budgets[action] = { limit, windowSeconds: Math.round(windowHours * 3600) };
   }
   return {
@@ -1071,12 +1281,18 @@ function shortSessionId(id: string): string {
 
 function auditActionLabel(entry: LocalAgentAuditEntry): string {
   switch (entry.action) {
-    case "capture.original.read": return "Original image read";
-    case "capture.export": return "Capture exported";
-    case "capture.edit": return "Image edit requested";
-    case "trash.write": return "Capture moved to Trash";
-    case "sizzle.preview.read": return "Sizzle preview rendered";
-    case "sizzle.full.read": return "Full Sizzle rendered";
+    case "capture.original.read":
+      return "Original image read";
+    case "capture.export":
+      return "Capture exported";
+    case "capture.edit":
+      return "Image edit requested";
+    case "trash.write":
+      return "Capture moved to Trash";
+    case "sizzle.preview.read":
+      return "Sizzle preview rendered";
+    case "sizzle.full.read":
+      return "Full Sizzle rendered";
   }
 }
 

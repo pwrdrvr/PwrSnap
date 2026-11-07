@@ -1,22 +1,21 @@
-// Exercise the public MCP/OAuth path against the built Electron app. Inference
+// Exercise the public MCP stdio relay against the independently running Electron app. Inference
 // is intercepted in the isolated app: no provider credential leaves this test.
 // Real FFmpeg, utility rendering, persistence and protected media delivery run.
-import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type {
   SizzleAsset,
   SizzleProject,
   SizzleSpeechTiming,
 } from "@pwrsnap/shared";
-import type { LocalAgentMcpServerAddress } from "../src/main/local-agents/mcp-server";
+import { LOCAL_AGENT_CAPABILITIES } from "@pwrsnap/shared";
+import { LOCAL_AGENT_CAPABILITY_LABELS } from "../src/main/local-agents/local-agent-permissions";
 import {
   test,
   expect,
@@ -35,13 +34,14 @@ const capabilities = [
   "sizzle.assets.import",
   "sizzle.preview.read",
   "sizzle.full.read",
-];
+] as const;
 
+type McpAddress = { endpoint: string; executable: string };
 type TestBridge = {
-  startLocalAgentMcp: () => Promise<LocalAgentMcpServerAddress>;
+  startLocalAgentMcp: () => Promise<McpAddress>;
   stopLocalAgentMcp: () => Promise<void>;
 };
-async function startMcp(app: LaunchedApp): Promise<LocalAgentMcpServerAddress> {
+async function startMcp(app: LaunchedApp): Promise<McpAddress> {
   return app.electronApp.evaluate(() =>
     (
       globalThis as unknown as { __PWRSNAP_TEST__: TestBridge }
@@ -51,44 +51,15 @@ async function startMcp(app: LaunchedApp): Promise<LocalAgentMcpServerAddress> {
 
 async function authorize(
   app: LaunchedApp,
-  address: LocalAgentMcpServerAddress,
+  address: McpAddress,
 ): Promise<Client> {
-  const endpoint = (route: string) => new URL(route, address.url);
-  const callback = "http://127.0.0.1:19191/callback";
-  const verifier = "sizzle-mcp-e2e-pkce-verifier-with-at-least-43-characters";
-  const registered = await fetch(endpoint("/register"), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      client_name: "Sizzle MCP E2E",
-      redirect_uris: [callback],
-      grant_types: ["authorization_code"],
-      response_types: ["code"],
-      token_endpoint_auth_method: "none",
-    }),
-  });
-  expect(registered.status).toBe(201);
-  const metadata = (await registered.json()) as { client_id: string };
-  const authorization = new URL(address.authorizationUrl);
-  for (const [key, value] of Object.entries({
-    client_id: metadata.client_id,
-    redirect_uri: callback,
-    response_type: "code",
-    code_challenge: createHash("sha256").update(verifier).digest("base64url"),
-    code_challenge_method: "S256",
-    resource: address.url,
-    scope: capabilities.join(" "),
-    state: "sizzle-audit",
-  }))
-    authorization.searchParams.set(key, value);
-  const started = await fetch(authorization, { redirect: "manual" });
-  expect(started.status).toBe(200);
-  const html = await started.text();
-  const next = html.match(
-    /<meta http-equiv="refresh" content="1;url=([^"]+)">/,
-  );
-  expect(next).not.toBeNull();
-  const status = new URL(next![1]!.replaceAll("&amp;", "&"), address.url);
+  const client = new Client({ name: "Sizzle MCP audit", version: "1.0.0" });
+  let connectionError: unknown;
+  const connected = client.connect(new StdioClientTransport({
+    command: address.executable,
+    args: ["--endpoint", address.endpoint],
+    stderr: "pipe",
+  })).catch((cause: unknown) => { connectionError = cause; });
   // Consent comes from the actual native window, with its real IPC sender.
   await expect
     .poll(() =>
@@ -102,45 +73,14 @@ async function authorize(
     .windows()
     .find((win) => win.url().includes("local-agent-consent"))!;
   await consent.getByRole("radio", { name: /Custom role/ }).check();
-  await expect(consent.getByRole("checkbox")).toHaveCount(capabilities.length);
-  for (const checkbox of await consent.getByRole("checkbox").all())
-    await checkbox.check();
+  await expect(consent.getByRole("checkbox")).toHaveCount(LOCAL_AGENT_CAPABILITIES.length);
+  for (const capability of capabilities)
+    await consent.getByRole("checkbox", { name: LOCAL_AGENT_CAPABILITY_LABELS[capability], exact: false }).check();
   await consent
     .getByRole("button", { name: "Allow access", exact: true })
     .click();
-  let redirect: Response | null = null;
-  await expect
-    .poll(async () => {
-      redirect = await fetch(status, { redirect: "manual" });
-      return redirect.status;
-    })
-    .toBe(302);
-  const location = new URL(
-    (redirect as Response | null)!.headers.get("location")!,
-  );
-  expect(location.searchParams.get("state")).toBe("sizzle-audit");
-  const exchanged = await fetch(endpoint("/token"), {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      client_id: metadata.client_id,
-      code: location.searchParams.get("code")!,
-      code_verifier: verifier,
-      redirect_uri: callback,
-      resource: address.url,
-    }),
-  });
-  expect(exchanged.status).toBe(200);
-  const tokens = (await exchanged.json()) as { access_token: string };
-  const client = new Client({ name: "Sizzle MCP audit", version: "1.0.0" });
-  await client.connect(
-    new StreamableHTTPClientTransport(new URL(address.url), {
-      requestInit: {
-        headers: { Authorization: `Bearer ${tokens.access_token}` },
-      },
-    }) as unknown as Transport,
-  );
+  await connected;
+  if (connectionError !== undefined) throw connectionError;
   return client;
 }
 function value<T>(result: Awaited<ReturnType<Client["callTool"]>>): T {
@@ -152,6 +92,7 @@ function value<T>(result: Awaited<ReturnType<Client["callTool"]>>): T {
   return result.structuredContent as T;
 }
 async function media(
+  client: Client,
   result: Awaited<ReturnType<Client["callTool"]>>,
   mime: string,
 ): Promise<Buffer> {
@@ -161,10 +102,13 @@ async function media(
   expect(link?.type).toBe("resource_link");
   if (link?.type !== "resource_link")
     throw new Error("Missing protected media");
-  const delivered = await fetch(link.uri);
-  expect(delivered.status).toBe(200);
-  expect(delivered.headers.get("content-type")).toContain(mime);
-  return Buffer.from(await delivered.arrayBuffer());
+  expect(link.uri).toMatch(/^pwrsnap:\/\//);
+  const delivered = await client.readResource({ uri: link.uri });
+  expect(delivered.contents).toHaveLength(1);
+  const resource = delivered.contents[0]!;
+  expect(resource.mimeType).toBe(mime);
+  if (!("blob" in resource)) throw new Error("Expected protected binary MCP resource");
+  return Buffer.from(resource.blob, "base64");
 }
 
 test("MCP authors, aligns, reviews, renders and revises a continuous narrated reel", async ({}, testInfo) => {
@@ -301,7 +245,6 @@ test("MCP authors, aligns, reviews, renders and revises a continuous narrated re
         .ok,
     ).toBe(true);
     const address = await startMcp(app);
-    expect(address.port).not.toBe(51729);
     client = await authorize(app, address);
     const mcp = client;
     const call = (name: string, args: Record<string, unknown>) =>
@@ -417,7 +360,7 @@ test("MCP authors, aligns, reviews, renders and revises a continuous narrated re
     >(preparation);
     expect(prepared.asset.kind).toBe("audio");
     expect(prepared.timing.quality).toBe("precise");
-    const audition = await media(preparation, "audio/wav");
+    const audition = await media(mcp, preparation, "audio/wav");
     expect(audition.subarray(0, 4).toString()).toBe("RIFF");
     await writeFile(testInfo.outputPath("mcp-narration.wav"), audition);
     project = await get();
@@ -462,13 +405,13 @@ test("MCP authors, aligns, reviews, renders and revises a continuous narrated re
       projectId,
       frames: [0, 12, last],
     });
-    const png = await media(frames, "image/png");
+    const png = await media(mcp, frames, "image/png");
     expect((await sharp(png).metadata()).width).toBe(1920);
     await writeFile(testInfo.outputPath("mcp-contact.png"), png);
     const preview = await call("pwrsnap_sizzle_render_preview", { projectId });
     expect(value<{ renderedScenes: number }>(preview).renderedScenes).toBe(9);
     const full = await call("pwrsnap_sizzle_render_full", { projectId });
-    const movie = await media(full, "video/mp4");
+    const movie = await media(mcp, full, "video/mp4");
     expect(movie.length).toBeGreaterThan(1000);
     await writeFile(testInfo.outputPath("mcp-reel.mp4"), movie);
     const qa = value<{

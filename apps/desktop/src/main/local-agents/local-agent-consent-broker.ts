@@ -17,7 +17,7 @@ import { createLocalAgentConsentWindow } from "../window";
 import {
   LOCAL_AGENT_CAPABILITY_DETAILS,
   LOCAL_AGENT_CAPABILITY_LABELS
-} from "./local-agent-oauth";
+} from "./local-agent-permissions";
 
 export type LocalAgentConsentRequest = {
   clientId: string;
@@ -51,7 +51,7 @@ type GrantReader = () => Promise<
 >;
 
 /**
- * Native user-presence boundary for loopback OAuth. HTTP can create a pending
+ * Native user-presence boundary for local MCP. A connection can create a pending
  * request, but only a renderer hosted by the exact BrowserWindow created here
  * can inspect or resolve it through IPC.
  */

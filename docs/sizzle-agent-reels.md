@@ -267,8 +267,10 @@ and transferring its footage remain capture/VM tasks. The original local
 script's cache-file copy for narration is replaced by `sizzle_prepare_narration`.
 
 The desktop protocol test is `e2e/sizzle-mcp.spec.ts`: a real MCP SDK client
-registers with OAuth, approves the actual native consent window, exchanges a
-PKCE code, and calls these tools on the built app. It intercepts inference in
+launches the stdio relay, connects to the already running built app through a
+private IPC endpoint, approves the actual native consent window, and calls
+these tools. Protected media is read through MCP resources, without a TCP
+listener or OAuth exchange. The test intercepts inference in
 the isolated test process, rather than copying provider credentials to the VM.
 The media pipeline, persistence, permissions, and protected delivery are real.
 Set `PWRSNAP_E2E_REQUIRE_SIZZLE_MCP=1` with a vetted macOS FFmpeg path to require

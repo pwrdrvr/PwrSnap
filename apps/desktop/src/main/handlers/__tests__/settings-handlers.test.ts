@@ -40,6 +40,7 @@ vi.mock("../../log", () => ({
 // Stub `electron` so module-load succeeds without a runtime.
 vi.mock("electron", (): Partial<typeof import("electron")> => ({
   app: {
+    getAppPath: () => "/fixture/PwrSnap",
     getVersion: () => "1.0.0-beta.25",
     getPath: (name: string): string => {
       if (name === "userData") return "/tmp/pwrsnap-test-userData-settings-handlers";

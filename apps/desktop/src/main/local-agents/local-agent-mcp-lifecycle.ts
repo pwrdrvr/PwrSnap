@@ -3,6 +3,10 @@ import type { LocalAgentMcpListenerStatus } from "@pwrsnap/shared";
 export type ManagedLocalAgentMcpServer = {
   start(): Promise<unknown>;
   stop(): Promise<void>;
+  settingsChanged?(): Promise<void>;
+  isConnected?(): boolean;
+  bootstrapHttp?(signal: AbortSignal): Promise<{ token: string; expiresAt: string }>;
+  httpUrl?(): string | undefined;
 };
 
 /** Serializes the live MCP listener's start/stop transitions. Settings writes
@@ -34,7 +38,18 @@ export class LocalAgentMcpLifecycle {
   }
 
   getStatus(): LocalAgentMcpListenerStatus {
+    if (this.status.state === "listening" && this.server?.isConnected?.() === false) return {state:"failed"};
     return this.status;
+  }
+  httpUrl(): string | undefined { return this.getStatus().state === "listening" ? this.server?.httpUrl?.() : undefined; }
+  async bootstrapHttp(signal: AbortSignal): Promise<{ token: string; expiresAt: string; httpUrl: string }> {
+    await this.transition;
+    const server = this.server;
+    const httpUrl = this.httpUrl();
+    if (!server?.bootstrapHttp || httpUrl === undefined) throw new Error("Enable local-agent access in the running desktop first");
+    const credential = await server.bootstrapHttp(signal);
+    if (server !== this.server || this.getStatus().state !== "listening") throw new Error("Desktop disconnected during approval; bootstrap manually again");
+    return { ...credential, httpUrl };
   }
 
   private async reconcile(): Promise<void> {
@@ -64,6 +79,7 @@ export class LocalAgentMcpLifecycle {
         this.status = { state: "off" };
       }
 
+      if (target && this.server !== null) await this.server.settingsChanged?.();
       if (target === this.desiredEnabled) return;
     }
   }

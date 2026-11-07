@@ -1,2005 +1,483 @@
-import { createHash } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
-import { once } from "node:events";
-import { Agent as HttpAgent, request as httpRequest } from "node:http";
-import { connect as netConnect } from "node:net";
-import { gzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { InvalidGrantError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { err, ok, LOCAL_AGENT_CAPABILITIES, type LocalAgentCapability } from "@pwrsnap/shared";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
+import { LOCAL_AGENT_CAPABILITIES, ok, resolveLocalAgentPolicy } from "@pwrsnap/shared";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { z } from "zod";
-
-const safeStorageMock = vi.hoisted(() => ({
-  isEncryptionAvailable: vi.fn(() => true),
-  encryptString: vi.fn((s: string): Buffer =>
-    Buffer.from(`PWR-ENC|${Buffer.from(s, "utf8").toString("base64")}`, "utf8")
-  ),
-  decryptString: vi.fn((b: Buffer): string => {
-    const text = b.toString("utf8");
-    if (!text.startsWith("PWR-ENC|")) throw new Error("not a PWR-ENC blob");
-    return Buffer.from(text.slice("PWR-ENC|".length), "base64").toString("utf8");
-  })
-}));
-
+import { Agent, request } from "node:http";
 vi.mock("electron", () => ({
-  safeStorage: safeStorageMock
+  app: { getVersion: () => "9.8.7" },
+  safeStorage: {
+    isEncryptionAvailable: () => true,
+    encryptString: (s: string) => Buffer.from(s),
+    decryptString: (b: Buffer) => b.toString()
+  }
 }));
-
 import { DesktopSecretStore } from "../../settings/desktop-secret-store";
 import { DesktopSettingsService, defaultSettings } from "../../settings/desktop-settings-service";
-import { LocalAgentGrantService, secretNameForClient } from "../local-agent-grants";
-import { LocalAgentMcpResourceRegistry } from "../mcp-resource-registry";
-import {
-  LOCAL_AGENT_MCP_PORT,
-  LocalAgentMcpServer,
-  type LocalAgentMcpServerAddress
-} from "../mcp-server";
-import { LocalAgentSignedUrlService } from "../signed-url";
-import { LocalAgentOAuthProvider } from "../local-agent-oauth";
-import type { LocalAgentUsageService } from "../local-agent-usage";
-import type {
-  LocalAgentConsentDecision,
-  LocalAgentConsentRequest
-} from "../local-agent-consent-broker";
-import {
-  createDefaultLocalAgentMcpTools,
-  type LocalAgentMcpTool,
-  withMcpResourceLink
-} from "../mcp-tool-registry";
-
-let workDir = "";
+import { LocalAgentGrantService } from "../local-agent-grants";
+import { LocalAgentMcpServer } from "../mcp-server";
+import { NativeMcpBridge } from "../../ai/mcp/native-mcp-bridge";
+import { bus } from "../../command-bus";
+import type { LocalAgentConsentDecision } from "../local-agent-consent-broker";
+const executable = fileURLToPath(
+  new URL(
+    "../../../../build/mcp/" + (process.platform === "win32" ? "pwrsnap-mcp.exe" : "pwrsnap-mcp"),
+    import.meta.url
+  )
+);
+let server: LocalAgentMcpServer;
 let settings: DesktopSettingsService;
-let secrets: DesktopSecretStore;
-let grantService: LocalAgentGrantService;
-let server: LocalAgentMcpServer | null = null;
-let client: Client | null = null;
-let extraClient: Client | null = null;
-let consentRequests: LocalAgentConsentRequest[] = [];
-let consentDecisions: Array<
-  LocalAgentConsentDecision | Promise<LocalAgentConsentDecision>
-> = [];
-
-const allowUsageService: Pick<LocalAgentUsageService, "reserve" | "release"> = {
-  reserve: ({ sessionId, action, budget }) => ({
-    ok: true,
-    reservation: {
-      id: `usage_${sessionId}_${action}`,
-      sessionId,
-      action,
-      used: 1,
-      limit: budget.limit,
-      windowSeconds: budget.windowSeconds
-    }
-  }),
-  release: () => undefined
-};
-
-async function requestNativeConsent(
-  request: LocalAgentConsentRequest
-): Promise<LocalAgentConsentDecision> {
-  consentRequests.push(request);
-  const decision = consentDecisions.shift();
-  if (decision === undefined) throw new Error("test did not provide a native consent decision");
-  return decision;
-}
-
-beforeEach(() => {
-  workDir = mkdtempSync(join(tmpdir(), "pwrsnap-mcp-server-"));
-  settings = new DesktopSettingsService({ filePath: join(workDir, "settings.json") });
-  secrets = new DesktopSecretStore({ filePath: join(workDir, "secrets.bin") });
-  grantService = new LocalAgentGrantService({
-    settings,
-    secrets,
-    now: () => new Date("2026-06-07T12:00:00.000Z"),
-    makeId: () => "lag_mcp",
-    makeToken: () => "pws_local_mcp-token"
-  });
-  consentRequests = [];
-  consentDecisions = [];
-});
-
-afterEach(async () => {
-  if (client !== null) {
-    await client.close();
-    client = null;
-  }
-  if (extraClient !== null) {
-    await extraClient.close();
-    extraClient = null;
-  }
-  if (server !== null) {
-    await server.stop();
-    server = null;
-  }
-});
-
-function toolSet(): LocalAgentMcpTool<z.ZodRawShape>[] {
-  return [
-    {
-      name: "pwrsnap_library_search",
-      title: "Search PwrSnap Library",
-      description: "Search live captures.",
-      inputSchema: {
-        query: z.string().optional()
-      },
-      requiredCapabilities: ["library.read"],
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: false
-      },
-      dispatch: async (input, ctx) =>
-        ok({
-          rows: [],
-          query: input.query ?? "",
-          clientId: ctx.clientId,
-          principal: ctx.commandContext.principal
-        })
-    },
-    {
-      name: "pwrsnap_capture_delete_to_trash",
-      title: "Move PwrSnap Capture To Trash",
-      description: "Soft-delete a capture.",
-      inputSchema: {
-        captureId: z.string()
-      },
-      requiredCapabilities: ["trash.write"],
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: true,
-        idempotentHint: true,
-        openWorldHint: false
-      },
-      dispatch: async (input, ctx) =>
-        ok({
-          deleted: input.captureId,
-          clientId: ctx.clientId
-        })
-    },
-    {
-      name: "pwrsnap_library_discover",
-      title: "Discover PwrSnap Library Filters",
-      description: "List reusable human app and accepted-tag filters.",
-      inputSchema: {
-        limit: z.number().int().min(1).optional()
-      },
-      requiredCapabilities: ["library.read"],
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: false
-      },
-      dispatch: async (input, ctx) =>
-        ok({
-          applications: [
-            {
-              name: "Claude",
-              bundleId: "com.anthropic.claudefordesktop",
-              count: 4,
-              mostRecentCapturedAt: "2026-06-07T12:00:00.000Z"
-            }
-          ],
-          tags: [
-            {
-              label: "Important",
-              count: 3,
-              mostRecentCapturedAt: "2026-06-06T12:00:00.000Z"
-            }
-          ],
-          limit: input.limit ?? null,
-          clientId: ctx.clientId,
-          principal: ctx.commandContext.principal
-        })
-    },
-    {
-      name: "pwrsnap_image_edit_send",
-      title: "Edit PwrSnap Image",
-      description: "Start an image edit and return its thread status.",
-      inputSchema: {
-        captureId: z.string(),
-        instruction: z.string()
-      },
-      requiredCapabilities: ["capture.edit", "capture.composite.read"],
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: false,
-        openWorldHint: true
-      },
-      dispatch: async (input) => ok({ edited: input.captureId })
-    }
-  ];
-}
-
-async function startServer(): Promise<string> {
+let grants: LocalAgentGrantService;
+let endpoint: string;
+let settingsPath: string;
+let decision: LocalAgentConsentDecision;
+const clients: Client[] = [];
+const agents: Agent[] = [];
+const consent = vi.fn();
+const dispatch = vi.fn(async (_input: unknown, ctx: { capabilities: readonly string[] }) =>
+  ok({ caps: ctx.capabilities })
+);
+beforeEach(async () => {
+  const dir = mkdtempSync(join(tmpdir(), "psm-"));
+  endpoint =
+    process.platform === "win32"
+      ? `\\\\.\\pipe\\psm-${dir.split(/[\\/]/).pop()}`
+      : join(dir, "mcp.sock");
+  settingsPath = join(dir, "settings.json");
+  settings = new DesktopSettingsService({ filePath: settingsPath });
+  const secrets = new DesktopSecretStore({ filePath: join(dir, "secrets.bin") });
+  grants = new LocalAgentGrantService({ settings, secrets });
+  decision = {
+    decision: "allow",
+    sessionName: "Fixture Session",
+    roleId: "builtin.search",
+    capabilities: ["library.read"]
+  };
+  consent.mockReset();
+  consent.mockImplementation(async () => decision);
+  dispatch.mockClear();
   server = new LocalAgentMcpServer({
     settings,
     secrets,
-    grantService,
-    tools: toolSet(),
-    host: "127.0.0.1",
-    port: 0,
-    usageService: allowUsageService,
-    captureCapturedAt: () => new Date().toISOString()
-  });
-  const address = await server.start();
-  return address.url;
-}
-
-async function connect(url: string, token: string): Promise<Client> {
-  client = new Client({ name: "test-client", version: "1.0.0" });
-  return connectAs(url, "lag_mcp", token, client);
-}
-
-async function connectAs(
-  url: string,
-  clientId: string,
-  token: string,
-  targetClient: Client
-): Promise<Client> {
-  const transport = new StreamableHTTPClientTransport(new URL(url), {
-    fetch: (input, init) => {
-      const headers = new Headers(init?.headers);
-      headers.set("authorization", bearer(clientId, token));
-      return fetch(input, {
-        ...init,
-        headers
-      });
-    }
-  });
-  await targetClient.connect(transport as unknown as Transport);
-  return targetClient;
-}
-
-async function connectWithAccessToken(
-  url: string,
-  accessToken: string,
-  targetClient: Client
-): Promise<Client> {
-  const transport = new StreamableHTTPClientTransport(new URL(url), {
-    fetch: (input, init) => {
-      const headers = new Headers(init?.headers);
-      headers.set("authorization", `Bearer ${accessToken}`);
-      return fetch(input, { ...init, headers });
-    }
-  });
-  await targetClient.connect(transport as unknown as Transport);
-  return targetClient;
-}
-
-type RegisteredOAuthClient = {
-  client_id: string;
-  client_name: string;
-  redirect_uris: string[];
-  token_endpoint_auth_method: "none";
-};
-
-const OAUTH_CALLBACK = "http://127.0.0.1:43123/callback";
-const PKCE_VERIFIER = "pwrsnap-test-verifier-abcdefghijklmnopqrstuvwxyz-0123456789";
-
-function endpoint(address: LocalAgentMcpServerAddress, path: string): string {
-  return new URL(path, `http://${address.host}:${address.port}`).href;
-}
-
-function bearer(clientId: string, token: string): string {
-  return `Bearer ${clientId}:${token}`;
-}
-
-function toolsCallBody(query: string): string {
-  return JSON.stringify({
-    jsonrpc: "2.0",
-    id: 1,
-    method: "tools/call",
-    params: { name: "pwrsnap_library_search", arguments: { query } }
-  });
-}
-
-function mcpPostHeaders(): Record<string, string> {
-  return {
-    authorization: bearer("lag_mcp", "pws_local_mcp-token"),
-    "content-type": "application/json",
-    accept: "application/json, text/event-stream"
-  };
-}
-
-async function postMcpJson(
-  url: string,
-  body: string | Uint8Array<ArrayBuffer>,
-  headers: Record<string, string> = {}
-): Promise<Response> {
-  return fetch(url, {
-    method: "POST",
-    headers: { ...mcpPostHeaders(), ...headers },
-    body
-  });
-}
-
-type RawMcpResponse = {
-  status: number | undefined;
-  body: string;
-  headers: Record<string, string | string[] | undefined>;
-  socket: unknown;
-};
-
-/** Streams `pieces` as a chunked (no content-length) POST over `agent`. */
-function postMcpChunked(
-  url: string,
-  agent: HttpAgent,
-  pieces: () => Iterable<string>
-): Promise<RawMcpResponse> {
-  return new Promise((resolve, reject) => {
-    const target = new URL(url);
-    let responded = false;
-    const req = httpRequest(
-      {
-        agent,
-        hostname: target.hostname,
-        port: target.port,
-        path: target.pathname,
-        method: "POST",
-        headers: { ...mcpPostHeaders(), "transfer-encoding": "chunked" }
-      },
-      (response) => {
-        responded = true;
-        const socket = response.socket;
-        const chunks: Buffer[] = [];
-        response.on("data", (chunk: Buffer) => chunks.push(chunk));
-        response.once("end", () =>
-          resolve({
-            status: response.statusCode,
-            body: Buffer.concat(chunks).toString("utf8"),
-            headers: response.headers,
-            socket
-          })
-        );
-      }
-    );
-    // The server drains a rejected body before answering, so the happy path
-    // never resets this connection. These are defensive only: if a socket
-    // ever does error while still writing, swallow it (possibly more than
-    // once, and on the socket rather than the request) and reject only when
-    // no response arrived first.
-    req.on("socket", (socket) => socket.on("error", () => undefined));
-    req.on("error", (cause) => {
-      if (!responded) reject(cause);
-    });
-    const iterator = pieces()[Symbol.iterator]();
-    const pump = (): void => {
-      if (req.destroyed || req.writableEnded) return;
-      for (;;) {
-        const next = iterator.next();
-        if (next.done === true) {
-          req.end();
-          return;
+    grantService: grants,
+    version: "9.8.7",
+    requestConsent: consent,
+    usageService: {
+      reserve: () => ({
+        ok: true,
+        reservation: {
+          id: "fixture",
+          sessionId: "fixture",
+          action: "search",
+          used: 1,
+          limit: 50,
+          windowSeconds: 86400
         }
-        let flushed: boolean;
-        try {
-          flushed = req.write(next.value);
-        } catch {
-          return;
-        }
-        if (!flushed) {
-          req.once("drain", pump);
-          return;
-        }
-      }
-    };
-    pump();
-  });
-}
-
-async function registerOAuthClient(
-  address: LocalAgentMcpServerAddress,
-  clientName = "Codex"
-): Promise<RegisteredOAuthClient> {
-  const response = await fetch(endpoint(address, "/register"), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      client_name: clientName,
-      redirect_uris: [OAUTH_CALLBACK],
-      grant_types: ["authorization_code"],
-      response_types: ["code"],
-      token_endpoint_auth_method: "none"
-    })
-  });
-  expect(response.status).toBe(201);
-  return await response.json() as RegisteredOAuthClient;
-}
-
-function makeAuthorizationUrl(
-  address: LocalAgentMcpServerAddress,
-  oauthClient: RegisteredOAuthClient,
-  scopes?: readonly string[]
-): URL {
-  const url = new URL(address.authorizationUrl);
-  url.searchParams.set("client_id", oauthClient.client_id);
-  url.searchParams.set("redirect_uri", OAUTH_CALLBACK);
-  url.searchParams.set("response_type", "code");
-  url.searchParams.set("code_challenge", createHash("sha256")
-    .update(PKCE_VERIFIER)
-    .digest("base64url"));
-  url.searchParams.set("code_challenge_method", "S256");
-  url.searchParams.set("resource", address.url);
-  url.searchParams.set("state", "test-state");
-  if (scopes !== undefined) url.searchParams.set("scope", scopes.join(" "));
-  return url;
-}
-
-async function beginBrowserAuthorization(
-  address: LocalAgentMcpServerAddress,
-  authorizationUrl: URL
-): Promise<string> {
-  const response = await fetch(authorizationUrl, { redirect: "manual" });
-  expect(response.status).toBe(200);
-  expect(response.headers.get("cache-control")).toBe("no-store");
-  expect(response.headers.get("content-security-policy")).toContain(
-    "default-src 'none'"
-  );
-  const html = await response.text();
-  expect(html).toContain("Continue in PwrSnap");
-  expect(html).toContain("This browser page cannot approve access");
-  expect(html).not.toContain("<form");
-  expect(html).not.toContain("<script");
-  const refresh = html.match(
-    /<meta http-equiv="refresh" content="1;url=([^"]+)">/
-  );
-  expect(refresh).not.toBeNull();
-  return new URL(
-    (refresh?.[1] ?? "").replaceAll("&amp;", "&"),
-    endpoint(address, "/")
-  ).href;
-}
-
-async function waitForAuthorizationRedirect(statusUrl: string): Promise<Response> {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    const response = await fetch(statusUrl, { redirect: "manual" });
-    if (response.status === 302) return response;
-    expect(response.status).toBe(200);
-    expect(await response.text()).toContain("Waiting for PwrSnap");
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  throw new Error("native PwrSnap authorization did not complete");
-}
-
-async function approveAndExchange(
-  address: LocalAgentMcpServerAddress,
-  oauthClient: RegisteredOAuthClient,
-  capabilities: readonly LocalAgentCapability[],
-  requestedScopes?: readonly LocalAgentCapability[],
-  roleId: string | null = null
-): Promise<string> {
-  consentDecisions.push({
-    decision: "allow",
-    sessionName: oauthClient.client_name,
-    roleId,
-    capabilities,
-    maxCaptureAgeDays: 7
-  });
-  const authorizationUrl = makeAuthorizationUrl(
-    address,
-    oauthClient,
-    requestedScopes
-  );
-  const statusUrl = await beginBrowserAuthorization(address, authorizationUrl);
-  const authorized = await waitForAuthorizationRedirect(statusUrl);
-  const callback = new URL(authorized.headers.get("location") ?? "");
-  expect(callback.origin + callback.pathname).toBe(OAUTH_CALLBACK);
-  expect(callback.searchParams.get("state")).toBe("test-state");
-  const code = callback.searchParams.get("code");
-  expect(code).not.toBeNull();
-
-  const tokenResponse = await fetch(endpoint(address, "/token"), {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      client_id: oauthClient.client_id,
-      code: code ?? "",
-      code_verifier: PKCE_VERIFIER,
-      redirect_uri: OAUTH_CALLBACK,
-      resource: address.url
-    })
-  });
-  expect(tokenResponse.status).toBe(200);
-  const tokens = await tokenResponse.json() as {
-    access_token: string;
-    token_type: string;
-    scope: string;
-  };
-  expect(tokens.token_type.toLowerCase()).toBe("bearer");
-  expect(tokens.scope).toBe(capabilities.join(" "));
-  return tokens.access_token;
-}
-
-describe("LocalAgentMcpServer", () => {
-  test("refuses unauthorized clients before MCP initialization", async () => {
-    const url = await startServer();
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "initialize",
-        params: {
-          protocolVersion: "2025-11-25",
-          capabilities: {},
-          clientInfo: { name: "bad", version: "1.0.0" }
-        }
-      })
-    });
-
-    expect(res.status).toBe(401);
-    expect(res.headers.get("www-authenticate")).toContain(
-      "/.well-known/oauth-protected-resource/mcp"
-    );
-  });
-
-  test("answers every non-POST verb on /mcp with 405 before auth", async () => {
-    // The endpoint is stateless (one transport + McpServer per POST), so there
-    // is no session for a GET SSE stream or a DELETE to act on. Before this
-    // pin, the SDK transport answered GET with a stream that never ended and
-    // DELETE by building a whole server to close nothing; other verbs reached
-    // the SDK's own 405, which advertised the GET this server refuses. One
-    // answer, one `Allow`, and it comes before auth so nobody can open a
-    // stream. Both verified clients treat the GET 405 as "no stream here".
-    const url = await startServer();
-
-    for (const method of ["GET", "DELETE", "PUT"]) {
-      const res = await fetch(url, {
-        method,
-        headers: method === "GET" ? { accept: "text/event-stream" } : {}
-      });
-      expect(res.status, method).toBe(405);
-      expect(res.headers.get("allow"), method).toBe("POST");
-      expect(await res.json()).toMatchObject({ error: "method_not_allowed" });
-    }
-  });
-
-  test("lists tool schemas with read-only and destructive annotations", async () => {
-    await grantService.createGrant({
-      name: "PwrAgent",
-      capabilities: ["library.read", "trash.write"]
-    });
-    const connected = await connect(await startServer(), "pws_local_mcp-token");
-
-    const tools = await connected.listTools();
-
-    const search = tools.tools.find((tool) => tool.name === "pwrsnap_library_search");
-    const trash = tools.tools.find((tool) => tool.name === "pwrsnap_capture_delete_to_trash");
-    expect(search?.annotations).toMatchObject({
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false
-    });
-    expect(search?.inputSchema.properties).toHaveProperty("query");
-    expect(trash?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
-  });
-
-  test("advertises concrete MIME types for protected media templates", async () => {
-    await grantService.createGrant({
-      name: "PwrAgent",
-      capabilities: ["capture.composite.read", "sizzle.preview.read"]
-    });
-    const connected = await connect(await startServer(), "pws_local_mcp-token");
-
-    const resources = await connected.listResourceTemplates();
-    expect(resources.resourceTemplates.map((template) => template.uriTemplate)).toEqual([
-      "pwrsnap://capture/{captureId}/composite",
-      "pwrsnap://capture/{captureId}/original",
-      "pwrsnap://capture/{captureId}/export/{exportId}",
-      "pwrsnap://sizzle/{projectId}/{mode}/{renderId}"
-    ]);
-    expect(resources.resourceTemplates).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        uriTemplate: "pwrsnap://capture/{captureId}/composite",
-        mimeType: "image/png"
-      }),
-      expect.objectContaining({
-        uriTemplate: "pwrsnap://sizzle/{projectId}/{mode}/{renderId}",
-        mimeType: "video/mp4"
-      })
-    ]));
-    expect(resources.resourceTemplates.every((template) =>
-      template.description?.includes("do not construct URIs from this template")
-    )).toBe(true);
-  });
-
-  test("returns media as first-class MCP resource links without inline bytes", async () => {
-    await grantService.createGrant({
-      name: "PwrAgent",
-      capabilities: ["capture.composite.read"]
-    });
-    const mediaTool: LocalAgentMcpTool<{ captureId: z.ZodString }> = {
-      name: "pwrsnap_capture_resource",
-      title: "Get PwrSnap Capture Resource",
-      description: "Return a capture resource link.",
-      inputSchema: { captureId: z.string() },
-      requiredCapabilities: ["capture.composite.read"],
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: false
-      },
-      dispatch: async (input) => ok(withMcpResourceLink({
-        resourceUri: `pwrsnap://capture/${input.captureId}/composite`
-      }, {
-        uri: "http://127.0.0.1:51729/media?grant=temporary",
-        name: "composite capture",
-        mimeType: "image/png",
-        size: 3
-      }))
-    };
-    server = new LocalAgentMcpServer({
-      settings,
-      secrets,
-      grantService,
-      tools: [mediaTool],
-      host: "127.0.0.1",
-      port: 0,
-      usageService: allowUsageService,
-      captureCapturedAt: () => new Date().toISOString()
-    });
-    const address = await server.start();
-    const connected = await connect(address.url, "pws_local_mcp-token");
-
-    const result = await connected.callTool({
-      name: mediaTool.name,
-      arguments: { captureId: "cap_1" }
-    }) as CallToolResult;
-
-    expect(result.structuredContent).toMatchObject({
-      resourceUri: "pwrsnap://capture/cap_1/composite"
-    });
-    expect(result.content[1]).toEqual({
-      type: "resource_link",
-      uri: "http://127.0.0.1:51729/media?grant=temporary",
-      name: "composite capture",
-      description:
-        "Pass this link directly to the client media fetch/render path. Do not copy or reconstruct its URI.",
-      mimeType: "image/png",
-      size: 3,
-      annotations: {
-        audience: ["user", "assistant"],
-        priority: 1
-      }
-    });
-    expect(result.content.some((content) => content.type === "image")).toBe(false);
-  });
-
-  test("authorized client with library.read can search but cannot delete without trash.write", async () => {
-    await grantService.createGrant({
-      name: "PwrAgent",
-      capabilities: ["library.read"]
-    });
-    const connected = await connect(await startServer(), "pws_local_mcp-token");
-
-    const search = (await connected.callTool({
-      name: "pwrsnap_library_search",
-      arguments: { query: "pairing" }
-    })) as CallToolResult;
-    expect(search.isError).not.toBe(true);
-    expect(search.structuredContent).toMatchObject({
-      rows: [],
-      query: "pairing",
-      clientId: "lag_mcp",
-      principal: "mcp"
-    });
-
-    const denied = (await connected.callTool({
-      name: "pwrsnap_capture_delete_to_trash",
-      arguments: { captureId: "cap_1" }
-    })) as CallToolResult;
-    expect(denied.isError).toBe(true);
-    expect(denied.content[0]).toMatchObject({
-      type: "text",
-      text: expect.stringContaining("missing_capability")
-    });
-  });
-
-  test("authorized client discovers reusable human app and tag facets with MCP context", async () => {
-    await grantService.createGrant({
-      name: "PwrAgent",
-      capabilities: ["library.read"]
-    });
-    const connected = await connect(await startServer(), "pws_local_mcp-token");
-
-    const discovery = (await connected.callTool({
-      name: "pwrsnap_library_discover",
-      arguments: { limit: 25 }
-    })) as CallToolResult;
-
-    expect(discovery.isError).not.toBe(true);
-    expect(discovery.structuredContent).toEqual({
-      applications: [
-        {
-          name: "Claude",
-          bundleId: "com.anthropic.claudefordesktop",
-          count: 4,
-          mostRecentCapturedAt: "2026-06-07T12:00:00.000Z"
-        }
-      ],
-      tags: [
-        {
-          label: "Important",
-          count: 3,
-          mostRecentCapturedAt: "2026-06-06T12:00:00.000Z"
-        }
-      ],
-      limit: 25,
-      clientId: "lag_mcp",
-      principal: "mcp"
-    });
-  });
-
-  test("returns a typed MCP error when a sliding-window budget is exhausted", async () => {
-    await grantService.createGrant({
-      name: "Budgeted Agent",
-      capabilities: ["library.read"]
-    });
-    const deniedUsage: Pick<LocalAgentUsageService, "reserve" | "release"> = {
-      reserve: ({ budget }) => ({
-        ok: false,
-        used: budget.limit,
-        limit: budget.limit,
-        windowSeconds: budget.windowSeconds,
-        retryAt: "2026-08-02T12:00:00.000Z"
       }),
       release: () => undefined
-    };
-    server = new LocalAgentMcpServer({
-      settings,
-      secrets,
-      grantService,
-      tools: toolSet(),
-      host: "127.0.0.1",
-      port: 0,
-      usageService: deniedUsage,
-      captureCapturedAt: () => new Date().toISOString()
-    });
-    const connected = await connect(
-      (await server.start()).url,
-      "pws_local_mcp-token"
-    );
-
-    const result = await connected.callTool({
-      name: "pwrsnap_library_search",
-      arguments: { query: "too many" }
-    }) as CallToolResult;
-    expect(result.isError).toBe(true);
-    expect(result.content[0]).toMatchObject({
-      type: "text",
-      text: expect.stringContaining("local_agent_budget_exceeded")
-    });
-  });
-
-  test("rejects capture ids outside the role's age horizon before dispatch", async () => {
-    await grantService.createGrant({
-      name: "Recent Only",
-      capabilities: ["library.read"]
-    });
-    const dispatch = vi.fn(async () => ok({ leaked: true }));
-    const scopedTool: LocalAgentMcpTool<{ captureId: z.ZodString }> = {
-      name: "pwrsnap_test_scoped_capture",
-      title: "Scoped capture",
-      description: "Age-scope test tool",
-      inputSchema: { captureId: z.string() },
-      requiredCapabilities: ["library.read"],
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: false
-      },
-      dispatch
-    };
-    server = new LocalAgentMcpServer({
-      settings,
-      secrets,
-      grantService,
-      tools: [scopedTool],
-      host: "127.0.0.1",
-      port: 0,
-      usageService: allowUsageService,
-      captureCapturedAt: () => "2000-01-01T00:00:00.000Z"
-    });
-    const connected = await connect(
-      (await server.start()).url,
-      "pws_local_mcp-token"
-    );
-
-    const result = await connected.callTool({
-      name: scopedTool.name,
-      arguments: { captureId: "cap_old" }
-    }) as CallToolResult;
-    expect(result.isError).toBe(true);
-    expect(result.content[0]).toMatchObject({
-      type: "text",
-      text: expect.stringContaining("capture_outside_role_scope")
-    });
-    expect(dispatch).not.toHaveBeenCalled();
-  });
-
-  test("fails closed for registered capture resources with missing metadata", async () => {
-    const mediaPath = join(workDir, "orphaned-original.png");
-    writeFileSync(mediaPath, "orphaned-sensitive-media");
-    const resources = new LocalAgentMcpResourceRegistry();
-    resources.register({
-      uri: "pwrsnap://capture/cap_missing/original",
-      name: "orphaned original",
-      mimeType: "image/png",
-      requiredCapabilities: ["capture.original.read"],
-      captureId: "cap_missing",
-      ownerClientId: "lag_mcp",
-      resolvePath: async () => mediaPath
-    });
-    const signedUrls = new LocalAgentSignedUrlService(Buffer.alloc(32, 9));
-    await grantService.createGrant({
-      name: "Recent media only",
-      capabilities: ["capture.original.read"]
-    });
-    server = new LocalAgentMcpServer({
-      settings,
-      secrets,
-      grantService,
-      tools: toolSet(),
-      host: "127.0.0.1",
-      port: 0,
-      resourceRegistry: resources,
-      signedUrls,
-      usageService: allowUsageService,
-      captureCapturedAt: () => null
-    });
-    const address = await server.start();
-    const signed = signedUrls.mint({
-      baseUrl: `http://${address.host}:${address.port}`,
-      resourceUri: "pwrsnap://capture/cap_missing/original",
-      clientId: "lag_mcp"
-    });
-
-    const signedResponse = await fetch(signed.url);
-    expect(signedResponse.status).toBe(403);
-    expect(await signedResponse.json()).toMatchObject({
-      error: expect.stringContaining("last 7 days")
-    });
-
-    const connected = await connect(address.url, "pws_local_mcp-token");
-    await expect(connected.readResource({
-      uri: "pwrsnap://capture/cap_missing/original"
-    })).rejects.toThrow(/last 7 days/u);
-  });
-
-  test("edit-only OAuth client cannot start a vision-dependent edit", async () => {
-    await grantService.createGrant({
-      name: "Edit-only agent",
-      capabilities: ["capture.edit"]
-    });
-    const connected = await connect(await startServer(), "pws_local_mcp-token");
-
-    const denied = await connected.callTool({
-      name: "pwrsnap_image_edit_send",
-      arguments: { captureId: "cap_1", instruction: "Add an arrow" }
-    }) as CallToolResult;
-    expect(denied.isError).toBe(true);
-    expect(denied.content[0]).toMatchObject({
-      type: "text",
-      text: expect.stringContaining("capture.composite.read")
-    });
-  });
-
-  test("editor OAuth client can start an edit when it can read the composite", async () => {
-    await grantService.createGrant({
-      name: "Editor agent",
-      capabilities: ["capture.edit", "capture.composite.read"]
-    });
-    const connected = await connect(await startServer(), "pws_local_mcp-token");
-
-    const sent = await connected.callTool({
-      name: "pwrsnap_image_edit_send",
-      arguments: { captureId: "cap_1", instruction: "Add an arrow" }
-    }) as CallToolResult;
-    expect(sent.isError).not.toBe(true);
-    expect(sent.structuredContent).toEqual({
-      edited: "cap_1"
-    });
-  });
-
-  test("audits original-derived exports as both export and original access", async () => {
-    await grantService.createGrant({
-      name: "PwrAgent",
-      capabilities: ["capture.export", "capture.original.read"]
-    });
-    const exportTool: LocalAgentMcpTool<{
-      captureId: z.ZodString;
-      variant: z.ZodEnum<{ composite: "composite"; original: "original" }>;
-    }> = {
-      name: "pwrsnap_capture_export",
-      title: "Export capture",
-      description: "Test export",
-      inputSchema: {
-        captureId: z.string(),
-        variant: z.enum(["composite", "original"])
-      },
-      requiredCapabilities: ["capture.export"],
-      requiredCapabilitiesForInput: (input) =>
-        input.variant === "original" ? ["capture.original.read"] : [],
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: false
-      },
-      dispatch: async (input) =>
-        input.captureId === "missing"
-          ? err({ kind: "validation", code: "not_found", message: "missing" })
-          : ok({ exported: input.captureId })
-    };
-    server = new LocalAgentMcpServer({
-      settings,
-      secrets,
-      grantService,
-      tools: [exportTool],
-      host: "127.0.0.1",
-      port: 0,
-      usageService: allowUsageService,
-      captureCapturedAt: () => new Date().toISOString()
-    });
-    const address = await server.start();
-    const connected = await connect(address.url, "pws_local_mcp-token");
-
-    await connected.callTool({
-      name: "pwrsnap_capture_export",
-      arguments: { captureId: "cap_1", variant: "original" }
-    });
-    await connected.callTool({
-      name: "pwrsnap_capture_export",
-      arguments: { captureId: "missing", variant: "original" }
-    });
-
-    expect((await settings.read()).localAgents.audit.map((entry) => ({
-      action: entry.action,
-      outcome: entry.outcome,
-      subjectId: entry.subjectId
-    }))).toEqual([
-      { action: "capture.export", outcome: "success", subjectId: "cap_1" },
-      { action: "capture.original.read", outcome: "success", subjectId: "cap_1" },
-      { action: "capture.export", outcome: "failure", subjectId: "missing" },
-      { action: "capture.original.read", outcome: "failure", subjectId: "missing" }
-    ]);
-  });
-
-  async function startDuplicateServer(capabilities: LocalAgentCapability[]): Promise<{
-    connected: Client;
-    duplicated: unknown[];
-    reserved: string[];
-    released: string[];
-  }> {
-    const duplicated: unknown[] = [];
-    const reserved: string[] = [];
-    const released: string[] = [];
-    await grantService.createGrant({ name: "Duplicating agent", capabilities });
-    server = new LocalAgentMcpServer({
-      settings,
-      secrets,
-      grantService,
-      tools: createDefaultLocalAgentMcpTools({
-        search: async () => ok({ rows: [] }),
-        deleteToTrash: async () => ok({}),
-        captureDuplicate: async (input) => {
-          duplicated.push(input);
-          if (input.captureId === "cap_abandoned") {
-            return err({
-              kind: "validation",
-              code: "aborted",
-              message: "stopped waiting; the copy continues in PwrSnap as cap_copy"
-            });
-          }
-          return input.captureId === "cap_in_trash"
-            ? err({
-                kind: "validation",
-                code: "trashed",
-                message: "Restore the snap from Trash to duplicate it."
-              })
-            : ok({
-                captureId: "cap_copy",
-                familyId: input.captureId,
-                duplicatedFrom: input.captureId,
-                withEdits: input.withEdits,
-                kind: "image",
-                capturedAt: "2026-06-07T12:00:00.000Z",
-                widthPx: 1280,
-                heightPx: 800
-              });
-        },
-        captureEditSummary: async (input) =>
-          ok({ captureId: input.captureId, hasEdits: false, summary: null })
-      }),
-      host: "127.0.0.1",
-      port: 0,
-      usageService: {
-        reserve: (request) => {
-          reserved.push(request.action);
-          return allowUsageService.reserve(request);
-        },
-        release: (reservationId) => {
-          released.push(reservationId);
-        }
-      },
-      captureCapturedAt: () => new Date().toISOString()
-    });
-    const address = await server.start();
-    return {
-      connected: await connect(address.url, "pws_local_mcp-token"),
-      duplicated,
-      reserved,
-      released
-    };
-  }
-
-  test("an abandoned duplicate still spends the edit budget, because the copy still lands", async () => {
-    const { connected, released } = await startDuplicateServer(["capture.edit"]);
-
-    const refused = await connected.callTool({
-      name: "pwrsnap_capture_duplicate",
-      arguments: { captureId: "cap_in_trash", withEdits: true }
-    }) as CallToolResult;
-    expect(refused.isError).toBe(true);
-    // A refusal wrote nothing, so its reservation goes back.
-    expect(released).toHaveLength(1);
-
-    const abandoned = await connected.callTool({
-      name: "pwrsnap_capture_duplicate",
-      arguments: { captureId: "cap_abandoned", withEdits: true }
-    }) as CallToolResult;
-    expect(abandoned.isError).toBe(true);
-    expect(released).toHaveLength(1);
-  });
-
-  test("a read-only grant cannot duplicate, but may read the edit summary", async () => {
-    const { connected, duplicated } = await startDuplicateServer(["library.read"]);
-
-    const denied = await connected.callTool({
-      name: "pwrsnap_capture_duplicate",
-      arguments: { captureId: "cap_1", withEdits: true }
-    }) as CallToolResult;
-    expect(denied.isError).toBe(true);
-    expect(denied.content[0]).toMatchObject({
-      type: "text",
-      text: expect.stringMatching(/^missing_capability: .*capture\.edit/u)
-    });
-    expect(duplicated).toEqual([]);
-
-    const summary = await connected.callTool({
-      name: "pwrsnap_capture_edit_summary",
-      arguments: { captureId: "cap_1" }
-    }) as CallToolResult;
-    expect(summary.isError).not.toBe(true);
-  });
-
-  test("an editor duplicates with an explicit withEdits, spending and auditing an edit", async () => {
-    const { connected, duplicated, reserved } = await startDuplicateServer(["capture.edit"]);
-
-    // No implicit default: a call that omits withEdits never reaches PwrSnap.
-    const missingChoice = await connected.callTool({
-      name: "pwrsnap_capture_duplicate",
-      arguments: { captureId: "cap_1" }
-    }) as CallToolResult;
-    expect(missingChoice.isError).toBe(true);
-    expect(duplicated).toEqual([]);
-
-    const copied = await connected.callTool({
-      name: "pwrsnap_capture_duplicate",
-      arguments: { captureId: "cap_1", withEdits: false }
-    }) as CallToolResult;
-    expect(copied.isError).not.toBe(true);
-    expect(copied.structuredContent).toMatchObject({
-      captureId: "cap_copy",
-      familyId: "cap_1",
-      withEdits: false
-    });
-    // Data twice: structuredContent, and the same JSON as the last block.
-    expect(copied.content.at(-1)).toEqual({
-      type: "text",
-      text: JSON.stringify(copied.structuredContent)
-    });
-
-    const refused = await connected.callTool({
-      name: "pwrsnap_capture_duplicate",
-      arguments: { captureId: "cap_in_trash", withEdits: true }
-    }) as CallToolResult;
-    expect(refused.isError).toBe(true);
-    expect(refused.content[0]).toEqual({
-      type: "text",
-      text: "trashed: Restore the snap from Trash to duplicate it."
-    });
-
-    expect(duplicated).toEqual([
-      { captureId: "cap_1", withEdits: false },
-      { captureId: "cap_in_trash", withEdits: true }
-    ]);
-    // A copy spends the edit budget and is audited as an edit of its source.
-    expect(reserved).toEqual(["edit", "edit"]);
-    expect((await settings.read()).localAgents.audit.map((entry) => ({
-      action: entry.action,
-      outcome: entry.outcome,
-      subjectId: entry.subjectId
-    }))).toEqual([
-      { action: "capture.edit", outcome: "success", subjectId: "cap_1" },
-      { action: "capture.edit", outcome: "failure", subjectId: "cap_in_trash" }
-    ]);
-  });
-
-  test("serves multiple clients without allocating MCP session state", async () => {
-    const serviceA = new LocalAgentGrantService({
-      settings,
-      secrets,
-      now: () => new Date("2026-06-07T12:00:00.000Z"),
-      makeId: () => "lag_a",
-      makeToken: () => "token-a"
-    });
-    const serviceB = new LocalAgentGrantService({
-      settings,
-      secrets,
-      now: () => new Date("2026-06-07T12:00:00.000Z"),
-      makeId: () => "lag_b",
-      makeToken: () => "token-b"
-    });
-    await serviceA.createGrant({ name: "Agent A", capabilities: ["library.read"] });
-    await serviceB.createGrant({ name: "Agent B", capabilities: ["library.read"] });
-    const url = await startServer();
-
-    client = await connectAs(url, "lag_a", "token-a", new Client({ name: "a", version: "1.0.0" }));
-    extraClient = await connectAs(url, "lag_b", "token-b", new Client({ name: "b", version: "1.0.0" }));
-
-    expect(client.transport?.sessionId).toBeUndefined();
-    expect(extraClient.transport?.sessionId).toBeUndefined();
-
-    const a = (await client.callTool({
-      name: "pwrsnap_library_search",
-      arguments: { query: "from-a" }
-    })) as CallToolResult;
-    const b = (await extraClient.callTool({
-      name: "pwrsnap_library_search",
-      arguments: { query: "from-b" }
-    })) as CallToolResult;
-
-    expect(a.structuredContent).toMatchObject({ clientId: "lag_a", query: "from-a" });
-    expect(b.structuredContent).toMatchObject({ clientId: "lag_b", query: "from-b" });
-  });
-
-  test("authorizes a dynamically registered client through native PwrSnap consent", async () => {
-    server = new LocalAgentMcpServer({
-      settings,
-      secrets,
-      grantService,
-      tools: toolSet(),
-      host: "127.0.0.1",
-      port: 0,
-      usageService: allowUsageService,
-      captureCapturedAt: () => new Date().toISOString(),
-      requestConsent: requestNativeConsent
-    });
-    const address = await server.start();
-    const oauthClient = await registerOAuthClient(address, "Codex Desktop");
-    expect(oauthClient.token_endpoint_auth_method).toBe("none");
-    expect(oauthClient).not.toHaveProperty("client_secret");
-
-    consentDecisions.push({ decision: "deny", sessionName: "", roleId: null, capabilities: [] });
-    const defaultStatusUrl = await beginBrowserAuthorization(
-      address,
-      makeAuthorizationUrl(address, oauthClient)
-    );
-    const defaultConsent = await waitForAuthorizationRedirect(defaultStatusUrl);
-    expect(defaultConsent.status).toBe(302);
-    expect(consentRequests[0]).toMatchObject({
-      clientId: oauthClient.client_id,
-      clientName: "Codex Desktop",
-      requestedCapabilities: ["library.read", "capture.composite.read"]
-    });
-
-    const accessToken = await approveAndExchange(
-      address,
-      oauthClient,
-      ["library.read", "trash.write"],
-      ["library.read", "trash.write"]
-    );
-    const grants = await grantService.list();
-    expect(grants).toHaveLength(1);
-    expect(grants[0]).toMatchObject({
-      name: "Codex Desktop",
-      capabilities: ["library.read", "trash.write"],
-      revokedAt: null,
-      oauthClient: {
-        clientId: oauthClient.client_id,
-        redirectUris: [OAUTH_CALLBACK]
-      }
-    });
-    expect(consentRequests.at(-1)?.requestedCapabilities).toEqual([
-      "library.read",
-      "trash.write"
-    ]);
-
-    client = await connectWithAccessToken(
-      address.url,
-      accessToken,
-      new Client({ name: "oauth-client", version: "1.0.0" })
-    );
-    const result = await client.callTool({
-      name: "pwrsnap_capture_delete_to_trash",
-      arguments: { captureId: "cap_1" }
-    }) as CallToolResult;
-    expect(result.isError).not.toBe(true);
-    expect(result.structuredContent).toMatchObject({ deleted: "cap_1" });
-
-    const revoked = await fetch(endpoint(address, "/revoke"), {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        client_id: oauthClient.client_id,
-        token: accessToken,
-        token_type_hint: "access_token"
-      })
-    });
-    expect(revoked.status).toBe(200);
-    expect((await grantService.list())[0]?.revokedAt).not.toBeNull();
-    await expect(client.listTools()).rejects.toThrow();
-  });
-
-  test("an upgraded Full Access installation completes OAuth and its first real MCP request", async () => {
-    const historical = defaultSettings();
-    const permissions = LOCAL_AGENT_CAPABILITIES.filter(
-      (permission) => permission !== "sizzle.assets.import",
-    );
-    historical.localAgents.roles = historical.localAgents.roles.map((role) =>
-      role.id === "builtin.full-access" ? { ...role, permissions } : role,
-    );
-    const legacyId = "legacy_existing";
-    const legacyToken = "synthetic-existing-token";
-    historical.localAgents.grants = [
+    },
+    bridgeFactory: (onConnection) => new NativeMcpBridge({ executable, endpoint, allowHttp: true, onConnection }),
+    tools: [
       {
-        id: legacyId,
-        name: "Existing Agent",
-        roleId: "builtin.full-access",
-        capabilities: permissions,
-        createdAt: "2026-11-05T00:00:00Z",
-        updatedAt: "2026-11-05T00:00:00Z",
-        lastUsedAt: null,
-        revokedAt: null,
-      },
-    ];
-    writeFileSync(join(workDir, "settings.json"), JSON.stringify(historical));
-    await secrets.replace(
-      secretNameForClient(legacyId),
-      createHash("sha256").update(legacyToken).digest("hex"),
-    );
-    let nextId = 0;
-    grantService = new LocalAgentGrantService({
-      settings,
-      secrets,
-      makeId: () => `lag_upgrade_${++nextId}`,
-    });
-    server = new LocalAgentMcpServer({
-      settings,
-      secrets,
-      grantService,
-      tools: toolSet(),
-      host: "127.0.0.1",
-      port: 0,
-      usageService: allowUsageService,
-      requestConsent: requestNativeConsent,
-    });
-    const address = await server.start();
-    await expect(
-      grantService.authenticate({ clientId: legacyId, token: legacyToken }),
-    ).resolves.toMatchObject({ ok: true });
-    await expect(
-      grantService.authenticate({
-        clientId: legacyId,
-        token: legacyToken,
-        requiredCapabilities: ["sizzle.assets.import"],
-      }),
-    ).resolves.toEqual({ ok: false, code: "missing_capability" });
-    const profiles = (await settings.read()).localAgents.roles;
-    const previousProfile = profiles.find(
-      (role) => role.permissions.length === permissions.length,
-    )!;
-    const registered = await registerOAuthClient(address, "PwrAgent");
-    const token = await approveAndExchange(
-      address,
-      registered,
-      permissions,
-      permissions,
-      previousProfile.id,
-    );
-    client = await connectWithAccessToken(
-      address.url,
-      token,
-      new Client({ name: "upgraded-client", version: "1" }),
-    );
-    expect(
-      (await client.listTools()).tools.some(
-        (tool) => tool.name === "pwrsnap_library_search",
-      ),
-    ).toBe(true);
-    const firstGrant = (await grantService.list()).find(
-      (grant) => grant.name === "PwrAgent",
-    )!;
-    expect(firstGrant.capabilities).toEqual(permissions);
-
-    // Import is granted only by a separate approval which actually requested it.
-    const importingClient = await registerOAuthClient(
-      address,
-      "PwrAgent with media import",
-    );
-    const importingToken = await approveAndExchange(
-      address,
-      importingClient,
-      LOCAL_AGENT_CAPABILITIES,
-      LOCAL_AGENT_CAPABILITIES,
-      "builtin.full-access",
-    );
-    extraClient = await connectWithAccessToken(
-      address.url,
-      importingToken,
-      new Client({ name: "importing-client", version: "1" }),
-    );
-    expect((await extraClient.listTools()).tools.length).toBeGreaterThan(0);
-    expect(
-      (await grantService.list()).find((grant) => grant.id === firstGrant.id)!
-        .capabilities,
-    ).toEqual(permissions);
-    expect(
-      (await grantService.list()).find(
-        (grant) => grant.name === "PwrAgent with media import",
-      )!.capabilities,
-    ).toContain("sizzle.assets.import");
-    await expect(
-      grantService.authenticate({ clientId: legacyId, token: legacyToken }),
-    ).resolves.toMatchObject({ ok: true });
+        name: "fixture_search",
+        title: "Fixture search",
+        description: "Desktop-owned fixture description",
+        inputSchema: { query: z.string() },
+        requiredCapabilities: ["library.read"],
+        annotations: { readOnlyHint: true, openWorldHint: false },
+        dispatch
+      }
+    ]
   });
+  await server.start();
+});
+afterEach(async () => {
+  for (const agent of agents.splice(0)) agent.destroy();
+  await Promise.all(clients.splice(0).map((client) => client.close()));
+  await server.stop();
+});
 
-  test("publishes standards-based OAuth metadata without refresh-token claims", async () => {
-    server = new LocalAgentMcpServer({
-      settings,
-      secrets,
-      grantService,
-      tools: toolSet(),
-      host: "127.0.0.1",
-      port: 0
+function httpHost() {
+  const agent = new Agent({ keepAlive: true });
+  agents.push(agent);
+  return (body?: unknown, headers: Record<string, string> = {}, method = "POST") => new Promise<{ status: number; headers: Record<string, string | string[] | undefined>; text: string }>((resolve, reject) => {
+    const bytes = body === undefined ? "" : JSON.stringify(body);
+    const req = request({ socketPath: endpoint, path: "/mcp", method, agent,
+      headers: { host: "localhost", accept: "application/json, text/event-stream", "content-type": "application/json", "content-length": Buffer.byteLength(bytes), ...headers } }, (res) => {
+      let text = "";
+      res.setEncoding("utf8"); res.on("data", (chunk) => { text += chunk; });
+      res.on("end", () => resolve({ status: res.statusCode!, headers: res.headers, text }));
+      res.on("error", reject);
     });
-    const address = await server.start();
-    const protectedResource = await fetch(
-      endpoint(address, "/.well-known/oauth-protected-resource/mcp")
-    );
-    expect(await protectedResource.json()).toMatchObject({
-      resource: address.url,
-      authorization_servers: [`http://${address.host}:${address.port}/`],
-      resource_name: "PwrSnap"
-    });
-    const authorizationServer = await fetch(
-      endpoint(address, "/.well-known/oauth-authorization-server")
-    );
-    expect(await authorizationServer.json()).toMatchObject({
-      authorization_endpoint: address.authorizationUrl,
-      token_endpoint: endpoint(address, "/token"),
-      registration_endpoint: endpoint(address, "/register"),
-      grant_types_supported: ["authorization_code"],
-      token_endpoint_auth_methods_supported: ["none"]
-    });
+    req.on("error", reject); req.end(bytes);
   });
-
-  test("restores approved OAuth clients and access tokens after server restart", async () => {
-    server = new LocalAgentMcpServer({
-      settings,
-      secrets,
-      grantService,
-      tools: toolSet(),
-      host: "127.0.0.1",
-      port: 0,
-      requestConsent: requestNativeConsent
+}
+const initializeHttp = { jsonrpc: "2.0", id: 1, method: "initialize", params: {
+  protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "IPC HTTP host", version: "1" },
+  _meta: { approval: { policy: "native" } }, extension: { preserved: true }
+} };
+function httpMessage(text: string): Record<string, unknown> {
+  return JSON.parse(text.split("\n").find((line) => line.startsWith("data: "))!.slice(6));
+}
+test("HTTP policy edits before initialization/SSE queue invalidations and later edits notify the open stream", async () => {
+  const { token } = await server.bootstrapHttp(new AbortController().signal);
+  const [grant] = await grants.list();
+  await grants.assignRole(grant.id, "builtin.full-access");
+  await server.settingsChanged();
+  const send = httpHost();
+  const initialized = await send(initializeHttp, { authorization: `Bearer ${token}` });
+  const headers = { authorization: `Bearer ${token}`, "mcp-session-id": initialized.headers["mcp-session-id"] as string };
+  // A host that never opens SSE can still explicitly rediscover current tools.
+  expect(httpMessage((await send({ jsonrpc: "2.0", id: 2, method: "tools/list" }, headers)).text))
+    .toMatchObject({ result: { tools: [{ name: "fixture_search" }] } });
+  const events: string[] = [];
+  const req = request({ socketPath: endpoint, path: "/mcp", method: "GET", headers: {
+    ...headers, accept: "text/event-stream"
+  } }, (res) => { res.setEncoding("utf8"); res.on("data", (bytes: string) => events.push(bytes)); });
+  req.on("error", () => undefined);
+  req.end();
+  const messages = (): string[] => events.join("").split("\n").filter((line) => line.startsWith("data: "))
+    .map((line) => (JSON.parse(line.slice(6)) as { method: string }).method);
+  try {
+    await vi.waitFor(() => expect(messages()).toEqual([
+      "notifications/tools/list_changed", "notifications/resources/list_changed"
+    ]));
+    await grants.assignRole(grant.id, "builtin.preview");
+    await server.settingsChanged();
+    await vi.waitFor(() => expect(messages()).toHaveLength(4));
+    expect((await grants.authorizeClient(grant.id))?.capabilities).toEqual(["library.read"]);
+  } finally { req.destroy(); }
+});
+test("HTTP over the same protected IPC endpoint uses native bootstrap and the desktop catalog and validation", async () => {
+  const send = httpHost();
+  expect((await send(initializeHttp)).status).toBe(401);
+  expect(consent).not.toHaveBeenCalled();
+  const credential = await server.bootstrapHttp(new AbortController().signal);
+  const headers: Record<string, string> = { authorization: `Bearer ${credential.token}` };
+  const initialized = await send(initializeHttp, headers);
+  expect(initialized.status).toBe(200);
+  expect(httpMessage(initialized.text)).toMatchObject({ result: { serverInfo: { name: "PwrSnap", version: "9.8.7" } } });
+  expect(initialized.text).toContain("direct IPC HTTP/1.x; no relay");
+  headers["mcp-session-id"] = initialized.headers["mcp-session-id"] as string;
+  headers["mcp-protocol-version"] = "2025-11-25";
+  expect((await send({ jsonrpc: "2.0", method: "notifications/initialized" }, headers)).status).toBe(202);
+  const tools = await send({ jsonrpc: "2.0", id: 2, method: "tools/list" }, headers);
+  expect(httpMessage(tools.text)).toMatchObject({ result: { tools: [{ name: "fixture_search", description: "Desktop-owned fixture description", annotations: { readOnlyHint: true }, inputSchema: { required: ["query"] } }] } });
+  const bad = await send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "fixture_search", arguments: { query: 4 } } }, headers);
+  expect(httpMessage(bad.text)).toMatchObject({ result: { isError: true } });
+  expect(dispatch).not.toHaveBeenCalled();
+  const good = await send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "fixture_search", arguments: { query: "hello" }, _meta: { progressToken: "preserved" } } }, headers);
+  expect(good.status).toBe(200);
+  expect(dispatch).toHaveBeenCalledOnce();
+  expect(consent).toHaveBeenCalledOnce();
+  const [grant] = await grants.list();
+  await grants.assignRole(grant.id, "builtin.full-access");
+  expect((await grants.authorizeClient(grant.id))?.capabilities).toEqual(["library.read"]);
+});
+test("HTTP session ids and old approvals never replace the bearer credential or authorize a second initialization", async () => {
+  const send = httpHost();
+  const { token } = await server.bootstrapHttp(new AbortController().signal);
+  const first = await send(initializeHttp, { authorization: `Bearer ${token}` });
+  const id = first.headers["mcp-session-id"] as string;
+  expect((await httpHost()(initializeHttp, { authorization: `Bearer ${token}`, "mcp-session-id": id })).status).toBe(409);
+  expect((await httpHost()(initializeHttp, { authorization: `Bearer ${token}` })).status).toBe(404);
+  expect((await httpHost()(undefined, { "mcp-session-id": id }, "GET")).status).toBe(401);
+  expect((await httpHost()(undefined, { authorization: `Bearer ${token}`, "mcp-session-id": "other" }, "GET")).status).toBe(404);
+  const [grant] = await grants.list();
+  await grants.revokeGrant(grant.id); await server.settingsChanged();
+  expect((await httpHost()(initializeHttp, { authorization: `Bearer ${token}` })).status).toBe(401);
+  expect(dispatch).not.toHaveBeenCalled();
+});
+test("HTTP DELETE delivers its terminal response and revokes all Session streams and the consumed credential", async () => {
+  const send = httpHost();
+  const { token } = await server.bootstrapHttp(new AbortController().signal);
+  const first = await send(initializeHttp, { authorization: `Bearer ${token}` });
+  const headers = { authorization: `Bearer ${token}`, "mcp-session-id": first.headers["mcp-session-id"] as string };
+  expect((await send(undefined, headers, "DELETE")).status).toBe(200);
+  await vi.waitFor(async () => expect((await grants.list())[0].revokedAt).not.toBeNull());
+  expect((await httpHost()(initializeHttp, { authorization: `Bearer ${token}` })).status).toBe(401);
+});
+test("persistent HTTP and SSE deliver discovery changes, and a closed SSE cannot resume or replay", async () => {
+  const send = httpHost();
+  const { token } = await server.bootstrapHttp(new AbortController().signal);
+  const initialized = await send(initializeHttp, { authorization: `Bearer ${token}` });
+  const headers = { host: "localhost", accept: "text/event-stream", authorization: `Bearer ${token}`,
+    "mcp-session-id": initialized.headers["mcp-session-id"] as string, "mcp-protocol-version": "2025-11-25" };
+  await send({ jsonrpc: "2.0", method: "notifications/initialized" }, headers);
+  let stream: import("node:http").IncomingMessage | undefined;
+  let events = "";
+  const opened = new Promise<void>((resolve, reject) => {
+    const req = request({ socketPath: endpoint, path: "/mcp", method: "GET", headers }, (res) => {
+      stream = res; res.setEncoding("utf8");
+      res.on("data", (chunk) => { events += chunk; resolve(); });
+      res.on("error", () => undefined);
     });
-    const firstAddress = await server.start();
-    const oauthClient = await registerOAuthClient(firstAddress);
-    const accessToken = await approveAndExchange(
-      firstAddress,
-      oauthClient,
-      ["library.read"]
-    );
-    await server.stop();
-
-    server = new LocalAgentMcpServer({
-      settings,
-      secrets,
-      grantService,
-      tools: toolSet(),
-      host: "127.0.0.1",
-      port: 0,
-      requestConsent: requestNativeConsent
-    });
-    const secondAddress = await server.start();
-
-    client = await connectWithAccessToken(
-      secondAddress.url,
-      accessToken,
-      new Client({ name: "restored-oauth-client", version: "1.0.0" })
-    );
-    await expect(client.listTools()).resolves.toMatchObject({
-      tools: expect.arrayContaining([
-        expect.objectContaining({ name: "pwrsnap_library_search" })
-      ])
-    });
+    req.on("error", reject); req.end();
   });
-
-  test("denies consent without creating a grant and rejects hostile origins", async () => {
-    server = new LocalAgentMcpServer({
-      settings,
-      secrets,
-      grantService,
-      tools: toolSet(),
-      host: "127.0.0.1",
-      port: 0,
-      requestConsent: requestNativeConsent
-    });
-    const address = await server.start();
-
-    const hostile = await fetch(endpoint(address, "/register"), {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        origin: "https://attacker.example"
-      },
-      body: "{}"
-    });
-    expect(hostile.status).toBe(403);
-
-    const oauthClient = await registerOAuthClient(address, "Untrusted Agent");
-    const authorizationUrl = makeAuthorizationUrl(address, oauthClient, [
-      "capture.original.read"
-    ]);
-    consentDecisions.push({ decision: "deny", sessionName: "", roleId: null, capabilities: [] });
-    const statusUrl = await beginBrowserAuthorization(address, authorizationUrl);
-    const denied = await waitForAuthorizationRedirect(statusUrl);
-    expect(denied.status).toBe(302);
-    const callback = new URL(denied.headers.get("location") ?? "");
-    expect(callback.searchParams.get("error")).toBe("access_denied");
-    expect(await grantService.list()).toEqual([]);
+  const [grant] = await grants.list();
+  // Wait for the parser to establish GET before changing discovery. No
+  // resumption event store is present, so the first data is a real change.
+  let transition = 0;
+  await vi.waitFor(async () => {
+    const result = await httpHost()(undefined, { ...headers, "last-event-id": "never-replay" }, "GET");
+    expect(result.status).toBe(400);
+    await grants.assignRole(grant.id, ++transition % 2 ? "builtin.full-access" : "builtin.search");
+    await server.settingsChanged();
+    expect(events).toContain("notifications/tools/list_changed");
   });
-
-  test("loopback HTTP cannot manufacture approval while native consent is pending", async () => {
-    server = new LocalAgentMcpServer({
-      settings,
-      secrets,
-      grantService,
-      tools: toolSet(),
-      host: "127.0.0.1",
-      port: 0,
-      requestConsent: requestNativeConsent
-    });
-    const address = await server.start();
-    const oauthClient = await registerOAuthClient(address, "Forging Agent");
-
-    const forgedUrl = makeAuthorizationUrl(address, oauthClient, ["library.read"]);
-    forgedUrl.searchParams.set("pwrsnap_decision", "allow");
-    forgedUrl.searchParams.append("capability", "trash.write");
-    const forged = await fetch(forgedUrl, { redirect: "manual" });
-    expect(forged.status).toBe(400);
-    expect(await forged.json()).toMatchObject({ error: "invalid_request" });
-    expect(await grantService.list()).toEqual([]);
-
-    let resolveNative!: (decision: LocalAgentConsentDecision) => void;
-    consentDecisions.push(new Promise((resolve) => {
-      resolveNative = resolve;
-    }));
-    const statusUrl = await beginBrowserAuthorization(
-      address,
-      makeAuthorizationUrl(address, oauthClient)
-    );
-    await vi.waitFor(() => expect(consentRequests).toHaveLength(1));
-
-    const pending = await fetch(statusUrl, { redirect: "manual" });
-    expect(pending.status).toBe(200);
-    expect(await pending.text()).toContain("waiting for your decision");
-
-    const headlessApproval = await fetch(address.authorizationUrl, {
-      method: "POST",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        cookie: "pwrsnap_consent=forged"
-      },
-      body: new URLSearchParams({
-        consent_transaction: "forged",
-        pwrsnap_decision: "allow",
-        capability: "library.read"
-      }),
-      redirect: "manual"
-    });
-    expect(headlessApproval.status).toBe(405);
-    expect(await headlessApproval.json()).toMatchObject({ error: "method_not_allowed" });
-    expect(await grantService.list()).toEqual([]);
-
-    resolveNative({
-      decision: "allow",
-      sessionName: "Forging Agent",
-      roleId: null,
-      capabilities: ["library.read"],
-      maxCaptureAgeDays: 7
-    });
-    const approved = await waitForAuthorizationRedirect(statusUrl);
-    expect(approved.status).toBe(302);
-    const callback = new URL(approved.headers.get("location") ?? "");
-    expect(callback.searchParams.get("code")).not.toBeNull();
-    expect(approved.headers.get("set-cookie")).toBeNull();
+  await opened;
+  expect(events).toContain("notifications/tools/list_changed");
+  expect(events).not.toContain("id:");
+  stream!.destroy();
+  await vi.waitFor(async () => expect((await grants.list())[0].revokedAt).not.toBeNull());
+  expect((await httpHost()(undefined, headers, "GET")).status).toBe(401);
+  expect(dispatch).not.toHaveBeenCalled();
+});
+test("HTTP bootstrap denial, cancellation and disconnect cannot leave an approval for replacement sessions", async () => {
+  decision = { decision: "deny", sessionName: "", roleId: null, capabilities: [] };
+  await expect(server.bootstrapHttp(new AbortController().signal)).rejects.toThrow();
+  expect(await grants.list()).toEqual([]);
+  decision = { decision: "allow", sessionName: "HTTP only", roleId: "builtin.search", capabilities: ["library.read"] };
+  const controller = new AbortController();
+  controller.abort();
+  await expect(server.bootstrapHttp(controller.signal)).rejects.toThrow();
+  expect(await grants.list()).toEqual([]);
+  const { token } = await server.bootstrapHttp(new AbortController().signal);
+  const initialized = await httpHost()(initializeHttp, { authorization: `Bearer ${token}` });
+  expect(initialized.status).toBe(200);
+  for (const agent of agents.splice(0)) agent.destroy();
+  await vi.waitFor(async () => expect((await grants.list())[0].revokedAt).not.toBeNull());
+  expect((await httpHost()(initializeHttp, { authorization: `Bearer ${token}` })).status).toBe(401);
+});
+test("HTTP and stdio share the Session cap, and concurrent replacements reclaim idle revoked HTTP sessions before admission", async () => {
+  let index = 0;
+  consent.mockImplementation(async () => ({ ...decision, sessionName: `HTTP Session ${++index}` }));
+  for (let i = 0; i < 31; i++) await server.bootstrapHttp(new AbortController().signal);
+  await connect();
+  await expect(server.bootstrapHttp(new AbortController().signal)).rejects.toThrow("limit");
+  expect(consent).toHaveBeenCalledTimes(32);
+  const [grant] = await grants.list();
+  await grants.revokeGrant(grant.id);
+  const attempts = await Promise.allSettled([server.bootstrapHttp(new AbortController().signal), server.bootstrapHttp(new AbortController().signal)]);
+  expect(attempts.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+  expect(attempts.filter((result) => result.status === "rejected")).toHaveLength(1);
+  expect(consent).toHaveBeenCalledTimes(33);
+  expect((await grants.list()).filter((grant) => grant.revokedAt === null)).toHaveLength(32);
+});
+async function connect(): Promise<Client> {
+  const client = new Client({ name: "Fixture host", version: "0.0.2" }, { capabilities: {} });
+  clients.push(client);
+  await client.connect(
+    new StdioClientTransport({
+      command: executable,
+      args: ["--endpoint", endpoint],
+      stderr: "pipe"
+    })
+  );
+  return client;
+}
+test("mixed release versions use the desktop interface and preserve descriptions, schemas and annotations", async () => {
+  const client = await connect();
+  expect(client.getServerVersion()).toEqual({ name: "PwrSnap", version: "9.8.7" });
+  expect(client.getInstructions()).toContain("relay 1.0.0; local transport 1");
+  expect(consent).toHaveBeenCalledOnce();
+  const tools = await client.listTools();
+  expect(tools.tools[0]).toMatchObject({
+    name: "fixture_search",
+    description: "Desktop-owned fixture description",
+    annotations: { readOnlyHint: true },
+    inputSchema: { required: ["query"] }
   });
+  const result = await client.callTool({ name: "fixture_search", arguments: { query: "hello" } });
+  expect(result.isError).not.toBe(true);
+  expect(dispatch).toHaveBeenCalledOnce();
+});
 
-  test("expires server-issued consent transactions before a decision", async () => {
-    let nowMs = Date.parse("2026-08-01T12:00:00.000Z");
-    const resourceUrl = new URL("http://127.0.0.1:51729/mcp");
-    const provider = new LocalAgentOAuthProvider({
-      grantService,
-      resourceUrl,
-      now: () => new Date(nowMs),
-      makeClientId: () => "lag_expiring_consent",
-      makeConsentId: () => "consent_expiring"
-    });
-    const oauthClient = await provider.clientsStore.registerClient?.({
-      client_name: "Expiring Agent",
-      redirect_uris: [OAUTH_CALLBACK],
-      token_endpoint_auth_method: "none",
-      grant_types: ["authorization_code"],
-      response_types: ["code"]
-    });
-    expect(oauthClient).toBeDefined();
-    const result = await provider.handleAuthorizationRequest(
-      makeAuthorizationUrl(
-        {
-          host: "127.0.0.1",
-          port: 51_729,
-          url: resourceUrl.href,
-          authorizationUrl: "http://127.0.0.1:51729/authorize"
-        },
-        oauthClient as RegisteredOAuthClient
-      )
-    );
-    expect(result).toMatchObject({
-      kind: "consent",
-      transactionId: "consent_expiring"
-    });
-
-    nowMs += 5 * 60_000 + 1;
-    expect(provider.handleConsentDecision({
-      transactionId: "consent_expiring",
-      decision: "allow",
-      sessionName: "Expiring Agent",
-      roleId: null,
-      capabilities: ["library.read"],
-      maxCaptureAgeDays: 7
-    })).toMatchObject({
-      kind: "error",
-      status: 400,
-      error: "invalid_request"
-    });
-  });
-
-  test("returns an actionable OAuth error when a session name races with an active grant", async () => {
-    await grantService.createGrant({
-      name: "PwrAgent",
-      capabilities: ["library.read"]
-    });
-    const resourceUrl = new URL("http://127.0.0.1:51729/mcp");
-    const provider = new LocalAgentOAuthProvider({
-      grantService,
-      resourceUrl,
-      makeClientId: () => "lag_duplicate_name"
-    });
-    const oauthClient = await provider.clientsStore.registerClient?.({
-      client_name: "PwrAgent",
-      redirect_uris: [OAUTH_CALLBACK],
-      token_endpoint_auth_method: "none",
-      grant_types: ["authorization_code"],
-      response_types: ["code"]
-    });
-    if (oauthClient === undefined) throw new Error("expected registered OAuth client");
-    const code = provider.createAuthorizationCode({
-      client: oauthClient,
-      params: {
-        codeChallenge: "test-challenge",
-        redirectUri: OAUTH_CALLBACK,
-        resource: resourceUrl,
-        scopes: ["library.read"]
-      },
-      sessionName: "PwrAgent",
-      roleId: null,
-      capabilities: ["library.read"],
-      maxCaptureAgeDays: 7
-    });
-
-    const exchange = provider.exchangeAuthorizationCode(
-      oauthClient,
-      code,
-      undefined,
-      OAUTH_CALLBACK,
-      resourceUrl
-    );
-    await expect(exchange).rejects.toBeInstanceOf(InvalidGrantError);
-    await expect(exchange).rejects.toThrow("use a unique Session Name");
-  });
-
-  test("rejects requests outside known routes and with an alternate Host", async () => {
-    server = new LocalAgentMcpServer({
-      settings,
-      secrets,
-      grantService,
-      tools: toolSet(),
-      host: "127.0.0.1",
-      port: 0
-    });
-    const address = await server.start();
-    const res = await fetch(`http://${address.host}:${address.port}/other`);
-    expect(res.status).toBe(404);
-
-    const responseStatus = await new Promise<number | undefined>((resolve, reject) => {
-      const req = httpRequest({
-        hostname: address.host,
-        port: address.port,
-        path: "/.well-known/oauth-authorization-server",
-        headers: { host: `localhost:${address.port}` }
-      }, (response) => {
-        response.resume();
-        response.once("end", () => resolve(response.statusCode));
-      });
-      req.once("error", reject);
-      req.end();
-    });
-    expect(responseStatus).toBe(403);
-  });
-
-  test("streams signed media and revocation invalidates an existing URL", async () => {
-    const mediaPath = join(workDir, "original.png");
-    writeFileSync(mediaPath, "sensitive-media");
-    const resources = new LocalAgentMcpResourceRegistry();
-    resources.register({
-      uri: "pwrsnap://capture/cap_1/original",
-      name: "original",
-      mimeType: "image/png",
-      requiredCapabilities: ["capture.original.read"],
-      ownerClientId: "lag_mcp",
-      audit: {
-        action: "capture.original.read",
-        capability: "capture.original.read",
-        subjectKind: "capture",
-        subjectId: "cap_1"
-      },
-      resolvePath: async () => mediaPath
-    });
-    const signedUrls = new LocalAgentSignedUrlService(Buffer.alloc(32, 3));
-    await grantService.createGrant({
-      name: "PwrAgent",
-      capabilities: ["capture.original.read"]
-    });
-    server = new LocalAgentMcpServer({
-      settings,
-      secrets,
-      grantService,
-      tools: toolSet(),
-      host: "127.0.0.1",
-      port: 0,
-      resourceRegistry: resources,
-      signedUrls
-    });
-    const address = await server.start();
-    const signed = signedUrls.mint({
-      baseUrl: `http://${address.host}:${address.port}`,
-      resourceUri: "pwrsnap://capture/cap_1/original",
-      clientId: "lag_mcp"
-    });
-
-    const first = await fetch(signed.url);
-    expect(first.status).toBe(200);
-    expect(first.headers.get("cache-control")).toBe("private, no-store");
-    expect(first.headers.get("x-content-type-options")).toBe("nosniff");
-    expect(await first.text()).toBe("sensitive-media");
-
-    const ranged = await fetch(signed.url, {
-      headers: { range: "bytes=0-0" }
-    });
-    expect(ranged.status).toBe(206);
-    expect(ranged.headers.get("accept-ranges")).toBe("bytes");
-    expect(ranged.headers.get("content-range")).toBe("bytes 0-0/15");
-    expect(ranged.headers.get("content-length")).toBe("1");
-    expect(await ranged.text()).toBe("s");
-
-    client = await connect(address.url, "pws_local_mcp-token");
-    const resource = await client.readResource({
-      uri: "pwrsnap://capture/cap_1/original"
-    });
-    expect(resource.contents[0]).toMatchObject({
-      uri: "pwrsnap://capture/cap_1/original",
-      mimeType: "image/png",
-      blob: Buffer.from("sensitive-media").toString("base64")
-    });
-    expect((await settings.read()).localAgents.audit).toHaveLength(3);
-
-    await grantService.revokeGrant("lag_mcp");
-    const revoked = await fetch(signed.url);
-    expect(revoked.status).toBe(403);
-    expect((await settings.read()).localAgents.audit).toHaveLength(3);
-  });
-
-  test("rejects signed media replay through a different Host header", async () => {
-    const mediaPath = join(workDir, "media.png");
-    writeFileSync(mediaPath, "media");
-    const resources = new LocalAgentMcpResourceRegistry();
-    resources.register({
-      uri: "pwrsnap://capture/cap_1/composite",
-      name: "composite",
-      mimeType: "image/png",
-      requiredCapabilities: ["capture.composite.read"],
-      resolvePath: async () => mediaPath
-    });
-    const signedUrls = new LocalAgentSignedUrlService(Buffer.alloc(32, 4));
-    await grantService.createGrant({
-      name: "PwrAgent",
-      capabilities: ["capture.composite.read"]
-    });
-    server = new LocalAgentMcpServer({
-      settings,
-      secrets,
-      grantService,
-      tools: toolSet(),
-      host: "127.0.0.1",
-      port: 0,
-      resourceRegistry: resources,
-      signedUrls
-    });
-    const address = await server.start();
-    const signed = signedUrls.mint({
-      baseUrl: `http://${address.host}:${address.port}`,
-      resourceUri: "pwrsnap://capture/cap_1/composite",
-      clientId: "lag_mcp"
-    });
-
-    const responseStatus = await new Promise<number | undefined>((resolve, reject) => {
-      const target = new URL(signed.url);
-      const req = httpRequest({
-        hostname: address.host,
-        port: address.port,
-        path: `${target.pathname}${target.search}`,
-        headers: { host: `localhost:${address.port}` }
-      }, (response) => {
-        response.resume();
-        response.once("end", () => resolve(response.statusCode));
-      });
-      req.once("error", reject);
-      req.end();
-    });
-
-    expect(responseStatus).toBe(403);
-  });
-
-  test("rejects MCP request bodies larger than one MiB with PwrSnap's JSON 413", async () => {
-    await grantService.createGrant({
-      name: "PwrAgent",
-      capabilities: ["library.read"]
-    });
-    const url = await startServer();
-
-    const response = await postMcpJson(url, toolsCallBody("x".repeat(1024 * 1024)));
-
-    expect(response.status).toBe(413);
-    expect(response.headers.get("content-type")).toBe("application/json");
-    await expect(response.json()).resolves.toEqual({ error: "request_too_large" });
-  });
-
-  test("accepts a tools/call body above body-parser's 100 kb default", async () => {
-    await grantService.createGrant({
-      name: "PwrAgent",
-      capabilities: ["library.read"]
-    });
-    const url = await startServer();
-    const query = "y".repeat(200 * 1024);
-    const body = toolsCallBody(query);
-    // Above the 100 kb limit the SDK's createMcpExpressApp would have
-    // imposed, below MAX_REQUEST_BODY_BYTES: only PwrSnap's cap may run.
-    expect(Buffer.byteLength(body)).toBeGreaterThan(100 * 1024);
-    expect(Buffer.byteLength(body)).toBeLessThan(1024 * 1024);
-
-    const response = await postMcpJson(url, body);
-
-    expect(response.status).toBe(200);
-    const payload = (await response.json()) as {
-      result?: CallToolResult;
-      error?: unknown;
-    };
-    expect(payload.error).toBeUndefined();
-    expect(payload.result?.isError).not.toBe(true);
-    const echoed = payload.result?.structuredContent?.["query"];
-    expect(typeof echoed === "string" ? echoed.length : echoed).toBe(query.length);
-    // Compared as a boolean so a mismatch does not print 200 KB twice.
-    expect(echoed === query).toBe(true);
-  });
-
-  test("rejects an over-cap chunked upload and keeps the connection usable", async () => {
-    await grantService.createGrant({
-      name: "PwrAgent",
-      capabilities: ["library.read"]
-    });
-    const url = await startServer();
-    // maxSockets: 1 so the follow-up request can only proceed once the first
-    // connection is released — the case that used to hang ~6 s under load.
-    const agent = new HttpAgent({ keepAlive: true, maxSockets: 1 });
-    try {
-      // No content-length, so the streaming branch of the cap — not the
-      // up-front content-length check — is the only thing that can stop this.
-      const first = await postMcpChunked(url, agent, function* () {
-        yield '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":' +
-          '{"name":"pwrsnap_library_search","arguments":{"query":"';
-        const piece = "x".repeat(64 * 1024);
-        for (let sent = 0; sent < 2 * 1024 * 1024; sent += piece.length) yield piece;
-        yield '"}}}';
-      });
-      // The server drains the rejected body before answering (like
-      // body-parser), so the 413 arrives on a keep-alive connection — not as a
-      // mid-upload reset — on every platform.
-      expect(first.status).toBe(413);
-      expect(JSON.parse(first.body)).toEqual({ error: "request_too_large" });
-
-      // The next request reuses that connection and is served at once: no
-      // reset, and no wait for the keep-alive timeout. (vitest's 5 s per-test
-      // timeout is the backstop that turns a stall regression into a failure.)
-      const second = await postMcpChunked(url, agent, function* () {
-        yield toolsCallBody("after");
-      });
-      expect(second.status).toBe(200);
-    } finally {
-      agent.destroy();
+test.each(["stdio", "HTTP"] as const)("upgraded Full Access roles connect over %s without widening prior consent", async (transport) => {
+  const historical = defaultSettings();
+  const permissions = LOCAL_AGENT_CAPABILITIES.filter((permission) => permission !== "sizzle.assets.import");
+  historical.localAgents.roles = historical.localAgents.roles.map((role) =>
+    role.id === "builtin.full-access" ? { ...role, permissions } : role
+  );
+  historical.localAgents.grants = [{
+    id: "legacy_existing", name: "Existing Agent", roleId: "builtin.full-access", capabilities: permissions,
+    createdAt: "2026-11-05T00:00:00Z", updatedAt: "2026-11-05T00:00:00Z", lastUsedAt: null, revokedAt: null
+  }];
+  writeFileSync(settingsPath, JSON.stringify(historical));
+  const migrated = (await settings.read()).localAgents;
+  const previousRole = migrated.roles.find((role) => role.id === migrated.grants[0].roleId)!;
+  expect(previousRole.permissions).toEqual(permissions);
+  for (const [name, roleId, capabilities] of [
+    ["Previous permissions", previousRole.id, permissions],
+    ["New explicit approval", "builtin.full-access", LOCAL_AGENT_CAPABILITIES]
+  ] as const) {
+    decision = { decision: "allow", sessionName: name, roleId, capabilities };
+    if (transport === "stdio") {
+      const client = await connect();
+      expect((await client.listTools()).tools[0].name).toBe("fixture_search");
+      expect((await client.callTool({ name: "fixture_search", arguments: { query: name } })).isError).not.toBe(true);
+    } else {
+      const { token } = await server.bootstrapHttp(new AbortController().signal);
+      const send = httpHost();
+      const initialized = await send(initializeHttp, { authorization: `Bearer ${token}` });
+      expect(initialized.status).toBe(200);
+      const headers = { authorization: `Bearer ${token}`, "mcp-session-id": initialized.headers["mcp-session-id"] as string };
+      const listed = await send({ jsonrpc: "2.0", id: 2, method: "tools/list" }, headers);
+      expect(httpMessage(listed.text)).toMatchObject({ result: { tools: [{ name: "fixture_search" }] } });
+      const called = await send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "fixture_search", arguments: { query: name } } }, headers);
+      expect(httpMessage(called.text)).toMatchObject({ result: { content: expect.any(Array) } });
+      expect((httpMessage(called.text).result as { isError?: boolean }).isError).not.toBe(true);
     }
+    const reopened = (await new DesktopSettingsService({ filePath: settingsPath }).read()).localAgents;
+    for (const [sessionName, expected] of [
+      ["Existing Agent", permissions], ["Previous permissions", permissions], [name, capabilities]
+    ] as const) {
+      const grant = reopened.grants.find((item) => item.name === sessionName)!;
+      const policy = resolveLocalAgentPolicy(reopened, grant.id);
+      expect(policy.ok).toBe(true);
+      if (!policy.ok) throw new Error(policy.code);
+      expect(policy.policy.capabilities).toEqual(expected);
+    }
+  }
+  expect(consent).toHaveBeenCalledTimes(2);
+  expect(dispatch).toHaveBeenCalledTimes(2);
+});
+
+test("main's Sizzle catalog and protected media use the same production handlers over stdio and IPC HTTP", async () => {
+  await server.stop();
+  decision = { decision: "allow", sessionName: "Sizzle stdio", roleId: null,
+    capabilities: ["sizzle.compose", "sizzle.assets.import", "sizzle.preview.read", "sizzle.full.read"] };
+  server = new LocalAgentMcpServer({ settings, grantService: grants, requestConsent: consent,
+    secrets: new DesktopSecretStore({ filePath: settingsPath + ".secrets" }),
+    bridgeFactory: (onConnection) => new NativeMcpBridge({ executable, endpoint, allowHttp: true, onConnection }) });
+  const { writeFile } = await import("node:fs/promises");
+  const mediaPath = settingsPath + ".png";
+  const bytes = Buffer.from("private Sizzle contact sheet");
+  await writeFile(mediaPath, bytes);
+  const inspect = vi.fn(async () => ok({ outputPath: mediaPath, widthPx: 1920, heightPx: 1080, renderId: "frames" }));
+  bus.installLocalAgentAuthorizer((id) => grants.authorizeClient(id));
+  bus.register("sizzle:inspectFrames", inspect);
+  try {
+    await server.start();
+    const client = await connect();
+    const tools = (await client.listTools()).tools;
+    for (const suffix of ["get", "audio_qa", "prepare_narration", "align_narration", "apply_launch_template",
+      "import_capture", "import", "update", "set_bindings", "inspect_frames"])
+      expect(tools.map((tool) => tool.name)).toContain(`pwrsnap_sizzle_${suffix}`);
+    decision = { ...decision, sessionName: "Sizzle IPC HTTP" };
+    const { token } = await server.bootstrapHttp(new AbortController().signal);
+    const send = httpHost();
+    const initialized = await send(initializeHttp, { authorization: `Bearer ${token}` });
+    const headers = { authorization: `Bearer ${token}`, "mcp-session-id": initialized.headers["mcp-session-id"] as string };
+    const listed = await send({ jsonrpc: "2.0", id: 2, method: "tools/list" }, headers);
+    expect(httpMessage(listed.text).result).toEqual({ tools });
+    const result = await client.callTool({ name: "pwrsnap_sizzle_inspect_frames", arguments: { projectId: "project", frames: [0] } });
+    expect(result.isError).not.toBe(true);
+    expect(inspect).toHaveBeenCalledOnce();
+    const link = CallToolResultSchema.parse(result).content.find((item) => item.type === "resource_link");
+    expect(link?.type).toBe("resource_link");
+    if (link?.type !== "resource_link") throw new Error("Expected MCP media link");
+    expect(link.uri).toMatch(/^pwrsnap:\/\//);
+    const media = await client.readResource({ uri: link.uri });
+    expect(media.contents).toEqual([{ uri: link.uri, mimeType: "image/png", blob: bytes.toString("base64") }]);
+  } finally {
+    bus.unregister("sizzle:inspectFrames");
+    bus.uninstallLocalAgentAuthorizerForTests();
+  }
+});
+test("schema validation and capability boundaries stay desktop-owned", async () => {
+  const client = await connect();
+  expect((await client.callTool({ name: "fixture_search", arguments: { query: 4 } })).isError).toBe(
+    true
+  );
+  expect(dispatch).not.toHaveBeenCalled();
+  const [grant] = await grants.list();
+  await grants.assignRole(grant.id, "builtin.sizzle");
+  const result = await client.callTool({ name: "fixture_search", arguments: { query: "hello" } });
+  expect(result.isError).not.toBe(true);
+  expect(dispatch.mock.calls[0][1].capabilities).toEqual(["library.read"]);
+  expect((await grants.authorizeClient(grant.id))?.capabilities).toEqual(["library.read"]);
+});
+test("native denial exposes no tools and creates no grant", async () => {
+  decision = { decision: "deny", sessionName: "", roleId: null, capabilities: [] };
+  await expect(connect()).rejects.toThrow();
+  expect(await grants.list()).toEqual([]);
+  expect(dispatch).not.toHaveBeenCalled();
+});
+test("revoking an idle session closes IPC and a fresh host needs new consent", async () => {
+  const client = await connect();
+  let closed = false;
+  client.onclose = () => {
+    closed = true;
+  };
+  const [grant] = await grants.list();
+  await grants.revokeGrant(grant.id);
+  await server.settingsChanged();
+  await vi.waitFor(() => expect(closed).toBe(true));
+  decision = { ...decision, sessionName: "Replacement" };
+  await connect();
+  expect(consent).toHaveBeenCalledTimes(2);
+});
+test("desktop disable closes sessions and never reconnects or replays calls", async () => {
+  const client = await connect();
+  let closed = false;
+  client.onclose = () => {
+    closed = true;
+  };
+  await server.stop();
+  await vi.waitFor(() => expect(closed).toBe(true));
+  await expect(
+    client.callTool({ name: "fixture_search", arguments: { query: "x" } })
+  ).rejects.toThrow();
+  expect(dispatch).not.toHaveBeenCalled();
+  await expect(connect()).rejects.toThrow();
+});
+test("host disconnect revokes its native session instead of transferring approval", async () => {
+  const client = await connect();
+  const [original] = await grants.list();
+  await expect(grants.removeRevokedGrants([original.id])).rejects.toMatchObject({ code: "session_active" });
+  await client.close();
+  await vi.waitFor(async () => expect((await grants.list())[0].revokedAt).not.toBeNull());
+  await expect(grants.removeRevokedGrants([original.id])).resolves.toEqual([original.id]);
+  await expect(grants.authorizeClient(original.id)).resolves.toBeNull();
+  await connect();
+  const [replacement] = await grants.list();
+  expect(replacement.id).not.toBe(original.id);
+  expect(replacement.name).toBe(original.name);
+  expect(replacement.nativeConsent?.capabilities).toEqual(["library.read"]);
+  expect(consent).toHaveBeenCalledTimes(2);
+});
+test("desktop absent fails with a manual reconnect instruction and never launches it", async () => {
+  await server.stop();
+  const { spawnSync } = await import("node:child_process");
+  const result = spawnSync(executable, ["--endpoint", endpoint], {
+    encoding: "utf8",
+    timeout: 5000
   });
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain("Open PwrSnap yourself");
+  expect(result.stdout).toBe("");
+});
 
-  test("rejects compressed MCP bodies with 415 instead of inflating them", async () => {
-    await grantService.createGrant({
-      name: "PwrAgent",
-      capabilities: ["library.read"]
-    });
-    const url = await startServer();
+test("persisted native consent ceilings survive settings parsing without widening", async () => {
+  await connect();
+  const [grant] = await grants.list();
+  await grants.assignRole(grant.id, "builtin.full-access");
+  const reopened = await new DesktopSettingsService({ filePath: settingsPath }).read();
+  expect(reopened.localAgents.grants[0].nativeConsent?.capabilities).toEqual(["library.read"]);
+  const policy = resolveLocalAgentPolicy(reopened.localAgents, grant.id);
+  expect(policy.ok && policy.policy.maxCaptureAgeDays).toBe(7);
+  expect(policy.ok && policy.policy.capabilities).toEqual(["library.read"]);
+});
 
-    const response = await postMcpJson(
-      url,
-      new Uint8Array(gzipSync(toolsCallBody("zipped"))),
-      { "content-encoding": "gzip" }
-    );
-
-    expect(response.status).toBe(415);
-    await expect(response.json()).resolves.toEqual({ error: "unsupported_media_type" });
-  });
-
-  test("answers SDK-router parser failures with JSON, not Express's HTML page", async () => {
-    server = new LocalAgentMcpServer({
-      settings,
-      secrets,
-      grantService,
-      tools: toolSet(),
-      host: "127.0.0.1",
-      port: 0
-    });
-    const address = await server.start();
-
-    const oversize = await fetch(endpoint(address, "/register"), {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        client_name: "oversize",
-        redirect_uris: [OAUTH_CALLBACK],
-        padding: "x".repeat(150 * 1024)
-      })
-    });
-    expect(oversize.status).toBe(413);
-    expect(oversize.headers.get("content-type")).toBe("application/json");
-    await expect(oversize.json()).resolves.toEqual({ error: "request_too_large" });
-
-    const malformed = await fetch(endpoint(address, "/register"), {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: "{"
-    });
-    expect(malformed.status).toBe(400);
-    expect(malformed.headers.get("content-type")).toBe("application/json");
-    const text = await malformed.text();
-    expect(JSON.parse(text)).toEqual({ error: "invalid_request" });
-    expect(text).not.toContain("SyntaxError");
-  });
-
-  test("token endpoint takes form bodies only (no app-level JSON parser)", async () => {
-    server = new LocalAgentMcpServer({
-      settings,
-      secrets,
-      grantService,
-      tools: toolSet(),
-      host: "127.0.0.1",
-      port: 0
-    });
-    const address = await server.start();
-
-    const response = await fetch(endpoint(address, "/token"), {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        grant_type: "authorization_code",
-        client_id: "lag_mcp",
-        code: "code",
-        code_verifier: PKCE_VERIFIER
-      })
-    });
-
-    expect(response.status).toBe(400);
-    expect(((await response.json()) as { error: string }).error).toBe("invalid_request");
-  });
-
-  test("stop() does not wait for a client that is still uploading", async () => {
-    await grantService.createGrant({
-      name: "PwrAgent",
-      capabilities: ["library.read"]
-    });
-    const url = await startServer();
-    const target = new URL(url);
-    const socket = netConnect(Number(target.port), target.hostname);
-    socket.on("error", () => undefined);
-    await once(socket, "connect");
-    socket.write(
-      `POST ${target.pathname} HTTP/1.1\r\nhost: ${target.host}\r\n` +
-        `authorization: ${bearer("lag_mcp", "pws_local_mcp-token")}\r\n` +
-        "content-type: application/json\r\naccept: application/json, text/event-stream\r\n" +
-        'content-length: 100\r\n\r\n{"jsonrpc"'
-    );
-    // Let the server pick the request up and park in readRequestBody.
-    await new Promise((resolve) => setTimeout(resolve, 100));
-
-    const stopping = server?.stop() ?? Promise.resolve();
-    server = null;
-    await expect(
-      Promise.race([
-        stopping.then(() => "stopped"),
-        new Promise<string>((resolve) => setTimeout(() => resolve("timed out"), 3_000))
-      ])
-    ).resolves.toBe("stopped");
-    socket.destroy();
-  });
-
-  test("uses a stable default port", () => {
-    expect(LOCAL_AGENT_MCP_PORT).toBe(51_729);
-  });
-
-  test("shutdown closes the socket and rejects subsequent requests", async () => {
-    await grantService.createGrant({
-      name: "PwrAgent",
-      capabilities: ["library.read"]
-    });
-    const url = await startServer();
-    await connect(url, "pws_local_mcp-token");
-    await server?.stop();
-    server = null;
-
-    await expect(
-      fetch(url, {
-        method: "POST",
-        headers: {
-          Authorization: "Bearer pws_local_mcp-token",
-          "content-type": "application/json"
-        },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping" })
-      })
-    ).rejects.toThrow();
-  });
+test("idempotent listener startup preserves an active native Session without replaying consent",async()=>{
+  const client=await connect();await Promise.all([server.start(),server.start()]);
+  expect((await grants.list())[0].revokedAt).toBeNull();
+  expect((await client.listTools()).tools[0].name).toBe("fixture_search");
+  expect(consent).toHaveBeenCalledOnce();
 });

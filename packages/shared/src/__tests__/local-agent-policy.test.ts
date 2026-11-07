@@ -94,8 +94,10 @@ describe("local-agent RBAC policy", () => {
         ? { ...role, permissions: ["library.read", "trash.write"] as const }
         : role
     ) as LocalAgentRoleProfile[];
-    expect(resolveLocalAgentPolicy(localAgents(grant(), drifted), "lag_codex"))
-      .toEqual({ ok: false, code: "builtin_role_drift" });
+    expect(resolveLocalAgentPolicy(localAgents(grant(), drifted), "lag_codex")).toEqual({
+      ok: false,
+      code: "builtin_role_drift"
+    });
   });
 
   test("keeps permission definitions, danger tiers, and full access in lockstep", () => {
@@ -103,8 +105,25 @@ describe("local-agent RBAC policy", () => {
       [...LOCAL_AGENT_CAPABILITIES].sort()
     );
     expect(
-      LOCAL_AGENT_BUILT_IN_ROLES.find((role) => role.id === "builtin.full-access")
-        ?.permissions
+      LOCAL_AGENT_BUILT_IN_ROLES.find((role) => role.id === "builtin.full-access")?.permissions
     ).toEqual(LOCAL_AGENT_CAPABILITIES);
   });
+});
+
+test("native consent ceilings remain visible to the graph and constrain widened roles", () => {
+  const approved = roles()[0];
+  const session = grant({
+    roleId: "builtin.full-access",
+    nativeConsent: {
+      capabilities: [...approved.permissions],
+      maxCaptureAgeDays: approved.maxCaptureAgeDays,
+      budgets: approved.budgets
+    }
+  });
+  const resolution = resolveLocalAgentPolicy(localAgents(session), session.id);
+  expect(resolution.ok).toBe(true);
+  if (!resolution.ok) throw new Error("unreachable");
+  expect(resolution.policy.capabilities).toEqual(["library.read"]);
+  expect(resolution.policy.maxCaptureAgeDays).toBe(7);
+  expect(resolution.policy.budgets.search).toEqual(approved.budgets.search);
 });

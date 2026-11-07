@@ -65,10 +65,11 @@ function installFakeApi(
 } {
   const dispatch = vi.fn(async (name: string, req: unknown): Promise<AnyResult> => {
     if (name === "localAgents:list") {
-      return { ok: true, value: { grants: [currentGrant], roles, listenerStatus } };
+      return { ok: true, value: { grants: [currentGrant], roles, listenerStatus, httpUrl: "unix:///tmp/fixture.sock#/mcp" } };
     }
     if (name === "localAgents:audit") return { ok: true, value: { entries: audit } };
     if (name === "localAgents:usage") return { ok: true, value: { entries: [] } };
+    if (name === "localAgents:httpBootstrap") return { ok: true, value: { token: "fixture-secret-never-in-config", expiresAt: new Date(Date.now() + 120_000).toISOString(), httpUrl: "unix:///tmp/fixture.sock#/mcp" } };
     if (name === "localAgents:assignRole") {
       const roleId = (req as { roleId: string }).roleId;
       return { ok: true, value: { ...currentGrant, roleId } };
@@ -190,7 +191,7 @@ describe("LocalAgentsPage", () => {
     expect(patch).toHaveBeenCalledWith({ localAgents: { enabled: true } });
   });
 
-  test("shows the loopback endpoint only while MCP access is enabled", async () => {
+  test("shows local IPC connection status only while MCP access is enabled", async () => {
     const enabledSettings = {
       ...baseSettings,
       localAgents: { ...baseSettings.localAgents, enabled: true }
@@ -198,7 +199,7 @@ describe("LocalAgentsPage", () => {
     installFakeApi(grant, [], { state: "listening" });
     const el = await renderPage(enabledSettings);
 
-    expect(el.textContent).toContain("http://127.0.0.1:51729/mcp");
+    expect(el.textContent).toContain("Local IPC MCP");
     expect(el.textContent).not.toContain("MCP off");
   });
 
@@ -214,11 +215,11 @@ describe("LocalAgentsPage", () => {
     // server. `--scope user`: without it Claude Code registers the server for
     // the terminal's current directory only.
     expect(el.textContent).toContain(
-      "claude mcp add --scope user --transport http pwrsnap http://127.0.0.1:51729/mcp"
+      "claude mcp add --scope user --transport stdio pwrsnap -- pwrsnap-mcp"
     );
-    expect(el.textContent).toContain("claude mcp login pwrsnap");
+    expect(el.textContent).not.toContain("claude mcp login pwrsnap");
     expect(el.textContent).toContain(
-      "codex mcp add pwrsnap --url http://127.0.0.1:51729/mcp --oauth-client-registration dcr"
+      "codex mcp add pwrsnap -- pwrsnap-mcp"
     );
 
     installFakeApi(grant, [], { state: "off" });
@@ -245,12 +246,27 @@ describe("LocalAgentsPage", () => {
     });
     expect(dispatch).toHaveBeenCalledWith("clipboard:copyText", {
       text:
-        "claude mcp add --scope user --transport http pwrsnap http://127.0.0.1:51729/mcp\n" +
-        "claude mcp login pwrsnap"
+        "claude mcp add --scope user --transport stdio pwrsnap -- pwrsnap-mcp"
     });
     // The visible label and the accessible name change together.
     expect(button?.textContent).toBe("Copied");
     expect(button?.getAttribute("aria-label")).toBe("Copied Claude Code command");
+  });
+
+  test("direct HTTP bootstrap uses native approval and copies the secret separately from configuration", async () => {
+    const { dispatch } = installFakeApi(grant, [], { state: "listening" });
+    const el = await renderPage({ ...baseSettings, localAgents: { ...baseSettings.localAgents, enabled: true } });
+    expect(el.textContent).toContain("unix:///tmp/fixture.sock#/mcp");
+    expect(el.textContent).toContain("Bearer ${input:pwrsnap-http-token}");
+    expect(el.textContent).not.toContain("fixture-secret");
+    await act(async () => { Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Create HTTP Session")!.click(); });
+    expect(dispatch).toHaveBeenCalledWith("localAgents:httpBootstrap", {});
+    expect(el.textContent).not.toContain("fixture-secret");
+    await act(async () => { Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Copy HTTP credential")!.click(); });
+    expect(dispatch).toHaveBeenCalledWith("clipboard:copyText", { text: "fixture-secret-never-in-config" });
+    await act(async () => { Array.from(el.querySelectorAll("button")).find((b) => b.textContent === "Hide credential")!.click(); });
+    expect(el.textContent).not.toContain("Copy HTTP credential");
+    expect(el.querySelector("pre")?.textContent).not.toContain("fixture-secret");
   });
 
   test("a failed copy stays on the button and never reaches the page error banner", async () => {
@@ -290,7 +306,7 @@ describe("LocalAgentsPage", () => {
 
     expect(el.textContent).toContain("MCP unavailable");
     expect(el.textContent).toContain("failed to start");
-    expect(el.textContent).not.toContain("http://127.0.0.1:51729/mcp");
+    expect(el.textContent).not.toContain("Local IPC MCP");
     expect(el.querySelector("button[role='switch']")?.getAttribute("aria-checked")).toBe("true");
     // The switch is already on, so the connect card must not say to turn it on.
     expect(el.textContent).not.toContain("Turn on local-agent access");
@@ -480,4 +496,16 @@ describe("LocalAgentsPage", () => {
     expect(el.textContent).toContain("cap_1");
     expect(el.textContent).toContain("success");
   });
+});
+
+test("the graph and live scope retain the native consent ceiling after a role is widened",async()=>{
+  const approved=roles[0];
+  installFakeApi({...grant,roleId:"builtin.full-access",nativeConsent:{capabilities:[...approved.permissions],maxCaptureAgeDays:7,budgets:approved.budgets}});
+  const el=await renderPage();
+  const scope=Array.from(el.querySelectorAll(".pss__card")).find((card)=>card.textContent?.includes("LIVE SCOPE"));
+  expect(scope?.textContent).toContain("Last 7 days");
+  expect(scope?.textContent).toContain("0 / 50");
+  expect(scope?.textContent).toContain("Reconnect and approve a new Session");
+  const allowed=el.querySelectorAll(".is-permission.is-allowed");
+  expect(allowed).toHaveLength(1);expect(allowed[0].textContent).toContain("Search library");
 });

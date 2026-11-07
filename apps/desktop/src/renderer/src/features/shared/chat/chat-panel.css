@@ -156,3 +156,28 @@
    (MessageList: .ml__activity / .ml__chip / .ml__thinking), so they flow
    with the conversation and persist for the session — not a fixed bar
    above the composer. */
+
+/* "Using ChatGPT plan · Manage usage" under the backend chips, when the
+   chosen provider is a model on the ChatGPT plan connection. OpenAI's
+   guidelines put this line near the model selector. */
+.ps-libchat-plan {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 2px 12px 6px;
+  color: var(--text-muted);
+  font: 500 11px/1.4 var(--font-sans);
+}
+.ps-libchat-plan-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+.ps-libchat-plan-link:hover { color: var(--text-primary); text-decoration: underline; }
+.ps-libchat-plan-link:focus-visible {
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}

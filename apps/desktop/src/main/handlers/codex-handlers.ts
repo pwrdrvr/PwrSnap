@@ -19,6 +19,7 @@ import {
   codexEffortForModel,
   hasObsoleteCodexDefaults,
   resolveManagedCodexEnrichmentModel,
+  isCustomProvider,
   resolveCustomModel,
   err,
   ok
@@ -721,6 +722,18 @@ export function registerCodexHandlers(params?: {
     }
 
     const enrichmentProvider = settings.ai.defaults.enrichment.provider;
+    // Sign in with ChatGPT: automatic post-capture work on the user's plan
+    // needs its own consent. A clicked action (regenerate) is the user's own
+    // request and runs without it.
+    if (triggerSource === "auto-enrichment" && isCustomProvider(enrichmentProvider) &&
+        settings.ai.chatgptPlan?.backgroundConsent !== true) {
+      const model = resolveCustomModel(settings.ai.customConnections, settings.ai.customModels,
+        enrichmentProvider!.slice("custom:".length));
+      if (model?.auth.type === "chatgpt") {
+        return validationError("chatgpt_background_consent_required",
+          "Allow automatic use for new captures in Settings → AI Providers → ChatGPT first.");
+      }
+    }
     if (refreshDefaultsBeforeEnrichment && (!enrichmentProvider || enrichmentProvider === "codex") &&
         !managedEnrichmentByCatalog.has(codexCatalogKey(settings)) &&
         (!settings.ai.defaults.enrichment.model || hasObsoleteCodexDefaults(settings, ["enrichment"]))) {
@@ -836,6 +849,17 @@ export function registerCodexHandlers(params?: {
     const resolveFallback = fallbackSettings === null
       ? undefined
       : async (): Promise<EnrichmentBackendPlan> => {
+        // A fallback spends the same user's plan as a primary. Consent is
+        // checked at the hop so a healthy non-plan primary can still run.
+        const fallbackProvider = fallbackSettings.ai.defaults.enrichment.provider;
+        if (triggerSource === "auto-enrichment" && settings.ai.chatgptPlan?.backgroundConsent !== true &&
+            fallbackProvider?.startsWith("custom:")) {
+          const model = resolveCustomModel(settings.ai.customConnections, settings.ai.customModels,
+            fallbackProvider.slice("custom:".length));
+          if (model?.auth.type === "chatgpt") {
+            throw new Error("Allow automatic use for new captures in Settings → AI Providers → ChatGPT first.");
+          }
+        }
         const catalogKey = codexCatalogKey(fallbackSettings);
         const { provider, model } = fallbackSettings.ai.defaults.enrichment;
         const codexBacked = enrichmentAcpAgentId(fallbackSettings) === undefined &&

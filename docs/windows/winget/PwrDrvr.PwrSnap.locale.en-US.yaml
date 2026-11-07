@@ -23,7 +23,7 @@ Description: |-
 
   Captures are written to your own machine as a local SQLite index plus a
   content-addressed store of the source images, and they stay there. PwrSnap
-  opens no account of its own, holds no API key of its own, and sends no
+  keeps optional OAuth tokens and API credentials encrypted locally, and sends no
   telemetry.
 
   AI features are opt-in and run through the OpenAI Codex CLI or Codex Desktop

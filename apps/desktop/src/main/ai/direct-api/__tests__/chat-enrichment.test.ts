@@ -32,7 +32,7 @@ test("existing chat controller streams and persists direct replies, resumes jour
   }); cleanup.push(http.close);
   const entry = model(`${http.url}/v1`); entry.enrichmentReasoning = "off"; const store = memoryStore();
   // Main-only service seam; real protocol transport and production controller.
-  const service = { selected: async () => entry, credentials: { headers: async () => ({}) } } as unknown as CustomModelService;
+  const service = { selected: async () => entry, credentials: { headers: async () => ({}), noteFailure: async () => undefined } } as unknown as CustomModelService;
   const backend = new DirectChatBackend(entry, service, (id) => store.readJournal(id)); cleanup.push(() => backend.close());
   const controller = new PwrSnapChatSessionController({ client: backend, store, readSettings: async () => ({}),
     broadcast: () => undefined, buildSystemPrompt: () => "Agent tools must not be forwarded", toolLabels: {} });
@@ -65,7 +65,7 @@ test("opted-in loopback enrichment disables llama.cpp thinking", async () => {
       usage: { prompt_tokens: 9, completion_tokens: 3, total_tokens: 12 } });
   }); cleanup.push(http.close);
   const entry = model(`${http.url}/v1`); entry.capabilities.streaming = false; entry.enrichmentReasoning = "off";
-  const service = { credentials: { headers: async () => ({}) } } as unknown as CustomModelService;
+  const service = { credentials: { headers: async () => ({}), noteFailure: async () => undefined } } as unknown as CustomModelService;
   const result = await new DirectEnrichmentBackend(entry, service).enrichCapture({ imagePaths: [path],
     metadata: { captureKind: "image", sourceAppName: null, sourceAppBundleId: null, widthPx: 1, heightPx: 1, capturedAt: "2026-01-01T00:00:00Z" } });
   expect(request).toMatchObject({ chat_template_kwargs: { enable_thinking: false } });
@@ -77,7 +77,7 @@ test("direct enrichment sends only prepared image bytes and validates the existi
   let request: unknown;
   const http = await server(async (req, res) => { request = JSON.parse(await body(req)); json(res, { content: [{ type: "text", text: JSON.stringify({ title: "Fixture image", description: "One synthetic pixel", ocrText: "", filenameStem: "fixture", textAnchors: [], tags: [] }) }] }); }); cleanup.push(http.close);
   const entry = model(`${http.url}/v1`, "anthropic-messages"); entry.capabilities.streaming = false;
-  const service = { credentials: { headers: async () => ({}) } } as unknown as CustomModelService;
+  const service = { credentials: { headers: async () => ({}), noteFailure: async () => undefined } } as unknown as CustomModelService;
   const client = new DirectEnrichmentBackend(entry, service);
   const timeout = vi.spyOn(AbortSignal, "timeout");
   let result;

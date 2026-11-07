@@ -156,9 +156,7 @@ vi.mock("../../window", () => ({
 }));
 
 vi.mock("../../settings/desktop-secret-store", () => ({
-  DesktopSecretStore: class {
-    getValue = mocks.getValue;
-  },
+  getDesktopSecretStore: () => ({ getValue: mocks.getValue }),
   // toError() instanceof-checks against this — keep the shape
   // compatible with the production export.
   SecretUnavailableError: class SecretUnavailableError extends Error {

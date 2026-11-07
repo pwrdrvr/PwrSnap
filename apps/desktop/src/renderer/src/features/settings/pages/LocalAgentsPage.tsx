@@ -341,12 +341,27 @@ export function LocalAgentsPage(): ReactElement {
     const result = await dispatch("localAgents:revoke", { id });
     if (result.ok) {
       setGrants((current) => current.map((grant) => grant.id === id ? result.value : grant));
+      setConfirmRevokeId(null);
+      // The card moves to the revoked group; follow it to its Remove.
+      setReturnFocusTo(`remove:${id}`);
       setError(null);
     } else {
+      // Keep the confirm open so the user can retry or cancel from it.
       setError(result.error.message);
     }
-    setConfirmRevokeId(null);
     setRevokingId(null);
+  };
+
+  // Where focus goes when a Remove button disappears: the next revoked card,
+  // else the first live Session's Revoke…, else nowhere left to go.
+  const focusAfterRemoving = (removedIds: readonly string[]): string | null => {
+    const removed = new Set(removedIds);
+    const at = revokedGrants.findIndex((grant) => removed.has(grant.id));
+    const rest = revokedGrants.filter((grant) => !removed.has(grant.id));
+    const next = rest[Math.max(0, at)] ?? rest.at(-1);
+    if (next !== undefined) return `remove:${next.id}`;
+    const live = activeGrants[0];
+    return live === undefined ? null : `revoke:${live.id}`;
   };
 
   const applyRemoval = (removedIds: readonly string[]): void => {
@@ -363,6 +378,7 @@ export function LocalAgentsPage(): ReactElement {
     const result = await dispatch("localAgents:remove", { id });
     if (result.ok) {
       applyRemoval(result.value.removedIds);
+      setReturnFocusTo(focusAfterRemoving(result.value.removedIds));
       setError(null);
     } else {
       setError(result.error.message);
@@ -375,6 +391,7 @@ export function LocalAgentsPage(): ReactElement {
     const result = await dispatch("localAgents:removeRevoked", {});
     if (result.ok) {
       applyRemoval(result.value.removedIds);
+      setReturnFocusTo(focusAfterRemoving(result.value.removedIds));
       setError(null);
     } else {
       setError(result.error.message);
@@ -713,6 +730,7 @@ export function LocalAgentsPage(): ReactElement {
                     <div className="pss__auth-node-meta">
                       <span>Authorized {formatDate(grant.createdAt)}</span>
                       <button
+                        ref={returnFocusTo === `remove:${grant.id}` ? focusOnMount : undefined}
                         type="button"
                         aria-label={`Remove revoked Session ${grant.name} (ID ${shortSessionId(grant.id)})`}
                         disabled={removing !== null}

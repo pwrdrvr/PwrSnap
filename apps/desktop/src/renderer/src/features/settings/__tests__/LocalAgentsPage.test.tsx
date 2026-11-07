@@ -322,6 +322,7 @@ describe("LocalAgentsPage", () => {
       buttonNamed(el, "Revoke access")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(dispatch).toHaveBeenCalledWith("localAgents:revoke", { id: "lag_test" });
+    expect(document.activeElement?.textContent).toBe("Remove");
     // Now in the revoked group: no role picker, and Remove is offered.
     expect(el.textContent).toContain("Revoked · 1");
     expect(el.querySelector("select[aria-label='Role for PwrAgent']")).toBeNull();
@@ -378,6 +379,10 @@ describe("LocalAgentsPage", () => {
     expect(dispatch).toHaveBeenCalledWith("localAgents:remove", { id: "lag_old_a93f" });
     expect(el.textContent).toContain("Revoked · 1");
     expect(el.textContent).not.toContain("ID a93f");
+    // Focus moves to the next revoked card's Remove, not to the document body.
+    expect(document.activeElement?.getAttribute("aria-label")).toBe(
+      "Remove revoked Session PwrAgent 2 (ID 52d0)"
+    );
 
     await act(async () => {
       buttonNamed(el, "Remove all")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -390,6 +395,26 @@ describe("LocalAgentsPage", () => {
     expect(el.textContent).not.toContain("Revoked ·");
     expect(el.querySelectorAll(".pss__auth-node.is-session")).toHaveLength(1);
     expect(el.textContent).toContain("ID 7c1e");
+  });
+
+  test("a failed revoke keeps the confirm open", async () => {
+    const { dispatch } = installFakeApi();
+    dispatch.mockImplementation(async (name: string): Promise<AnyResult> => {
+      if (name === "localAgents:list") {
+        return { ok: true, value: { grants: [grant], roles, listenerStatus: { state: "off" } } };
+      }
+      if (name === "localAgents:revoke") return { ok: false, error: { message: "disk full" } };
+      return { ok: true, value: { entries: [] } };
+    });
+    const el = await renderPage();
+    await act(async () => {
+      buttonNamed(el, "Revoke…")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      buttonNamed(el, "Revoke access")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(el.textContent).toContain("disk full");
+    expect(buttonNamed(el, "Revoke access")).toBeDefined();
   });
 
   test("role assignment dispatches the selected Session and role", async () => {

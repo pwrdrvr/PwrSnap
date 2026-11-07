@@ -79,3 +79,18 @@ describe("local-agent duplicate and family command policy", () => {
     expect(localAgentCommandRequirement(command, {})).toEqual({ all: ["library.read"] });
   });
 });
+
+describe("local-agent Session management", () => {
+  test("no Session-management verb is reachable by an agent, whatever its role", () => {
+    for (const command of [
+      "localAgents:list",
+      "localAgents:revoke",
+      "localAgents:remove",
+      "localAgents:removeRevoked",
+      "localAgents:update",
+      "localAgents:assignRole"
+    ]) {
+      expect(localAgentCommandRequirement(command, {})).toBeNull();
+    }
+  });
+});

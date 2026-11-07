@@ -287,12 +287,6 @@ export class LocalAgentMcpServer {
     if (this.closed) throw new Error("MCP server cannot restart; reconnect manually");
     if (this.starting !== undefined) return this.starting;
     this.starting = (async () => {
-      // Native approvals belong to live connections. Expire crash survivors
-      // once, before accepting clients; an idempotent start preserves live sessions.
-      for (const grant of await this.grantService.list()) {
-        if (grant.nativeConsent !== undefined && grant.revokedAt === null)
-          await this.grantService.revokeGrant(grant.id);
-      }
       await this.bridge.start();
       this.reaper = setInterval(() => { void this.settingsChanged().catch(() => undefined); }, 1000);
       this.reaper.unref();
@@ -317,8 +311,15 @@ export class LocalAgentMcpServer {
       if (policy === null) continue;
       const fingerprint = JSON.stringify(policy);
       if (session.fingerprint !== "" && session.fingerprint !== fingerprint) {
-        session.mcp.sendToolListChanged();
-        session.mcp.sendResourceListChanged();
+        try {
+          // The McpServer convenience wrappers discard these promises.
+          await Promise.all([
+            session.mcp.server.sendToolListChanged(),
+            session.mcp.server.sendResourceListChanged()
+          ]);
+        } catch {
+          log.debug("MCP catalog notification unavailable; host must rediscover manually");
+        }
       }
       session.fingerprint = fingerprint;
     }

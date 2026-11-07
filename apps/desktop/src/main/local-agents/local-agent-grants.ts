@@ -83,6 +83,24 @@ export class LocalAgentGrantService {
     return settings.localAgents.grants;
   }
 
+  /** Desktop boot only, before subscribing the MCP lifecycle to broadcasts.
+   * Every native approval belongs to a connection lost with the old process. */
+  async expireNativeSessions(): Promise<void> {
+    await this.serializeMutation(async () => {
+      const settings = await this.settings.read();
+      const revokedAt = this.now().toISOString();
+      let changed = false;
+      const grants = settings.localAgents.grants.map((grant) => {
+        if (grant.nativeConsent === undefined || grant.revokedAt !== null) return grant;
+        changed = true;
+        return { ...grant, revokedAt };
+      });
+      if (!changed) return;
+      const next = await this.settings.write({ localAgents: { grants } });
+      await this.notifySettingsChanged(next);
+    });
+  }
+
   async listRoles(): Promise<LocalAgentRoleProfile[]> {
     const settings = await this.settings.read();
     return settings.localAgents.roles;

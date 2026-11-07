@@ -34,6 +34,9 @@ enum Frame {
     Close {
         id: u64,
     },
+    Written {
+        id: u64,
+    },
 }
 impl Frame {
     fn encode(&self) -> io::Result<Vec<u8>> {
@@ -50,6 +53,7 @@ impl Frame {
             }
             Self::Data { id, data } => json!({"type":"data","id":id,"data":data}),
             Self::Close { id } => json!({"type":"close","id":id}),
+            Self::Written { id } => json!({"type":"written","id":id}),
         };
         let mut bytes = serde_json::to_vec(&value)?;
         bytes.push(b'\n');
@@ -353,6 +357,13 @@ async fn serve(path: &Path, allow_http: bool) -> io::Result<()> {
                                     write.write_all(&bytes),
                                 )
                                 .await??;
+                                // Desktop sends at most one unacknowledged chunk
+                                // per peer, so an actively draining large response
+                                // cannot overflow the bounded command queue.
+                                events
+                                    .send(Frame::Written { id })
+                                    .await
+                                    .map_err(|_| error("desktop closed"))?;
                             }
                             Ok::<(), io::Error>(())
                         };

@@ -1,4 +1,6 @@
 import { Server } from "node:net";
+import { setImmediate as idle } from "node:timers/promises";
+import fc from "fast-check";
 import { afterEach, expect, test, vi } from "vitest";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 vi.mock("electron", () => ({ app: {} }));
@@ -46,6 +48,44 @@ function send(
     )
   );
 }
+
+test("catalog invalidations before SSE are bounded, coalesced and delivered with metadata when it opens", async () => {
+  await fc.assert(fc.asyncProperty(fc.array(fc.tuple(
+    fc.constantFrom("notifications/tools/list_changed", "notifications/resources/list_changed"),
+    fc.jsonValue()
+  ), { minLength: 1, maxLength: 20 }), async (changes) => {
+    let transport!: IpcHttpTransport;
+    const service = new IpcHttpMcp(async (input) => {
+      transport = input;
+      input.onmessage = (message) => {
+        if ("id" in message && message.id !== undefined)
+          void input.send({ jsonrpc: "2.0", id: message.id, result: {} });
+      };
+    });
+    try {
+      const { token } = await service.bootstrap(new AbortController().signal);
+      const post = peer(service);
+      send(post.stream, token, initialize);
+      await idle(); await idle();
+      const expected = new Map<string, unknown>();
+      for (const [method, metadata] of changes) {
+        const message = { jsonrpc: "2.0", method, params: { _meta: { generated: metadata } }, extension: "preserved" } as const;
+        // Model only the latest invalidation per catalog, canonicalized as JSON.
+        expected.set(method, JSON.parse(JSON.stringify(message)));
+        await transport.send(message);
+      }
+      const sse = peer(service);
+      send(sse.stream, token, undefined, transport.sessionId, "GET");
+      await idle(); await idle();
+      const delivered = sse.output.join("").split("\n").filter((line) => line.startsWith("data: "))
+        .map((line) => JSON.parse(line.slice(6)));
+      expect(delivered).toEqual([...expected.values()]);
+      expect(transport.controller.signal.aborted).toBe(false);
+      await expect(transport.send({ jsonrpc: "2.0", id: "approval", method: "elicitation/create", params: {} }))
+        .resolves.toBeUndefined();
+    } finally { await service.close(); }
+  }), { numRuns: 30 });
+});
 test("HTTP framing preserves bidirectional requests, notifications, cancellation, metadata and extension fields without any listen call", async () => {
   const listen = vi.spyOn(Server.prototype, "listen");
   const messages: JSONRPCMessage[] = [];

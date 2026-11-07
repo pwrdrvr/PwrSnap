@@ -7,6 +7,9 @@ import { mcpExecutablePath } from "./mcp-executable";
 
 const MAX_MESSAGE = 1024 * 1024;
 const MAX_PENDING = 4 * MAX_MESSAGE;
+/** Existing synchronous sinks may return a write count; asynchronous sinks
+ * return a promise. Both transports await completion before accepting more. */
+type ByteWriter = (bytes: Buffer) => unknown;
 export const MANUAL_RECONNECT =
   "Open PwrSnap yourself, enable Local agents in Settings, then manually reconnect this MCP server in your host. Requests are never replayed.";
 
@@ -20,7 +23,7 @@ export type McpConnection = {
 };
 
 type Frame = {
-  type: "ready" | "open" | "data" | "close";
+  type: "ready" | "open" | "data" | "written" | "close";
   id: number;
   data?: string;
   relay_version?: string;
@@ -35,14 +38,17 @@ export class NativeIpcStream extends Duplex {
   readonly remoteAddress = "local-ipc";
   private timer: ReturnType<typeof setTimeout> | undefined;
   private timeoutMs = 0;
-  constructor(private readonly writeBytes: (bytes: Buffer) => void, private readonly disconnect: () => void) {
+  constructor(private readonly writeBytes: ByteWriter, private readonly disconnect: () => void) {
     super({ highWaterMark: 64 * 1024 });
     this.on("error", () => undefined);
   }
   override _read(): void {}
   override _write(bytes: Buffer, _encoding: BufferEncoding, done: (error?: Error | null) => void): void {
-    try { this.touch(); this.writeBytes(bytes); done(); }
-    catch (cause) { done(cause instanceof Error ? cause : new Error("IPC output closed")); }
+    this.touch();
+    void Promise.resolve().then(() => this.writeBytes(bytes)).then(
+      () => done(),
+      (cause: unknown) => done(cause instanceof Error ? cause : new Error("IPC output closed"))
+    );
   }
   override _destroy(error: Error | null, done: (error?: Error | null) => void): void {
     clearTimeout(this.timer);
@@ -92,7 +98,7 @@ export class McpByteTransport implements Transport {
   private preparing = false;
   private closed = false;
   constructor(
-    private readonly writeBytes: (bytes: Buffer) => void,
+    private readonly writeBytes: ByteWriter,
     private readonly disconnect: () => void,
     private readonly beforeInitialize?: (message: JSONRPCMessage) => Promise<void>
   ) {}
@@ -164,7 +170,7 @@ export class McpByteTransport implements Transport {
       throw new Error("MCP output overflow");
     }
     try {
-      this.writeBytes(bytes);
+      await this.writeBytes(bytes);
     } catch (cause) {
       this.fail(cause instanceof Error ? cause : new Error("MCP output closed"));
       throw cause;
@@ -192,6 +198,10 @@ export class NativeMcpBridge {
   private stopped: Promise<void> = Promise.resolve();
   private endpoint: string | undefined;
   private readonly connections = new Map<number, McpByteTransport | NativeIpcStream>();
+  private controlWrites: Promise<void> = Promise.resolve();
+  private readonly outputQueues = new Map<number, Promise<void>>();
+  private queuedBytes = 0;
+  private readonly acknowledgements = new Map<number, { resolve: () => void; reject: (error: Error) => void }>();
   onclose?: () => void;
   constructor(
     private readonly options: {
@@ -259,6 +269,10 @@ export class NativeMcpBridge {
     });
   }
   private receive(frame: Frame): void {
+    if (frame.type === "written") {
+      this.acknowledgements.get(frame.id)?.resolve();
+      return;
+    }
     if (frame.type === "close") {
       void this.connections.get(frame.id)?.close();
       return;
@@ -299,28 +313,79 @@ export class NativeMcpBridge {
       }
     });
   }
-  private sendBytes(id: number, bytes: Buffer): void {
-    for (let offset = 0; offset < bytes.length; offset += 16384)
-      this.write({ type: "data", id, data: bytes.subarray(offset, offset + 16384).toString("base64") });
+  private sendBytes(id: number, bytes: Buffer): Promise<void> {
+    // Bound queued logical responses separately from the tiny control frames.
+    // Overflow rejects this connection's send, never the shared listener.
+    if (this.queuedBytes + bytes.length > 64 * MAX_MESSAGE)
+      return Promise.reject(new Error("MCP pending output overflow"));
+    const child = this.child;
+    this.queuedBytes += bytes.length;
+    const previous = this.outputQueues.get(id) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(async () => {
+      for (let offset = 0; offset < bytes.length; offset += 16384) {
+        if (!child || child !== this.child || !this.connections.has(id)) throw new Error(MANUAL_RECONNECT);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const acknowledged = new Promise<void>((resolve, reject) => {
+          timer = setTimeout(() => reject(new Error("MCP peer output stalled; reconnect manually")), 5000);
+          timer.unref();
+          this.acknowledgements.set(id, { resolve, reject });
+        });
+        // Attach the rejection handler before control-pipe I/O can fail.
+        void acknowledged.catch(() => undefined);
+        try {
+          await Promise.all([
+            this.write({ type: "data", id, data: bytes.subarray(offset, offset + 16384).toString("base64") }),
+            acknowledged
+          ]);
+        } finally {
+          clearTimeout(timer);
+          this.acknowledgements.delete(id);
+        }
+      }
+    }).finally(() => {
+      this.queuedBytes -= bytes.length;
+      if (this.outputQueues.get(id) === next) this.outputQueues.delete(id);
+    });
+    this.outputQueues.set(id, next);
+    return next;
   }
   private disconnect(id: number): void {
     this.connections.delete(id);
-    try { this.write({ type: "close", id }); }
-    catch { this.shutdown(); }
+    this.acknowledgements.get(id)?.reject(new Error(MANUAL_RECONNECT));
+    void this.write({ type: "close", id }).catch(() => undefined);
   }
-  private write(frame: Frame): void {
-    const input = this.child?.stdin;
-    if (input === undefined || input.destroyed) throw new Error(MANUAL_RECONNECT);
-    if (input.writableLength > MAX_PENDING) {
-      this.shutdown();
-      throw new Error("MCP control output overflow");
-    }
-    input.write(JSON.stringify(frame) + "\n");
+  private write(frame: Frame): Promise<void> {
+    const child = this.child;
+    const next = this.controlWrites.catch(() => undefined).then(async () => {
+      if (!child || child !== this.child || child.stdin.destroyed) throw new Error(MANUAL_RECONNECT);
+      // One bounded frame at a time. Completion propagates OS backpressure;
+      // the peer acknowledgement also bounds the native per-peer queue.
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          reject(new Error("MCP native control pipe stalled; reconnect manually"));
+          if (this.child === child) this.shutdown();
+        }, 5000);
+        timer.unref();
+        try {
+          child.stdin.write(JSON.stringify(frame) + "\n", (error) => {
+            clearTimeout(timer);
+            if (error) reject(error); else resolve();
+          });
+        } catch (cause) {
+          clearTimeout(timer);
+          reject(cause);
+        }
+      });
+    });
+    this.controlWrites = next;
+    return next;
   }
   private shutdown(): void {
     const child = this.child;
     if (child === undefined) return;
     this.child = undefined;
+    for (const pending of this.acknowledgements.values()) pending.reject(new Error(MANUAL_RECONNECT));
+    this.acknowledgements.clear();
     this.stopped =
       child.pid === undefined || child.exitCode !== null || child.signalCode !== null
         ? Promise.resolve()

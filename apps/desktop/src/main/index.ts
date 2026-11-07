@@ -445,6 +445,9 @@ async function wireLocalAgentMcpLifecycle(): Promise<void> {
     return;
   }
   const { service } = getDesktopSettingsServices();
+  // Revocation broadcasts must finish before the lifecycle subscribes. Doing
+  // this inside start() makes its broadcast await a transition behind itself.
+  await getLocalAgentGrantService().expireNativeSessions();
   const lifecycle = new LocalAgentMcpLifecycle({
     createServer: () => createLocalAgentMcpServer(),
     onStartError: (cause) => {

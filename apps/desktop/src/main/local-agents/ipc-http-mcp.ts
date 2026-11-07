@@ -23,6 +23,7 @@ export class IpcHttpTransport implements Transport {
   private readonly posts = new Map<RequestId, ServerResponse>();
   private sse: ServerResponse | undefined;
   private heartbeat: ReturnType<typeof setInterval> | undefined;
+  private readonly pendingCatalogChanges = new Map<string, string>();
 
   async start(): Promise<void> {}
 
@@ -38,11 +39,22 @@ export class IpcHttpTransport implements Transport {
         : options?.relatedRequestId === undefined
           ? this.sse
           : this.posts.get(options.relatedRequestId);
-    if (!target || target.destroyed)
-      throw new Error("No live HTTP response stream; rediscover or reconnect manually");
     const bytes = `event: message\ndata: ${JSON.stringify(message)}\n\n`;
+    if (Buffer.byteLength(bytes) > 32 * 1024 * 1024) {
+      await this.close();
+      throw new Error("MCP HTTP output overflow");
+    }
+    if (!target || target.destroyed) {
+      if (options?.relatedRequestId === undefined && !("id" in message) && "method" in message &&
+        ["notifications/tools/list_changed", "notifications/resources/list_changed"].includes(message.method)) {
+        // Keep at most the latest two catalog invalidations until the first
+        // SSE stream. No requests, results, approvals or event history replay.
+        this.pendingCatalogChanges.set(message.method, bytes);
+        return;
+      }
+      throw new Error("No live HTTP response stream; rediscover or reconnect manually");
+    }
     try {
-      if (Buffer.byteLength(bytes) > 32 * 1024 * 1024) throw new Error("MCP HTTP output overflow");
       await new Promise<void>((resolve, reject) =>
         target.write(bytes, (error) => (error ? reject(error) : resolve()))
       );
@@ -91,6 +103,12 @@ export class IpcHttpTransport implements Transport {
       }
       this.sse = res;
       this.headers(res);
+      const pending = [...this.pendingCatalogChanges.values()];
+      this.pendingCatalogChanges.clear();
+      for (const bytes of pending) {
+        await new Promise<void>((resolve, reject) =>
+          res.write(bytes, (error) => error ? reject(error) : resolve()));
+      }
       this.heartbeat = setInterval(() => {
         if (res.destroyed || res.writableLength > 4 * 1024 * 1024) {
           void this.close();
@@ -161,6 +179,7 @@ export class IpcHttpTransport implements Transport {
   async close(): Promise<void> {
     if (this.controller.signal.aborted) return;
     this.controller.abort();
+    this.pendingCatalogChanges.clear();
     clearInterval(this.heartbeat);
     for (const response of this.posts.values()) response.destroy();
     this.posts.clear();

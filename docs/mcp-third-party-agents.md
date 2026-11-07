@@ -155,7 +155,10 @@ the desktop SDK still validates supported messages and advertised capabilities.
 The full MCP stream supports notifications, server requests, responses,
 cancellation, approval/elicitation metadata and extension fields. The byte
 relay does not select fields. Supported tool/resource list-change notifications
-ask the host to re-discover; they do not update host caches themselves. Loaded
+ask the host to re-discover; they do not update host caches themselves.
+HTTP retains at most the latest tool and resource catalog invalidations until
+its first GET SSE stream opens. Hosts without SSE must explicitly re-discover.
+No operations, results or approvals are queued for replay. Loaded
 skills and initialization instructions require the host's supported refresh
 or an explicit new connection. Prompts/skills not advertised by the desktop
 are not supplied by the relay.

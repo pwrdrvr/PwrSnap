@@ -124,6 +124,35 @@ const initializeHttp = { jsonrpc: "2.0", id: 1, method: "initialize", params: {
 function httpMessage(text: string): Record<string, unknown> {
   return JSON.parse(text.split("\n").find((line) => line.startsWith("data: "))!.slice(6));
 }
+test("HTTP policy edits before initialization/SSE queue invalidations and later edits notify the open stream", async () => {
+  const { token } = await server.bootstrapHttp(new AbortController().signal);
+  const [grant] = await grants.list();
+  await grants.assignRole(grant.id, "builtin.full-access");
+  await server.settingsChanged();
+  const send = httpHost();
+  const initialized = await send(initializeHttp, { authorization: `Bearer ${token}` });
+  const headers = { authorization: `Bearer ${token}`, "mcp-session-id": initialized.headers["mcp-session-id"] as string };
+  // A host that never opens SSE can still explicitly rediscover current tools.
+  expect(httpMessage((await send({ jsonrpc: "2.0", id: 2, method: "tools/list" }, headers)).text))
+    .toMatchObject({ result: { tools: [{ name: "fixture_search" }] } });
+  const events: string[] = [];
+  const req = request({ socketPath: endpoint, path: "/mcp", method: "GET", headers: {
+    ...headers, accept: "text/event-stream"
+  } }, (res) => { res.setEncoding("utf8"); res.on("data", (bytes: string) => events.push(bytes)); });
+  req.on("error", () => undefined);
+  req.end();
+  const messages = (): string[] => events.join("").split("\n").filter((line) => line.startsWith("data: "))
+    .map((line) => (JSON.parse(line.slice(6)) as { method: string }).method);
+  try {
+    await vi.waitFor(() => expect(messages()).toEqual([
+      "notifications/tools/list_changed", "notifications/resources/list_changed"
+    ]));
+    await grants.assignRole(grant.id, "builtin.preview");
+    await server.settingsChanged();
+    await vi.waitFor(() => expect(messages()).toHaveLength(4));
+    expect((await grants.authorizeClient(grant.id))?.capabilities).toEqual(["library.read"]);
+  } finally { req.destroy(); }
+});
 test("HTTP over the same protected IPC endpoint uses native bootstrap and the desktop catalog and validation", async () => {
   const send = httpHost();
   expect((await send(initializeHttp)).status).toBe(401);

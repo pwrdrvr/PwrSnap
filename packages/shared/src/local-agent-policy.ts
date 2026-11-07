@@ -9,6 +9,10 @@ import {
   type Settings
 } from "./protocol";
 
+/** Cap on `localAgents.retainedOAuthClients`. Past it the oldest registration
+ *  is dropped; that agent then has to register again before asking. */
+export const MAX_RETAINED_LOCAL_AGENT_OAUTH_CLIENTS = 64;
+
 export const LOCAL_AGENT_BUILT_IN_ROLES = [
   {
     id: "builtin.search",

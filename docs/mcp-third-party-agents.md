@@ -25,6 +25,26 @@ and role in PwrSnap's own window; the browser page a client opens cannot
 approve anything (it has no form and no script — the server test pins
 that), it only waits.
 
+### Revoke, remove, and asking again
+
+Revoking a Session deletes its credential at once; the card stays, marked
+revoked. Removing a revoked Session deletes that saved entry. Active
+Sessions offer only Revoke, and `localAgents:remove` refuses one, so
+removal can never end or restore access. Audit entries keep the removed
+Session's id.
+
+Approving the same agent again always makes a new Session with a new id,
+even under the same name, which is why each card shows when it was
+authorized and the id's last four characters.
+
+The agent's OAuth registration (dynamic client registration) is stored
+with its Sessions. When the last Session holding one is removed, PwrSnap
+keeps the registration in `localAgents.retainedOAuthClients`, capped at 64,
+without any credential. Without it, Claude Code and Codex, which reuse
+their saved `client_id`, would land on "client is not registered" when they
+next asked, and could only recover by clearing their own OAuth state. A
+kept registration lets an agent open the approval window and nothing more.
+
 There is deliberately no second way to mint a token. A device-flow-shaped
 "pair" endpoint was built and removed in
 [pwrdrvr/PwrSnap#561](https://github.com/pwrdrvr/PwrSnap/pull/561) once it

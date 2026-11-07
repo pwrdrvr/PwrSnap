@@ -738,6 +738,31 @@ export function registerSettingsDataHandlers(options: {
     }
   });
 
+  bus.register("localAgents:remove", async (req) => {
+    if (typeof req.id !== "string" || req.id.trim().length === 0) {
+      return err({
+        kind: "validation",
+        code: "invalid_local_agent_id",
+        message: "localAgents:remove: id must be a non-empty string"
+      });
+    }
+    try {
+      const removedIds = await getLocalAgentGrantService().removeRevokedGrants([req.id]);
+      return ok({ removedIds });
+    } catch (cause) {
+      return err(toLocalAgentError(cause));
+    }
+  });
+
+  bus.register("localAgents:removeRevoked", async () => {
+    try {
+      const removedIds = await getLocalAgentGrantService().removeRevokedGrants("all-revoked");
+      return ok({ removedIds });
+    } catch (cause) {
+      return err(toLocalAgentError(cause));
+    }
+  });
+
   bus.register("localAgents:update", async (req) => {
     if (typeof req.id !== "string" || req.id.trim().length === 0) {
       return err({

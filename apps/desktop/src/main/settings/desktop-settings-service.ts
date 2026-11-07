@@ -100,6 +100,7 @@ import {
   defaultLocalAgentRoleConstraints,
   isValidRole,
   LOCAL_AGENT_BUILT_IN_ROLES,
+  MAX_RETAINED_LOCAL_AGENT_OAUTH_CLIENTS,
   isRedactionStyle,
   inferUpdateSelection,
   isUpdateChannel,
@@ -308,7 +309,8 @@ export function defaultSettings(
         permissions: [...role.permissions],
         budgets: cloneLocalAgentBudgets(role.budgets)
       })),
-      audit: []
+      audit: [],
+      retainedOAuthClients: []
     }
   };
 }
@@ -1363,6 +1365,10 @@ function parseLocalAgentsSettings(
   if (raw.grants !== undefined && !Array.isArray(raw.grants)) return null;
   if (raw.roles !== undefined && !Array.isArray(raw.roles)) return null;
   if (raw.audit !== undefined && !Array.isArray(raw.audit)) return null;
+  if (
+    raw.retainedOAuthClients !== undefined &&
+    !Array.isArray(raw.retainedOAuthClients)
+  ) return null;
   const rolesRaw = raw.roles ?? defaults.roles;
   if (rolesRaw.length > 100) return null;
   const roleIds = new Set<string>();
@@ -1412,11 +1418,22 @@ function parseLocalAgentsSettings(
     auditIds.add(entry.id);
     audit.push(entry);
   }
+  const retainedRaw = raw.retainedOAuthClients ?? [];
+  if (retainedRaw.length > MAX_RETAINED_LOCAL_AGENT_OAUTH_CLIENTS) return null;
+  const retainedOAuthClients: Settings["localAgents"]["retainedOAuthClients"] = [];
+  const retainedIds = new Set<string>();
+  for (const clientRaw of retainedRaw) {
+    const client = parseLocalAgentOAuthClient(clientRaw);
+    if (client === null || retainedIds.has(client.clientId)) return null;
+    retainedIds.add(client.clientId);
+    retainedOAuthClients.push(client);
+  }
   return {
     enabled: raw.enabled ?? defaults.enabled,
     grants,
     roles,
-    audit
+    audit,
+    retainedOAuthClients
   };
 }
 
@@ -2277,7 +2294,11 @@ function mergeLocalAgents(
     enabled: patch.enabled !== undefined ? patch.enabled : current.enabled,
     grants: patch.grants !== undefined ? patch.grants : current.grants,
     roles: patch.roles !== undefined ? patch.roles : current.roles,
-    audit: patch.audit !== undefined ? patch.audit : current.audit
+    audit: patch.audit !== undefined ? patch.audit : current.audit,
+    retainedOAuthClients:
+      patch.retainedOAuthClients !== undefined
+        ? patch.retainedOAuthClients
+        : current.retainedOAuthClients
   };
 }
 

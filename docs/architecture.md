@@ -488,7 +488,9 @@ measured against a seeded large library rather than a handful of captures.
   client registration, PKCE, and its own native approval window. Third-
   party agents (Claude Code, Codex CLI) connect with their built-in OAuth
   clients; there is no second credential path and no helper to install.
-  See [mcp-third-party-agents.md](mcp-third-party-agents.md).
+  Each approval is its own Session; revoking ends it, and removing a revoked
+  one deletes its entry while keeping the agent's registration so it can ask
+  again. See [mcp-third-party-agents.md](mcp-third-party-agents.md).
 
 ## Direction — open and deliberately unresolved
 

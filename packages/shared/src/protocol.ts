@@ -3202,6 +3202,10 @@ export type Settings = {
     grants: LocalAgentClientGrant[];
     roles: LocalAgentRoleProfile[];
     audit: LocalAgentAuditEntry[];
+    /** OAuth registrations whose last Session was removed. Kept so the agent
+     *  can ask for approval again without re-registering; they carry no
+     *  credential and authorize nothing. Main-owned, capped, newest last. */
+    retainedOAuthClients: LocalAgentOAuthClient[];
   };
 };
 
@@ -4016,6 +4020,7 @@ export type SettingsPatch = {
     grants?: LocalAgentClientGrant[];
     roles?: LocalAgentRoleProfile[];
     audit?: LocalAgentAuditEntry[];
+    retainedOAuthClients?: LocalAgentOAuthClient[];
   };
 };
 
@@ -5177,6 +5182,18 @@ export type Commands = {
   "localAgents:revoke": {
     req: { id: string };
     res: LocalAgentClientGrant;
+  };
+  /** Delete the saved entry of a REVOKED Session. Refuses an active one:
+   *  ending access is `localAgents:revoke`. */
+  "localAgents:remove": {
+    req: { id: string };
+    res: { removedIds: string[] };
+  };
+  /** Delete every revoked Session's saved entry. Active Sessions are never
+   *  touched; the set is chosen in main at the moment of the write. */
+  "localAgents:removeRevoked": {
+    req: Record<string, never>;
+    res: { removedIds: string[] };
   };
   "localAgents:update": {
     req: { id: string; patch: LocalAgentClientGrantPatch };

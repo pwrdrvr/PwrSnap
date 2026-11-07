@@ -95,7 +95,7 @@ const baseSettings: Settings = {
     confirmBeforeTrash: true,
     gridZoom: 180, duplicateWithEdits: { image: true, video: true }, editToolbarDock: "float"
   },
-  localAgents: { enabled: false, grants: [], roles: [], audit: [] }
+  localAgents: { enabled: false, grants: [], roles: [], audit: [], retainedOAuthClients: [] }
 };
 
 const patchMock = vi.fn(async (): Promise<void> => undefined);

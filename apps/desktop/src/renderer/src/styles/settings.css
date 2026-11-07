@@ -2729,6 +2729,60 @@ a.pss__top-btn[aria-disabled="true"]:hover {
 .pss__auth-end-state b { font: 700 10px/1 var(--font-sans); text-transform: uppercase; letter-spacing: 0.06em; }
 .pss__auth-end-state small { color: var(--text-muted); font: 500 9px/1 var(--font-mono); }
 .pss__auth-empty { padding: 24px; color: var(--text-muted); font: 500 12px/1.4 var(--font-sans); }
+.pss__auth-hint { margin: 0; padding: 0 6px; color: var(--text-muted); font: 400 10px/1.45 var(--font-sans); }
+/* Names repeat across approvals; the authorization time and id tail tell them apart. */
+.pss__auth-node-id { color: var(--text-muted); font: 500 9px/1.3 var(--font-mono); }
+.pss__auth-group {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 10px 6px 0;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font: 700 9px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.pss__auth-group > button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--accent-bright);
+  cursor: pointer;
+  font: 600 10px/1 var(--font-sans);
+  letter-spacing: 0;
+  text-transform: none;
+}
+.pss__auth-group > button:focus-visible { outline-offset: 2px; border-radius: var(--radius-sm); }
+.pss__auth-group > button:disabled { color: var(--text-muted); cursor: default; }
+/* A revoked Session can never be used again: no role picker, no fill. */
+.pss__auth-node.is-revoked { min-height: 0; gap: 7px; padding: 10px 12px; background: transparent; box-shadow: none; border-style: dashed; }
+.pss__auth-node.is-revoked h3 { color: var(--text-secondary); }
+.pss__auth-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid var(--danger-border);
+  border-radius: 6px;
+  background: var(--danger-soft);
+}
+.pss__auth-confirm > p { margin: 0; color: var(--text-secondary); font: 400 10px/1.4 var(--font-sans); }
+.pss__auth-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.pss__auth-confirm-actions > button {
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid var(--border-default);
+  border-radius: 5px;
+  background: var(--bg-panel-elevated);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: 600 10px/1 var(--font-sans);
+}
+.pss__auth-confirm-actions > button.is-danger { color: var(--danger-text); border-color: var(--danger-border); background: transparent; }
+.pss__auth-confirm-actions > button:disabled { color: var(--text-muted); cursor: default; }
 .pss__usage-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(120px, 1fr));

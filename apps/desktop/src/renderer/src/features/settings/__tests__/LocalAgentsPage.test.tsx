@@ -50,7 +50,7 @@ const roles: LocalAgentRoleProfile[] = LOCAL_AGENT_BUILT_IN_ROLES.map((role) => 
 }));
 
 const baseSettings = {
-  localAgents: { enabled: false, grants: [grant], roles, audit: [] }
+  localAgents: { enabled: false, grants: [grant], roles, audit: [], retainedOAuthClients: [] }
 } as unknown as Settings;
 
 let container: HTMLDivElement | null = null;
@@ -152,6 +152,10 @@ afterEach(async () => {
   container = null;
   vi.clearAllMocks();
 });
+
+function buttonNamed(el: HTMLElement, text: string): HTMLButtonElement | undefined {
+  return Array.from(el.querySelectorAll("button")).find((b) => b.textContent === text);
+}
 
 describe("LocalAgentsPage", () => {
   beforeEach(() => {
@@ -293,18 +297,99 @@ describe("LocalAgentsPage", () => {
     expect(el.textContent).toContain("failed to start, so there is nothing to connect to yet");
   });
 
-  test("revoke button dispatches localAgents:revoke", async () => {
+  test("revoking an active Session takes a second press in the card", async () => {
     const { dispatch } = installFakeApi();
     const el = await renderPage();
-    const button = Array.from(el.querySelectorAll("button")).find((b) =>
-      b.textContent?.includes("Revoke")
-    );
-    expect(button).toBeDefined();
+    const arm = buttonNamed(el, "Revoke…");
     await act(async () => {
-      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      arm?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(dispatch).not.toHaveBeenCalledWith("localAgents:revoke", expect.anything());
+    expect(el.textContent).toContain("loses access now");
+    // The confirm takes focus so a keyboard user lands on the safe choice.
+    expect(document.activeElement?.textContent).toBe("Cancel");
+
+    await act(async () => {
+      buttonNamed(el, "Cancel")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(el.textContent).not.toContain("loses access now");
+    expect(document.activeElement?.textContent).toBe("Revoke…");
+
+    await act(async () => {
+      buttonNamed(el, "Revoke…")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      buttonNamed(el, "Revoke access")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(dispatch).toHaveBeenCalledWith("localAgents:revoke", { id: "lag_test" });
-    expect(el.textContent).toContain("Revoked");
+    // Now in the revoked group: no role picker, and Remove is offered.
+    expect(el.textContent).toContain("Revoked · 1");
+    expect(el.querySelector("select[aria-label='Role for PwrAgent']")).toBeNull();
+    expect(buttonNamed(el, "Remove")).toBeDefined();
+  });
+
+  test("revoked Sessions sit below active ones, named apart, and can be removed", async () => {
+    const sessions: LocalAgentClientGrant[] = [
+      { ...grant, id: "lag_old_a93f", revokedAt: "2026-06-07T13:00:00.000Z" },
+      { ...grant, id: "lag_new_7c1e", createdAt: "2026-06-07T14:00:00.000Z" },
+      { ...grant, id: "lag_old_52d0", name: "PwrAgent 2", revokedAt: "2026-06-07T13:05:00.000Z" }
+    ];
+    const dispatch = vi.fn(async (name: string, req: unknown): Promise<AnyResult> => {
+      if (name === "localAgents:list") {
+        return { ok: true, value: { grants: sessions, roles, listenerStatus: { state: "off" } } };
+      }
+      if (name === "localAgents:audit") return { ok: true, value: { entries: [] } };
+      if (name === "localAgents:usage") return { ok: true, value: { entries: [] } };
+      if (name === "localAgents:remove") {
+        return { ok: true, value: { removedIds: [(req as { id: string }).id] } };
+      }
+      if (name === "localAgents:removeRevoked") {
+        return { ok: true, value: { removedIds: ["lag_old_52d0"] } };
+      }
+      return { ok: true, value: undefined };
+    });
+    (window as Window).pwrsnapApi = {
+      dispatch,
+      on: () => () => undefined,
+      startCaptureDrag: () => undefined
+    } as unknown as NonNullable<Window["pwrsnapApi"]>;
+    const el = await renderPage();
+
+    const cards = Array.from(el.querySelectorAll(".pss__auth-node.is-session"));
+    expect(cards.map((card) => card.querySelector("h3")?.textContent)).toEqual([
+      "PwrAgent", "PwrAgent 2", "PwrAgent"
+    ]);
+    expect(cards[0]?.textContent).toContain("ID 7c1e");
+    expect(cards[0]?.textContent).toContain("active");
+    // Newest revoke first; each revoked card carries its own id tail.
+    expect(cards[1]?.textContent).toContain("ID 52d0");
+    expect(cards[2]?.textContent).toContain("ID a93f");
+    expect(el.querySelectorAll("select[aria-label='Role for PwrAgent']")).toHaveLength(1);
+    expect(el.textContent).toContain("Revoked · 2");
+    // An active Session never offers Remove.
+    expect(cards[0]?.querySelector("button[aria-label^='Remove']")).toBeNull();
+
+    const removeOne = el.querySelector<HTMLButtonElement>(
+      "button[aria-label='Remove revoked Session PwrAgent (ID a93f)']"
+    );
+    await act(async () => {
+      removeOne?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(dispatch).toHaveBeenCalledWith("localAgents:remove", { id: "lag_old_a93f" });
+    expect(el.textContent).toContain("Revoked · 1");
+    expect(el.textContent).not.toContain("ID a93f");
+
+    await act(async () => {
+      buttonNamed(el, "Remove all")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(dispatch).not.toHaveBeenCalledWith("localAgents:removeRevoked", expect.anything());
+    await act(async () => {
+      buttonNamed(el, "Remove 1")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(dispatch).toHaveBeenCalledWith("localAgents:removeRevoked", {});
+    expect(el.textContent).not.toContain("Revoked ·");
+    expect(el.querySelectorAll(".pss__auth-node.is-session")).toHaveLength(1);
+    expect(el.textContent).toContain("ID 7c1e");
   });
 
   test("role assignment dispatches the selected Session and role", async () => {

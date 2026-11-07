@@ -1630,4 +1630,57 @@ describe("settings:read + settings:write round-trip (integration)", () => {
 
     __setSettingsServicesForTests({ service: null, secrets: null });
   });
+
+  test("localAgents:remove deletes only revoked Sessions, and only for the app", async () => {
+    const { mkdtemp } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const path = await import("node:path");
+    const dir = await mkdtemp(path.join(tmpdir(), "pwrsnap-local-agents-remove-"));
+    const { DesktopSettingsService } = await import(
+      "../../settings/desktop-settings-service"
+    );
+    const { DesktopSecretStore } = await import("../../settings/desktop-secret-store");
+    const { LocalAgentGrantService } = await import("../../local-agents/local-agent-grants");
+    const { __setSettingsServicesForTests } = await import("../settings-handlers");
+    const service = new DesktopSettingsService({ filePath: path.join(dir, "settings.json") });
+    const secrets = new DesktopSecretStore({ filePath: path.join(dir, "secrets.bin") });
+    __setSettingsServicesForTests({ service, secrets });
+    let seq = 0;
+    const grantService = new LocalAgentGrantService({
+      settings: service,
+      secrets,
+      makeId: () => `lag_remove_${++seq}`
+    });
+    const kept = await grantService.createGrant({ name: "PwrAgent", capabilities: ["library.read"] });
+    const old = await grantService.createGrant({ name: "PwrAgent old", capabilities: ["library.read"] });
+    const older = await grantService.createGrant({ name: "PwrAgent older", capabilities: ["library.read"] });
+
+    const active = await bus.dispatch("localAgents:remove", { id: kept.grant.id }, { principal: "ipc" });
+    expect(active).toMatchObject({ ok: false, error: { code: "session_active" } });
+
+    await bus.dispatch("localAgents:revoke", { id: old.grant.id }, { principal: "ipc" });
+    await bus.dispatch("localAgents:revoke", { id: older.grant.id }, { principal: "ipc" });
+
+    // An MCP agent cannot reach either verb, whatever its role.
+    for (const name of ["localAgents:remove", "localAgents:removeRevoked"] as const) {
+      const denied = await bus.dispatch(
+        name,
+        { id: old.grant.id } as never,
+        { principal: "mcp", localAgent: { clientId: kept.grant.id, capabilities: ["library.read"] } }
+      );
+      expect(denied.ok).toBe(false);
+    }
+    expect((await grantService.list()).map((grant) => grant.id)).toHaveLength(3);
+
+    const one = await bus.dispatch("localAgents:remove", { id: old.grant.id }, { principal: "ipc" });
+    expect(one).toEqual({ ok: true, value: { removedIds: [old.grant.id] } });
+    const rest = await bus.dispatch("localAgents:removeRevoked", {}, { principal: "ipc" });
+    expect(rest).toEqual({ ok: true, value: { removedIds: [older.grant.id] } });
+    expect((await grantService.list()).map((grant) => grant.id)).toEqual([kept.grant.id]);
+
+    const empty = await bus.dispatch("localAgents:remove", { id: " " }, { principal: "ipc" });
+    expect(empty).toMatchObject({ ok: false, error: { code: "invalid_local_agent_id" } });
+
+    __setSettingsServicesForTests({ service: null, secrets: null });
+  });
 });

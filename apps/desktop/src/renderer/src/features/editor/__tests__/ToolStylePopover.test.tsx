@@ -159,7 +159,7 @@ function makeSettings(overrides?: {
       sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
     },
     library: { detailRail: { pinned: true, lastSelectedTab: "info" }, gridCopyPalette: { anchor: "follow" }, confirmBeforeTrash: true, gridZoom: 180, duplicateWithEdits: { image: true, video: true }, editToolbarDock: "float" },
-  localAgents: { enabled: false, grants: [], roles: [], audit: [] }
+  localAgents: { enabled: false, grants: [], roles: [], audit: [], retainedOAuthClients: [] }
   };
 }
 

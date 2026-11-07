@@ -18,8 +18,7 @@ output was itself the bug, and the tests kept it in place:
 
 The three ideas below let the computer choose the inputs. They run on
 [fast-check](https://fast-check.dev/) inside the repo's vitest workspace.
-fast-check is not a dependency yet: the first PR that adds a test adds it
-(see the last section).
+fast-check is a root devDependency (see the last section).
 
 ## The three words
 
@@ -68,9 +67,8 @@ means, and a model test checks the real code against its model.
 ## What the history showed
 
 Each test below ran against the code from just before the fix, extracted with
-`git show <fix>^:<path>` beside the current module. Each was run five times
-with fresh seeds. Current `main` passed every one (100–300 runs each), except
-the last row.
+`git show <fix>^:<path>` beside the current module. Each was run with five or
+ten fresh seeds. The fixed code passed every one (100–8,000 runs).
 
 | Fix | Bug | Test | Found in |
 | --- | --- | --- | --- |
@@ -79,24 +77,27 @@ the last row.
 | #662 | An explicit export whose spans all normalized away exported the whole recording. | Property: export ⊆ requested spans. Oracle: interval union | Runs 1–4; shrunk to one zero-length span |
 | #662 | An edit with more than 200 kept spans silently dropped the rest. | Property: normalizing keeps total kept duration | Runs 1–4; shrunk to exactly 201 spans |
 | #532 | Undo coalescing dropped a delete; the layers were unrecoverable. | Model: random edit sessions, strict fake bus | Runs 24–54 (89–227 ms); shrunk to `begin, create, delete` |
-| open #794 | On `main` today: a double-tapped ⌘Z replays one entry twice. | Same model, plus double-taps from one render | Runs 1–3 (10–26 ms); shrunk to `create; ⌘Z ⌘Z` |
+| #794 | A double-tapped ⌘Z replayed one entry twice. Found on `main`, not in history. | Same model, plus double-taps from one render | Runs 1–3 (10–26 ms); shrunk to `create; ⌘Z ⌘Z` |
+| #712 | Beta · Prerelease trailed a staged final or `-rc` that Stable · Prerelease offered. | Property: the four slots keep their order | Runs 1–9; shrunk to one staged final, `v0.0.0` |
+| #745 | A downloaded update ended every check, so a newer release was never offered. | Model: held-update sessions (I4) | Runs 26–343; shrunk to `download lands; publish newer; Check` |
+| #671 | A relaunch forgot the request budget and read the release list at once. | Same model (I5) | Runs 1–3; shrunk to one `restart` |
+| new | On `main`: a download on one track deleted the other track's installer, and switching back offered it. | Same model (I1) | Runs 3–36; shrunk to `Beta; download lands; Stable` |
+| new | On `main`: Check during a download re-ran electron-updater's check, and Cancel then stopped nothing. | Same model (I6, I7) | Runs 1–9; shrunk to `Check; Cancel` |
 
-The last row is not a historical fix: the model found it on current `main`.
-PR #794's version of `useUndoRedo.ts` (head `60a37585`) passed 3,000 runs of
-the same model.
+The #794 row and the two `new` rows were found on `main`, not in history. #794
+fixed the first; the updater rows are fixed in the PR that added the model.
+The updater rows come from the committed tests,
+`auto-updater.slots.property.test.ts` and
+`auto-updater.held-update.property.test.ts`, ported from PwrGit #554; the
+held-update rows ran with the other invariants switched off, so each counts
+only its own. The update-track logic is shared across the Pwr family, so an
+updater fix in one app belongs in the others' copies of these tests too.
 
 The history has longer fix tails that no generated test has been run against
 yet. These are **sketches**, not results:
 
-- **Auto-updater:** 11 shipped fixes (#296 through #767). A held-update
-  `fc.commands` model would cover them: commands for check, feed publishes,
-  download completes or fails, channel switch, restart. Rules: every check
-  settles, and at most one install owner exists. `selectChannelReleases` and
-  the held-update flow are shared across the Pwr family. PwrGit is committing
-  `selectChannelReleases` properties and a held-update model now. Port them
-  rather than writing a second set.
 - **Stale async completions:** a late result overwrites newer work (#589,
-  #780, #785, #789; open #781, #783, #787, #788). Use one `fc.scheduler`
+  #780, #781, #783, #785, #787, #788, #789). Use one `fc.scheduler`
   oracle: the final state equals some serial order of the requests issued.
 - **Lost one-shot events:** #653, #654 and #723, within 10 days. Rule: for any
   ordering of send, load events and subscriber mount, the subscriber gets the
@@ -162,6 +163,9 @@ yet. These are **sketches**, not results:
   in CI, under vitest's default 5 s per-test timeout.
   - Pure properties: the default `numRuns` (100), in well under a second.
   - jsdom models: about 3 ms per run, so about 300 runs per test.
+  - Models that relaunch a module per run, like the held-update model: about
+    3 ms per run locally, so give the test an explicit timeout for the
+    Windows runner.
   - Real file system or SQLite: temp dirs from `mkdtempSync(tmpdir())`, about
     100 runs.
   - Real FFmpeg: a handful of runs, an explicit timeout, and
@@ -170,12 +174,13 @@ yet. These are **sketches**, not results:
 - **Don't pin a seed in committed tests.** On failure, fast-check prints
   `seed` and `path`. Replay with `fc.assert(prop, { seed, path })`.
 - **A property failure on an unrelated PR is a real bug.** Reproduce it from
-  the printed seed and fix it or file it. Never re-run CI to get green.
+  the printed seed and fix it or file it. Never re-run CI to get green. CI
+  retries a failed unit test once (#801), with a new seed, so a property can
+  fail and then pass in the same job. Check the flake report for it.
 - **Use the scheduler for time and ordering,** not real sleeps or timers.
   Where code reads `performance.now()`, mock it and advance it as a command.
-- **fast-check goes in the root `package.json` devDependencies,** beside
-  vitest. It is MIT, which is on the always-allowed list. As a devDependency,
-  it stays out of `THIRD_PARTY_LICENSES`. Run `pnpm lint` anyway, since it
-  includes `licenses:check`. The 7-day `minimumReleaseAge` cooldown in
-  `pnpm-workspace.yaml` applies. 4.10.2 was published 2026-09-19, so it
-  clears it.
+- **fast-check is a root `package.json` devDependency,** beside vitest
+  (4.10.2, added in #787). It is MIT, which is on the always-allowed list. As
+  a devDependency, it stays out of `THIRD_PARTY_LICENSES`. A bump still runs
+  `pnpm lint`, since it includes `licenses:check`, and waits out the 7-day
+  `minimumReleaseAge` cooldown in `pnpm-workspace.yaml`.

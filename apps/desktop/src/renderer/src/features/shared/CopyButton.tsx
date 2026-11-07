@@ -13,7 +13,10 @@
 import { useEffect, useRef, useState } from "react";
 import {
   acceleratorToDisplayText,
+  resolveExportLadder,
+  rungForPreset,
   type ExportRung,
+  type ExportStrategy,
   type ShortcutPlatform
 } from "@pwrsnap/shared";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
@@ -82,6 +85,86 @@ export function estimateMetricForRung(
     bytes: formatBytes(bytes, true),
     exact: false
   };
+}
+
+/** What one image copy card shows: its label, size, DPI tag, and
+ *  whether it can copy at all. */
+export type ImageCopyCard = {
+  readonly preset: CopyPreset;
+  readonly label: string;
+  readonly dim: string;
+  readonly bytes: string;
+  readonly tag: CopyTag | undefined;
+  readonly disabled: boolean;
+};
+
+const IMAGE_COPY_PRESETS: readonly CopyPreset[] = ["low", "med", "high"];
+const IMAGE_COPY_LABELS: Readonly<Record<CopyPreset, string>> = {
+  low: "Low",
+  med: "Med",
+  high: "High"
+};
+
+/**
+ * The Low / Med / High cards for one image capture, under the active
+ * export strategy. Every image copy surface (the tray, the float-over
+ * toast, the Library's detail rail and grid palette) renders from this,
+ * so the same capture is described the same way everywhere. The tray
+ * once carried its own copy of this logic without the ladder, and showed
+ * no Retina tag on a snap the toast beside it called Retina.
+ *
+ * Legacy strategy: the fixed 800 / 1440 / source estimate, no tags.
+ * DPI-aware strategies: the shared export ladder supplies the size, the
+ * Retina / scale tag, and which rungs are too small to offer.
+ * Main's exact render metrics replace the estimate once they arrive.
+ */
+export function resolveImageCopyCards(input: {
+  readonly widthPx: number;
+  readonly heightPx: number;
+  readonly devicePixelRatio: number;
+  readonly byteSize: number;
+  readonly strategy: ExportStrategy;
+  readonly metrics: Partial<Record<CopyPreset, CopyButtonMetric>>;
+  readonly platform: string | undefined;
+}): ImageCopyCard[] {
+  const ladder =
+    input.strategy === "legacy"
+      ? null
+      : resolveExportLadder(
+          {
+            widthPx: input.widthPx,
+            heightPx: input.heightPx,
+            devicePixelRatio: input.devicePixelRatio
+          },
+          input.strategy
+        );
+  return IMAGE_COPY_PRESETS.map((preset): ImageCopyCard => {
+    const rung = ladder === null ? undefined : rungForPreset(ladder, preset);
+    const unavailable = rung !== undefined && !rung.available;
+    if (unavailable) {
+      return {
+        preset,
+        label: IMAGE_COPY_LABELS[preset],
+        dim: "—",
+        bytes: "—",
+        tag: undefined,
+        disabled: true
+      };
+    }
+    const estimate =
+      rung === undefined
+        ? presetMetrics(preset, input.widthPx, input.heightPx, input.byteSize)
+        : estimateMetricForRung(rung, input.widthPx, input.byteSize);
+    const metric = input.metrics[preset] ?? estimate;
+    return {
+      preset,
+      label: rung?.actual === true ? "Actual" : IMAGE_COPY_LABELS[preset],
+      dim: metric.dim,
+      bytes: metric.bytes,
+      tag: rung === undefined ? undefined : rungTag(rung, input.platform),
+      disabled: false
+    };
+  });
 }
 
 /** Estimated output dimensions + bytes for a given preset against a

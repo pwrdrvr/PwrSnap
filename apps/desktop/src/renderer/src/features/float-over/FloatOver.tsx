@@ -8,18 +8,11 @@ import type {
   ShortcutPlatform,
   VideoRange
 } from "@pwrsnap/shared";
-import {
-  normalizeTagLabel,
-  capturesFolderDisplayPath,
-  resolveExportLadder,
-  rungForPreset
-} from "@pwrsnap/shared";
+import { normalizeTagLabel, capturesFolderDisplayPath } from "@pwrsnap/shared";
 import { PwrSnapMark } from "../shared/BrandMark";
 import {
   CopyButton,
-  presetMetrics,
-  rungTag,
-  estimateMetricForRung,
+  resolveImageCopyCards,
   type CopyAction,
   type CopyPreset
 } from "../shared/CopyButton";
@@ -43,15 +36,6 @@ import { FoIcon } from "./FoIcons";
 import { fitTagChips } from "./fitTagRow";
 import { DOCK_TUCK_COUNTDOWN_MS } from "./float-over-dock-model";
 import { ageTickMs, capturedAtMs, formatCaptureAgo, useNow } from "./float-over-age";
-
-const RES_PRESETS = [
-  { id: "low", label: "Low" },
-  { id: "med", label: "Med" },
-  { id: "high", label: "High" }
-] as const satisfies ReadonlyArray<{
-  id: CopyPreset;
-  label: string;
-}>;
 
 const VARIANTS = {
   compact: { showAnnotate: false, showAi: false, showFooter: false, showStorage: false, autoMs: 4000 },
@@ -1266,47 +1250,29 @@ export function FloatOver({
           </div>
         ) : (
           <div className="fo__copy">
-            {(() => {
-              // Resolve the export ladder once. In legacy mode the cards are
-              // unchanged; with DPI-aware export on, each rung supplies the
-              // Retina/scale tag + a correct pre-render dim estimate.
-              const ladder =
-                exportStrategy === "legacy"
-                  ? null
-                  : resolveExportLadder(
-                      { widthPx: srcW, heightPx: srcH, devicePixelRatio: srcDpr },
-                      exportStrategy
-                    );
-              return RES_PRESETS.map((p) => {
-                const rung = ladder === null ? undefined : rungForPreset(ladder, p.id);
-                const unavailable = rung !== undefined && !rung.available;
-                const estimate = unavailable
-                  ? { dim: "—", bytes: "—", exact: true }
-                  : rung === undefined
-                    ? presetMetrics(p.id, srcW, srcH, srcBytes)
-                    : estimateMetricForRung(rung, srcW, srcBytes);
-                const m = unavailable ? estimate : (copyMetrics?.[p.id] ?? estimate);
-                return (
-                  <CopyButton
-                    key={p.id}
-                    preset={p.id}
-                    label={rung?.actual === true ? "Actual" : p.label}
-                    dim={m.dim}
-                    bytes={m.bytes}
-                    tag={
-                      rung === undefined || unavailable
-                        ? undefined
-                        : rungTag(rung, window.pwrsnapApi?.platform)
-                    }
-                    disabled={unavailable}
-                    onCopy={(preset) => onCopy?.(preset)}
-                    {...(onCopyPath !== undefined ? { onCopyPath } : {})}
-                    {...(onDragPreset !== undefined ? { onDrag: onDragPreset } : {})}
-                    copyPulse={copyPulses?.[p.id] ?? 0}
-                  />
-                );
-              });
-            })()}
+            {resolveImageCopyCards({
+              widthPx: srcW,
+              heightPx: srcH,
+              devicePixelRatio: srcDpr,
+              byteSize: srcBytes,
+              strategy: exportStrategy,
+              metrics: copyMetrics ?? {},
+              platform: window.pwrsnapApi?.platform
+            }).map((card) => (
+              <CopyButton
+                key={card.preset}
+                preset={card.preset}
+                label={card.label}
+                dim={card.dim}
+                bytes={card.bytes}
+                tag={card.tag}
+                disabled={card.disabled}
+                onCopy={(preset) => onCopy?.(preset)}
+                {...(onCopyPath !== undefined ? { onCopyPath } : {})}
+                {...(onDragPreset !== undefined ? { onDrag: onDragPreset } : {})}
+                copyPulse={copyPulses?.[card.preset] ?? 0}
+              />
+            ))}
           </div>
         )}
 

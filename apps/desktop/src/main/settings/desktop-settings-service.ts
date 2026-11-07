@@ -112,6 +112,7 @@ import {
   TOOL_BAG_SIZE
 } from "@pwrsnap/shared";
 import { getMainLogger } from "../log";
+import { upgradeHistoricalLocalAgentRoles } from "./local-agent-role-upgrade";
 const LEGACY_ENRICHMENT_DEFAULT_MODEL = "gpt-5.4-mini";
 const DEFAULTS_MIGRATION_VERSIONS: readonly string[] = [
   "1.0.0-beta.26",
@@ -1357,6 +1358,7 @@ function parseLocalAgentsSettings(
   raw: unknown,
   defaults: Settings["localAgents"]
 ): Settings["localAgents"] | null {
+  raw = upgradeHistoricalLocalAgentRoles(raw);
   if (raw === undefined) return defaults;
   if (!isRecord(raw)) return null;
   if (raw.enabled !== undefined && typeof raw.enabled !== "boolean") return null;
@@ -1364,7 +1366,9 @@ function parseLocalAgentsSettings(
   if (raw.roles !== undefined && !Array.isArray(raw.roles)) return null;
   if (raw.audit !== undefined && !Array.isArray(raw.audit)) return null;
   const rolesRaw = raw.roles ?? defaults.roles;
-  if (rolesRaw.length > 100) return null;
+  // The upgrade retains one previous profile alongside the new built-in,
+  // including when an installation had already filled the old 100-role table.
+  if (rolesRaw.length > 101) return null;
   const roleIds = new Set<string>();
   const roles: LocalAgentRoleProfile[] = [];
   for (const roleRaw of rolesRaw) {
@@ -2024,6 +2028,13 @@ function preserveUnknownSettingsFields(
   next: Settings,
   patch: SettingsPatch
 ): Settings {
+  // Roles and their session references migrate together, even if the next
+  // write patches only one array or an unrelated setting. The forward-field
+  // preservation below must not restore the obsolete half of that pair.
+  if (raw !== null) {
+    const localAgents = upgradeHistoricalLocalAgentRoles(raw.localAgents);
+    if (localAgents !== raw.localAgents) raw = { ...raw, localAgents };
+  }
   const merge = (oldValue: unknown, knownValue: unknown, newValue: unknown, changedValue: unknown): unknown => {
     // An older parser may drop an entire array entry when a newer build adds
     // a strict-schema field to it. Keep the raw array until this build edits

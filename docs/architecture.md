@@ -489,6 +489,9 @@ measured against a seeded large library rather than a handful of captures.
   party agents (Claude Code, Codex CLI) connect with their built-in OAuth
   clients; there is no second credential path and no helper to install.
   See [mcp-third-party-agents.md](mcp-third-party-agents.md).
+  Built-in role upgrades preserve existing sessions' approved permissions and
+  limits in a retained custom profile; expanded roles require new approval.
+  Arbitrary drift from a canonical built-in definition remains rejected.
 
 ## Direction — open and deliberately unresolved
 

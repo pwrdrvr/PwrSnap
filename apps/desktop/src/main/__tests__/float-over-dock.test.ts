@@ -188,10 +188,16 @@ function drag(phase: "start" | "move" | "end"): void {
   handler({ sender: win().webContents }, { phase });
 }
 
-function passThrough(through: boolean, sender: unknown = win().webContents): void {
+type SolidRect = { x: number; y: number; width: number; height: number };
+
+function passThrough(
+  through: boolean,
+  sender: unknown = win().webContents,
+  solid?: readonly SolidRect[]
+): void {
   const handler = mocks.ipcHandlers.get("float-over:pass-through");
   if (handler === undefined) throw new Error("pass-through channel is not wired");
-  handler({ sender }, { through });
+  handler({ sender }, solid === undefined ? { through } : { through, solid });
 }
 
 /** A toast on screen, whose renderer has drawn it. */
@@ -452,6 +458,81 @@ describe("float-over dock", () => {
     // Another webContents cannot switch it.
     passThrough(true, {});
     expect(window.setIgnoreMouseEvents).toHaveBeenCalledTimes(2);
+  });
+
+  // macOS hands a window that ignores the mouse only the moves AppKit
+  // chooses to forward, and a non-key panel (or a pointer driven by a
+  // remote-control app) may get none. The renderer is then never told the
+  // pointer came back over the toast, so every button on it lets clicks
+  // fall through to the app behind. Main must not depend on those moves:
+  // while the window is click-through it watches the cursor itself.
+  describe("click-through never outlives the see-through spot", () => {
+    // The toast is drawn in the top 400px; the 80px strip below the rail
+    // is see-through.
+    const TOAST: SolidRect = { x: 0, y: 0, width: 392, height: 400 };
+
+    function cursorAt(window: MockWindow, x: number, y: number): void {
+      const bounds = window.getBounds();
+      mocks.cursor.x = bounds.x + x;
+      mocks.cursor.y = bounds.y + y;
+    }
+
+    it("takes clicks back when the cursor returns over a drawn part, with no forwarded move", () => {
+      const window = showToast();
+      cursorAt(window, 200, 440);
+      passThrough(true, window.webContents, [TOAST]);
+      expect(window.setIgnoreMouseEvents).toHaveBeenLastCalledWith(true, { forward: true });
+
+      // Still over the see-through strip: stays click-through.
+      vi.advanceTimersByTime(500);
+      expect(window.setIgnoreMouseEvents).toHaveBeenLastCalledWith(true, { forward: true });
+
+      // The pointer moves up onto the copy cards. The renderer hears
+      // nothing, so nothing arrives on the channel.
+      cursorAt(window, 300, 300);
+      vi.advanceTimersByTime(200);
+      expect(window.setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);
+      // ...and the renderer is told, so its next report is not deduped away.
+      expect(window.webContents.send).toHaveBeenCalledWith("events:float-over:pass-through-reset");
+    });
+
+    it("takes clicks back once the cursor leaves the window", () => {
+      const window = showToast();
+      cursorAt(window, 200, 440);
+      passThrough(true, window.webContents, [TOAST]);
+
+      cursorAt(window, -50, 200);
+      vi.advanceTimersByTime(200);
+      expect(window.setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);
+    });
+
+    it("uses page zoom to place the drawn parts", () => {
+      const window = showToast();
+      window.webContents.zoomFactor = 0.5;
+      cursorAt(window, 150, 250);
+      // At zoom 0.5 the 400 CSS px toast covers 200 DIP, so y=250 is
+      // see-through.
+      passThrough(true, window.webContents, [TOAST]);
+      vi.advanceTimersByTime(500);
+      expect(window.setIgnoreMouseEvents).toHaveBeenLastCalledWith(true, { forward: true });
+      cursorAt(window, 150, 150);
+      vi.advanceTimersByTime(200);
+      expect(window.setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);
+    });
+
+    it("stops watching once the window parks", () => {
+      const window = showToast();
+      cursorAt(window, 200, 440);
+      passThrough(true, window.webContents, [TOAST]);
+      setFloatOverState({ kind: "dismiss" });
+      window.setIgnoreMouseEvents.mockClear();
+
+      cursorAt(window, 300, 300);
+      vi.advanceTimersByTime(1000);
+      // Parked windows ignore the mouse outright; the watch must not
+      // hand clicks back to an invisible window.
+      expect(window.setIgnoreMouseEvents).not.toHaveBeenCalled();
+    });
   });
 
   it("never un-parks a parked window's mouse, and a show takes clicks again", () => {

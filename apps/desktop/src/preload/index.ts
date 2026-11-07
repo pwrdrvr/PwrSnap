@@ -451,9 +451,17 @@ const pwrsnapApi = {
    * Float-over renderer → main: the pointer is over a see-through part of
    * the window (`through: true`) or back over something drawn. Main lets
    * clicks fall through to the app behind while it is see-through.
+   * `solid` (CSS px, viewport-relative) lists the drawn parts, so main can
+   * take clicks back by watching the cursor itself.
    */
-  setFloatOverPassThrough(through: boolean): void {
-    ipcRenderer.send(FLOAT_OVER_PASS_THROUGH_CHANNEL, { through });
+  setFloatOverPassThrough(
+    through: boolean,
+    solid?: ReadonlyArray<{ x: number; y: number; width: number; height: number }>
+  ): void {
+    ipcRenderer.send(
+      FLOAT_OVER_PASS_THROUGH_CHANNEL,
+      solid === undefined ? { through } : { through, solid }
+    );
   },
   /**
    * Float-over renderer → main: ask for the current toast state. Call it

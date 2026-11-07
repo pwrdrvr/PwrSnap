@@ -127,6 +127,10 @@ let takingMouse = false;
 /** The pointer is over a see-through part of the window, so clicks go to
  *  whatever is behind it. See `wireFloatOverPassThroughChannel`. */
 let passThrough = false;
+/** The drawn parts of the window, window-local DIP, as the renderer
+ *  reported them when it turned click-through on. */
+let passThroughSolid: readonly PassThroughRect[] = [];
+let passThroughWatch: ReturnType<typeof setInterval> | null = null;
 /**
  * Display the float-over is currently anchored on, captured at
  * show-idle / show-loaded time. Subsequent content-driven resizes
@@ -193,6 +197,7 @@ function resetFloatOverRuntimeState(): void {
   dockContentProtected = false;
   takingMouse = false;
   passThrough = false;
+  stopPassThroughWatch();
 }
 
 /**
@@ -247,6 +252,7 @@ function parkOffScreen(window: BrowserWindow): void {
   window.setIgnoreMouseEvents(true);
   takingMouse = false;
   passThrough = false;
+  stopPassThroughWatch();
   if (floatOverHideModelForPlatform(process.platform) === "hide") {
     // Windows AND Linux: a REAL hide().
     //
@@ -288,6 +294,7 @@ function restoreOnScreen(window: BrowserWindow): void {
   window.setIgnoreMouseEvents(false);
   takingMouse = true;
   passThrough = false;
+  stopPassThroughWatch();
   if (floatOverHideModelForPlatform(process.platform) === "hide") {
     // `parkOffScreen` really hid this window, so every restore has to really
     // show it — there is no once-only shortcut here. (That shortcut is what
@@ -745,9 +752,97 @@ function wireFloatOverPassThroughChannel(): void {
     const through = (payload as { through?: unknown } | null)?.through === true;
     if (through === passThrough) return;
     passThrough = through;
-    if (through) singleton.setIgnoreMouseEvents(true, { forward: true });
-    else singleton.setIgnoreMouseEvents(false);
+    if (through) {
+      passThroughSolid = parsePassThroughSolid(
+        (payload as { solid?: unknown }).solid,
+        singleton.webContents.zoomFactor
+      );
+      singleton.setIgnoreMouseEvents(true, { forward: true });
+      startPassThroughWatch();
+    } else {
+      stopPassThroughWatch();
+      singleton.setIgnoreMouseEvents(false);
+    }
   });
+}
+
+/** A drawn part of the float-over, in window-local DIP. */
+type PassThroughRect = { x: number; y: number; width: number; height: number };
+
+/** How often main checks the cursor while the window is click-through. */
+const PASS_THROUGH_WATCH_MS = 50;
+const PASS_THROUGH_MAX_RECTS = 64;
+
+/** The renderer measures in CSS px; main hit-tests in DIP. Anything
+ *  malformed is dropped: a missing rect only means the watch hands clicks
+ *  back when the cursor leaves the window instead. */
+function parsePassThroughSolid(raw: unknown, zoomFactor: number): PassThroughRect[] {
+  if (!Array.isArray(raw)) return [];
+  const zoom = Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1;
+  const rects: PassThroughRect[] = [];
+  for (const item of raw.slice(0, PASS_THROUGH_MAX_RECTS)) {
+    if (typeof item !== "object" || item === null) continue;
+    const { x, y, width, height } = item as Record<string, unknown>;
+    if (
+      typeof x !== "number" || typeof y !== "number" ||
+      typeof width !== "number" || typeof height !== "number" ||
+      !Number.isFinite(x) || !Number.isFinite(y) ||
+      !Number.isFinite(width) || !Number.isFinite(height) ||
+      width <= 0 || height <= 0
+    ) {
+      continue;
+    }
+    rects.push({ x: x * zoom, y: y * zoom, width: width * zoom, height: height * zoom });
+  }
+  return rects;
+}
+
+/**
+ * While the window ignores the mouse, the renderer only hears the moves
+ * macOS forwards to it, and it may hear none: AppKit sends mouse-moved
+ * events to the key window, and the float-over is a non-activating panel
+ * that is rarely key. Then the renderer never learns the pointer came back
+ * over the toast, and every button on it passes clicks through to the app
+ * behind until the next show. So main watches the cursor itself and takes
+ * clicks back as soon as it is over a drawn part, or off the window
+ * altogether (where ignoring the mouse buys nothing). The watch runs only
+ * while the pointer sits on a see-through spot.
+ */
+function startPassThroughWatch(): void {
+  if (passThroughWatch !== null) clearInterval(passThroughWatch);
+  passThroughWatch = setInterval(checkPassThroughCursor, PASS_THROUGH_WATCH_MS);
+}
+
+function stopPassThroughWatch(): void {
+  if (passThroughWatch !== null) {
+    clearInterval(passThroughWatch);
+    passThroughWatch = null;
+  }
+  passThroughSolid = [];
+}
+
+function checkPassThroughCursor(): void {
+  if (singleton === null || singleton.isDestroyed() || !takingMouse || !passThrough) {
+    stopPassThroughWatch();
+    return;
+  }
+  const cursor = screen.getCursorScreenPoint();
+  const bounds = singleton.getBounds();
+  const x = cursor.x - bounds.x;
+  const y = cursor.y - bounds.y;
+  const inWindow = x >= 0 && y >= 0 && x < bounds.width && y < bounds.height;
+  const overDrawn = passThroughSolid.some(
+    (rect) => x >= rect.x && y >= rect.y && x < rect.x + rect.width && y < rect.y + rect.height
+  );
+  if (inWindow && !overDrawn) return;
+  stopPassThroughWatch();
+  passThrough = false;
+  singleton.setIgnoreMouseEvents(false);
+  // The renderer still remembers "see-through" and would drop its next
+  // identical report; let it start over.
+  if (!singleton.webContents.isDestroyed()) {
+    singleton.webContents.send(EVENT_CHANNELS.floatOverPassThroughReset);
+  }
 }
 
 /**
@@ -1299,6 +1394,7 @@ export function disposeFloatOver(): void {
     ipcMain.removeAllListeners(FLOAT_OVER_PASS_THROUGH_CHANNEL);
     passThroughChannelWired = false;
   }
+  stopPassThroughWatch();
   unsubscribeRecordingState?.();
   unsubscribeRecordingState = null;
   recordingOwnsScreen = false;

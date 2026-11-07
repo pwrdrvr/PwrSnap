@@ -452,6 +452,9 @@ export class LocalAgentOAuthProvider implements OAuthServerProvider {
             `${cause.message}. Return to PwrSnap and use a unique Session Name.`
           );
         }
+        if (cause instanceof LocalAgentGrantError && cause.code === "invalid_role") {
+          throw new InvalidGrantError(cause.message);
+        }
         throw cause;
       });
     return {

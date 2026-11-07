@@ -108,6 +108,10 @@ function settleSelector(invocation: SelectorInvocation, result: SelectorOutcome)
 }
 let resultListenerAttached = false;
 let displayListenersAttached = false;
+/** The listeners `preWarmRegionSelector` attached, so dispose can take
+ *  them off again. */
+let onDisplayMetricsChanged: ((event: unknown, display: Display) => void) | null = null;
+let onDisplaySetChanged: (() => void) | null = null;
 
 /** The capture currently waiting for its snapshot to paint before the
  *  selector is shown. Resolved by the SELECTOR_PAINTED_CHANNEL ack
@@ -803,11 +807,13 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
     // counts as a metric change), and rebuilding the selector mid-show
     // killed the very window we were trying to put on screen. setBounds
     // is cheap, idempotent, and doesn't disturb the show/hide state.
-    screen.on("display-metrics-changed", (_event, display) => {
+    onDisplayMetricsChanged = (_event, display) => {
       resizeSelectorToDisplay(display);
-    });
-    screen.on("display-added", () => preWarmRegionSelector("display-change"));
-    screen.on("display-removed", () => preWarmRegionSelector("display-change"));
+    };
+    onDisplaySetChanged = () => preWarmRegionSelector("display-change");
+    screen.on("display-metrics-changed", onDisplayMetricsChanged);
+    screen.on("display-added", onDisplaySetChanged);
+    screen.on("display-removed", onDisplaySetChanged);
     displayListenersAttached = true;
   }
 }
@@ -2431,6 +2437,11 @@ export function disposeRegionSelector(): void {
   activeSelectorSenderId = null;
   snapshotPaintObservation = null;
   uninstallSelectorGlobalShortcuts();
+  // A disposed selector must stay disposed. The quit teardown disposes it,
+  // and closing the Library then changes display metrics; a listener left
+  // attached rebuilt a hidden selector window mid-quit, which Electron
+  // waited on forever, and Electron then ignored every later quit.
+  detachDisplayListeners();
   for (const win of selectorWindows.values()) {
     if (!win.isDestroyed()) win.destroy();
   }
@@ -2448,6 +2459,20 @@ export function disposeRegionSelector(): void {
     ipcMain.removeHandler(SELECTOR_SNAPSHOT_READ_CHANNEL);
     resultListenerAttached = false;
   }
+}
+
+function detachDisplayListeners(): void {
+  if (!displayListenersAttached) return;
+  if (onDisplayMetricsChanged !== null) {
+    screen.removeListener("display-metrics-changed", onDisplayMetricsChanged);
+  }
+  if (onDisplaySetChanged !== null) {
+    screen.removeListener("display-added", onDisplaySetChanged);
+    screen.removeListener("display-removed", onDisplaySetChanged);
+  }
+  onDisplayMetricsChanged = null;
+  onDisplaySetChanged = null;
+  displayListenersAttached = false;
 }
 
 export const REGION_SELECTOR_RESULT_CHANNEL = SELECTOR_RESULT_CHANNEL;

@@ -105,7 +105,7 @@ vi.mock("electron", () => ({
   screen: {
     getAllDisplays: () => [display], getDisplayNearestPoint: () => display, getDisplayMatching: () => display,
     getCursorScreenPoint: () => ({ x: 20, y: 20 }), screenToDipRect: (_win: unknown, rect: unknown) => rect,
-    on: () => undefined
+    on: () => undefined, removeListener: () => undefined
   },
   globalShortcut: {
     register: (key: string) => {

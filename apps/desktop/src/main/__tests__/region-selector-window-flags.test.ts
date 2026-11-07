@@ -192,7 +192,8 @@ vi.mock("electron", () => {
         scaleFactor: 2
       }),
       getCursorScreenPoint: () => ({ x: 0, y: 0 }),
-      on: vi.fn()
+      on: vi.fn(),
+      removeListener: vi.fn()
     },
     BrowserWindow,
     globalShortcut: {

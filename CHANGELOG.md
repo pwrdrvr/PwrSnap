@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.2.6 - 2026-11-07
+
+This patch restores existing agent connections and improves copying, updates,
+and shutdown reliability.
+
+- Local Agents - Fixed saved connections being rejected after a built-in
+  role gains new permissions, preserving their original access without granting
+  extra permissions. Added removal of revoked Sessions and clearer identification
+  of agents with repeated names.
+- Copying - Fixed capture popover buttons becoming unclickable and reporting
+  success when copying failed. Retina and scale labels now match across the
+  tray, popover, and Library copy cards.
+- Capture Popover - Fixed AI results restarting the dismissal countdown,
+  so the popover closes on its original schedule.
+- App Updates - Fixed cancellation losing control of an active download and
+  stale restart offers surviving a channel switch after their installer was removed.
+- Shutdown - Fixed quitting stalling when the capture selector is rebuilt
+  during shutdown.
+- Security - Updated vulnerable app dependencies to address reported
+  security advisories.
+
 ## v1.2.5 - 2026-11-06
 
 This release expands agent-assisted reel creation and makes editor changes

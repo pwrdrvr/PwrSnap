@@ -37,9 +37,7 @@ import {
 } from "react";
 import {
   EVENT_CHANNELS,
-  exportStrategyFromSettings,
-  resolveExportLadder,
-  rungForPreset
+  exportStrategyFromSettings
 } from "@pwrsnap/shared";
 import type {
   CaptureRecord,
@@ -51,9 +49,7 @@ import type {
 } from "@pwrsnap/shared";
 import {
   CopyButton,
-  estimateMetricForRung,
-  presetMetrics,
-  rungTag,
+  resolveImageCopyCards,
   type CopyPreset
 } from "../shared/CopyButton";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
@@ -64,12 +60,6 @@ import { copyImagePreset, copyImagePresetPath } from "../../lib/clipboard-copy";
 import { resolveFollowAnchor } from "./grid-copy-palette-anchor";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 
-const COPY_PRESETS = ["low", "med", "high"] as const;
-const COPY_LABELS: Record<(typeof COPY_PRESETS)[number], string> = {
-  low: "Low",
-  med: "Med",
-  high: "High"
-};
 
 const DRAG_MARGIN_PX = 8;
 
@@ -439,17 +429,6 @@ export function GridCopyPalette({
       : null;
   const isVideo = videoMeta !== null;
   const hasExactRenderMetrics = renderMetrics.high?.exact === true;
-  const exportLadder =
-    isVideo || exportStrategy === "legacy"
-      ? null
-      : resolveExportLadder(
-          {
-            widthPx: record.width_px,
-            heightPx: record.height_px,
-            devicePixelRatio: record.device_pixel_ratio
-          },
-          exportStrategy
-        );
 
   return (
     <div
@@ -565,37 +544,30 @@ export function GridCopyPalette({
           </div>
         ) : (
           <div className="psl__copy-row">
-            {COPY_PRESETS.map((p) => {
-              const rung =
-                exportLadder === null ? undefined : rungForPreset(exportLadder, p);
-              const unavailable = rung !== undefined && !rung.available;
-              const estimate = unavailable
-                ? { dim: "—", bytes: "—", exact: true }
-                : rung === undefined
-                  ? presetMetrics(p, record.width_px, record.height_px, record.byte_size)
-                  : estimateMetricForRung(rung, record.width_px, record.byte_size);
-              const m = unavailable ? estimate : (renderMetrics[p] ?? estimate);
-              return (
-                <CopyButton
-                  key={p}
-                  preset={p}
-                  label={rung?.actual === true ? "Actual" : COPY_LABELS[p]}
-                  dim={m.dim}
-                  bytes={m.bytes}
-                  tag={
-                    rung === undefined || unavailable
-                      ? undefined
-                      : rungTag(rung, window.pwrsnapApi?.platform)
-                  }
-                  disabled={unavailable}
-                  onCopy={(preset) => copyImagePreset(record.id, preset)}
-                  shortcutPlatform={shortcutPlatform}
-                  onCopyPath={(preset) => copyImagePresetPath(record.id, preset)}
-                  onDrag={(preset) => startCaptureDrag(record.id, preset)}
-                  copyPulse={copyPulses?.[p] ?? 0}
-                />
-              );
-            })}
+            {resolveImageCopyCards({
+              widthPx: record.width_px,
+              heightPx: record.height_px,
+              devicePixelRatio: record.device_pixel_ratio,
+              byteSize: record.byte_size,
+              strategy: isVideo ? "legacy" : exportStrategy,
+              metrics: renderMetrics,
+              platform: window.pwrsnapApi?.platform
+            }).map((card) => (
+              <CopyButton
+                key={`${record.id}:${card.preset}`}
+                preset={card.preset}
+                label={card.label}
+                dim={card.dim}
+                bytes={card.bytes}
+                tag={card.tag}
+                disabled={card.disabled}
+                onCopy={(preset) => copyImagePreset(record.id, preset)}
+                shortcutPlatform={shortcutPlatform}
+                onCopyPath={(preset) => copyImagePresetPath(record.id, preset)}
+                onDrag={(preset) => startCaptureDrag(record.id, preset)}
+                copyPulse={copyPulses?.[card.preset] ?? 0}
+              />
+            ))}
           </div>
         )}
       </div>

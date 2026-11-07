@@ -12,7 +12,8 @@ import {
   type RecordingState
 } from "@pwrsnap/shared";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
-import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
+import { CopyButton, resolveImageCopyCards } from "../shared/CopyButton";
+import { useExportStrategy } from "../shared/useExportStrategy";
 import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { Kbd } from "../shared/Primitives";
@@ -92,16 +93,6 @@ const MODES: Array<{
   { id: "all", name: "All Screens", available: true },
   // The odd fifth tile spans the full width to close the bottom row cleanly.
   { id: "timed", name: "Timed (5s)", available: true, span2: true }
-];
-
-/** Three preset widths matching the float-over Low/Med/High buttons,
- *  intentionally identical so muscle memory carries from the post-
- *  capture toast straight into the tray. ⌘1 / ⌘2 / ⌘3 dispatch the
- *  same `clipboard:copy` command-bus verb. */
-const COPY_PRESETS: Array<{ id: CopyPreset; label: string }> = [
-  { id: "low", label: "Low" },
-  { id: "med", label: "Med" },
-  { id: "high", label: "High" }
 ];
 
 // presetMetrics moved to features/shared/CopyButton.tsx in Phase C.5
@@ -249,6 +240,7 @@ export function TrayMenu() {
   // sharp-based preset pipeline returns nothing for `.mp4`, and the
   // tray's video branch uses GIF / MP4 export buttons instead of the
   // Low / Med / High clipboard cards anyway.
+  const exportStrategy = useExportStrategy();
   const lastSnapMetrics = usePresetRenderMetrics(
     lastSnap !== undefined && !lastSnapIsVideo ? lastSnap.id : null,
     lastSnap !== undefined && !lastSnapIsVideo ? lastSnap.edits_version : null
@@ -500,10 +492,26 @@ export function TrayMenu() {
     // recording lifecycle surfaces via the events:recording:* broadcasts.
     if (canRecordVideo) void dispatch("capture:videoInteractive", {});
   };
-  const onCopyLastSnap = (preset: "low" | "med" | "high"): void => {
-    if (lastSnap === undefined) return;
-    copyImagePreset(lastSnap.id, preset);
+  const onCopyLastSnap = (
+    preset: "low" | "med" | "high"
+  ): ReturnType<typeof copyImagePreset> | undefined => {
+    if (lastSnap === undefined) return undefined;
+    return copyImagePreset(lastSnap.id, preset);
   };
+  // One card list for the cards and their shortcuts, so ⌘1–⌘3 cannot
+  // copy a rung its card shows as unavailable.
+  const lastSnapCopyCards =
+    lastSnap === undefined || lastSnapIsVideo
+      ? []
+      : resolveImageCopyCards({
+          widthPx: lastSnap.width_px,
+          heightPx: lastSnap.height_px,
+          devicePixelRatio: lastSnap.device_pixel_ratio,
+          byteSize: lastSnap.byte_size,
+          strategy: exportStrategy,
+          metrics: lastSnapMetrics,
+          platform: window.pwrsnapApi?.platform
+        });
   useSurfaceCopyShortcuts({
     assetKind: lastSnap?.kind ?? null,
     enabled: lastSnap !== undefined,
@@ -512,7 +520,9 @@ export function TrayMenu() {
       if (lastSnap === undefined) return;
       if (shortcut.kind === "image") {
         if (lastSnap.kind !== "image") return;
-        copyImagePreset(lastSnap.id, shortcut.preset);
+        const card = lastSnapCopyCards.find((c) => c.preset === shortcut.preset);
+        if (card === undefined || card.disabled) return;
+        void copyImagePreset(lastSnap.id, shortcut.preset);
         return;
       }
       if (lastSnap.kind !== "video") return;
@@ -810,17 +820,18 @@ export function TrayMenu() {
               </div>
             ) : (
               <div className="ps-tray__last-copy">
-                {COPY_PRESETS.map((p) => {
-                  const m =
-                    lastSnapMetrics[p.id] ??
-                    presetMetrics(p.id, lastSnap.width_px, lastSnap.height_px, lastSnap.byte_size);
+                {/* Same cards as the toast and the Library: the shared
+                    resolver adds the DPI ladder's Retina / scale tags. */}
+                {lastSnapCopyCards.map((card) => {
                   return (
                     <CopyButton
-                      key={p.id}
-                      preset={p.id}
-                      label={p.label}
-                      dim={m.dim}
-                      bytes={m.bytes}
+                      key={`${lastSnap.id}:${card.preset}`}
+                      preset={card.preset}
+                      label={card.label}
+                      dim={card.dim}
+                      bytes={card.bytes}
+                      tag={card.tag}
+                      disabled={card.disabled}
                       onCopy={onCopyLastSnap}
                       shortcutPlatform={shortcutPlatform}
                       onCopyPath={(preset) => copyImagePresetPath(lastSnap.id, preset)}

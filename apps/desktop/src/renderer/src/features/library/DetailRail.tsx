@@ -32,8 +32,6 @@ import {
   EVENT_CHANNELS,
   exportStrategyFromSettings,
   desktopFileManagerName,
-  resolveExportLadder,
-  rungForPreset,
   sizzleProjectHasCapture,
   sizzleSceneCaptureIds
 } from "@pwrsnap/shared";
@@ -54,9 +52,7 @@ import type {
 } from "@pwrsnap/shared";
 import {
   CopyButton,
-  presetMetrics,
-  rungTag,
-  estimateMetricForRung,
+  resolveImageCopyCards,
   type CopyPreset
 } from "../shared/CopyButton";
 import { CodexStatusPill, enrichmentBackendLabel, enrichmentRegenerateLabel } from "../shared/CodexStatusPill";
@@ -91,12 +87,6 @@ import { mapBundleIdToAppId } from "./adapter";
 import type { LibraryView } from "./library-view";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 
-const COPY_PRESETS = ["low", "med", "high"] as const;
-const COPY_LABELS: Record<(typeof COPY_PRESETS)[number], string> = {
-  low: "Low",
-  med: "Med",
-  high: "High"
-};
 
 type SidebarTab = LibrarySidebarTab;
 
@@ -1056,58 +1046,34 @@ export function DetailRail({
             </div>
           ) : (
             <div className="psl__copy-row">
-              {((): ReactElement[] => {
-                // Resolve the active export ladder once per render. In
-                // legacy mode `ladder` stays unused and the cards look
-                // exactly as they do for normal users; with DPI-aware
-                // export on, each rung supplies the Retina/scale tag and a
-                // correct pre-render dim estimate.
-                const ladder =
-                  exportStrategy === "legacy"
-                    ? null
-                    : resolveExportLadder(
-                        {
-                          widthPx: record.width_px,
-                          heightPx: record.height_px,
-                          devicePixelRatio: record.device_pixel_ratio
-                        },
-                        exportStrategy
-                      );
-                return COPY_PRESETS.map((p) => {
-                  const rung = ladder === null ? undefined : rungForPreset(ladder, p);
-                  const unavailable = rung !== undefined && !rung.available;
-                  const estimate = unavailable
-                    ? { dim: "—", bytes: "—", exact: true }
-                    : rung === undefined
-                      ? presetMetrics(p, record.width_px, record.height_px, record.byte_size)
-                      : estimateMetricForRung(rung, record.width_px, record.byte_size);
-                  const m = unavailable ? estimate : (renderMetrics[p] ?? estimate);
-                  return (
-                    <CopyButton
-                      key={p}
-                      preset={p}
-                      label={rung?.actual === true ? "Actual" : COPY_LABELS[p]}
-                      dim={m.dim}
-                      bytes={m.bytes}
-                      tag={
-                        rung === undefined || unavailable
-                          ? undefined
-                          : rungTag(rung, window.pwrsnapApi?.platform)
-                      }
-                      disabled={unavailable}
-                      // Image BYTES, via the shared helper so every copy
-                      // surface stays in lockstep (see clipboard-copy.ts —
-                      // PR #232 drifted this card body to a file URL).
-                      onCopy={(preset) => copyImagePreset(record.id, preset)}
-                      shortcutPlatform={shortcutPlatform}
-                      showShortcutHint={isGrid}
-                      onCopyPath={(preset) => copyImagePresetPath(record.id, preset)}
-                      onDrag={(preset) => startCaptureDrag(record.id, preset)}
-                      copyPulse={copyPulses?.[p] ?? 0}
-                    />
-                  );
-                });
-              })()}
+              {resolveImageCopyCards({
+                widthPx: record.width_px,
+                heightPx: record.height_px,
+                devicePixelRatio: record.device_pixel_ratio,
+                byteSize: record.byte_size,
+                strategy: exportStrategy,
+                metrics: renderMetrics,
+                platform: window.pwrsnapApi?.platform
+              }).map((card) => (
+                <CopyButton
+                  key={`${record.id}:${card.preset}`}
+                  preset={card.preset}
+                  label={card.label}
+                  dim={card.dim}
+                  bytes={card.bytes}
+                  tag={card.tag}
+                  disabled={card.disabled}
+                  // Image BYTES, via the shared helper so every copy
+                  // surface stays in lockstep (see clipboard-copy.ts —
+                  // PR #232 drifted this card body to a file URL).
+                  onCopy={(preset) => copyImagePreset(record.id, preset)}
+                  shortcutPlatform={shortcutPlatform}
+                  showShortcutHint={isGrid}
+                  onCopyPath={(preset) => copyImagePresetPath(record.id, preset)}
+                  onDrag={(preset) => startCaptureDrag(record.id, preset)}
+                  copyPulse={copyPulses?.[card.preset] ?? 0}
+                />
+              ))}
             </div>
           )}
         </div>

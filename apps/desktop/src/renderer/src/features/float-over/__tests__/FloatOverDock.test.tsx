@@ -867,7 +867,33 @@ describe("FloatOverHost dock", () => {
     move(el.querySelector(".fo")!);
     move(el.querySelector(".fo-host")!);
     // Only crossings are reported.
-    expect(api.passThrough.mock.calls).toEqual([[true], [false], [true]]);
+    expect(api.passThrough.mock.calls.map(([through]) => through)).toEqual([true, false, true]);
+    // Turning click-through on also tells main where the drawn parts are,
+    // so main can take clicks back without a forwarded move.
+    for (const [through, solid] of api.passThrough.mock.calls) {
+      if (through === true) expect(Array.isArray(solid)).toBe(true);
+      else expect(solid).toBeUndefined();
+    }
+  });
+
+  test("after main takes the mouse back, the next see-through crossing is reported again", async () => {
+    const api = installHostApi();
+    const el = await mountHost();
+    await showSnap(api, "cap_1", "running");
+    await push(api, EVENT_CHANNELS.floatOverState, { kind: "show-idle" });
+    await showSnap(api, "cap_2", "running");
+
+    document.elementFromPoint = () => null;
+    const move = (target: Element): void => {
+      target.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+    };
+    move(el.querySelector(".fo-host")!);
+    expect(api.passThrough.mock.calls.map(([through]) => through)).toEqual([true]);
+
+    // Main watched the cursor leave and gave the window its clicks back.
+    await push(api, EVENT_CHANNELS.floatOverPassThroughReset, undefined);
+    move(el.querySelector(".fo-host")!);
+    expect(api.passThrough.mock.calls.map(([through]) => through)).toEqual([true, true]);
   });
 
   test("the rail opens another waiting snap", async () => {

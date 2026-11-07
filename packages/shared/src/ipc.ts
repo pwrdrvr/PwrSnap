@@ -201,6 +201,13 @@ export const EVENT_CHANNELS = {
    */
   floatOverCopyPulse: "events:float-over:copy-pulse",
   /**
+   * Main → float-over renderer: main took the mouse back from a
+   * click-through window on its own (the cursor came back over a drawn
+   * part, or left the window). The renderer forgets its last
+   * pass-through report so the next one is sent. No payload.
+   */
+  floatOverPassThroughReset: "events:float-over:pass-through-reset",
+  /**
    * Main → float-over renderer: a native/global video export shortcut
    * fired while the toast was visible. The renderer owns the live trim
    * range, so it must dispatch the export instead of main falling back to

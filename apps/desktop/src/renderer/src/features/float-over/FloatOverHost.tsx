@@ -585,6 +585,11 @@ export function FloatOverHost({
   // mouse moves while it ignores clicks, so this keeps hearing the
   // pointer. Main resets to "taking clicks" on every show and park,
   // which each follow a state event, so the memo resets with the epoch.
+  //
+  // Main may get no forwarded moves at all (a non-key panel on macOS), so
+  // turning click-through on also hands main the drawn parts' rects: main
+  // then watches the cursor itself and takes clicks back, and says so on
+  // `floatOverPassThroughReset` so the next crossing is reported again.
   useEffect(() => {
     let sent: boolean | null = null;
     const onMove = (event: MouseEvent): void => {
@@ -592,10 +597,26 @@ export function FloatOverHost({
       const through = !(target instanceof Element) || target.closest(FLOAT_OVER_SOLID) === null;
       if (through === sent) return;
       sent = through;
-      window.pwrsnapApi?.setFloatOverPassThrough?.(through);
+      if (through) {
+        // Post-transform rects are the right kind here: they are compared
+        // with where the pointer is.
+        const solid = Array.from(document.querySelectorAll(FLOAT_OVER_SOLID), (element) => {
+          const rect = element.getBoundingClientRect();
+          return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+        });
+        window.pwrsnapApi?.setFloatOverPassThrough?.(true, solid);
+      } else {
+        window.pwrsnapApi?.setFloatOverPassThrough?.(false);
+      }
     };
     document.addEventListener("mousemove", onMove);
-    return () => document.removeEventListener("mousemove", onMove);
+    const unsubscribe = window.pwrsnapApi?.on(EVENT_CHANNELS.floatOverPassThroughReset, () => {
+      sent = null;
+    });
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      unsubscribe?.();
+    };
   }, [mode, layoutEpoch]);
 
   // Subscribe to main → renderer state events, then ask main for the

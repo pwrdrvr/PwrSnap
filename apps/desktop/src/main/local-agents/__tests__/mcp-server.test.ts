@@ -1,11 +1,11 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
-import { ok, resolveLocalAgentPolicy } from "@pwrsnap/shared";
+import { LOCAL_AGENT_CAPABILITIES, ok, resolveLocalAgentPolicy } from "@pwrsnap/shared";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { z } from "zod";
 import { Agent, request } from "node:http";
@@ -18,7 +18,7 @@ vi.mock("electron", () => ({
   }
 }));
 import { DesktopSecretStore } from "../../settings/desktop-secret-store";
-import { DesktopSettingsService } from "../../settings/desktop-settings-service";
+import { DesktopSettingsService, defaultSettings } from "../../settings/desktop-settings-service";
 import { LocalAgentGrantService } from "../local-agent-grants";
 import { LocalAgentMcpServer } from "../mcp-server";
 import { NativeMcpBridge } from "../../ai/mcp/native-mcp-bridge";
@@ -296,6 +296,56 @@ test("mixed release versions use the desktop interface and preserve descriptions
   const result = await client.callTool({ name: "fixture_search", arguments: { query: "hello" } });
   expect(result.isError).not.toBe(true);
   expect(dispatch).toHaveBeenCalledOnce();
+});
+
+test.each(["stdio", "HTTP"] as const)("upgraded Full Access roles connect over %s without widening prior consent", async (transport) => {
+  const historical = defaultSettings();
+  const permissions = LOCAL_AGENT_CAPABILITIES.filter((permission) => permission !== "sizzle.assets.import");
+  historical.localAgents.roles = historical.localAgents.roles.map((role) =>
+    role.id === "builtin.full-access" ? { ...role, permissions } : role
+  );
+  historical.localAgents.grants = [{
+    id: "legacy_existing", name: "Existing Agent", roleId: "builtin.full-access", capabilities: permissions,
+    createdAt: "2026-11-05T00:00:00Z", updatedAt: "2026-11-05T00:00:00Z", lastUsedAt: null, revokedAt: null
+  }];
+  writeFileSync(settingsPath, JSON.stringify(historical));
+  const migrated = (await settings.read()).localAgents;
+  const previousRole = migrated.roles.find((role) => role.id === migrated.grants[0].roleId)!;
+  expect(previousRole.permissions).toEqual(permissions);
+  for (const [name, roleId, capabilities] of [
+    ["Previous permissions", previousRole.id, permissions],
+    ["New explicit approval", "builtin.full-access", LOCAL_AGENT_CAPABILITIES]
+  ] as const) {
+    decision = { decision: "allow", sessionName: name, roleId, capabilities };
+    if (transport === "stdio") {
+      const client = await connect();
+      expect((await client.listTools()).tools[0].name).toBe("fixture_search");
+      expect((await client.callTool({ name: "fixture_search", arguments: { query: name } })).isError).not.toBe(true);
+    } else {
+      const { token } = await server.bootstrapHttp(new AbortController().signal);
+      const send = httpHost();
+      const initialized = await send(initializeHttp, { authorization: `Bearer ${token}` });
+      expect(initialized.status).toBe(200);
+      const headers = { authorization: `Bearer ${token}`, "mcp-session-id": initialized.headers["mcp-session-id"] as string };
+      const listed = await send({ jsonrpc: "2.0", id: 2, method: "tools/list" }, headers);
+      expect(httpMessage(listed.text)).toMatchObject({ result: { tools: [{ name: "fixture_search" }] } });
+      const called = await send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "fixture_search", arguments: { query: name } } }, headers);
+      expect(httpMessage(called.text)).toMatchObject({ result: { content: expect.any(Array) } });
+      expect((httpMessage(called.text).result as { isError?: boolean }).isError).not.toBe(true);
+    }
+    const reopened = (await new DesktopSettingsService({ filePath: settingsPath }).read()).localAgents;
+    for (const [sessionName, expected] of [
+      ["Existing Agent", permissions], ["Previous permissions", permissions], [name, capabilities]
+    ] as const) {
+      const grant = reopened.grants.find((item) => item.name === sessionName)!;
+      const policy = resolveLocalAgentPolicy(reopened, grant.id);
+      expect(policy.ok).toBe(true);
+      if (!policy.ok) throw new Error(policy.code);
+      expect(policy.policy.capabilities).toEqual(expected);
+    }
+  }
+  expect(consent).toHaveBeenCalledTimes(2);
+  expect(dispatch).toHaveBeenCalledTimes(2);
 });
 
 test("main's Sizzle catalog and protected media use the same production handlers over stdio and IPC HTTP", async () => {

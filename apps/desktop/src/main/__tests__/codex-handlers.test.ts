@@ -401,6 +401,20 @@ describe("Codex handlers", () => {
   test.each(["success", "http-failure", "removed-model"] as const)(
     "custom enrichment uses direct HTTP and never creates a Codex client: %s",
     async (scenario) => {
+      // This is a real Sharp + loopback HTTP + SQLite integration test. Await
+      // the handler's terminal event instead of imposing a separate two-second
+      // polling deadline on a loaded Windows runner. Persistence precedes this
+      // broadcast, so the real database remains the completion oracle.
+      let finish!: (run: { id: string; status: string }) => void;
+      const finished = new Promise<{ id: string; status: string }>((resolve) => { finish = resolve; });
+      electronMock.windows.push({
+        isDestroyed: () => false,
+        webContents: { send: (channel, payload) => {
+          const run = (payload as { run?: { id: string; status: string } | null }).run;
+          if (channel === EVENT_CHANNELS.aiRunUpdated && run && ["completed", "failed"].includes(run.status))
+            finish(run);
+        } }
+      });
       const requests: Array<{ url: string | undefined; body: Record<string, unknown> }> = [];
       const http = await server(async (req, res) => {
         requests.push({ url: req.url, body: JSON.parse(await body(req)) as Record<string, unknown> });
@@ -435,7 +449,8 @@ describe("Codex handlers", () => {
         const result = await bus.dispatch("codex:enrich", { captureId: "cap_1" }, { principal: "ipc" });
         expect(result.ok).toBe(true);
         if (!result.ok) return;
-        await waitFor(() => ["completed", "failed"].includes(getAiRun(result.value.runId)?.status ?? ""));
+        expect(await finished).toMatchObject({ id: result.value.runId,
+          status: scenario === "success" ? "completed" : "failed" });
         expect(getAiRun(result.value.runId)?.status).toBe(scenario === "success" ? "completed" : "failed");
         expect(clientFactory).not.toHaveBeenCalled();
         expect(requests).toHaveLength(scenario === "removed-model" ? 0 : 1);
@@ -460,7 +475,8 @@ describe("Codex handlers", () => {
         serviceSpy.mockRestore();
         await http.close();
       }
-    }
+    },
+    10_000
   );
 
   // A stopped local server is what `ai.enrichmentFallback` exists for. The

@@ -326,6 +326,22 @@ export class LocalAgentGrantService {
           `local agent grant already exists: ${grant.id}`
         );
       }
+      // Do not mint a credential which the first MCP request will reject.
+      // Structural validity alone misses a modified built-in definition.
+      const policy = resolveLocalAgentPolicy(
+        {
+          ...settings.localAgents,
+          roles: roleState.roles,
+          grants: [...settings.localAgents.grants, grant]
+        },
+        grant.id
+      );
+      if (!policy.ok) {
+        throw new LocalAgentGrantError(
+          "invalid_role",
+          "the approved local-agent role is invalid; choose a valid role before authorizing"
+        );
+      }
       const secretName = secretNameForClient(grant.id);
       await this.secrets.replace(secretName, hashToken(token));
       let nextSettings: Settings;

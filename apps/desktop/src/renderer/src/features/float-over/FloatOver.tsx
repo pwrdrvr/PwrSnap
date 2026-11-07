@@ -832,18 +832,6 @@ export function FloatOver({
     replaceVisibleTags(tagsWithMutation(acceptedTags, pendingTagMutationRef.current));
   }, [acceptedTags.join("\0"), replaceVisibleTags]);
 
-  // The model answered while the toast is up: give the answer a full
-  // countdown to be read, instead of whatever was left of the tuck one.
-  const wasInFlightRef = useRef(inFlight);
-  useEffect(() => {
-    const was = wasInFlightRef.current;
-    wasInFlightRef.current = inFlight;
-    if (!tuckMode || !was || inFlight) return;
-    elapsedAtPause.current = 0;
-    startedAt.current = Date.now();
-    setProgress(1);
-  }, [inFlight, tuckMode]);
-
   // Countdown over, or the Tuck button: play the exit, then hand the
   // host the outcome. Reads refs so a re-render mid-exit cannot swap in
   // a stale answer.
@@ -861,6 +849,7 @@ export function FloatOver({
   const finishCountdownRef = useRef(finishCountdown);
   finishCountdownRef.current = finishCountdown;
 
+  // Enrichment updates the contents without restarting this countdown.
   useEffect(() => {
     if (!startCountdown || !autoMs) return;
     if (isPaused) {

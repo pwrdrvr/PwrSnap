@@ -11,7 +11,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { InvalidGrantError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { err, ok, type LocalAgentCapability } from "@pwrsnap/shared";
+import { err, ok, LOCAL_AGENT_CAPABILITIES, type LocalAgentCapability } from "@pwrsnap/shared";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 
@@ -32,8 +32,8 @@ vi.mock("electron", () => ({
 }));
 
 import { DesktopSecretStore } from "../../settings/desktop-secret-store";
-import { DesktopSettingsService } from "../../settings/desktop-settings-service";
-import { LocalAgentGrantService } from "../local-agent-grants";
+import { DesktopSettingsService, defaultSettings } from "../../settings/desktop-settings-service";
+import { LocalAgentGrantService, secretNameForClient } from "../local-agent-grants";
 import { LocalAgentMcpResourceRegistry } from "../mcp-resource-registry";
 import {
   LOCAL_AGENT_MCP_PORT,
@@ -474,12 +474,13 @@ async function approveAndExchange(
   address: LocalAgentMcpServerAddress,
   oauthClient: RegisteredOAuthClient,
   capabilities: readonly LocalAgentCapability[],
-  requestedScopes?: readonly LocalAgentCapability[]
+  requestedScopes?: readonly LocalAgentCapability[],
+  roleId: string | null = null
 ): Promise<string> {
   consentDecisions.push({
     decision: "allow",
     sessionName: oauthClient.client_name,
-    roleId: null,
+    roleId,
     capabilities,
     maxCaptureAgeDays: 7
   });
@@ -1255,6 +1256,119 @@ describe("LocalAgentMcpServer", () => {
     expect(revoked.status).toBe(200);
     expect((await grantService.list())[0]?.revokedAt).not.toBeNull();
     await expect(client.listTools()).rejects.toThrow();
+  });
+
+  test("an upgraded Full Access installation completes OAuth and its first real MCP request", async () => {
+    const historical = defaultSettings();
+    const permissions = LOCAL_AGENT_CAPABILITIES.filter(
+      (permission) => permission !== "sizzle.assets.import",
+    );
+    historical.localAgents.roles = historical.localAgents.roles.map((role) =>
+      role.id === "builtin.full-access" ? { ...role, permissions } : role,
+    );
+    const legacyId = "legacy_existing";
+    const legacyToken = "synthetic-existing-token";
+    historical.localAgents.grants = [
+      {
+        id: legacyId,
+        name: "Existing Agent",
+        roleId: "builtin.full-access",
+        capabilities: permissions,
+        createdAt: "2026-11-05T00:00:00Z",
+        updatedAt: "2026-11-05T00:00:00Z",
+        lastUsedAt: null,
+        revokedAt: null,
+      },
+    ];
+    writeFileSync(join(workDir, "settings.json"), JSON.stringify(historical));
+    await secrets.replace(
+      secretNameForClient(legacyId),
+      createHash("sha256").update(legacyToken).digest("hex"),
+    );
+    let nextId = 0;
+    grantService = new LocalAgentGrantService({
+      settings,
+      secrets,
+      makeId: () => `lag_upgrade_${++nextId}`,
+    });
+    server = new LocalAgentMcpServer({
+      settings,
+      secrets,
+      grantService,
+      tools: toolSet(),
+      host: "127.0.0.1",
+      port: 0,
+      usageService: allowUsageService,
+      requestConsent: requestNativeConsent,
+    });
+    const address = await server.start();
+    await expect(
+      grantService.authenticate({ clientId: legacyId, token: legacyToken }),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      grantService.authenticate({
+        clientId: legacyId,
+        token: legacyToken,
+        requiredCapabilities: ["sizzle.assets.import"],
+      }),
+    ).resolves.toEqual({ ok: false, code: "missing_capability" });
+    const profiles = (await settings.read()).localAgents.roles;
+    const previousProfile = profiles.find(
+      (role) => role.permissions.length === permissions.length,
+    )!;
+    const registered = await registerOAuthClient(address, "PwrAgent");
+    const token = await approveAndExchange(
+      address,
+      registered,
+      permissions,
+      permissions,
+      previousProfile.id,
+    );
+    client = await connectWithAccessToken(
+      address.url,
+      token,
+      new Client({ name: "upgraded-client", version: "1" }),
+    );
+    expect(
+      (await client.listTools()).tools.some(
+        (tool) => tool.name === "pwrsnap_library_search",
+      ),
+    ).toBe(true);
+    const firstGrant = (await grantService.list()).find(
+      (grant) => grant.name === "PwrAgent",
+    )!;
+    expect(firstGrant.capabilities).toEqual(permissions);
+
+    // Import is granted only by a separate approval which actually requested it.
+    const importingClient = await registerOAuthClient(
+      address,
+      "PwrAgent with media import",
+    );
+    const importingToken = await approveAndExchange(
+      address,
+      importingClient,
+      LOCAL_AGENT_CAPABILITIES,
+      LOCAL_AGENT_CAPABILITIES,
+      "builtin.full-access",
+    );
+    extraClient = await connectWithAccessToken(
+      address.url,
+      importingToken,
+      new Client({ name: "importing-client", version: "1" }),
+    );
+    expect((await extraClient.listTools()).tools.length).toBeGreaterThan(0);
+    expect(
+      (await grantService.list()).find((grant) => grant.id === firstGrant.id)!
+        .capabilities,
+    ).toEqual(permissions);
+    expect(
+      (await grantService.list()).find(
+        (grant) => grant.name === "PwrAgent with media import",
+      )!.capabilities,
+    ).toContain("sizzle.assets.import");
+    await expect(
+      grantService.authenticate({ clientId: legacyId, token: legacyToken }),
+    ).resolves.toMatchObject({ ok: true });
   });
 
   test("publishes standards-based OAuth metadata without refresh-token claims", async () => {

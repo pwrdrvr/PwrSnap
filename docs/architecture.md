@@ -491,6 +491,9 @@ measured against a seeded large library rather than a handful of captures.
   Each approval is its own Session; revoking ends it, and removing a revoked
   one deletes its entry while keeping the agent's registration so it can ask
   again. See [mcp-third-party-agents.md](mcp-third-party-agents.md).
+  Built-in role upgrades preserve existing sessions' approved permissions and
+  limits in a retained custom profile; expanded roles require new approval.
+  Arbitrary drift from a canonical built-in definition remains rejected.
 
 ## Direction — open and deliberately unresolved
 

@@ -412,18 +412,19 @@ describe("FloatOver tuck countdown", () => {
     expect(container?.querySelector('[aria-label="Tuck to the screen edge"]')).toBeNull();
   });
 
-  test("an answer that lands gets a full countdown to be read", async () => {
+  test.each([64, 4_000])("an answer at %i ms keeps the original five-second deadline", async (arrivalMs) => {
     const onTimeout = vi.fn();
     const props = { ...baseProps, dockable: true, onTimeout };
     await render({ ...props, enrichment: running });
-    await advance(4_000);
+    await advance(arrivalMs);
 
     await act(async () => {
       root?.render(createElement(FloatOver, { ...props, enrichment: enrichment("cap_1", "completed") }));
     });
-    await advance(DOCK_TUCK_COUNTDOWN_MS - 500);
+    await advance(DOCK_TUCK_COUNTDOWN_MS - arrivalMs - 100);
     expect(onTimeout).not.toHaveBeenCalled();
-    await advance(1_000);
+    await advance(400);
+    expect(onTimeout).toHaveBeenCalledTimes(1);
     expect(onTimeout).toHaveBeenCalledWith({ inFlight: false });
   });
 

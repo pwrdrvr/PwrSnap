@@ -175,6 +175,54 @@ describe("LocalAgentGrantService", () => {
     })).resolves.toMatchObject({ ok: true });
   });
 
+  test.each(["budget", "description"])(
+    "never issues an OAuth credential for built-in %s drift",
+    async (drift) => {
+      const initial = await settings.read();
+      await settings.write({
+        localAgents: {
+          roles: initial.localAgents.roles.map((role) =>
+            role.id !== "builtin.search"
+              ? role
+              : drift === "budget"
+                ? {
+                    ...role,
+                    budgets: {
+                      ...role.budgets,
+                      search: { ...role.budgets.search, limit: 51 },
+                    },
+                  }
+                : { ...role, description: "Modified built-in policy" },
+          ),
+        },
+      });
+      const service = makeService();
+      await expect(
+        service.issueOAuthGrant({
+          name: "Agent",
+          roleId: "builtin.search",
+          capabilities: ["library.read"],
+          oauthClient: {
+            clientId: "oauth_test",
+            clientName: "Agent",
+            redirectUris: ["http://127.0.0.1:43123/callback"],
+            clientUri: null,
+            scope: "library.read",
+            grantTypes: ["authorization_code"],
+            responseTypes: ["code"],
+            softwareId: null,
+            softwareVersion: null,
+            registeredAt: "2026-11-05T12:00:00.000Z",
+          },
+        }),
+      ).rejects.toMatchObject({ code: "invalid_role" });
+      expect(await service.list()).toEqual([]);
+      expect(
+        (await secrets.getStatus(secretNameForClient("lag_test"))).configured,
+      ).toBe(false);
+    },
+  );
+
   test("OAuth custom access preserves an explicit all-time capture-history limit", async () => {
     const service = makeService();
     const issued = await service.issueOAuthGrant({

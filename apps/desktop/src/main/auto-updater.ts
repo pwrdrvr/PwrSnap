@@ -903,16 +903,24 @@ function adoptDownloadCancellation(
     abandonSupersede("no download started");
     return;
   }
-  if (supersedingDownload !== undefined && process.platform !== "darwin") {
-    // Starting this download empties electron-updater's pending cache dir,
-    // and the replaced installer with it. Do not offer what is gone.
-    heldDownloadedUpdate = undefined;
-  }
   // The registration was seeded from the release TAG; the event stream uses
   // the version electron-updater read out of the channel file. Those are
   // normally the same and this file already documents that they can drift —
   // so adopt the one the download will actually report itself as.
   download.version = result?.updateInfo?.version ?? download.version;
+  const held = heldDownloadedUpdate;
+  if (
+    held !== undefined &&
+    process.platform !== "darwin" &&
+    (supersedingDownload !== undefined || held.version !== download.version)
+  ) {
+    // Starting a download of another version empties electron-updater's ONE
+    // pending cache dir, and the held installer with it — whichever track it
+    // was downloaded for. Do not offer what is gone, here or after switching
+    // back, and hold install-on-quit off until the new installer exists.
+    if (supersedingDownload === undefined) beginSupersede(held);
+    heldDownloadedUpdate = undefined;
+  }
   const token = result?.cancellationToken;
   download.cancel = () => token?.cancel();
   // A cancel that arrived while the token did not yet exist: honour it now
@@ -1023,6 +1031,24 @@ function startAppUpdateCheck(
           version: pendingSquirrelStage.version,
           ...(pendingSquirrelStage.downgrade === true ? ({ downgrade: true } as const) : {})
         };
+      }
+      // electron-updater is still downloading. Asked to check again, it
+      // announces whatever the feed says now but carries on with the download
+      // it already has, under a new cancellation token wired to nothing:
+      // Cancel would stop nothing, and a newer release would be reported as
+      // downloading when it is not. The running download is this track's
+      // answer. A check for any other track waits for it to settle.
+      if (downloadSettlement !== undefined) {
+        const running = activeDownload;
+        if (running?.selection === updateSelection && !running.canceled) {
+          return {
+            status: "available",
+            version: running.version,
+            ...(running.downgrade === true ? ({ downgrade: true } as const) : {})
+          };
+        }
+        while (downloadSettlement !== undefined) await downloadSettlement;
+        reconcileAppUpdateSelection(updateSelection);
       }
       // A downloaded update no longer ends the check. A newer release on the
       // same track replaces it, so the Restart offer is for the newest build

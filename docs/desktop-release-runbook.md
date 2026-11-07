@@ -284,11 +284,19 @@ The release workflow separates preparation, signing, and publication:
    injects the pinned Windows FFmpeg artifact, installs `TrustedSigning`, and
    packages via `--sign-stage-only --release --require-signing`. It verifies
    Authenticode on both the app executable and the installer, then copies the
-   verified installer to the stable `PwrSnap.Setup.exe` alias. It does not
-   check out source or install dependencies. See
+   verified installer to the stable `PwrSnap.Setup.exe` alias.
+   It also creates an isolated signed baseline/target pair for the updater
+   gate; those synthetic artifacts never enter release publication globs. It
+   does not check out source or install dependencies. See
    [desktop-windows-signing.md](desktop-windows-signing.md).
-6. **`publish-release-assets`** depends on successful Linux, macOS, and Windows
-   jobs. Only this job creates the GitHub Pre-release, with changelog notes,
+6. **`windows-updater-smoke`** runs the signed pair on a fresh hosted Windows
+   runner with no protected environment or credentials. It serves only a
+   loopback feed and proves download, install, relaunch, version, and userData
+   continuity. See
+   [windows/packaged-updater-smoke.md](windows/packaged-updater-smoke.md).
+7. **`publish-release-assets`** depends on successful Linux, macOS, Windows
+   signing, and packaged updater jobs. Only this job creates the GitHub
+   Pre-release, with changelog notes,
    macOS DMG/ZIP/updater metadata, the stable `PwrSnap.dmg` alias, the signed
    Windows installer/updater metadata, the stable `PwrSnap.Setup.exe` alias,
    and checksums.
@@ -360,6 +368,13 @@ approve the protected job, and remove the rule after the
 validation. This is the same `release.yml` Windows prepare/sign path used by
 tags; `publish-release-assets` is disabled for PR events, so it never creates a
 tag or GitHub Release.
+
+For the packaged baseline-to-target updater path, apply
+`ci:windows-updater-smoke` instead. It uses the same temporary exact merge-ref
+rule and protected approval, but the signed pair is consumed only by a fresh
+credential-free job against `127.0.0.1`; no GitHub Release feed is read or
+changed. The exact contract, diagnostics, and first-run limitation are in
+[windows/packaged-updater-smoke.md](windows/packaged-updater-smoke.md).
 
 Do not approve either signing environment unless the tag, commit, and release
 metadata are intended. Approval exposes that environment's credentials to its

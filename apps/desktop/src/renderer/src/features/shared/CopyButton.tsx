@@ -128,6 +128,16 @@ function formatBytes(n: number, estimated: boolean): string {
   return `${prefix}${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/** What a copy reports back. A dispatch `Result` fits as-is. */
+export type CopyOutcome =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly error: { readonly message: string } };
+
+/** A copy callback may return its outcome. When it does, the card says
+ *  "Copied" only once the copy succeeded, and "Failed" when it did not.
+ *  A callback that returns nothing keeps the old click-time flash. */
+export type CopyAction = (preset: CopyPreset) => void | PromiseLike<CopyOutcome>;
+
 export type CopyButtonProps = {
   /** Which preset this button represents — drives the kbd shortcut
    *  hint (⌘1 / ⌘2 / ⌘3) and is passed to onCopy on click. */
@@ -150,7 +160,7 @@ export type CopyButtonProps = {
   /** Fired when the user clicks. Caller chooses whether this copies
    *  raw image bytes or a file-backed export; the overlay animation
    *  runs unconditionally on click. */
-  onCopy: (preset: CopyPreset) => void;
+  onCopy: CopyAction;
   /** Fired on a drag-start gesture to drag this exact preset as a PNG file. */
   onDrag?: (preset: CopyPreset) => void;
   /** Fired on a click of the FILE chip. Caller dispatches
@@ -158,7 +168,7 @@ export type CopyButtonProps = {
    *  lands on the clipboard as text. Drag still hands off the file
    *  itself; this is the keyboardless-mouse equivalent for pasting
    *  the path into a terminal / editor. */
-  onCopyPath?: (preset: CopyPreset) => void;
+  onCopyPath?: CopyAction;
   /** Incremented by parent-owned shortcuts to run the same visual feedback as click. */
   copyPulse?: number;
   /** Explicit override for deterministic platform-presentation tests. */
@@ -202,6 +212,13 @@ export function CopyButton({
 }: CopyButtonProps) {
   const [copied, setCopied] = useState(false);
   const [pathCopied, setPathCopied] = useState(false);
+  const [copyBusy, setCopyBusy] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
+  const [pathError, setPathError] = useState<string | null>(null);
+  // Only the latest click's outcome may land; an earlier, slower copy
+  // must not overwrite it. Bumped on unmount so nothing lands after it.
+  const copySeqRef = useRef(0);
+  const pathSeqRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pathTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copyPulseRef = useRef(copyPulse);
@@ -217,8 +234,27 @@ export function CopyButton({
 
   const handleClick = (): void => {
     if (disabled) return;
-    onCopy(preset);
-    showCopied();
+    setCopyError(null);
+    const outcome = onCopy(preset);
+    if (outcome === undefined) {
+      showCopied();
+      return;
+    }
+    const seq = ++copySeqRef.current;
+    setCopyBusy(true);
+    void Promise.resolve(outcome).then(
+      (result) => {
+        if (seq !== copySeqRef.current) return;
+        setCopyBusy(false);
+        if (result.ok) showCopied();
+        else setCopyError(result.error.message);
+      },
+      (cause: unknown) => {
+        if (seq !== copySeqRef.current) return;
+        setCopyBusy(false);
+        setCopyError(cause instanceof Error ? cause.message : String(cause));
+      }
+    );
   };
 
   const handleDragStart = (event: React.DragEvent<HTMLAnchorElement>): void => {
@@ -227,10 +263,7 @@ export function CopyButton({
     onDrag(preset);
   };
 
-  const handleFileClick = (event: React.MouseEvent<HTMLAnchorElement>): void => {
-    event.preventDefault();
-    if (disabled || onCopyPath === undefined) return;
-    onCopyPath(preset);
+  const showPathCopied = (): void => {
     setPathCopied(true);
     if (pathTimerRef.current !== null) clearTimeout(pathTimerRef.current);
     pathTimerRef.current = setTimeout(() => {
@@ -239,12 +272,37 @@ export function CopyButton({
     }, COPIED_VISIBLE_MS);
   };
 
+  const handleFileClick = (event: React.MouseEvent<HTMLAnchorElement>): void => {
+    event.preventDefault();
+    if (disabled || onCopyPath === undefined) return;
+    setPathError(null);
+    const outcome = onCopyPath(preset);
+    if (outcome === undefined) {
+      showPathCopied();
+      return;
+    }
+    const seq = ++pathSeqRef.current;
+    void Promise.resolve(outcome).then(
+      (result) => {
+        if (seq !== pathSeqRef.current) return;
+        if (result.ok) showPathCopied();
+        else setPathError(result.error.message);
+      },
+      (cause: unknown) => {
+        if (seq !== pathSeqRef.current) return;
+        setPathError(cause instanceof Error ? cause.message : String(cause));
+      }
+    );
+  };
+
   // Clear the timer on unmount so a button-overlay timeout doesn't
   // fire after the float-over toast or tray popover hides. Without
   // this, `setCopied(false)` would fire on an unmounted component
   // and React would log a warning in dev.
   useEffect(() => {
     return () => {
+      copySeqRef.current += 1;
+      pathSeqRef.current += 1;
       if (timerRef.current !== null) {
         clearTimeout(timerRef.current);
         timerRef.current = null;
@@ -274,9 +332,18 @@ export function CopyButton({
     <div className={"fo__copy-card" + (disabled ? " is-disabled" : "")}>
       <button
         type="button"
-        className={"fo__copy-btn" + (copied ? " is-copied" : "")}
+        className={
+          "fo__copy-btn" +
+          (copied ? " is-copied" : "") +
+          (copyBusy ? " is-pending" : "") +
+          (copyError !== null ? " is-error" : "")
+        }
         disabled={disabled}
         onClick={handleClick}
+        aria-busy={copyBusy ? true : undefined}
+        // The fast tooltip carries the reason; the card itself has room
+        // only for "Failed".
+        data-tip={copyError !== null ? `Couldn’t copy: ${copyError}` : undefined}
       >
         <div className="fo__copy-btn-row1">
           <span className="fo__copy-label">{label}</span>
@@ -284,6 +351,14 @@ export function CopyButton({
             <span className="fo__copy-kbd">{disabled ? "—" : copyChord}</span>
           ) : null}
         </div>
+        {copyError !== null ? (
+          <div className="fo__copy-meta">
+            <span className="fo__copy-dim">
+              <span>Failed</span>
+              <span>retry?</span>
+            </span>
+          </div>
+        ) : (
         <div className="fo__copy-meta">
           <span className="fo__copy-dim">
             <span>{dimLine1}</span>
@@ -303,6 +378,7 @@ export function CopyButton({
             {bytesLine2.length > 0 ? <span>{bytesLine2}</span> : null}
           </span>
         </div>
+        )}
         {/* Orange overlay — covers button content while `is-copied` is
             set. position:absolute + inset:0 keeps it inside the button
             bounds without affecting layout of the row1 / meta children
@@ -316,15 +392,25 @@ export function CopyButton({
       </button>
       {!disabled && (onDrag !== undefined || onCopyPath !== undefined) ? (
         <a
-          className={"fo__copy-file" + (pathCopied ? " is-copied" : "")}
+          className={
+            "fo__copy-file" +
+            (pathCopied ? " is-copied" : "") +
+            (pathError !== null ? " is-error" : "")
+          }
           draggable={onDrag !== undefined}
           href="#"
           // "File" alone does not say a click copies the path; the fast
           // tooltip does.
           data-tip={
-            onCopyPath !== undefined ? `Copy ${label} PNG file path` : `Drag ${label} PNG file`
+            pathError !== null
+              ? `Couldn’t copy the path: ${pathError}`
+              : onCopyPath !== undefined
+                ? `Copy ${label} PNG file path`
+                : `Drag ${label} PNG file`
           }
-          data-tip-detail={onCopyPath !== undefined ? "Drag for the file itself" : undefined}
+          data-tip-detail={
+            pathError === null && onCopyPath !== undefined ? "Drag for the file itself" : undefined
+          }
           aria-label={
             onCopyPath !== undefined
               ? `Copy ${label} PNG file path to clipboard, or drag for the file`
@@ -335,7 +421,7 @@ export function CopyButton({
           onDragStart={handleDragStart}
         >
           <FoIcon name="hand" size={10} />
-          {pathCopied ? "Copied" : "File"}
+          {pathCopied ? "Copied" : pathError !== null ? "Failed" : "File"}
         </a>
       ) : null}
     </div>

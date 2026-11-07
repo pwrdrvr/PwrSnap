@@ -20,6 +20,7 @@ import {
   presetMetrics,
   rungTag,
   estimateMetricForRung,
+  type CopyAction,
   type CopyPreset
 } from "../shared/CopyButton";
 import { CodexStatusPill } from "../shared/CodexStatusPill";
@@ -321,8 +322,8 @@ export type FloatOverAsset =
       kind: "image";
       src: string;
       enhancedSrc?: string | undefined;
-      onCopy?: (preset: "low" | "med" | "high") => void;
-      onCopyPath?: (preset: "low" | "med" | "high") => void;
+      onCopy?: CopyAction;
+      onCopyPath?: CopyAction;
       onDragFile?: () => void;
       onDragPreset?: (preset: "low" | "med" | "high") => void;
     }
@@ -502,11 +503,11 @@ export function FloatOver({
    *  component just animates the "copied" badge. Without this prop
    *  wired (which was the original bug), the buttons looked
    *  responsive but never actually copied anything. */
-  onCopy?: (preset: "low" | "med" | "high") => void;
+  onCopy?: CopyAction;
   /** Fired when the user clicks the FILE chip under a preset. Parent
    *  dispatches `clipboard:copy-path` so the rendered cache file's
    *  platform-native absolute path lands on the clipboard as text. */
-  onCopyPath?: (preset: "low" | "med" | "high") => void;
+  onCopyPath?: CopyAction;
   /** Fired from a drag-start gesture to hand a real PNG file to the OS. */
   onDragFile?: () => void;
   /** Fired from a Low / Med / High drag gesture to hand that preset to the OS. */

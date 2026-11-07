@@ -525,6 +525,12 @@
   border-color: var(--accent);
   color: var(--button-text-on-accent);
 }
+/* The path copy failed: same danger tint as a failed card
+   (`.fo__copy-btn.is-error`); the reason is in the chip's tooltip. */
+.fo__copy-file.is-error {
+  border-color: var(--danger-text);
+  color: var(--danger-text);
+}
 
 /* ----- annotation row ----- */
 .fo__annotate {
@@ -939,4 +945,10 @@
   gap: 6px;
   flex-wrap: wrap;
   padding: 0 var(--space-3, 12px) var(--space-2, 8px);
+}
+
+/* A copy is in flight: the card says "Copied" only once main reports
+   success (CopyButton). */
+.fo__copy-btn.is-pending {
+  cursor: progress;
 }

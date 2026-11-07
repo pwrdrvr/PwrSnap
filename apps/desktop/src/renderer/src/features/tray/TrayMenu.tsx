@@ -500,9 +500,11 @@ export function TrayMenu() {
     // recording lifecycle surfaces via the events:recording:* broadcasts.
     if (canRecordVideo) void dispatch("capture:videoInteractive", {});
   };
-  const onCopyLastSnap = (preset: "low" | "med" | "high"): void => {
-    if (lastSnap === undefined) return;
-    copyImagePreset(lastSnap.id, preset);
+  const onCopyLastSnap = (
+    preset: "low" | "med" | "high"
+  ): ReturnType<typeof copyImagePreset> | undefined => {
+    if (lastSnap === undefined) return undefined;
+    return copyImagePreset(lastSnap.id, preset);
   };
   useSurfaceCopyShortcuts({
     assetKind: lastSnap?.kind ?? null,

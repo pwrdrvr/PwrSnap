@@ -263,7 +263,8 @@ const fake = vi.hoisted(() => {
 vi.mock("@pwrsnap/shared", async (importOriginal) => await importOriginal());
 const enoent = (path: unknown) =>
   Object.assign(new Error(`ENOENT: ${String(path)}`), { code: "ENOENT" });
-const mine = (path: unknown) => String(path).startsWith(fake.state.userData);
+const mine = (path: unknown) =>
+  fake.state.userData !== "" && String(path).startsWith(fake.state.userData);
 vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
   const files = fake.files;
@@ -727,7 +728,8 @@ beforeAll(() => {
 afterAll(() => {
   vi.clearAllTimers();
   vi.useRealTimers();
-  process.env.NODE_ENV = savedEnv.NODE_ENV;
+  if (savedEnv.NODE_ENV === undefined) delete process.env.NODE_ENV;
+  else process.env.NODE_ENV = savedEnv.NODE_ENV;
   if (savedEnv.PWRSNAP_E2E !== undefined) process.env.PWRSNAP_E2E = savedEnv.PWRSNAP_E2E;
   Object.defineProperty(process, "platform", { configurable: true, value: originalPlatform });
   Object.defineProperty(globalThis, "fetch", { configurable: true, value: originalFetch });

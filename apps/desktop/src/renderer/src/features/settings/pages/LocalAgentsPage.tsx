@@ -703,12 +703,15 @@ export function LocalAgentsPage(): ReactElement {
                       <span className="pss__auth-node-icon">×</span>
                       <div>
                         <h3>{grant.name}</h3>
-                        <p>Revoked {formatDate(grant.revokedAt ?? grant.updatedAt)}</p>
+                        <p>
+                          Revoked {formatDate(grant.revokedAt ?? grant.updatedAt)} · ID{" "}
+                          {shortSessionId(grant.id)}
+                        </p>
                       </div>
                       <span className="pss__badge is-danger">revoked</span>
                     </div>
                     <div className="pss__auth-node-meta">
-                      <span>Authorized {formatDate(grant.createdAt)} · ID {shortSessionId(grant.id)}</span>
+                      <span>Authorized {formatDate(grant.createdAt)}</span>
                       <button
                         type="button"
                         aria-label={`Remove revoked Session ${grant.name} (ID ${shortSessionId(grant.id)})`}

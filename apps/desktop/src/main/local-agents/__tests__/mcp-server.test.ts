@@ -439,8 +439,18 @@ test("desktop disable closes sessions and never reconnects or replays calls", as
 });
 test("host disconnect revokes its native session instead of transferring approval", async () => {
   const client = await connect();
+  const [original] = await grants.list();
+  await expect(grants.removeRevokedGrants([original.id])).rejects.toMatchObject({ code: "session_active" });
   await client.close();
   await vi.waitFor(async () => expect((await grants.list())[0].revokedAt).not.toBeNull());
+  await expect(grants.removeRevokedGrants([original.id])).resolves.toEqual([original.id]);
+  await expect(grants.authorizeClient(original.id)).resolves.toBeNull();
+  await connect();
+  const [replacement] = await grants.list();
+  expect(replacement.id).not.toBe(original.id);
+  expect(replacement.name).toBe(original.name);
+  expect(replacement.nativeConsent?.capabilities).toEqual(["library.read"]);
+  expect(consent).toHaveBeenCalledTimes(2);
 });
 test("desktop absent fails with a manual reconnect instruction and never launches it", async () => {
   await server.stop();

@@ -233,7 +233,7 @@ export function LocalAgentsPage(): ReactElement {
   const selectedPolicy = useMemo(() => {
     if (selectedSession === null || selectedSession.roleId !== selectedRoleId) return null;
     const result = resolveLocalAgentPolicy(
-      { enabled: mcpEnabled, grants, roles, audit: [] },
+      { enabled: mcpEnabled, grants, roles, audit: [], retainedOAuthClients: [] },
       selectedSession.id
     );
     return result.ok ? result.policy : null;

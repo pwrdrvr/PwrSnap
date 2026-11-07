@@ -111,6 +111,25 @@ and header syntax is documented by VS Code; transport tests exercise it with
 Node HTTP clients, rather than claiming an end-to-end OAuth or editor login
 verification.
 
+## Revoke, remove, and connect again
+
+Revoking a Session ends its access immediately; its card stays marked revoked.
+Removing a revoked Session deletes that saved entry while preserving audit
+entries with its id. Active Sessions offer Revoke, and `localAgents:remove`
+refuses active ids. Removal cannot end or restore access.
+
+Each new approval creates a new Session and id, even when its name repeats.
+Cards show the authorization time and the id's last four characters to tell
+them apart. Connecting again requires fresh native consent and, for direct
+HTTP, a fresh bootstrap credential. Removing old entries never transfers an
+approval or makes an old credential usable again.
+
+Legacy OAuth registration metadata may remain in
+`localAgents.retainedOAuthClients` after its last revoked entry is removed,
+capped at 64 records. This preserves saved metadata only: OAuth endpoints and
+legacy bearer authentication remain unavailable. Native Sessions create no
+OAuth registration or persisted bearer credential.
+
 ## Migrate an existing HTTP/OAuth connection
 
 1. Remove the host's old PwrSnap HTTP server entry and its cached OAuth login.

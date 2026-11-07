@@ -503,7 +503,10 @@ measured against a seeded large library rather than a handful of captures.
   and is revoked on disconnect. Existing OAuth credentials are retained for
   explicit revocation but are not accepted by the new transport. Migration
   requires stdio configuration and new native consent; approvals are not
-  transferred. Missing or disconnected desktops require a manual reconnect,
+  transferred. Revoked Session entries can be removed without deleting audit
+  history; each new approval has a new id even when its name repeats. Retained
+  legacy OAuth registrations are metadata only and confer no transport access.
+  Missing or disconnected desktops require a manual reconnect,
   with no reconnect, replay or handler fallback in the transport.
   Direct IPC HTTP requires a Settings bootstrap and native approval. Its
   in-memory bearer credential expires after two minutes unless initialized,

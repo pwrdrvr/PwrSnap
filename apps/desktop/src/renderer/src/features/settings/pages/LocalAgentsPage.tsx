@@ -121,6 +121,17 @@ export function LocalAgentsPage(): ReactElement {
   });
   const [error, setError] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
+  // Revoking ends access, so it takes a second press in the card. Removing
+  // an already revoked Session takes one; removing all of them takes two.
+  const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<string | "all" | null>(null);
+  const [confirmRemoveAll, setConfirmRemoveAll] = useState<boolean>(false);
+  // Arming swaps the pressed button for a confirm, and Cancel swaps it back;
+  // each side takes focus as it mounts so the keyboard user is not dropped.
+  const [returnFocusTo, setReturnFocusTo] = useState<string | null>(null);
+  const focusOnMount = useCallback((node: HTMLButtonElement | null): void => {
+    node?.focus();
+  }, []);
   const [confirmDeleteRoleId, setConfirmDeleteRoleId] = useState<string | null>(null);
   const graphRef = useRef<HTMLDivElement | null>(null);
   const nodeRefs = useRef(new Map<string, HTMLElement>());
@@ -286,10 +297,18 @@ export function LocalAgentsPage(): ReactElement {
     };
   }, [recalculatePaths, roleDraft]);
 
-  const activeCount = useMemo(
-    () => grants.filter((grant) => grant.revokedAt === null).length,
+  const activeGrants = useMemo(
+    () => grants.filter((grant) => grant.revokedAt === null),
     [grants]
   );
+  // Newest revoke first, below every live Session.
+  const revokedGrants = useMemo(
+    () => grants
+      .filter((grant) => grant.revokedAt !== null)
+      .sort((a, b) => (b.revokedAt ?? "").localeCompare(a.revokedAt ?? "")),
+    [grants]
+  );
+  const activeCount = activeGrants.length;
 
   const listenerCopy = !mcpEnabled
     ? { badge: "MCP off", tag: "off" }
@@ -322,11 +341,63 @@ export function LocalAgentsPage(): ReactElement {
     const result = await dispatch("localAgents:revoke", { id });
     if (result.ok) {
       setGrants((current) => current.map((grant) => grant.id === id ? result.value : grant));
+      setConfirmRevokeId(null);
+      // The card moves to the revoked group; follow it to its Remove.
+      setReturnFocusTo(`remove:${id}`);
+      setError(null);
+    } else {
+      // Keep the confirm open so the user can retry or cancel from it.
+      setError(result.error.message);
+    }
+    setRevokingId(null);
+  };
+
+  // Where focus goes when a Remove button disappears: the next revoked card,
+  // else the first live Session's Revoke…, else nowhere left to go.
+  const focusAfterRemoving = (removedIds: readonly string[]): string | null => {
+    const removed = new Set(removedIds);
+    const at = revokedGrants.findIndex((grant) => removed.has(grant.id));
+    const rest = revokedGrants.filter((grant) => !removed.has(grant.id));
+    const next = rest[Math.max(0, at)] ?? rest.at(-1);
+    if (next !== undefined) return `remove:${next.id}`;
+    const live = activeGrants[0];
+    return live === undefined ? null : `revoke:${live.id}`;
+  };
+
+  const applyRemoval = (removedIds: readonly string[]): void => {
+    const removed = new Set(removedIds);
+    setGrants((current) => current.filter((grant) => !removed.has(grant.id)));
+    setSelectedSessionId((current) => {
+      if (current === null || !removed.has(current)) return current;
+      return activeGrants[0]?.id ?? null;
+    });
+  };
+
+  const remove = async (id: string): Promise<void> => {
+    setRemoving(id);
+    const result = await dispatch("localAgents:remove", { id });
+    if (result.ok) {
+      applyRemoval(result.value.removedIds);
+      setReturnFocusTo(focusAfterRemoving(result.value.removedIds));
       setError(null);
     } else {
       setError(result.error.message);
     }
-    setRevokingId(null);
+    setRemoving(null);
+  };
+
+  const removeAllRevoked = async (): Promise<void> => {
+    setRemoving("all");
+    const result = await dispatch("localAgents:removeRevoked", {});
+    if (result.ok) {
+      applyRemoval(result.value.removedIds);
+      setReturnFocusTo(focusAfterRemoving(result.value.removedIds));
+      setError(null);
+    } else {
+      setError(result.error.message);
+    }
+    setConfirmRemoveAll(false);
+    setRemoving(null);
   };
 
   const saveRole = async (): Promise<void> => {
@@ -500,10 +571,16 @@ export function LocalAgentsPage(): ReactElement {
               <GraphColumn title="Sessions" count={grants.length}>
                 {grants.length === 0 ? (
                   <div className="pss__auth-empty">No approved MCP Sessions yet.</div>
-                ) : grants.map((grant) => {
+                ) : (
+                  <p className="pss__auth-hint">
+                    Each approval is its own Session, even when the name repeats. Revoking
+                    stops it; removing a revoked one deletes its saved entry.
+                  </p>
+                )}
+                {activeGrants.map((grant) => {
                   const role = roles.find((item) => item.id === grant.roleId);
-                  const revoked = grant.revokedAt !== null;
-                  const rejected = revoked || role === undefined;
+                  const rejected = role === undefined;
+                  const armed = confirmRevokeId === grant.id;
                   return (
                     <article
                       key={grant.id}
@@ -517,15 +594,16 @@ export function LocalAgentsPage(): ReactElement {
                           <h3>{grant.name}</h3>
                           <p>{grant.oauthClient?.clientName ?? "MCP client"} · self-reported</p>
                         </div>
-                        <span className={`pss__badge${revoked ? " is-danger" : " is-accent"}`}>
-                          {revoked ? "revoked" : "active"}
-                        </span>
+                        <span className="pss__badge is-accent">active</span>
                       </div>
+                      <span className="pss__auth-node-id">
+                        Authorized {formatDate(grant.createdAt)} · ID {shortSessionId(grant.id)}
+                      </span>
                       <select
                         className="pss__auth-select"
                         aria-label={`Role for ${grant.name}`}
                         value={role?.id ?? ""}
-                        disabled={revoked || saving}
+                        disabled={saving}
                         onClick={(event) => event.stopPropagation()}
                         onChange={(event) => {
                           void assignRole(grant.id, event.target.value);
@@ -534,22 +612,138 @@ export function LocalAgentsPage(): ReactElement {
                         <option value="" disabled>No valid role</option>
                         {roles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                       </select>
-                      <div className="pss__auth-node-meta">
-                        <span>{grant.lastUsedAt === null ? "Never used" : `Used ${formatDate(grant.lastUsedAt)}`}</span>
-                        <button
-                          type="button"
-                          disabled={revoked || revokingId === grant.id}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void revoke(grant.id);
-                          }}
+                      {armed ? (
+                        <div
+                          className="pss__auth-confirm"
+                          role="group"
+                          aria-label={`Revoke ${grant.name}`}
+                          onClick={(event) => event.stopPropagation()}
                         >
-                          {revokingId === grant.id ? "Revoking…" : "Revoke"}
-                        </button>
-                      </div>
+                          <p>
+                            {grant.name} loses access now. To reconnect, the agent must ask
+                            again, and approving it creates a new Session.
+                          </p>
+                          <div className="pss__auth-confirm-actions">
+                            <button
+                              ref={focusOnMount}
+                              type="button"
+                              disabled={revokingId === grant.id}
+                              onClick={() => {
+                                setReturnFocusTo(`revoke:${grant.id}`);
+                                setConfirmRevokeId(null);
+                              }}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              className="is-danger"
+                              disabled={revokingId === grant.id}
+                              onClick={() => void revoke(grant.id)}
+                            >
+                              {revokingId === grant.id ? "Revoking…" : "Revoke access"}
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="pss__auth-node-meta">
+                          <span>{grant.lastUsedAt === null ? "Never used" : `Used ${formatDate(grant.lastUsedAt)}`}</span>
+                          <button
+                            ref={returnFocusTo === `revoke:${grant.id}` ? focusOnMount : undefined}
+                            type="button"
+                            aria-label={`Revoke ${grant.name}…`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setConfirmRevokeId(grant.id);
+                            }}
+                          >
+                            Revoke…
+                          </button>
+                        </div>
+                      )}
                     </article>
                   );
                 })}
+                {revokedGrants.length > 0 ? (
+                  <div className="pss__auth-group">
+                    <span>Revoked · {revokedGrants.length}</span>
+                    {confirmRemoveAll ? null : (
+                      <button
+                        ref={returnFocusTo === "remove-all" ? focusOnMount : undefined}
+                        type="button"
+                        disabled={removing !== null}
+                        onClick={() => setConfirmRemoveAll(true)}
+                      >
+                        Remove all
+                      </button>
+                    )}
+                  </div>
+                ) : null}
+                {revokedGrants.length > 0 && confirmRemoveAll ? (
+                  <div className="pss__auth-confirm" role="group" aria-label="Remove all revoked Sessions">
+                    <p>
+                      Remove {revokedGrants.length} revoked{" "}
+                      {revokedGrants.length === 1 ? "Session" : "Sessions"} from this list? They
+                      already have no access, and active Sessions are not affected.
+                    </p>
+                    <div className="pss__auth-confirm-actions">
+                      <button
+                        ref={focusOnMount}
+                        type="button"
+                        disabled={removing === "all"}
+                        onClick={() => {
+                          setReturnFocusTo("remove-all");
+                          setConfirmRemoveAll(false);
+                        }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        className="is-danger"
+                        disabled={removing === "all"}
+                        onClick={() => void removeAllRevoked()}
+                      >
+                        {removing === "all" ? "Removing…" : `Remove ${revokedGrants.length}`}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+                {revokedGrants.map((grant) => (
+                  <article
+                    key={grant.id}
+                    ref={(node) => registerNode(`session:${grant.id}`, node)}
+                    className={`pss__auth-node is-session is-rejected is-revoked${grant.id === selectedSessionId ? " is-selected" : ""}`}
+                    onClick={() => setSelectedSessionId(grant.id)}
+                  >
+                    <div className="pss__auth-node-top">
+                      <span className="pss__auth-node-icon">×</span>
+                      <div>
+                        <h3>{grant.name}</h3>
+                        <p>
+                          Revoked {formatDate(grant.revokedAt ?? grant.updatedAt)} · ID{" "}
+                          {shortSessionId(grant.id)}
+                        </p>
+                      </div>
+                      <span className="pss__badge is-danger">revoked</span>
+                    </div>
+                    <div className="pss__auth-node-meta">
+                      <span>Authorized {formatDate(grant.createdAt)}</span>
+                      <button
+                        ref={returnFocusTo === `remove:${grant.id}` ? focusOnMount : undefined}
+                        type="button"
+                        aria-label={`Remove revoked Session ${grant.name} (ID ${shortSessionId(grant.id)})`}
+                        disabled={removing !== null}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void remove(grant.id);
+                        }}
+                      >
+                        {removing === grant.id ? "Removing…" : "Remove"}
+                      </button>
+                    </div>
+                  </article>
+                ))}
                 <div ref={(node) => registerNode("reject", node)} className="pss__auth-end-state">
                   <span>×</span>
                   <div><b>Rejected</b><small>Revoked or invalid role</small></div>
@@ -864,7 +1058,15 @@ function formatWindow(seconds: number): string {
 }
 
 function grantName(clientId: string, grants: readonly LocalAgentClientGrant[]): string {
-  return grants.find((grant) => grant.id === clientId)?.name ?? clientId;
+  const grant = grants.find((item) => item.id === clientId);
+  return grant !== undefined
+    ? `${grant.name} (ID ${shortSessionId(grant.id)})`
+    : `Removed Session (ID ${shortSessionId(clientId)})`;
+}
+
+/** Display tail of a Session id. Names repeat; this tells two apart. */
+function shortSessionId(id: string): string {
+  return id.slice(-4);
 }
 
 function auditActionLabel(entry: LocalAgentAuditEntry): string {

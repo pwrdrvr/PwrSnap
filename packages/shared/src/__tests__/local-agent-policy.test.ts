@@ -49,7 +49,7 @@ function localAgents(
   session: LocalAgentClientGrant,
   roleProfiles = roles()
 ): Settings["localAgents"] {
-  return { enabled: true, grants: [session], roles: roleProfiles, audit: [] };
+  return { enabled: true, grants: [session], roles: roleProfiles, audit: [], retainedOAuthClients: [] };
 }
 
 describe("local-agent RBAC policy", () => {

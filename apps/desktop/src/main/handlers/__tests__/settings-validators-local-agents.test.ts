@@ -14,7 +14,7 @@ describe("validateSettingsWrite — localAgents", () => {
   });
 
   test("rejects policy state replacement through settings:write", () => {
-    for (const key of ["grants", "roles", "audit"] as const) {
+    for (const key of ["grants", "roles", "audit", "retainedOAuthClients"] as const) {
       const result = validateSettingsWrite({ localAgents: { [key]: [] } });
       expect(result).toMatchObject({
         ok: false,

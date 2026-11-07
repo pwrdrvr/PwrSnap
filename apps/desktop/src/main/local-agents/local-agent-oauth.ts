@@ -39,7 +39,7 @@ const DEFAULT_CAPABILITIES: readonly LocalAgentCapability[] = [
 
 type OAuthGrantService = Pick<
   LocalAgentGrantService,
-  "authenticate" | "issueOAuthGrant" | "list" | "revokeGrant"
+  "authenticate" | "findOAuthClient" | "issueOAuthGrant" | "list" | "revokeGrant"
 >;
 
 type AuthorizationCodeRecord = {
@@ -133,12 +133,10 @@ class LocalAgentOAuthClientsStore implements OAuthRegisteredClientsStore {
   async getClient(clientId: string): Promise<OAuthClientInformationFull | undefined> {
     const pending = this.pending.get(clientId);
     if (pending !== undefined) return pending;
-    const grant = (await this.grantService.list()).find(
-      (item) => item.oauthClient?.clientId === clientId
-    );
-    return grant?.oauthClient === undefined
-      ? undefined
-      : oauthClientFromStored(grant.oauthClient);
+    // A Session's registration, or one kept after its last Session was
+    // removed. Either only lets the agent ask; approval is still required.
+    const stored = await this.grantService.findOAuthClient(clientId);
+    return stored === undefined ? undefined : oauthClientFromStored(stored);
   }
 
   async registerClient(

@@ -103,6 +103,7 @@ type GrantService = Pick<
   LocalAgentGrantService,
   | "authenticate"
   | "authorizeClient"
+  | "findOAuthClient"
   | "issueOAuthGrant"
   | "list"
   | "recordUsage"

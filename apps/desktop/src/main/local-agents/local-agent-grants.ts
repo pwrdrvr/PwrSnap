@@ -14,6 +14,7 @@ import {
   defaultLocalAgentRoleConstraints,
   isLocalAgentCapability,
   isValidRole,
+  MAX_RETAINED_LOCAL_AGENT_OAUTH_CLIENTS,
   resolveLocalAgentPolicy,
   type ResolvedLocalAgentPolicy
 } from "@pwrsnap/shared";
@@ -348,7 +349,11 @@ export class LocalAgentGrantService {
         nextSettings = await this.settings.write({
           localAgents: {
             grants: [...settings.localAgents.grants, grant],
-            roles: roleState.roles
+            roles: roleState.roles,
+            // The new Session holds this registration now.
+            retainedOAuthClients: settings.localAgents.retainedOAuthClients.filter(
+              (client) => client.clientId !== args.oauthClient.clientId
+            )
           }
         });
       } catch (cause) {
@@ -376,6 +381,72 @@ export class LocalAgentGrantService {
       await this.notifySettingsChanged(settings);
       return grant;
     });
+  }
+
+  /** Delete the saved entries of revoked Sessions. `ids` names them;
+   *  `"all-revoked"` takes every Session revoked at the moment of the write.
+   *  An active or unknown id refuses the whole call, so nothing here can end
+   *  access: that is `revokeGrant`. The token secret was cleared at revoke
+   *  and is cleared again in case that write was interrupted. An OAuth
+   *  registration that no remaining Session holds is kept, without any
+   *  credential, so the agent can ask for approval again. Audit entries keep
+   *  the removed id. */
+  async removeRevokedGrants(
+    selection: readonly string[] | "all-revoked"
+  ): Promise<string[]> {
+    return this.serializeMutation(async () => {
+      const settings = await this.settings.read();
+      const grants = settings.localAgents.grants;
+      let removing: LocalAgentClientGrant[];
+      if (selection === "all-revoked") {
+        removing = grants.filter((grant) => grant.revokedAt !== null);
+      } else {
+        const wanted = new Set(selection);
+        removing = [];
+        for (const id of wanted) {
+          const grant = grants.find((item) => item.id === id);
+          if (grant === undefined) {
+            throw new LocalAgentGrantError("not_found", `local agent grant not found: ${id}`);
+          }
+          if (grant.revokedAt === null) {
+            throw new LocalAgentGrantError(
+              "session_active",
+              "revoke an active local-agent session before removing it"
+            );
+          }
+          removing.push(grant);
+        }
+      }
+      if (removing.length === 0) return [];
+      const removedIds = new Set(removing.map((grant) => grant.id));
+      const remaining = grants.filter((grant) => !removedIds.has(grant.id));
+      const nextSettings = await this.settings.write({
+        localAgents: {
+          grants: remaining,
+          retainedOAuthClients: retainOAuthClients(
+            settings.localAgents.retainedOAuthClients,
+            removing,
+            remaining
+          )
+        }
+      });
+      for (const id of removedIds) {
+        await this.secrets.clear(secretNameForClient(id)).catch(() => undefined);
+      }
+      await this.notifySettingsChanged(nextSettings);
+      return [...removedIds];
+    });
+  }
+
+  /** The OAuth registration for `clientId`: from a Session that holds it,
+   *  else from one kept after its last Session was removed. */
+  async findOAuthClient(clientId: string): Promise<LocalAgentOAuthClient | undefined> {
+    const settings = await this.settings.read();
+    return (
+      settings.localAgents.grants.find((grant) => grant.oauthClient?.clientId === clientId)
+        ?.oauthClient ??
+      settings.localAgents.retainedOAuthClients.find((client) => client.clientId === clientId)
+    );
   }
 
   async recordUsage(clientId: string): Promise<void> {
@@ -602,6 +673,25 @@ export class LocalAgentGrantService {
     this.mutationQueue = run;
     return run;
   }
+}
+
+function retainOAuthClients(
+  retained: readonly LocalAgentOAuthClient[],
+  removed: readonly LocalAgentClientGrant[],
+  remaining: readonly LocalAgentClientGrant[]
+): LocalAgentOAuthClient[] {
+  const held = new Set(
+    remaining.flatMap((grant) => grant.oauthClient === undefined ? [] : [grant.oauthClient.clientId])
+  );
+  const next = retained.filter((client) => !held.has(client.clientId));
+  for (const grant of removed) {
+    const client = grant.oauthClient;
+    if (client === undefined || held.has(client.clientId)) continue;
+    const at = next.findIndex((item) => item.clientId === client.clientId);
+    if (at !== -1) next.splice(at, 1);
+    next.push(client);
+  }
+  return next.slice(-MAX_RETAINED_LOCAL_AGENT_OAUTH_CLIENTS);
 }
 
 function uniqueRoleName(

@@ -728,7 +728,7 @@ function validateLocalAgentsPatch(raw: unknown): PwrSnapError | null {
       "settings:write: localAgents.enabled must be a boolean"
     );
   }
-  for (const managedKey of ["grants", "roles", "audit"] as const) {
+  for (const managedKey of ["grants", "roles", "audit", "retainedOAuthClients"] as const) {
     if (!isUndefined(raw[managedKey])) {
       return validationError(
         `invalid_localAgents_${managedKey}`,

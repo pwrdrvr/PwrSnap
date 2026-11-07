@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createDiagnosticsShutdown } from "../diagnostics/diagnostics-shutdown";
 import { retryQuitAfterDispatch } from "../quit-retry";
-import { installQuitStallRecovery } from "../quit-stall-recovery";
+import { hasWindowTheUserCanSee, installQuitStallRecovery } from "../quit-stall-recovery";
 import { ElectronQuitModel } from "./electron-quit-model";
 
 afterEach(() => vi.useRealTimers());
@@ -211,6 +211,52 @@ describe("installQuitStallRecovery", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // A hidden helper window built mid-quit (the region selector, rebuilt
+  // by a display change after its teardown) kept Electron from reaching
+  // will-quit. The recovery read "a window is left" as "the user cancelled
+  // the quit and kept working" and stood down, so the app could never be
+  // quit: Electron ignores app.quit() while it believes it is quitting.
+  it("exits when the only windows left are ones the user cannot see", () => {
+    vi.useFakeTimers();
+    try {
+      const listeners = new Map<string, () => void>();
+      const app = {
+        on: (event: string, listener: () => void) => listeners.set(event, listener),
+        quit: vi.fn(),
+        exit: vi.fn()
+      };
+      const selector = { isDestroyed: () => false, isVisible: () => false, isMinimized: () => false };
+      const warn = vi.fn();
+      installQuitStallRecovery(app, {
+        isFinalPass: () => true,
+        hasWindows: () => hasWindowTheUserCanSee([selector]),
+        log: { warn },
+        exitAfterMs: 1_000
+      });
+      listeners.get("before-quit")!();
+      vi.advanceTimersByTime(1_000);
+      expect(app.exit).toHaveBeenCalledWith(0);
+      expect(warn).toHaveBeenCalledWith("quit stalled with no windows left; exiting", {
+        waitedMs: 1_000
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("counts a visible or minimized window as the user's, and a hidden or destroyed one as not", () => {
+    const win = (visible: boolean, minimized: boolean, destroyed = false) => ({
+      isDestroyed: () => destroyed,
+      isVisible: () => visible,
+      isMinimized: () => minimized
+    });
+    expect(hasWindowTheUserCanSee([])).toBe(false);
+    expect(hasWindowTheUserCanSee([win(false, false)])).toBe(false);
+    expect(hasWindowTheUserCanSee([win(true, false, true)])).toBe(false);
+    expect(hasWindowTheUserCanSee([win(false, false), win(true, false)])).toBe(true);
+    expect(hasWindowTheUserCanSee([win(false, true)])).toBe(true);
   });
 
   it("leaves a will-quit barrier's own retry alone when a window closes during its wait", async () => {

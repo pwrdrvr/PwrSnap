@@ -16,6 +16,25 @@ type QuitStallApp = {
  */
 export const QUIT_STALL_EXIT_MS = 20_000;
 
+type WindowVisibility = {
+  isDestroyed(): boolean;
+  isVisible(): boolean;
+  isMinimized(): boolean;
+};
+
+/**
+ * Whether a window the user could still be working in is left: on screen
+ * or minimized. A hidden window does not count. A quit once stalled behind
+ * a hidden region selector rebuilt mid-quit; counting it as "the user kept
+ * working" made the recovery stand down, and Electron, which ignores
+ * app.quit() while it believes it is quitting, could then never quit.
+ */
+export function hasWindowTheUserCanSee(windows: readonly WindowVisibility[]): boolean {
+  return windows.some(
+    (window) => !window.isDestroyed() && (window.isVisible() || window.isMinimized())
+  );
+}
+
 /**
  * Safety net under the quit sequence, NOT the fix for a stalled quit. The
  * fix is `retryQuitAfterDispatch` (quit-retry.ts); this exists so that the
@@ -32,10 +51,12 @@ export const QUIT_STALL_EXIT_MS = 20_000;
  *   macrotask. After a will-quit it means something else: a listener (the
  *   recording barrier) prevented will-quit and owns the retry, and asking
  *   again would run the quit out from under its wait.
- * - If nothing has quit `exitAfterMs` later and no window is left, exit.
- *   That catches the variant with no event at all (a will-quit retry that
- *   lost the flag). If a window IS left, the quit was cancelled — a window
- *   refused to close — and the user is still working, so stand down.
+ * - If nothing has quit `exitAfterMs` later and `hasWindows()` reports no
+ *   window the user can see (`hasWindowTheUserCanSee`), exit. That catches
+ *   the variant with no event at all (a will-quit retry that lost the flag)
+ *   and a hidden window that kept Electron from will-quit. If a visible
+ *   window IS left, the quit was cancelled — a window refused to close —
+ *   and the user is still working, so stand down.
  */
 export function installQuitStallRecovery(
   app: QuitStallApp,

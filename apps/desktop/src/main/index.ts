@@ -300,7 +300,7 @@ import {
 } from "./diagnostics/content-trace-recorder";
 import { createDiagnosticsShutdown } from "./diagnostics/diagnostics-shutdown";
 import { retryQuitAfterDispatch } from "./quit-retry";
-import { installQuitStallRecovery } from "./quit-stall-recovery";
+import { hasWindowTheUserCanSee, installQuitStallRecovery } from "./quit-stall-recovery";
 import { installLaunchAtLoginSync, wasLaunchedAtLogin } from "./launch-at-login";
 import { wireAppMenuBridge } from "./app-menu-bridge";
 import {
@@ -1522,7 +1522,7 @@ export function bootstrapApp(): void {
   installQuitDiagnostics();
   installQuitStallRecovery(app, {
     isFinalPass: isFinalQuitPass,
-    hasWindows: () => BaseWindow.getAllWindows().length > 0,
+    hasWindows: () => hasWindowTheUserCanSee(BaseWindow.getAllWindows()),
     log: getMainLogger("pwrsnap:quit")
   });
 

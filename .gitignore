@@ -83,3 +83,7 @@ todos/
 
 # Python release-tool bytecode
 __pycache__/
+
+# Rust transport build output
+**/target/
+apps/desktop/build/mcp/

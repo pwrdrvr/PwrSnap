@@ -145,17 +145,21 @@ export function resolveLocalAgentPolicy(
   if (role.builtIn && !matchesCanonicalBuiltIn(role)) {
     return { ok: false, code: "builtin_role_drift" };
   }
+  const policy: ResolvedLocalAgentPolicy = {
+    sessionId: session.id,
+    sessionName: session.name,
+    roleId: role.id,
+    roleName: role.name,
+    capabilities: [...role.permissions],
+    maxCaptureAgeDays: role.maxCaptureAgeDays,
+    budgets: cloneBudgets(role.budgets)
+  };
   return {
     ok: true,
-    policy: {
-      sessionId: session.id,
-      sessionName: session.name,
-      roleId: role.id,
-      roleName: role.name,
-      capabilities: [...role.permissions],
-      maxCaptureAgeDays: role.maxCaptureAgeDays,
-      budgets: cloneBudgets(role.budgets)
-    }
+    policy:
+      session.nativeConsent === undefined
+        ? policy
+        : constrainLocalAgentPolicy(policy, { ...policy, ...session.nativeConsent })
   };
 }
 
@@ -190,9 +194,7 @@ export function defaultLocalAgentRoleConstraints(
   };
 }
 
-export function capabilityFingerprint(
-  capabilities: readonly LocalAgentCapability[]
-): string {
+export function capabilityFingerprint(capabilities: readonly LocalAgentCapability[]): string {
   return [...new Set(capabilities)].sort().join("\n");
 }
 
@@ -211,7 +213,7 @@ export function isValidRole(role: LocalAgentRoleProfile): boolean {
       (Number.isInteger(role.maxCaptureAgeDays) &&
         role.maxCaptureAgeDays >= 1 &&
         role.maxCaptureAgeDays <= 36_500)) &&
-    isValidBudgets(role.budgets)
+    isValidLocalAgentBudgets(role.budgets)
   );
 }
 
@@ -221,8 +223,7 @@ function matchesCanonicalBuiltIn(role: LocalAgentRoleProfile): boolean {
     canonical !== undefined &&
     role.name === canonical.name &&
     role.description === canonical.description &&
-    capabilityFingerprint(role.permissions) ===
-      capabilityFingerprint(canonical.permissions) &&
+    capabilityFingerprint(role.permissions) === capabilityFingerprint(canonical.permissions) &&
     role.maxCaptureAgeDays === canonical.maxCaptureAgeDays &&
     JSON.stringify(role.budgets) === JSON.stringify(canonical.budgets)
   );
@@ -253,7 +254,7 @@ function budgets(
   };
 }
 
-function isValidBudgets(value: LocalAgentRoleBudgets): boolean {
+export function isValidLocalAgentBudgets(value: LocalAgentRoleBudgets): boolean {
   if (typeof value !== "object" || value === null) return false;
   return USAGE_ACTIONS.every((action) => {
     const budget = value[action];
@@ -286,4 +287,32 @@ export function effectiveCapabilitiesForGrant(
 ): readonly LocalAgentCapability[] {
   const resolution = resolveLocalAgentPolicy(localAgents, grant.id);
   return resolution.ok ? resolution.policy.capabilities : [];
+}
+
+/** Apply an immutable consent ceiling after re-resolving the current role. */
+export function constrainLocalAgentPolicy(
+  current: ResolvedLocalAgentPolicy,
+  ceiling: ResolvedLocalAgentPolicy
+): ResolvedLocalAgentPolicy {
+  const capabilities = new Set(ceiling.capabilities);
+  const maxAge = Math.min(
+    current.maxCaptureAgeDays ?? Infinity,
+    ceiling.maxCaptureAgeDays ?? Infinity
+  );
+  const budgets = cloneBudgets(current.budgets);
+  for (const action of USAGE_ACTIONS) {
+    budgets[action] = {
+      limit: Math.min(current.budgets[action].limit, ceiling.budgets[action].limit),
+      windowSeconds: Math.max(
+        current.budgets[action].windowSeconds,
+        ceiling.budgets[action].windowSeconds
+      )
+    };
+  }
+  return {
+    ...current,
+    capabilities: current.capabilities.filter((cap) => capabilities.has(cap)),
+    maxCaptureAgeDays: Number.isFinite(maxAge) ? maxAge : null,
+    budgets
+  };
 }

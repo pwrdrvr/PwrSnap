@@ -499,6 +499,8 @@ if (!signStageOnly) {
   //    exists) into the stage. Remove stale copies before our controlled
   //    cp to avoid macOS cp -R nesting (cp -R src dst/ creates dst/src/
   //    when dst exists).
+  step("build universal MCP transport");
+  runChecked(process.execPath, [join(desktopRoot, "scripts", "build-mcp.mjs")]);
   step("seed stage with build output + builder inputs");
   for (const dir of ["out", "build"]) {
     const target = join(stageDir, dir);
@@ -644,6 +646,7 @@ const builtApp = join(stageDir, "dist", `mac-${releaseArch}`, "PwrSnap.app");
 //    we verify here.
 step("verify packaged native helpers");
 const nativeHelpers = [
+  join(builtApp, "Contents", "Resources", "pwrsnap-mcp"),
   join(builtApp, "Contents", "Resources", "PwrSnapWindowList"),
   // PwrSnapRecorder — ScreenCaptureKit + AVFoundation recorder for
   // Fast Video Capture (issue #64). Without a valid Developer ID

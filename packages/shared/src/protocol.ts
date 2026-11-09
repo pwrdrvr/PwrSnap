@@ -1492,6 +1492,8 @@ export type LocalAgentClientGrant = {
   lastUsedAt: string | null;
   revokedAt: string | null;
   oauthClient?: LocalAgentOAuthClient;
+  /** Immutable native consent scope; role edits can only narrow this Session. */
+  nativeConsent?: {capabilities: LocalAgentCapability[]; maxCaptureAgeDays: number | null; budgets: LocalAgentRoleBudgets};
 };
 
 export type LocalAgentClientGrantPatch = {
@@ -3209,7 +3211,7 @@ export type Settings = {
   };
 };
 
-/** Live state of the loopback MCP listener. This is runtime-only state, not
+/** Live state of the local IPC MCP listener. This is runtime-only state, not
  * persisted intent: `Settings.localAgents.enabled` can remain true after a
  * bind failure so the UI must not infer that the endpoint is available. */
 export type LocalAgentMcpListenerStatus =
@@ -5161,7 +5163,13 @@ export type Commands = {
       grants: LocalAgentClientGrant[];
       roles: LocalAgentRoleProfile[];
       listenerStatus: LocalAgentMcpListenerStatus;
+      relayCommand?: string;
+      httpUrl?: string;
     };
+  };
+  "localAgents:httpBootstrap": {
+    req: Record<string, never>;
+    res: { token: string; expiresAt: string; httpUrl: string };
   };
   "localAgents:roleCreate": {
     req: Omit<LocalAgentRoleProfile, "id" | "builtIn">;

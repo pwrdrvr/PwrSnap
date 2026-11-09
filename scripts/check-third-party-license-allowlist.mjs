@@ -53,6 +53,7 @@
  * "UNLICENSED" or "SEE LICENSE IN ...", which fails to parse and is reported.
  */
 
+import { readMcpRustLicenseRecords } from "./check-mcp-rust-licenses.mjs";
 import { isCliEntrypoint } from "./lib/cli-entrypoint.mjs";
 import {
   NOTICE_PNPM_ARGS,
@@ -403,6 +404,7 @@ export function locatePlatformRecordsOrDefer(
 }
 
 function runCli() {
+  readMcpRustLicenseRecords();
   let failures;
   let deferred;
   try {

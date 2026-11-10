@@ -82,11 +82,20 @@ describe("local-agent consent strip CSS", () => {
 
   test("stays put, covers what scrolls under it, and drags the window", () => {
     expect(strip).toMatch(/position:\s*fixed/);
-    expect(strip).toMatch(/top:\s*0/);
+    expect(strip).toMatch(/(?:^|[\s;])top:\s*0/);
     expect(strip).toMatch(/background:\s*var\(--bg-app\)/);
     expect(strip).toMatch(/-webkit-app-region:\s*drag/);
     expect(strip).toMatch(/z-index:\s*\d+/);
     expect(stripHeight).toBeGreaterThan(0);
+  });
+
+  test("keyboard focus scrolls controls into view below the strip, not under it", () => {
+    const root = extractBlock(css, 'html:has\\(> body\\[data-stage="local-agent-consent"\\]\\)', {
+      label: "consent scroller",
+      expectSingle: true
+    });
+    const padding = /scroll-padding-top:\s*(\d+)px/.exec(root)?.[1];
+    expect(Number(padding)).toBeGreaterThanOrEqual(stripHeight);
   });
 
   test("every column rule, media queries included, reserves the strip's height at the top", () => {

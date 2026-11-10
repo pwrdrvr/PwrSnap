@@ -28,6 +28,14 @@ body[data-stage="local-agent-consent"] {
   overflow: auto;
 }
 
+/* Body's overflow propagates to the viewport, so the viewport is the
+   scroller, and the viewport reads scroll-padding from the ROOT element.
+   Without it, Shift+Tab back to a control above the fold scrolls only until
+   its border box is in view: under the strip, ring and all. */
+html:has(> body[data-stage="local-agent-consent"]) {
+  scroll-padding-top: 52px;
+}
+
 .local-agent-consent {
   width: min(620px, calc(100% - 40px));
   min-height: 100%;

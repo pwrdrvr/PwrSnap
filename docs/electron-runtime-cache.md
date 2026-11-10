@@ -8,8 +8,8 @@ Windows `.codex/environments/environment.toml` setup paths reach it through
 The implementation is ported unchanged from
 [PwrAgent #3580](https://github.com/pwrdrvr/PwrAgent/pull/3580), whose cache
 implementation commits are `046d94f34` and `13c19ca2c`. Its additional native
-entry-point tests arrived in `776c3c4d0`. The two installer modules remain
-byte-identical to that head. The cache is shared with PwrAgent and the other
+entry-point tests arrived in `776c3c4d0`. The two installer modules are
+byte-identical to donor permission fix `e64619ca8`. The cache is shared with PwrAgent and the other
 PwrDrvr desktop products; application state stays separate.
 
 ## Shared v1 contract
@@ -46,6 +46,23 @@ for diagnosis and are bypassed; an unavailable cache falls back to extraction
 inside the target package. A killed installer can leave its own staging files.
 The installer performs no eviction or migration of existing worktrees.
 
+Worktree-only write permissions are supported. Download and checksum temporary
+files live in an owned `.runtime-download-*` directory inside the current
+Electron package. If the ZIP cache rejects a write with `EACCES`, `EPERM` or
+`EROFS`, the installer makes one attempt with a ZIP cache inside that same
+temporary directory. Both attempts retain `@electron/get` checksum validation
+and download settings. Network and integrity failures do not trigger this
+permission fallback. The entry-point callback forwards `tempDirectory` and
+optional `cacheRoot` overrides **after** its default download options.
+
+A readable, verified shared extraction can still be cloned without modifying
+the shared cache. When shared storage cannot be used, installation remains
+local and may allocate a private runtime. Download scratch and its local ZIP
+cache are removed in `finally`; the package lock is released even if staging
+cleanup throws. No existing user cache is removed. This behavior is ported from
+PwrAgent's signed fix `e64619ca8`; the shared cache format, key and default are
+unchanged.
+
 Every worktree still installs its own dependencies. Runtime files are never
 hard-linked, and workspace packages are never linked to donor source. On macOS,
 native `/bin/cp -cRpP` creates independent writable APFS clones. Linux and Windows
@@ -78,6 +95,17 @@ installs three different project layouts against one cache. Another checks the
 common default home, exact identity/key and separation from PwrSnap state.
 Linux and Windows native behavior is exercised by CI, not by foreign-binary
 execution on the Mac.
+
+Permission regressions model `EACCES`/`EPERM`/`EROFS`, verify network errors are
+not retried, assert native entry-point override precedence, and inject a cleanup
+failure in a disposable child process to verify lock release. Another test uses
+the **real `@electron/get`**, replacing only HTTP with a local fixture ZIP, with
+both external caches set to mode `0555`. It verifies checksum handling, the
+single local-cache retry, scratch cleanup, installed content and unchanged
+external caches. This test reproduced `EACCES` before the fix and passed on
+macOS afterward. It skips Windows (where POSIX mode bits do not deny writes)
+and root processes; generated permission and native entry-point tests still
+cover those code paths. All caches in these tests are disposable fixtures.
 
 To measure a real runtime without starting Electron, pass an existing ZIP that
 matches this checkout's installed Electron package and a report destination.

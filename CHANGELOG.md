@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.3.0 - 2026-11-10
+
+PwrSnap's MCP integration has been rebuilt around protected local connections
+instead of a network listener.
+
+- MCP Connections - Added a bundled stdio connector for hosts such as Codex,
+  Claude Code, and Cursor, with copyable setup commands in Settings. No separate
+  Node installation is needed. Hosts supporting HTTP over local sockets or
+  Windows named pipes can connect directly, including VS Code.
+- Agent Permissions - Improved connection approval with a native PwrSnap consent
+  window and permissions limited to each live Session. Disconnecting ends its
+  access; connecting again requires fresh approval. Media stays behind the
+  Session's permissions rather than being exposed through HTTP download links.
+- Existing MCP Connections - Replaced the old loopback HTTP/OAuth connection.
+  Remove the old server entry and cached OAuth login in your agent host, then
+  copy the new configuration from Settings > Local agents and reconnect.
+  PwrSnap must already be running with local-agent access enabled; the connector
+  does not launch it. Existing approvals are not transferred.
+
 ## v1.2.6 - 2026-11-07
 
 This patch restores existing agent connections and improves copying, updates,

@@ -127,3 +127,35 @@ These observations prove shared extents with private write isolation. Equal
 content and `du` output alone would not establish that property. Existing
 private allocations are not reclaimed until their owning installs are explicitly
 replaced; this change never cleans up the user's existing worktrees or caches.
+
+## CI checkouts and completed dependency caches
+
+PwrAgent's follow-up review in `84721056b` found sparse checkout lists that
+selected the installer without its new helper. A dependency-cache hit could
+hide that failure by skipping installation. PwrSnap's audit found no sparse
+checkout lists: all 15 checkouts in jobs using `configure-nodejs` currently
+retain the full repository. The release signing archives consume prepared
+stages rather than running dependency installation.
+
+PwrSnap did have a related omission: the completed dependency-cache input list
+did not include either installer module. Both are now explicit inputs, so an
+installer or helper change invalidates the completed tree for producers and
+consumers. The cache-key test discovers the transitive local import closure
+rather than maintaining another list of helper names.
+
+`scripts/electron-install-sparse-checkout.test.mjs` adapts the donor's real Git
+oracle to PwrSnap's full checkouts and any future non-cone sparse lists. It
+discovers install jobs across every workflow, applies their actual Git patterns
+to disposable indexes with `git read-tree`, and checks the whole import closure.
+The parser includes static, side-effect, re-export and literal dynamic imports.
+A counterexample proves that an installer-only sparse list omits the helper,
+while the complete list retains it. No fixture commits, network, user checkout
+changes or cache hits are involved.
+
+The 19-test suite exposed the missing cache inputs before the fix; it passes
+after adding both files:
+
+```sh
+pnpm exec vitest run --config vitest.workspace.ts --project desktop-main \
+  scripts/electron-install-sparse-checkout.test.mjs
+```

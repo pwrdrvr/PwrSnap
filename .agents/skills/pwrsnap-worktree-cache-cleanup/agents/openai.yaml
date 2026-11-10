@@ -1,0 +1,6 @@
+interface:
+  display_name: "PwrSnap Worktree Cache Cleanup"
+  short_description: "Clean Vitest caches and share verified Electron runtimes"
+
+policy:
+  allow_implicit_invocation: false

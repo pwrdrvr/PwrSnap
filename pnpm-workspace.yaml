@@ -30,7 +30,7 @@ allowBuilds:
   # way. See AGENTS.md.
   better-sqlite3: false
   # No `electron` entry: since Electron 42 the package has no install script.
-  # The desktop postinstall runs its `install-electron` bin instead.
+  # The desktop postinstall runs our verified shared extraction cache instead.
   electron-winstaller: true
   esbuild: true
   sharp: true

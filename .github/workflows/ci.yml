@@ -38,6 +38,8 @@ env:
     scripts/check-node-version.mjs
     scripts/lib/cli-entrypoint.mjs
     scripts/linux-sandbox.mjs
+    apps/desktop/scripts/ensure-electron-runtime.mjs
+    apps/desktop/scripts/electron-runtime-cache.mjs
     apps/desktop/scripts/build-native.mjs
     apps/desktop/native/pasteboard-writer/main.swift
     apps/desktop/native/preview-extension/Info.plist

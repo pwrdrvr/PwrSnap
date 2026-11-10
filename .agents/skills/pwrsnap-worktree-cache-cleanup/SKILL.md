@@ -20,6 +20,10 @@ Run the skill's fixture tests directly on macOS with
 APFS and process-ownership oracles in disposable directories. These tests are
 operator-run and are not part of product CI. The invoked Node oracle can also
 run directly with `node --test tests/prepare-runtime-cache-root.test.mjs`.
+For the optional real-artifact oracle, point `PWRSNAP_CLEANUP_TEST_ELECTRON_ZIP`
+at an existing ZIP matching this checkout's Electron package and rerun the Python
+suite. It exercises real Mach-O architecture detection and production cache
+preparation in disposable paths, without downloading or launching Electron.
 
 Before either `clean` or `share`, show the concrete audit report and require
 explicit operator approval of that report. Creating the skill or auditing does

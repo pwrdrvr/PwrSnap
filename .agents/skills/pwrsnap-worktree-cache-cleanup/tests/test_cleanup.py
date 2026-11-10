@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -120,6 +121,66 @@ class CleanupTests(unittest.TestCase):
                 cleanup.main()
         self.assertEqual(stopped.exception.code, 2)
         self.assertFalse(report.exists())
+
+    @unittest.skipUnless(sys.platform == "darwin" and os.environ.get("PWRSNAP_CLEANUP_TEST_ELECTRON_ZIP"),
+                         "Opt-in real cached Electron ZIP, macOS only")
+    def test_real_runtime_uses_measured_architecture_and_production_cache_preparation(self):
+        archive = Path(os.environ["PWRSNAP_CLEANUP_TEST_ELECTRON_ZIP"]).resolve(strict=True)
+        project = SKILL.parents[2]
+        discover = """
+          const { createRequire } = require('node:module');
+          const electron = createRequire(require.resolve('./apps/desktop/node_modules/electron/package.json'));
+          console.log(JSON.stringify({ version: electron('./package.json').version,
+            checksums: electron('./checksums.json') }));
+        """
+        pinned = json.loads(subprocess.check_output(["node", "-e", discover], cwd=project))
+        version = pinned["version"]
+        digest = hashlib.sha256()
+        with archive.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        self.assertIn(digest.hexdigest(), [pinned["checksums"].get(
+            f"electron-v{version}-darwin-{arch}.zip") for arch in ("arm64", "x64")])
+        package = self.linked / f"node_modules/.pnpm/electron@{version}/node_modules/electron"
+        downloader = package / "node_modules/@electron/get"
+        downloader.mkdir(parents=True)
+        (package / "package.json").write_text(json.dumps({"name": "electron", "version": version}))
+        (package / "checksums.json").write_text(json.dumps(pinned["checksums"]))
+        # Supply only an existing ZIP; the real helper/installer still verify
+        # its package-pinned checksum and prepare a fully verified extraction.
+        (downloader / "index.js").write_text("exports.downloadArtifact = async () => " + json.dumps(str(archive)) + ";")
+        dist = package / "dist"
+        dist.mkdir()
+        subprocess.run(["unzip", "-qo", str(archive), "-d", str(dist)], check=True)
+        (package / "electron.d.ts").write_text("preserve root declarations")
+        before = cleanup.content_inventory(dist)
+        arch = cleanup.runtime_arch(dist)  # Read the real installed Mach-O.
+        original_inode = dist.stat().st_ino
+        original_state = cleanup.tree_state(dist)
+        self.assertGreater(original_state["private_bytes"], 0)
+        home = self.base / "isolated-shared-home"
+        with mock.patch.dict(os.environ, {"PWRAGENT_HOME": str(home)}):
+            report = cleanup.audit(self.project, IDLE, for_sharing=True)
+            result = cleanup.share(report, snapshot_fn=lambda: IDLE)
+        self.assertEqual(result["preserved"], [])
+        self.assertEqual(len(result["shared"]), 1)
+        self.assertEqual(result["shared"][0]["arch"], arch)
+        self.assertEqual(result["shared"][0]["version"], version)
+        source = Path(result["shared"][0]["cache"])
+        self.assertTrue(source.is_relative_to(home / "cache/electron-runtime/v1"))
+        cleanup.clone_oracle(source, dist)
+        shared_state = cleanup.tree_state(dist)
+        self.assertEqual(shared_state["private_bytes"], 0)
+        self.assertNotEqual(dist.stat().st_ino, original_inode)
+        self.assertEqual(cleanup.content_inventory(dist), before)
+        self.assertEqual((package / "electron.d.ts").read_text(), "preserve root declarations")
+        self.assertTrue((self.linked / "source.txt").exists())
+        self.assertFalse((package / ".pwragent-runtime-lock").exists())
+        print(json.dumps({"real_runtime_fixture": {"version": version, "arch": arch,
+            "regular_files": shared_state["regular_files"], "before_private_bytes": original_state["private_bytes"],
+            "after_private_bytes": shared_state["private_bytes"], "old_witness": original_state["witness"],
+            "shared_witness": shared_state["witness"], "cache_witness": cleanup.tree_state(source)["witness"]}}),
+            file=sys.stderr)
 
     def test_git_is_the_discovery_oracle(self):
         extra = self.base / "unregistered-project"

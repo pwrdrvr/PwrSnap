@@ -219,14 +219,16 @@ describe("dev launch environment", () => {
     });
   });
 
-  it("repairs a partial Electron install by rerunning install.js", () => {
+  it("repairs a partial Electron install with the runtime installer and rechecks health", () => {
     const root = tempElectronRoot();
     rmSync(join(root, "path.txt"));
+    const installer = join(root, "ensure-electron-runtime.mjs");
     writeFileSync(
-      join(root, "install.js"),
+      installer,
       `
-const { mkdirSync, writeFileSync } = require("node:fs");
-const { join } = require("node:path");
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const __dirname = import.meta.dirname;
 mkdirSync(join(__dirname, "dist", "Electron.app", "Contents", "MacOS"), { recursive: true });
 writeFileSync(join(__dirname, "path.txt"), "Electron.app/Contents/MacOS/Electron");
 writeFileSync(join(__dirname, "dist", "version"), "41.5.0");
@@ -234,11 +236,49 @@ writeFileSync(join(__dirname, "dist", "Electron.app", "Contents", "MacOS", "Elec
 `
     );
 
-    expect(ensureElectronInstalled({}, root, process.execPath, "darwin")).toBe(0);
+    expect(ensureElectronInstalled({}, root, process.execPath, "darwin", installer)).toBe(0);
     expect(electronInstallState(root, "darwin")).toEqual({
       ok: true,
       reason: "ok"
     });
+  });
+
+  it("keeps healthy installs usable without invoking a missing installer", () => {
+    const root = tempElectronRoot();
+    expect(ensureElectronInstalled({}, root, process.execPath, "darwin", join(root, "absent.mjs"))).toBe(0);
+  });
+
+  it("reports a missing package without invoking the runtime installer", () => {
+    const root = tempElectronRoot();
+    rmSync(join(root, "install.js"));
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(ensureElectronInstalled({}, root, process.execPath, "darwin", join(root, "absent.mjs"))).toBe(1);
+      expect(error).toHaveBeenCalledExactlyOnceWith("[dev] Electron package is missing; run `pnpm install`.");
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it.each([0, 29])("preserves repair failure reporting when the installer exits %s", (status) => {
+    const root = tempElectronRoot();
+    rmSync(join(root, "path.txt"));
+    const installer = join(root, "ensure-electron-runtime.mjs");
+    writeFileSync(installer, `process.exitCode = ${status};`);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(ensureElectronInstalled({}, root, process.execPath, "darwin", installer)).toBe(status || 1);
+      if (status === 0) {
+        expect(error.mock.calls).toEqual([
+          ["[dev] Electron install is still incomplete: electron path.txt is missing"],
+          ["[dev] Run `pnpm install` from the repo root, then retry `pnpm dev`."]
+        ]);
+      } else {
+        expect(error).not.toHaveBeenCalled();
+      }
+    } finally {
+      error.mockRestore();
+    }
   });
 
   it("runs the long-lived dev child in a POSIX process group and forwards Ctrl+C", async () => {

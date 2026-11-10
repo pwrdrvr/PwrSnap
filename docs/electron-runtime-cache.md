@@ -69,9 +69,11 @@ native `/bin/cp -cRpP` creates independent writable APFS clones. Linux and Windo
 use Node's existing reflink request with an independent-copy fallback. A
 filesystem without cloning retains correctness but allocates private bytes.
 
-The dev launcher's existing missing-runtime repair still invokes Electron's
-`install.js`; the ordinary install/setup paths use this cache. That separate
-repair path is a follow-up, not a cache migration of already installed runtimes.
+The dev launcher's missing-runtime repair runs the same sibling installer as
+postinstall. Its existing before/after health checks and error handling remain
+in place, and a healthy install still returns without invoking the installer.
+Repair finishes before the Linux sandbox advisory, native helper builds and
+the dev launch. This does not migrate already installed runtimes.
 
 ## Tests and filesystem evidence
 
@@ -79,6 +81,8 @@ repair path is a follow-up, not a cache migration of already installed runtimes.
 pnpm exec vitest run --config vitest.workspace.ts --project desktop-main \
   apps/desktop/scripts/ensure-electron-runtime.test.mjs \
   apps/desktop/scripts/electron-runtime-lifecycle.test.mjs \
+  apps/desktop/scripts/dev-electron-runtime-cache.test.mjs \
+  apps/desktop/scripts/dev.test.mjs \
   scripts/__tests__/linux-sandbox.test.mjs
 ```
 
@@ -87,12 +91,20 @@ Before the port it failed with different APFS clone IDs (`236632612` and
 `236632634`) for repeated extractions. Its setup-chain guard also failed on
 the original `install-electron` hook. The fixed hook passes both.
 
-The focused suite passed 24 tests on macOS. Generated target combinations and
+The focused suite passed 48 tests on macOS. Generated target combinations and
 cache mutations cover version/platform/architecture/archive separation,
 corruption, unavailable caches, offline reuse, incomplete installs, concurrent
 processes and recovery after a killed installer. A native-host entry-point test
 installs three different project layouts against one cache. Another checks the
 common default home, exact identity/key and separation from PwrSnap state.
+The dev repair oracle copies the production launcher and installers into
+disposable layouts, seeds a verified common cache, and repairs a missing
+runtime through the launcher's default entry point. It checks the complete
+inventory, unchanged cache entry, independent inodes, APFS clone IDs/private
+allocation on macOS, write isolation, and the healthy fast path offline. The
+oracle failed on the previous repair path because it executed the dependency's
+sentinel `install.js` (exit code 73). No test invokes the launcher main function
+or starts Electron.
 Linux and Windows native behavior is exercised by CI, not by foreign-binary
 execution on the Mac.
 

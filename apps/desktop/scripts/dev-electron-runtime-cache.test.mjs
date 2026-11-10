@@ -31,7 +31,11 @@ it("dev repair oracle: the default repair entry point reuses the common verified
     }
     const checksum = hash(readFileSync(zip));
     const home = join(root, "home");
-    const env = { ...process.env, PWRAGENT_HOME: home, npm_config_platform: process.platform, npm_config_arch: process.arch };
+    const env = {
+      ...process.env, PWRAGENT_HOME: home,
+      npm_config_platform: process.platform, npm_config_arch: process.arch,
+      electron_use_remote_checksums: undefined, npm_config_electron_use_remote_checksums: undefined,
+    };
     const requests = join(root, "requests.jsonl");
     const legacy = join(root, "legacy-installer-ran");
     const packages = ["seed", "repair"].map((name) => {

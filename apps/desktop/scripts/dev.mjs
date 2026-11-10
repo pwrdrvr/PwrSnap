@@ -367,7 +367,8 @@ export function ensureElectronInstalled(
   env,
   electronRoot = resolve(desktopRoot, "node_modules/electron"),
   node = process.execPath,
-  platform = process.platform
+  platform = process.platform,
+  runtimeInstaller = resolve(__dirname, "ensure-electron-runtime.mjs")
 ) {
   const before = electronInstallState(electronRoot, platform);
   if (before.ok) return 0;
@@ -377,7 +378,7 @@ export function ensureElectronInstalled(
   }
 
   console.warn(`[dev] repairing Electron install: ${before.reason}`);
-  const status = run(node, [resolve(electronRoot, "install.js")], env);
+  const status = run(node, [runtimeInstaller], env);
   if (status !== 0) return status;
 
   const after = electronInstallState(electronRoot, platform);

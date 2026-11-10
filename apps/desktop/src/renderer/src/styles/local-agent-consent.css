@@ -1,14 +1,14 @@
-/* Linux-only chrome strip for a window that has no title bar.
-   Frameless on Linux means no OS drag region and no OS caption buttons, and
-   this window paints neither of its own — see the note in App.tsx. Fixed
-   across the top 52px, which is exactly the padding `.local-agent-consent`
-   already reserves, so it displaces nothing at rest.
+/* The consent window's title strip, on every platform.
+   The window has no title bar of its own and its body scrolls
+   (`overflow: auto` below), while this strip is `position: fixed`. macOS
+   draws its traffic lights and Windows its caption overlay directly onto
+   whatever is under them, so a transparent strip, or none, let the heading
+   scroll up under the stoplights. Opaque, so scrolled content goes behind it.
+   On Linux it also carries the caption buttons we paint (see
+   LocalAgentConsentWindow.tsx).
 
-   Opaque, not transparent: the body scrolls (`overflow: auto` below) and this
-   strip is `position: fixed`, so on a short window the consent heading rides
-   up UNDER it — a transparent strip would show that text with a drag region
-   over it, unreadable and unclickable. The background is what makes the strip
-   read as a title bar instead of a hole. */
+   52px tall, exactly the top padding every `.local-agent-consent` rule
+   reserves, so it covers nothing at rest. */
 .ps-consent-chrome {
   position: fixed;
   top: 0;
@@ -302,7 +302,6 @@ body[data-stage="local-agent-consent"] {
 @media (max-width: 560px) {
   .local-agent-consent {
     width: min(100% - 28px, 620px);
-    padding-top: 38px;
   }
 
   .local-agent-consent__footer {

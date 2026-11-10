@@ -1,9 +1,7 @@
 import { AppDocumentWindow } from "./features/documents/AppDocumentWindow";
 import { Library } from "./features/library/Library";
-import { LocalAgentConsent } from "./features/local-agents/LocalAgentConsent";
+import { LocalAgentConsentWindow } from "./features/local-agents/LocalAgentConsentWindow";
 import { AppNoticeToast } from "./features/shared/AppNoticeToast";
-import { WindowControls } from "./features/shared/WindowControls";
-import { paintsOwnCaptionButtons, rendererPlatform } from "./lib/window-chrome";
 import { LogsWindow } from "./features/logs/LogsWindow";
 import { CapturesAccessBanner } from "./features/library/CapturesAccessBanner";
 import { CodexCompatibilityBanner } from "./features/library/CodexCompatibilityBanner";
@@ -169,25 +167,7 @@ export function App() {
       return <PermissionGuide />;
     }
     if (STAGE === "local-agent-consent") {
-      return (
-        <>
-          {/* This window is the one `platformWindowChrome()` consumer with no
-              title bar of its own — a centred column with 52px of top padding
-              and no drag region. macOS still draws its traffic lights into
-              that space and Windows still fills its `titleBarOverlay`, so on
-              both the window can be moved and closed without us. Linux is
-              frameless with nothing but what we paint, so without this strip
-              the authorization prompt could not be dragged, minimized or
-              closed at all. It occupies exactly the padding the design
-              already leaves. */}
-          {paintsOwnCaptionButtons(rendererPlatform()) ? (
-            <div className="ps-consent-chrome">
-              <WindowControls />
-            </div>
-          ) : null}
-          <LocalAgentConsent />
-        </>
-      );
+      return <LocalAgentConsentWindow />;
     }
     if (STAGE === "document") {
       return <AppDocumentWindow kind={DOCUMENT_KIND} />;

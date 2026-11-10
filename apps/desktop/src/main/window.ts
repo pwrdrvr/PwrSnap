@@ -135,10 +135,11 @@ type MenuVisibility = "visible" | "hidden";
  * Five of the six consumers render one of those bars: Library (`.psl`),
  * Settings (`.pss`), Sizzle (`.szl`), the document windows and the logs
  * window (both `.ps-doc`). **The local-agent consent window is the exception**
- * — it has no chrome bar at all (a centred column with 52px of top padding, no
- * drag region), so the buttons float over plain background there and the
- * derivation above does not describe it. That is tolerated, not overlooked: if
- * that window ever grows a title bar, the inset needs re-deriving against it.
+ * — it has no chrome bar, only a plain opaque 52px strip (the column's top
+ * padding, and the drag region) that scrolled content passes under, so the
+ * buttons float over plain background there and the derivation above does not
+ * describe it. That is tolerated, not overlooked: if that window ever grows a
+ * real title bar, the inset needs re-deriving against it.
  *
  * History: `x` was 20 from the 2026-05 build-out and never re-derived, which
  * left the buttons 4pt past the rail. `y` was 18 in the old 52px bar, whose

@@ -48,8 +48,9 @@ function renderer(relativePath: string): string {
  * frameless on Linux — naming the renderer file that paints its strip.
  *
  * Five render a chrome bar. The sixth, the local-agent consent window, renders
- * none: App.tsx gives it a Linux-only fixed strip instead, in the 52px of top
- * padding its layout already reserves.
+ * none: LocalAgentConsentWindow.tsx gives it a fixed strip instead (on every
+ * platform, with buttons on Linux), in the 52px of top padding its layout
+ * already reserves.
  */
 const FRAMELESS_SURFACES = [
   { factory: "createMainWindow", file: "features/library/Library.tsx" },
@@ -57,7 +58,7 @@ const FRAMELESS_SURFACES = [
   { factory: "createSizzleWindow", file: "features/sizzle/SizzleApp.tsx" },
   { factory: "showAppDocumentWindow", file: "features/documents/AppDocumentWindow.tsx" },
   { factory: "showLogsWindow", file: "features/logs/LogsWindow.tsx" },
-  { factory: "createLocalAgentConsentWindow", file: "App.tsx" }
+  { factory: "createLocalAgentConsentWindow", file: "features/local-agents/LocalAgentConsentWindow.tsx" }
 ] as const;
 
 describe("Linux caption-button coverage", () => {

@@ -60,7 +60,7 @@ env:
 
 jobs:
   # Keep the pull_request trigger path-unfiltered so the required check jobs
-  # exist on every PR. Documentation-only PRs skip those jobs below instead.
+  # exist on every PR. Documentation/agent-skill-only PRs skip those jobs below.
   changes:
     name: Classify Changes
     runs-on: ubuntu-latest
@@ -99,14 +99,18 @@ jobs:
             }
 
             const reportedCount = context.payload.pull_request.changed_files;
-            if (files.length === 0 || files.length !== reportedCount) {
+            if (!Array.isArray(files) || files.length === 0 || files.length !== reportedCount
+              || files.some((file) => !file || typeof file.filename !== "string" || !file.filename
+                || (file.status === "renamed"
+                  && (typeof file.previous_filename !== "string" || !file.previous_filename)))) {
               fullCi(
-                `changed-file list was incomplete (received ${files.length} of ${reportedCount})`,
+                `changed-file list was incomplete (received ${files?.length ?? "unknown"} of ${reportedCount})`,
               );
               return;
             }
 
             const isDocumentationPath = (path) => {
+              if (path.startsWith(".agents/skills/")) return true;
               if (path.startsWith("docs/")) return true;
               if (!path.toLowerCase().endsWith(".md")) return false;
               // Prompt Markdown is copied into the packaged app
@@ -126,11 +130,11 @@ jobs:
               .addHeading("Changed-file classification")
               .addTable([
                 [{data: "Classification", header: true}, {data: "Files", header: true}],
-                [docsOnly ? "Documentation only" : "Code impacting", String(files.length)],
+                [docsOnly ? "Documentation or agent skills only" : "Code impacting", String(files.length)],
               ])
               .addRaw(
                 docsOnly
-                  ? "Only `docs/**` and non-source Markdown files changed; expensive CI jobs are skipped."
+                  ? "Only `docs/**`, non-source Markdown, or `.agents/skills/**` changed; expensive CI jobs are skipped."
                   : `Full CI runs because \`${codeImpactingFile.filename}\` is not documentation-only.`,
               )
               .write();

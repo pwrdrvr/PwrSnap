@@ -23,7 +23,7 @@ vi.mock("electron", () => ({
 import { DesktopSecretStore } from "../../settings/desktop-secret-store";
 import { DesktopSettingsService, defaultSettings } from "../../settings/desktop-settings-service";
 import { LocalAgentGrantService } from "../local-agent-grants";
-import { LocalAgentMcpServer } from "../mcp-server";
+import { LocalAgentMcpServer, RETAINED_REVOKED_NATIVE_SESSIONS } from "../mcp-server";
 import { NativeMcpBridge } from "../../ai/mcp/native-mcp-bridge";
 import { bus } from "../../command-bus";
 import type { LocalAgentConsentDecision } from "../local-agent-consent-broker";
@@ -545,6 +545,20 @@ test("a relay without --role gets Full Access, and a built-in role may drop its 
   ]);
   expect(consent).not.toHaveBeenCalled();
 });
+test("revoked native Sessions are capped as relays come and go", async () => {
+  const total = RETAINED_REVOKED_NATIVE_SESSIONS + 3;
+  for (let i = 0; i < total; i++) {
+    const client = await connect();
+    const [live] = (await grants.list()).filter((grant) => grant.revokedAt === null);
+    await client.close();
+    await vi.waitFor(async () => expect((await grants.list()).find((grant) => grant.id === live.id)?.revokedAt).not.toBeNull());
+  }
+  await connect();
+  const all = await grants.list();
+  const revoked = all.filter((grant) => grant.revokedAt !== null);
+  expect(revoked.length).toBeLessThanOrEqual(RETAINED_REVOKED_NATIVE_SESSIONS);
+  expect(all.filter((grant) => grant.revokedAt === null)).toHaveLength(1);
+}, 60_000);
 test("relays connecting at once each get their own Session without a prompt", async () => {
   await Promise.all(Array.from({ length: 6 }, () => connect()));
   const live = (await grants.list()).filter((grant) => grant.revokedAt === null);

@@ -23,11 +23,11 @@ import { TRASH_RETENTION_DAYS } from "../persistence/trash-retention";
 import { getCaptureById } from "../persistence/captures-repo";
 import { LocalAgentGrantError, LocalAgentGrantService } from "./local-agent-grants";
 import { resolveRelayRole, unknownRelayRoleMessage } from "./local-agent-relay-role";
-import {
-  uniqueSessionName,
-  type LocalAgentConsentDecision,
-  type LocalAgentConsentRequest
+import type {
+  LocalAgentConsentDecision,
+  LocalAgentConsentRequest
 } from "./local-agent-consent-broker";
+import { uniqueSessionName } from "./local-agent-session-name";
 import {
   captureNotBefore,
   isCapturedAtOrAfter,
@@ -64,6 +64,7 @@ type Policy = NonNullable<CommandContext["localAgent"]>;
 type GrantService = Pick<
   LocalAgentGrantService,
   "authorizeClient" | "openNativeSession" | "recordUsage" | "revokeGrant" | "list" | "listRoles"
+  | "removeRevokedGrants"
 >;
 type UsageService = Pick<LocalAgentUsageService, "reserve" | "release">;
 type Session = {
@@ -78,6 +79,12 @@ type Session = {
   fingerprint: string;
 };
 const DIRECT_HTTP = "direct HTTP (no relay)";
+/**
+ * Revoked native Sessions kept in Access Control. A host such as PwrAgent opens
+ * a relay per thread, and each is revoked when it closes, so older ones are
+ * removed as new relays connect. Audit entries keep their ids.
+ */
+export const RETAINED_REVOKED_NATIVE_SESSIONS = 64;
 export type LocalAgentMcpServerOptions = {
   settings: Pick<DesktopSettingsStoreApi, "read" | "write">;
   secrets: DesktopSecretStore;
@@ -454,6 +461,7 @@ export class LocalAgentMcpServer {
     const roles = await this.grantService.listRoles();
     const role = resolveRelayRole(roles, requested);
     if (role === undefined) throw new Error(unknownRelayRoleMessage(roles, requested));
+    await this.pruneRevokedNativeSessions();
     // Hosts open several sessions at once; each takes the next free name.
     for (let attempt = 0; ; attempt += 1) {
       const sessionName = uniqueSessionName(name, await this.grantService.list());
@@ -467,6 +475,17 @@ export class LocalAgentMcpServer {
         if (!(error instanceof LocalAgentGrantError) || error.code !== "duplicate_name" || attempt >= 8) throw error;
       }
     }
+  }
+  private async pruneRevokedNativeSessions(): Promise<void> {
+    const revoked = (await this.grantService.list())
+      .filter((grant) => grant.revokedAt !== null && grant.nativeConsent !== undefined)
+      .sort((a, b) => a.revokedAt!.localeCompare(b.revokedAt!));
+    const excess = revoked.length - RETAINED_REVOKED_NATIVE_SESSIONS;
+    if (excess <= 0) return;
+    // Another connection may have removed some first; nothing else depends on it.
+    await this.grantService
+      .removeRevokedGrants(revoked.slice(0, excess).map((grant) => grant.id))
+      .catch(() => undefined);
   }
   private async policy(session: Session): Promise<Policy | null> {
     if (session.grantId === null || session.transport.controller.signal.aborted) return null;

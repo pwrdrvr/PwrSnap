@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -134,7 +134,7 @@ test("HTTP policy edits before initialization/SSE queue invalidations and later 
   const headers = { authorization: `Bearer ${token}`, "mcp-session-id": initialized.headers["mcp-session-id"] as string };
   // A host that never opens SSE can still explicitly rediscover current tools.
   expect(httpMessage((await send({ jsonrpc: "2.0", id: 2, method: "tools/list" }, headers)).text))
-    .toMatchObject({ result: { tools: [{ name: "fixture_search" }] } });
+    .toMatchObject({ result: { tools: [{ name: "fixture_search" }, { name: "pwrsnap_sizzle_skill" }] } });
   const events: string[] = [];
   const req = request({ socketPath: endpoint, path: "/mcp", method: "GET", headers: {
     ...headers, accept: "text/event-stream"
@@ -167,12 +167,20 @@ test("HTTP over the same protected IPC endpoint uses native bootstrap and the de
   headers["mcp-protocol-version"] = "2025-11-25";
   expect((await send({ jsonrpc: "2.0", method: "notifications/initialized" }, headers)).status).toBe(202);
   const tools = await send({ jsonrpc: "2.0", id: 2, method: "tools/list" }, headers);
-  expect(httpMessage(tools.text)).toMatchObject({ result: { tools: [{ name: "fixture_search", description: "Desktop-owned fixture description", annotations: { readOnlyHint: true }, inputSchema: { required: ["query"] } }] } });
+  expect(httpMessage(tools.text)).toMatchObject({ result: { tools: [{ name: "fixture_search", description: "Desktop-owned fixture description", annotations: { readOnlyHint: true }, inputSchema: { required: ["query"] } }, { name: "pwrsnap_sizzle_skill", annotations: { readOnlyHint: true } }] } });
   const bad = await send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "fixture_search", arguments: { query: 4 } } }, headers);
   expect(httpMessage(bad.text)).toMatchObject({ result: { isError: true } });
   expect(dispatch).not.toHaveBeenCalled();
   const good = await send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "fixture_search", arguments: { query: "hello" }, _meta: { progressToken: "preserved" } } }, headers);
   expect(good.status).toBe(200);
+  const skillUri = "pwrsnap://skills/pwrsnap-sizzle-reels/SKILL.md";
+  const resources = await send({ jsonrpc: "2.0", id: 5, method: "resources/list" }, headers);
+  expect(httpMessage(resources.text)).toMatchObject({ result: { resources: expect.arrayContaining([{ uri: skillUri, name: "pwrsnap-sizzle-reels", title: "PwrSnap Sizzle Reels skill", description: expect.any(String), mimeType: "text/markdown" }]) } });
+  const guidance = await send({ jsonrpc: "2.0", id: 6, method: "resources/read", params: { uri: skillUri } }, headers);
+  const skill = readFileSync(new URL("../../../../../../.agents/skills/pwrsnap-sizzle-reels/SKILL.md", import.meta.url), "utf8");
+  expect(httpMessage(guidance.text)).toMatchObject({ result: { contents: [{ uri: skillUri, mimeType: "text/markdown", text: skill }] } });
+  const skillTool = await send({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "pwrsnap_sizzle_skill", arguments: {} } }, headers);
+  expect(httpMessage(skillTool.text)).toMatchObject({ result: { structuredContent: { uri: skillUri, text: skill } } });
   expect(dispatch).toHaveBeenCalledOnce();
   expect(consent).toHaveBeenCalledOnce();
   const [grant] = await grants.list();
@@ -281,6 +289,40 @@ async function connect(): Promise<Client> {
   );
   return client;
 }
+test("approved search-only clients discover the bundled Sizzle skill and read identical files through resources and tools", async () => {
+  const client = await connect();
+  const root = "pwrsnap://skills/pwrsnap-sizzle-reels/";
+  const resources = (await client.listResources()).resources;
+  const tool = (await client.listTools()).tools.find((item) => item.name === "pwrsnap_sizzle_skill");
+  expect(tool?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, openWorldHint: false });
+  expect(client.getInstructions()).toContain(root + "SKILL.md");
+  for (const path of ["SKILL.md", "references/timeline.md"]) {
+    const uri = root + path;
+    const text = readFileSync(new URL(`../../../../../../.agents/skills/pwrsnap-sizzle-reels/${path}`, import.meta.url), "utf8");
+    expect(resources.find((item) => item.uri === uri)).toMatchObject({ mimeType: "text/markdown" });
+    expect((await client.readResource({ uri })).contents).toEqual([{ uri, mimeType: "text/markdown", text }]);
+    const result = await client.callTool({ name: "pwrsnap_sizzle_skill", arguments: { path } });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({ uri, text, mimeType: "text/markdown" });
+    expect(result.content).toContainEqual({ type: "text", text: JSON.stringify(result.structuredContent) });
+  }
+  const initial = await client.callTool({ name: "pwrsnap_sizzle_skill", arguments: {} });
+  expect(initial.structuredContent).toMatchObject({ uri: root + "SKILL.md" });
+  expect(dispatch).not.toHaveBeenCalled();
+  const [grant] = await grants.list();
+  expect((await grants.authorizeClient(grant.id))?.capabilities).toEqual(["library.read"]);
+});
+
+test("Sizzle guidance refuses unknown files and revoked sessions on both read paths", async () => {
+  const client = await connect();
+  await expect(client.readResource({ uri: "pwrsnap://skills/pwrsnap-sizzle-reels/../../settings.json" })).rejects.toThrow();
+  expect((await client.callTool({ name: "pwrsnap_sizzle_skill", arguments: { path: "../../settings.json" } })).isError).toBe(true);
+  const [grant] = await grants.list();
+  await grants.revokeGrant(grant.id);
+  await expect(client.readResource({ uri: "pwrsnap://skills/pwrsnap-sizzle-reels/SKILL.md" })).rejects.toThrow();
+  expect((await client.callTool({ name: "pwrsnap_sizzle_skill", arguments: {} })).isError).toBe(true);
+});
+
 test("mixed release versions use the desktop interface and preserve descriptions, schemas and annotations", async () => {
   const client = await connect();
   expect(client.getServerVersion()).toEqual({ name: "PwrSnap", version: "9.8.7" });
@@ -328,7 +370,7 @@ test.each(["stdio", "HTTP"] as const)("upgraded Full Access roles connect over %
       expect(initialized.status).toBe(200);
       const headers = { authorization: `Bearer ${token}`, "mcp-session-id": initialized.headers["mcp-session-id"] as string };
       const listed = await send({ jsonrpc: "2.0", id: 2, method: "tools/list" }, headers);
-      expect(httpMessage(listed.text)).toMatchObject({ result: { tools: [{ name: "fixture_search" }] } });
+      expect(httpMessage(listed.text)).toMatchObject({ result: { tools: [{ name: "fixture_search" }, { name: "pwrsnap_sizzle_skill" }] } });
       const called = await send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "fixture_search", arguments: { query: name } } }, headers);
       expect(httpMessage(called.text)).toMatchObject({ result: { content: expect.any(Array) } });
       expect((httpMessage(called.text).result as { isError?: boolean }).isError).not.toBe(true);

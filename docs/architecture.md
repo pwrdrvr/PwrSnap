@@ -522,6 +522,11 @@ measured against a seeded large library rather than a handful of captures.
   the external role graph nor unrelated app services are widened. These
   internal endpoints reject HTTP framing.
   See [mcp-third-party-agents.md](mcp-third-party-agents.md).
+  The Sizzle authoring skill and its timeline reference are bundled from
+  `.agents/skills/pwrsnap-sizzle-reels/` and discoverable as Markdown MCP
+  resources, with a read-only tool for tool-discovery clients. Guidance reads
+  require a live approved Session but no media permissions or capture budget;
+  the files contain product instructions only, never user media or secrets.
   Built-in role upgrades preserve existing sessions' approved permissions and
   limits in a retained custom profile; expanded roles require new approval.
   Arbitrary drift from a canonical built-in definition remains rejected.

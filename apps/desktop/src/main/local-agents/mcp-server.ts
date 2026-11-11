@@ -58,6 +58,7 @@ import {
 import { McpSessionPool } from "../ai/mcp/mcp-session-pool";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { IpcHttpMcp } from "./ipc-http-mcp";
+import { SIZZLE_SKILL_URI, sizzleSkillResources, sizzleSkillTool } from "./sizzle-skill";
 const log = getMainLogger("pwrsnap:local-agent-mcp");
 type Policy = NonNullable<CommandContext["localAgent"]>;
 type GrantService = Pick<
@@ -433,7 +434,9 @@ export class LocalAgentMcpServer {
           `Desktop ${this.version}; ${connection}. The desktop owns this MCP interface. ` +
           "Use PwrSnap tools only for captures and sizzle assets the user authorized for this local client. " +
           "Completed media tools attach capability-protected MCP resources. Read them with resources/read; no HTTP media URLs are served. " +
-          "Use the returned resourceUri only in clients that explicitly support MCP resource reads."
+          "Use the returned resourceUri only in clients that explicitly support MCP resource reads. " +
+          `Before authoring a launch/demo reel, read ${SIZZLE_SKILL_URI} or call pwrsnap_sizzle_skill. ` +
+          "Discover the bundled skill and its references with resources/list; guidance reads require this approved Session but no media permissions."
       }
     );
     this.registerTools(mcp, session);
@@ -442,6 +445,20 @@ export class LocalAgentMcpServer {
   }
 
   private registerResources(mcp: McpServer, session: Session): void {
+    for (const resource of sizzleSkillResources) {
+      mcp.registerResource(resource.name, resource.uri, {
+        title: resource.title,
+        description: resource.description,
+        mimeType: resource.mimeType
+      }, async (uri) => {
+        // Public product guidance needs no media scope or budget, but a
+        // revoked/disconnected Session must still fail closed on every read.
+        const policy = await this.policy(session);
+        if (policy === null) throw new Error("unauthorized");
+        await this.recordUsage(policy.clientId);
+        return { contents: [{ uri: uri.toString(), mimeType: resource.mimeType, text: resource.text }] };
+      });
+    }
     const templates = [
       ["capture-composite", "pwrsnap://capture/{captureId}/composite", "image/png"],
       ["capture-original", "pwrsnap://capture/{captureId}/original", "image/png"],
@@ -505,7 +522,7 @@ export class LocalAgentMcpServer {
   }
 
   private registerTools(mcp: McpServer, session: Session): void {
-    for (const tool of this.tools) {
+    for (const tool of [...this.tools, sizzleSkillTool]) {
       mcp.registerTool(
         tool.name,
         {

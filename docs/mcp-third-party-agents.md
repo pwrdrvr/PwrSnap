@@ -182,6 +182,21 @@ skills and initialization instructions require the host's supported refresh
 or an explicit new connection. Prompts/skills not advertised by the desktop
 are not supplied by the relay.
 
+### Sizzle authoring skill
+
+`resources/list` advertises `pwrsnap://skills/pwrsnap-sizzle-reels/SKILL.md`
+and its `references/timeline.md` companion. `resources/read` returns Markdown
+text embedded from the repo's `.agents/skills/pwrsnap-sizzle-reels/` at build
+time. No checkout or documentation network request is required. Tool-only
+hosts can discover `pwrsnap_sizzle_skill`, omit `path` to read the skill, and
+request `path: "references/timeline.md"` for examples and tool inputs.
+
+Guidance reads require an approved live Session, including after revocation
+or role changes. They require no capture/composition permissions and spend no
+media-read budget. Instructions explain the operations; actual media and
+render calls still enforce their existing grants and budgets. See
+[Authoring Sizzle reels](sizzle-agent-reels.md).
+
 Media tools return canonical `pwrsnap://` MCP resource links. Use
 `resources/read` to obtain bytes. Each read rechecks the live Session,
 capabilities, capture-history horizon, usage budget and resource ownership.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "PwrSnap Sizzle Reels"
+  short_description: "Build launch reels through PwrSnap MCP"
+  default_prompt: "Use $pwrsnap-sizzle-reels to build a launch reel from my app footage with continuous narration and music."

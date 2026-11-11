@@ -1687,13 +1687,19 @@ checks, protected endpoint ownership and bounded I/O on both native roles.
   stream revokes the Session. No SSE resumption or event replay. Retained legacy
   credentials are not accepted by this transport; never replay or transfer
   their approvals. Browser OAuth over IPC is unsupported; no TCP fallback.
-- `LocalAgentGrantService.openNativeSession` is called only after native
-  consent in `mcp-server.ts`. Its connection ceiling is enforced by
-  `authorizeClient` as well as the MCP boundary, so command-bus role
-  re-resolution cannot widen consent. A disconnect revokes the session.
-  Modern stdio `server/discover` may return public server metadata before
-  consent without creating a grant; every protected request, including skill
-  discovery/reads, still passes native consent. Internal ACP remains
+- A relay connection is never prompted. The client names its role on the
+  relay command line (`pwrsnap-mcp --role <id>`), and `mcp-server.ts` grants
+  exactly that role, or Full Access when none is named
+  (`local-agent-relay-role.ts`). An unknown id refuses the connection and never
+  falls back to another role. A client the operator does not trust with
+  everything connects with a lower role; an untrusted model belongs in a
+  contained environment, not on this machine's PwrSnap. Direct IPC HTTP has no
+  command line, so it still opens `openNativeSession` only after native
+  consent. Either way the connection ceiling is enforced by `authorizeClient`
+  as well as the MCP boundary, so command-bus role re-resolution cannot widen
+  the grant. A disconnect revokes the session. Modern stdio `server/discover`
+  may return public server metadata without creating a grant; every protected
+  request, including skill discovery/reads, needs the connection's grant. Internal ACP remains
   initialize-only, and discovery-only connections keep their admission timeout.
 - Every tool/resource read retains capability, history, usage-budget,
   revocation and owner checks. Tool results keep `structuredContent` and a

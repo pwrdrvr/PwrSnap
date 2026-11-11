@@ -36,11 +36,22 @@ For JSON-configured hosts such as Cursor, put the absolute relay path in
 {"mcpServers":{"pwrsnap":{"command":"/Applications/PwrSnap.app/Contents/Resources/pwrsnap-mcp","args":[]}}}
 ```
 
-The desktop opens its native approval window. The host name is self-reported;
-it is not a verified application identity. Choose a Session Name and role, or
-custom permissions and history limits. Same-account IPC never bypasses this
-approval. Closing the host or relay ends and revokes that connection's Session.
-A later connection needs a fresh approval.
+The relay is not prompted. PwrSnap grants the role named on the relay's command
+line, or Full Access when none is named, and lists the connection as a Session
+in Settings → Local Agents, named for the host's self-reported name. To give a
+host less, add `--role` with a role id from Settings → Local Agents:
+
+```sh
+claude mcp add --scope user --transport stdio pwrsnap-preview -- '/Applications/PwrSnap.app/Contents/Resources/pwrsnap-mcp' --role builtin.preview
+```
+
+The built-in ids are `builtin.search`, `builtin.preview`, `builtin.full-media`,
+`builtin.editor`, `builtin.sizzle` and `builtin.full-access`; the `builtin.`
+prefix may be left off. A custom role uses its own id. An unknown id refuses
+the connection rather than granting another role. If you do not trust a model
+with a role's access, connect it with a lower role; a model you do not trust at
+all belongs in a contained environment, not connected to this machine's
+PwrSnap. Closing the host or relay ends and revokes that connection's Session.
 
 Command stdio is the portable local path documented by
 [Codex](https://learn.chatgpt.com/docs/extend/mcp?surface=cli),
@@ -118,10 +129,10 @@ Removing a revoked Session deletes that saved entry while preserving audit
 entries with its id. Active Sessions offer Revoke, and `localAgents:remove`
 refuses active ids. Removal cannot end or restore access.
 
-Each new approval creates a new Session and id, even when its name repeats.
-Cards show the authorization time and the id's last four characters to tell
-them apart. Connecting again requires fresh native consent and, for direct
-HTTP, a fresh bootstrap credential. Removing old entries never transfers an
+Each new connection creates a new Session and id; a name already in use gets a
+number. Cards show the authorization time and the id's last four characters to
+tell them apart. Direct HTTP needs fresh native consent and a fresh bootstrap
+credential for each connection. Removing old entries never transfers an
 approval or makes an old credential usable again.
 
 Legacy OAuth registration metadata may remain in
@@ -136,8 +147,8 @@ OAuth registration or persisted bearer credential.
    For CLI hosts, use `claude mcp remove pwrsnap` or `codex mcp remove pwrsnap`.
 2. Install the updated desktop, open it yourself, and enable Local agents.
 3. Copy the new stdio command or direct IPC HTTP configuration from Settings,
-   then manually reconnect the MCP server in the host. Approve a new Session
-   in PwrSnap's native window; HTTP clients use the bootstrap described above.
+   then manually reconnect the MCP server in the host. A relay gets the role on
+   its command line; HTTP clients use the bootstrap described above.
 4. Revoke obsolete HTTP Sessions in Settings when no longer needed.
 
 The former loopback listener on port 51729, its OAuth authorization/token
@@ -207,7 +218,7 @@ render calls still enforce their existing grants and budgets. See
 Native stdio supports both the existing initialize handshake and revision
 `2026-07-28` requests with per-request metadata and `server/discover`.
 Modern `server/discover` exposes public server metadata without creating a
-grant; the first protected request requires native consent. Discovery-only
+grant; the first protected request opens the connection's Session. Discovery-only
 connections retain the admission timeout. The SDK handles era negotiation.
 Direct IPC HTTP retains its initialize-based Session contract and advertises
 the extension through that legacy handshake. Internal ACP endpoints retain

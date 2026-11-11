@@ -10,6 +10,7 @@ import {
   ok,
   type LocalAgentAuditAction,
   type LocalAgentCapability,
+  type LocalAgentClientGrant,
   type LocalAgentUsageAction,
   type Result,
   type PwrSnapError
@@ -20,10 +21,12 @@ import { DesktopSecretStore } from "../settings/desktop-secret-store";
 import type { DesktopSettingsStoreApi } from "../settings/desktop-settings-store";
 import { TRASH_RETENTION_DAYS } from "../persistence/trash-retention";
 import { getCaptureById } from "../persistence/captures-repo";
-import { LocalAgentGrantService } from "./local-agent-grants";
-import type {
-  LocalAgentConsentDecision,
-  LocalAgentConsentRequest
+import { LocalAgentGrantError, LocalAgentGrantService } from "./local-agent-grants";
+import { resolveRelayRole, unknownRelayRoleMessage } from "./local-agent-relay-role";
+import {
+  uniqueSessionName,
+  type LocalAgentConsentDecision,
+  type LocalAgentConsentRequest
 } from "./local-agent-consent-broker";
 import {
   captureNotBefore,
@@ -60,7 +63,7 @@ const log = getMainLogger("pwrsnap:local-agent-mcp");
 type Policy = NonNullable<CommandContext["localAgent"]>;
 type GrantService = Pick<
   LocalAgentGrantService,
-  "authorizeClient" | "openNativeSession" | "recordUsage" | "revokeGrant" | "list"
+  "authorizeClient" | "openNativeSession" | "recordUsage" | "revokeGrant" | "list" | "listRoles"
 >;
 type UsageService = Pick<LocalAgentUsageService, "reserve" | "release">;
 type Session = {
@@ -70,8 +73,11 @@ type Session = {
   mcp: McpServer;
   grantId: string | null;
   relayVersion: string;
+  /** The role a relay's command line asked for; direct HTTP has none. */
+  requestedRole: string | null;
   fingerprint: string;
 };
+const DIRECT_HTTP = "direct HTTP (no relay)";
 export type LocalAgentMcpServerOptions = {
   settings: Pick<DesktopSettingsStoreApi, "read" | "write">;
   secrets: DesktopSecretStore;
@@ -124,7 +130,7 @@ export class LocalAgentMcpServer {
     this.requestConsent = options.requestConsent;
     this.version = options.version ?? app.getVersion();
     this.http = new IpcHttpMcp(async (transport, message) => {
-      const session = this.makeSession(--this.nextHttpId, transport, "direct HTTP (no relay)");
+      const session = this.makeSession(--this.nextHttpId, transport, DIRECT_HTTP, null);
       try {
         if (!(await this.pool.admit(session.id, session))) throw new Error("MCP Session limit reached");
         await this.approve(session, message);
@@ -342,7 +348,7 @@ export class LocalAgentMcpServer {
       void transport.close();
     }, 30_000);
     initializationTimer.unref();
-    session = this.makeSession(input.id, transport, input.relayVersion);
+    session = this.makeSession(input.id, transport, input.relayVersion, input.role);
     transport.controller.signal.addEventListener(
       "abort",
       () => {
@@ -365,8 +371,15 @@ export class LocalAgentMcpServer {
       return session.mcp;
     }, { transport, onerror: () => { void transport.close(); } });
   }
-  private makeSession(id: number, transport: Session["transport"], relayVersion: string): Session {
-    const session: Session = { id, transport, relayVersion, grantId: null, fingerprint: "", mcp: undefined as unknown as McpServer };
+  private makeSession(
+    id: number,
+    transport: Session["transport"],
+    relayVersion: string,
+    requestedRole: string | null
+  ): Session {
+    const session: Session = {
+      id, transport, relayVersion, requestedRole, grantId: null, fingerprint: "", mcp: undefined as unknown as McpServer
+    };
     session.mcp = this.createMcpServer(session);
     transport.controller.signal.addEventListener("abort", () => {
       this.pool.remove(id);
@@ -394,24 +407,9 @@ export class LocalAgentMcpServer {
         typeof info === "object" && info !== null && "name" in info && typeof info.name === "string"
           ? info.name.slice(0, 200)
           : "Local MCP client";
-      const decision = await this.requestConsent?.({
-        clientId: randomUUID(),
-        clientName: name,
-        requestedCapabilities: LOCAL_AGENT_CAPABILITIES,
-        signal
-      });
-      if (signal.aborted || this.closed || decision?.decision !== "allow")
-        throw new Error("PwrSnap approval was denied or disconnected; reconnect manually");
-      if (decision.capabilities.some((cap) => !LOCAL_AGENT_CAPABILITIES.includes(cap)))
-        throw new Error("invalid consent scope");
-      const grant = await this.grantService.openNativeSession({
-        name: decision.sessionName,
-        capabilities: decision.capabilities,
-        roleId: decision.roleId,
-        ...(decision.maxCaptureAgeDays !== undefined
-          ? { maxCaptureAgeDays: decision.maxCaptureAgeDays }
-          : {})
-      });
+      const grant = session.relayVersion === DIRECT_HTTP
+        ? await this.grantFromConsent(name, signal)
+        : await this.grantRequestedRole(name, session.requestedRole);
       const ceiling = await this.grantService.authorizeClient(grant.id);
       // A disconnect during the serialized settings write cannot leave a
       // surviving approval or install it into a replacement connection.
@@ -426,12 +424,56 @@ export class LocalAgentMcpServer {
       clearTimeout(timer);
     }
   }
+  /** A direct HTTP Session has no relay command line, so the operator picks its role. */
+  private async grantFromConsent(name: string, signal: AbortSignal): Promise<LocalAgentClientGrant> {
+    const decision = await this.requestConsent?.({
+      clientId: randomUUID(),
+      clientName: name,
+      requestedCapabilities: LOCAL_AGENT_CAPABILITIES,
+      signal
+    });
+    if (signal.aborted || this.closed || decision?.decision !== "allow")
+      throw new Error("PwrSnap approval was denied or disconnected; reconnect manually");
+    if (decision.capabilities.some((cap) => !LOCAL_AGENT_CAPABILITIES.includes(cap)))
+      throw new Error("invalid consent scope");
+    return await this.grantService.openNativeSession({
+      name: decision.sessionName,
+      capabilities: decision.capabilities,
+      roleId: decision.roleId,
+      ...(decision.maxCaptureAgeDays !== undefined
+        ? { maxCaptureAgeDays: decision.maxCaptureAgeDays }
+        : {})
+    });
+  }
+  /**
+   * A relay connection gets the role its command line named, or Full Access,
+   * with no prompt. It is still a Session in Access Control, revocable there,
+   * and revoked when the host disconnects.
+   */
+  private async grantRequestedRole(name: string, requested: string | null): Promise<LocalAgentClientGrant> {
+    const roles = await this.grantService.listRoles();
+    const role = resolveRelayRole(roles, requested);
+    if (role === undefined) throw new Error(unknownRelayRoleMessage(roles, requested));
+    // Hosts open several sessions at once; each takes the next free name.
+    for (let attempt = 0; ; attempt += 1) {
+      const sessionName = uniqueSessionName(name, await this.grantService.list());
+      try {
+        return await this.grantService.openNativeSession({
+          name: sessionName,
+          capabilities: role.permissions,
+          roleId: role.id
+        });
+      } catch (error) {
+        if (!(error instanceof LocalAgentGrantError) || error.code !== "duplicate_name" || attempt >= 8) throw error;
+      }
+    }
+  }
   private async policy(session: Session): Promise<Policy | null> {
     if (session.grantId === null || session.transport.controller.signal.aborted) return null;
     return this.grantService.authorizeClient(session.grantId);
   }
   private createMcpServer(session: Session): McpServer {
-    const connection = session.relayVersion === "direct HTTP (no relay)"
+    const connection = session.relayVersion === DIRECT_HTTP
       ? "direct IPC HTTP/1.x; no relay"
       : `relay ${session.relayVersion}; local transport 1`;
     const mcp = new McpServer(
@@ -440,7 +482,7 @@ export class LocalAgentMcpServer {
         // Direct IPC HTTP retains its existing initialize-based Session
         // contract. The raw native endpoint also accepts modern discovery.
         supportedProtocolVersions: [
-          ...(session.relayVersion === "direct HTTP (no relay)" ? [] : ["2026-07-28"]),
+          ...(session.relayVersion === DIRECT_HTTP ? [] : ["2026-07-28"]),
           "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"
         ],
         instructions:

@@ -39,6 +39,11 @@ let grants: LocalAgentGrantService;
 let endpoint: string;
 let settingsPath: string;
 let decision: LocalAgentConsentDecision;
+/** The role every relay in these tests asks for on its command line. */
+let relayRole: string | null;
+function relayArgs(): string[] {
+  return [...(relayRole === null ? [] : ["--role", relayRole]), "--endpoint", endpoint];
+}
 const clients: Client[] = [];
 const skillsHosts: SkillsHost[] = [];
 const agents: Agent[] = [];
@@ -62,6 +67,7 @@ beforeEach(async () => {
     roleId: "builtin.search",
     capabilities: ["library.read"]
   };
+  relayRole = "builtin.search";
   consent.mockReset();
   consent.mockImplementation(async () => decision);
   dispatch.mockClear();
@@ -279,13 +285,14 @@ test("HTTP and stdio share the Session cap, and concurrent replacements reclaim 
   for (let i = 0; i < 31; i++) await server.bootstrapHttp(new AbortController().signal);
   await connect();
   await expect(server.bootstrapHttp(new AbortController().signal)).rejects.toThrow("limit");
-  expect(consent).toHaveBeenCalledTimes(32);
+  // Only HTTP asks; the relay Session took its command line's role.
+  expect(consent).toHaveBeenCalledTimes(31);
   const [grant] = await grants.list();
   await grants.revokeGrant(grant.id);
   const attempts = await Promise.allSettled([server.bootstrapHttp(new AbortController().signal), server.bootstrapHttp(new AbortController().signal)]);
   expect(attempts.filter((result) => result.status === "fulfilled")).toHaveLength(1);
   expect(attempts.filter((result) => result.status === "rejected")).toHaveLength(1);
-  expect(consent).toHaveBeenCalledTimes(33);
+  expect(consent).toHaveBeenCalledTimes(32);
   expect((await grants.list()).filter((grant) => grant.revokedAt === null)).toHaveLength(32);
 });
 async function connect(): Promise<Client> {
@@ -294,7 +301,7 @@ async function connect(): Promise<Client> {
   await client.connect(
     new StdioClientTransport({
       command: executable,
-      args: ["--endpoint", endpoint],
+      args: relayArgs(),
       stderr: "pipe"
     })
   );
@@ -305,7 +312,7 @@ test.each(["legacy", "modern"] as const)("official Skills client discovers and v
     versionNegotiation: { mode: era === "legacy" ? "legacy" : { pin: "2026-07-28" } }
   });
   skillsHosts.push(client);
-  await client.connect(new SkillsTransport({ command: executable, args: ["--endpoint", endpoint], stderr: "pipe" }));
+  await client.connect(new SkillsTransport({ command: executable, args: relayArgs(), stderr: "pipe" }));
   expect(client.getServerCapabilities()?.extensions?.["io.modelcontextprotocol/skills"]).toEqual({});
   const skills = new SkillsClient(client);
   const listed = await skills.list();
@@ -326,25 +333,25 @@ test.each(["legacy", "modern"] as const)("official Skills client discovers and v
   await expect(skills.get("skill://pwrsnap-sizzle-reels/references/timeline.md")).rejects.toMatchObject({ code: -32602 });
   const [grant] = await grants.list();
   expect((await grants.authorizeClient(grant.id))?.capabilities).toEqual(["library.read"]);
-  expect(consent).toHaveBeenCalledOnce();
-  expect(consent.mock.calls[0][0].clientName).toBe("Skills host");
+  expect(consent).not.toHaveBeenCalled();
+  expect(grant).toMatchObject({ name: "Skills host", roleId: "builtin.search" });
   await grants.revokeGrant(grant.id);
   await expect(skills.list()).rejects.toThrow();
   await expect(skills.get(entry.uri)).rejects.toThrow();
   await expect(client.readResource({ uri: entry.uri })).rejects.toThrow();
 });
 
-test("modern discovery is public and creates no grant; denied skill access never reaches the catalog", async () => {
-  decision = { decision: "deny", sessionName: "", roleId: null, capabilities: [] };
+test("modern discovery is public and creates no grant; an unknown role never reaches the catalog", async () => {
+  relayRole = "builtin.unknown";
   const client = new SkillsHost({ name: "Denied Skills host", version: "1" }, {
     versionNegotiation: { mode: { pin: "2026-07-28" } }
   });
   skillsHosts.push(client);
-  await client.connect(new SkillsTransport({ command: executable, args: ["--endpoint", endpoint], stderr: "pipe" }));
+  await client.connect(new SkillsTransport({ command: executable, args: relayArgs(), stderr: "pipe" }));
   expect(consent).not.toHaveBeenCalled();
   expect(await grants.list()).toEqual([]);
   await expect(new SkillsClient(client).list()).rejects.toThrow();
-  expect(consent).toHaveBeenCalledOnce();
+  expect(consent).not.toHaveBeenCalled();
   expect(await grants.list()).toEqual([]);
   expect(dispatch).not.toHaveBeenCalled();
 });
@@ -387,7 +394,7 @@ test("mixed release versions use the desktop interface and preserve descriptions
   const client = await connect();
   expect(client.getServerVersion()).toEqual({ name: "PwrSnap", version: "9.8.7" });
   expect(client.getInstructions()).toContain("relay 1.0.0; local transport 1");
-  expect(consent).toHaveBeenCalledOnce();
+  expect(consent).not.toHaveBeenCalled();
   const tools = await client.listTools();
   expect(tools.tools[0]).toMatchObject({
     name: "fixture_search",
@@ -419,6 +426,7 @@ test.each(["stdio", "HTTP"] as const)("upgraded Full Access roles connect over %
     ["New explicit approval", "builtin.full-access", LOCAL_AGENT_CAPABILITIES]
   ] as const) {
     decision = { decision: "allow", sessionName: name, roleId, capabilities };
+    relayRole = roleId;
     if (transport === "stdio") {
       const client = await connect();
       expect((await client.listTools()).tools[0].name).toBe("fixture_search");
@@ -436,8 +444,12 @@ test.each(["stdio", "HTTP"] as const)("upgraded Full Access roles connect over %
       expect((httpMessage(called.text).result as { isError?: boolean }).isError).not.toBe(true);
     }
     const reopened = (await new DesktopSettingsService({ filePath: settingsPath }).read()).localAgents;
+    // A relay Session is named for its client; the first took "Fixture host".
+    const sessionNames = transport === "stdio"
+      ? { "Previous permissions": "Fixture host", "New explicit approval": "Fixture host 2" }
+      : { "Previous permissions": "Previous permissions", "New explicit approval": "New explicit approval" };
     for (const [sessionName, expected] of [
-      ["Existing Agent", permissions], ["Previous permissions", permissions], [name, capabilities]
+      ["Existing Agent", permissions], [sessionNames["Previous permissions"], permissions], [sessionNames[name], capabilities]
     ] as const) {
       const grant = reopened.grants.find((item) => item.name === sessionName)!;
       const policy = resolveLocalAgentPolicy(reopened, grant.id);
@@ -446,14 +458,22 @@ test.each(["stdio", "HTTP"] as const)("upgraded Full Access roles connect over %
       expect(policy.policy.capabilities).toEqual(expected);
     }
   }
-  expect(consent).toHaveBeenCalledTimes(2);
+  expect(consent).toHaveBeenCalledTimes(transport === "stdio" ? 0 : 2);
   expect(dispatch).toHaveBeenCalledTimes(2);
 });
 
 test("main's Sizzle catalog and protected media use the same production handlers over stdio and IPC HTTP", async () => {
   await server.stop();
-  decision = { decision: "allow", sessionName: "Sizzle stdio", roleId: null,
-    capabilities: ["sizzle.compose", "sizzle.assets.import", "sizzle.preview.read", "sizzle.full.read"] };
+  const sizzleRole = await grants.createRole({
+    name: "Sizzle stdio",
+    description: "Sizzle tools only",
+    permissions: ["sizzle.compose", "sizzle.assets.import", "sizzle.preview.read", "sizzle.full.read"],
+    maxCaptureAgeDays: null,
+    budgets: (await grants.listRoles()).find((role) => role.id === "builtin.full-access")!.budgets
+  });
+  relayRole = sizzleRole.id;
+  decision = { decision: "allow", sessionName: "Sizzle stdio", roleId: sizzleRole.id,
+    capabilities: sizzleRole.permissions };
   server = new LocalAgentMcpServer({ settings, grantService: grants, requestConsent: consent,
     secrets: new DesktopSecretStore({ filePath: settingsPath + ".secrets" }),
     bridgeFactory: (onConnection) => new NativeMcpBridge({ executable, endpoint, allowHttp: true, onConnection }) });
@@ -505,13 +525,34 @@ test("schema validation and capability boundaries stay desktop-owned", async () 
   expect(dispatch.mock.calls[0][1].capabilities).toEqual(["library.read"]);
   expect((await grants.authorizeClient(grant.id))?.capabilities).toEqual(["library.read"]);
 });
-test("native denial exposes no tools and creates no grant", async () => {
-  decision = { decision: "deny", sessionName: "", roleId: null, capabilities: [] };
-  await expect(connect()).rejects.toThrow();
+test("an unknown relay role exposes no tools, creates no grant and never asks", async () => {
+  for (const role of ["builtin.unknown", "unknown", "Full Access"]) {
+    relayRole = role;
+    await expect(connect()).rejects.toThrow();
+  }
   expect(await grants.list()).toEqual([]);
+  expect(consent).not.toHaveBeenCalled();
   expect(dispatch).not.toHaveBeenCalled();
 });
-test("revoking an idle session closes IPC and a fresh host needs new consent", async () => {
+test("a relay without --role gets Full Access, and a built-in role may drop its prefix", async () => {
+  relayRole = null;
+  await connect();
+  relayRole = "preview";
+  await connect();
+  expect((await grants.list()).map((grant) => [grant.name, grant.roleId])).toEqual([
+    ["Fixture host", "builtin.full-access"],
+    ["Fixture host 2", "builtin.preview"]
+  ]);
+  expect(consent).not.toHaveBeenCalled();
+});
+test("relays connecting at once each get their own Session without a prompt", async () => {
+  await Promise.all(Array.from({ length: 6 }, () => connect()));
+  const live = (await grants.list()).filter((grant) => grant.revokedAt === null);
+  expect(new Set(live.map((grant) => grant.name)).size).toBe(6);
+  expect(live.every((grant) => grant.roleId === "builtin.search")).toBe(true);
+  expect(consent).not.toHaveBeenCalled();
+});
+test("revoking an idle session closes IPC and a fresh host gets a new Session", async () => {
   const client = await connect();
   let closed = false;
   client.onclose = () => {
@@ -521,9 +562,12 @@ test("revoking an idle session closes IPC and a fresh host needs new consent", a
   await grants.revokeGrant(grant.id);
   await server.settingsChanged();
   await vi.waitFor(() => expect(closed).toBe(true));
-  decision = { ...decision, sessionName: "Replacement" };
   await connect();
-  expect(consent).toHaveBeenCalledTimes(2);
+  const sessions = await grants.list();
+  expect(sessions).toHaveLength(2);
+  expect(sessions[1]).toMatchObject({ revokedAt: null, roleId: "builtin.search" });
+  expect(sessions[1].id).not.toBe(grant.id);
+  expect(consent).not.toHaveBeenCalled();
 });
 test("desktop disable closes sessions and never reconnects or replays calls", async () => {
   const client = await connect();
@@ -552,7 +596,7 @@ test("host disconnect revokes its native session instead of transferring approva
   expect(replacement.id).not.toBe(original.id);
   expect(replacement.name).toBe(original.name);
   expect(replacement.nativeConsent?.capabilities).toEqual(["library.read"]);
-  expect(consent).toHaveBeenCalledTimes(2);
+  expect(consent).not.toHaveBeenCalled();
 });
 test("desktop absent fails with a manual reconnect instruction and never launches it", async () => {
   await server.stop();
@@ -581,5 +625,5 @@ test("idempotent listener startup preserves an active native Session without rep
   const client=await connect();await Promise.all([server.start(),server.start()]);
   expect((await grants.list())[0].revokedAt).toBeNull();
   expect((await client.listTools()).tools[0].name).toBe("fixture_search");
-  expect(consent).toHaveBeenCalledOnce();
+  expect(consent).not.toHaveBeenCalled();
 });

@@ -256,7 +256,7 @@ export class LocalAgentConsentBroker {
   }
 }
 
-function uniqueSessionName(
+export function uniqueSessionName(
   requestedName: string,
   grants: readonly Pick<LocalAgentClientGrant, "name" | "revokedAt">[]
 ): string {

@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { Client as SkillsHost } from "@modelcontextprotocol/client";
+import { StdioClientTransport as SkillsTransport } from "@modelcontextprotocol/client/stdio";
+import { SkillsClient } from "@modelcontextprotocol/client/ext/skills";
 import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import { LOCAL_AGENT_CAPABILITIES, ok, resolveLocalAgentPolicy } from "@pwrsnap/shared";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -37,6 +40,7 @@ let endpoint: string;
 let settingsPath: string;
 let decision: LocalAgentConsentDecision;
 const clients: Client[] = [];
+const skillsHosts: SkillsHost[] = [];
 const agents: Agent[] = [];
 const consent = vi.fn();
 const dispatch = vi.fn(async (_input: unknown, ctx: { capabilities: readonly string[] }) =>
@@ -99,6 +103,7 @@ beforeEach(async () => {
 afterEach(async () => {
   for (const agent of agents.splice(0)) agent.destroy();
   await Promise.all(clients.splice(0).map((client) => client.close()));
+  await Promise.all(skillsHosts.splice(0).map((client) => client.close()));
   await server.stop();
 });
 
@@ -163,6 +168,7 @@ test("HTTP over the same protected IPC endpoint uses native bootstrap and the de
   expect(initialized.status).toBe(200);
   expect(httpMessage(initialized.text)).toMatchObject({ result: { serverInfo: { name: "PwrSnap", version: "9.8.7" } } });
   expect(initialized.text).toContain("direct IPC HTTP/1.x; no relay");
+  expect(httpMessage(initialized.text)).toMatchObject({ result: { capabilities: { extensions: { "io.modelcontextprotocol/skills": {} } } } });
   headers["mcp-session-id"] = initialized.headers["mcp-session-id"] as string;
   headers["mcp-protocol-version"] = "2025-11-25";
   expect((await send({ jsonrpc: "2.0", method: "notifications/initialized" }, headers)).status).toBe(202);
@@ -173,7 +179,7 @@ test("HTTP over the same protected IPC endpoint uses native bootstrap and the de
   expect(dispatch).not.toHaveBeenCalled();
   const good = await send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "fixture_search", arguments: { query: "hello" }, _meta: { progressToken: "preserved" } } }, headers);
   expect(good.status).toBe(200);
-  const skillUri = "pwrsnap://skills/pwrsnap-sizzle-reels/SKILL.md";
+  const skillUri = "skill://pwrsnap-sizzle-reels/SKILL.md";
   const resources = await send({ jsonrpc: "2.0", id: 5, method: "resources/list" }, headers);
   expect(httpMessage(resources.text)).toMatchObject({ result: { resources: expect.arrayContaining([{ uri: skillUri, name: "pwrsnap-sizzle-reels", title: "PwrSnap Sizzle Reels skill", description: expect.any(String), mimeType: "text/markdown" }]) } });
   const guidance = await send({ jsonrpc: "2.0", id: 6, method: "resources/read", params: { uri: skillUri } }, headers);
@@ -181,6 +187,11 @@ test("HTTP over the same protected IPC endpoint uses native bootstrap and the de
   expect(httpMessage(guidance.text)).toMatchObject({ result: { contents: [{ uri: skillUri, mimeType: "text/markdown", text: skill }] } });
   const skillTool = await send({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "pwrsnap_sizzle_skill", arguments: {} } }, headers);
   expect(httpMessage(skillTool.text)).toMatchObject({ result: { structuredContent: { uri: skillUri, text: skill } } });
+  const listing = await send({ jsonrpc: "2.0", id: 8, method: "skills/list" }, headers);
+  expect(httpMessage(listing.text)).toMatchObject({ result: { skills: [{ uri: skillUri, frontmatter: { name: "pwrsnap-sizzle-reels" }, resources: expect.any(Array) }] } });
+  const entry = (httpMessage(listing.text).result as { skills: unknown[] }).skills[0];
+  const getting = await send({ jsonrpc: "2.0", id: 9, method: "skills/get", params: { uri: skillUri } }, headers);
+  expect(httpMessage(getting.text)).toMatchObject({ result: { skill: entry } });
   expect(dispatch).toHaveBeenCalledOnce();
   expect(consent).toHaveBeenCalledOnce();
   const [grant] = await grants.list();
@@ -289,9 +300,58 @@ async function connect(): Promise<Client> {
   );
   return client;
 }
+test.each(["legacy", "modern"] as const)("official Skills client discovers and verifies every file over %s native MCP", async (era) => {
+  const client = new SkillsHost({ name: "Skills host", version: "1" }, {
+    versionNegotiation: { mode: era === "legacy" ? "legacy" : { pin: "2026-07-28" } }
+  });
+  skillsHosts.push(client);
+  await client.connect(new SkillsTransport({ command: executable, args: ["--endpoint", endpoint], stderr: "pipe" }));
+  expect(client.getServerCapabilities()?.extensions?.["io.modelcontextprotocol/skills"]).toEqual({});
+  const skills = new SkillsClient(client);
+  const listed = await skills.list();
+  expect(listed.skills).toHaveLength(1);
+  const entry = listed.skills[0]!;
+  expect(entry.uri).toBe("skill://pwrsnap-sizzle-reels/SKILL.md");
+  expect((await skills.get(entry.uri)).skill).toEqual(entry);
+  expect(entry.frontmatter.name).toBe("pwrsnap-sizzle-reels");
+  if (entry.resources === "dynamic") throw new Error("Bundled skill must have stable digests");
+  expect(entry.resources).toHaveLength(3);
+  for (const resource of entry.resources) {
+    const path = resource.uri.slice("skill://pwrsnap-sizzle-reels/".length);
+    const expected = readFileSync(new URL(`../../../../../../.agents/skills/pwrsnap-sizzle-reels/${path}`, import.meta.url));
+    const file = await skills.read(entry, path);
+    expect(file.verified).toBe(true);
+    expect(Buffer.from(file.bytes)).toEqual(expected);
+  }
+  await expect(skills.get("skill://pwrsnap-sizzle-reels/references/timeline.md")).rejects.toMatchObject({ code: -32602 });
+  const [grant] = await grants.list();
+  expect((await grants.authorizeClient(grant.id))?.capabilities).toEqual(["library.read"]);
+  expect(consent).toHaveBeenCalledOnce();
+  expect(consent.mock.calls[0][0].clientName).toBe("Skills host");
+  await grants.revokeGrant(grant.id);
+  await expect(skills.list()).rejects.toThrow();
+  await expect(skills.get(entry.uri)).rejects.toThrow();
+  await expect(client.readResource({ uri: entry.uri })).rejects.toThrow();
+});
+
+test("modern discovery is public and creates no grant; denied skill access never reaches the catalog", async () => {
+  decision = { decision: "deny", sessionName: "", roleId: null, capabilities: [] };
+  const client = new SkillsHost({ name: "Denied Skills host", version: "1" }, {
+    versionNegotiation: { mode: { pin: "2026-07-28" } }
+  });
+  skillsHosts.push(client);
+  await client.connect(new SkillsTransport({ command: executable, args: ["--endpoint", endpoint], stderr: "pipe" }));
+  expect(consent).not.toHaveBeenCalled();
+  expect(await grants.list()).toEqual([]);
+  await expect(new SkillsClient(client).list()).rejects.toThrow();
+  expect(consent).toHaveBeenCalledOnce();
+  expect(await grants.list()).toEqual([]);
+  expect(dispatch).not.toHaveBeenCalled();
+});
+
 test("approved search-only clients discover the bundled Sizzle skill and read identical files through resources and tools", async () => {
   const client = await connect();
-  const root = "pwrsnap://skills/pwrsnap-sizzle-reels/";
+  const root = "skill://pwrsnap-sizzle-reels/";
   const resources = (await client.listResources()).resources;
   const tool = (await client.listTools()).tools.find((item) => item.name === "pwrsnap_sizzle_skill");
   expect(tool?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, openWorldHint: false });
@@ -315,11 +375,11 @@ test("approved search-only clients discover the bundled Sizzle skill and read id
 
 test("Sizzle guidance refuses unknown files and revoked sessions on both read paths", async () => {
   const client = await connect();
-  await expect(client.readResource({ uri: "pwrsnap://skills/pwrsnap-sizzle-reels/../../settings.json" })).rejects.toThrow();
+  await expect(client.readResource({ uri: "skill://pwrsnap-sizzle-reels/../../settings.json" })).rejects.toThrow();
   expect((await client.callTool({ name: "pwrsnap_sizzle_skill", arguments: { path: "../../settings.json" } })).isError).toBe(true);
   const [grant] = await grants.list();
   await grants.revokeGrant(grant.id);
-  await expect(client.readResource({ uri: "pwrsnap://skills/pwrsnap-sizzle-reels/SKILL.md" })).rejects.toThrow();
+  await expect(client.readResource({ uri: "skill://pwrsnap-sizzle-reels/SKILL.md" })).rejects.toThrow();
   expect((await client.callTool({ name: "pwrsnap_sizzle_skill", arguments: {} })).isError).toBe(true);
 });
 

@@ -184,18 +184,34 @@ are not supplied by the relay.
 
 ### Sizzle authoring skill
 
-`resources/list` advertises `pwrsnap://skills/pwrsnap-sizzle-reels/SKILL.md`
-and its `references/timeline.md` companion. `resources/read` returns Markdown
-text embedded from the repo's `.agents/skills/pwrsnap-sizzle-reels/` at build
-time. No checkout or documentation network request is required. Tool-only
+The desktop advertises `io.modelcontextprotocol/skills` using the official SDK's
+[Skills extension (SEP-2640)](https://skills.extensions.modelcontextprotocol.io/specification/beta/skills).
+`skills/list` enumerates `skill://pwrsnap-sizzle-reels/SKILL.md`; `skills/get`
+returns the same entry by URI, with complete frontmatter and every file's
+SHA-256 digest and byte size. `resources/read` serves the exact bundled files,
+including `references/timeline.md` and `agents/openai.yaml`. `resources/list`
+also exposes them to ordinary resource readers. The manifest is static, not
+`dynamic`; no directory-read capability is advertised. No checkout or
+documentation network request is required. Tool-only
 hosts can discover `pwrsnap_sizzle_skill`, omit `path` to read the skill, and
 request `path: "references/timeline.md"` for examples and tool inputs.
 
 Guidance reads require an approved live Session, including after revocation
 or role changes. They require no capture/composition permissions and spend no
-media-read budget. Instructions explain the operations; actual media and
+media-read budget. A generic resource/tool read does not activate a skill;
+the host's skill loader verifies the entry and applies its own approval policy.
+Instructions explain the operations; actual media and
 render calls still enforce their existing grants and budgets. See
 [Authoring Sizzle reels](sizzle-agent-reels.md).
+
+Native stdio supports both the existing initialize handshake and revision
+`2026-07-28` requests with per-request metadata and `server/discover`.
+Modern `server/discover` exposes public server metadata without creating a
+grant; the first protected request requires native consent. Discovery-only
+connections retain the admission timeout. The SDK handles era negotiation.
+Direct IPC HTTP retains its initialize-based Session contract and advertises
+the extension through that legacy handshake. Internal ACP endpoints retain
+their separate initialize-only gate.
 
 Media tools return canonical `pwrsnap://` MCP resource links. Use
 `resources/read` to obtain bytes. Each read rechecks the live Session,

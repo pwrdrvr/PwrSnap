@@ -1,12 +1,9 @@
 import { app } from "electron";
 import { randomUUID } from "node:crypto";
-import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
-import type {
-  JSONRPCMessage,
-  ServerNotification,
-  ServerRequest
-} from "@modelcontextprotocol/sdk/types.js";
+import { McpServer, ResourceTemplate, type ServerContext } from "@modelcontextprotocol/server";
+import { serveStdio, type StdioServerHandle } from "@modelcontextprotocol/server/stdio";
+import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
+import { z } from "zod";
 import {
   LOCAL_AGENT_CAPABILITIES,
   err,
@@ -58,7 +55,7 @@ import {
 import { McpSessionPool } from "../ai/mcp/mcp-session-pool";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { IpcHttpMcp } from "./ipc-http-mcp";
-import { SIZZLE_SKILL_URI, sizzleSkillResources, sizzleSkillTool } from "./sizzle-skill";
+import { SIZZLE_SKILL_URI, attachSizzleSkill, sizzleSkillTool } from "./sizzle-skill";
 const log = getMainLogger("pwrsnap:local-agent-mcp");
 type Policy = NonNullable<CommandContext["localAgent"]>;
 type GrantService = Pick<
@@ -67,6 +64,7 @@ type GrantService = Pick<
 >;
 type UsageService = Pick<LocalAgentUsageService, "reserve" | "release">;
 type Session = {
+  stdio?: StdioServerHandle;
   id: number;
   transport: Transport & { controller: AbortController };
   mcp: McpServer;
@@ -112,6 +110,7 @@ export class LocalAgentMcpServer {
       (session.grantId === null || (await this.policy(session)) !== null),
     async (session) => {
       await session.transport.close();
+      await session.stdio?.close();
       await session.mcp.close();
     }
   );
@@ -330,11 +329,15 @@ export class LocalAgentMcpServer {
     let session: Session;
     let admission: Promise<boolean>;
     const transport = input.createTransport(async (message) => {
-      clearTimeout(initializationTimer);
       if (!(await admission) || input.identity !== null)
         throw new Error("MCP connection refused; reconnect manually");
+      // Modern hosts may probe discovery on a throwaway connection. It
+      // exposes public server metadata only and must not mint a consent grant.
+      if ("method" in message && message.method === "server/discover") return;
+      if (session.grantId !== null) return;
+      clearTimeout(initializationTimer);
       await this.approve(session, message);
-    });
+    }, { allowModernRequests: true });
     const initializationTimer = setTimeout(() => {
       void transport.close();
     }, 30_000);
@@ -355,9 +358,12 @@ export class LocalAgentMcpServer {
       .catch(() => {
         void transport.close();
       });
-    void session.mcp.connect(transport).catch(() => {
-      void transport.close();
-    });
+    let initial = true;
+    session.stdio = serveStdio(() => {
+      if (!initial) session.mcp = this.createMcpServer(session);
+      initial = false;
+      return session.mcp;
+    }, { transport, onerror: () => { void transport.close(); } });
   }
   private makeSession(id: number, transport: Session["transport"], relayVersion: string): Session {
     const session: Session = { id, transport, relayVersion, grantId: null, fingerprint: "", mcp: undefined as unknown as McpServer };
@@ -365,6 +371,7 @@ export class LocalAgentMcpServer {
     transport.controller.signal.addEventListener("abort", () => {
       this.pool.remove(id);
       if (session.grantId !== null) void this.grantService.revokeGrant(session.grantId).catch(() => undefined);
+      void session.stdio?.close();
       void session.mcp.close();
     }, { once: true });
     return session;
@@ -381,7 +388,7 @@ export class LocalAgentMcpServer {
       const params = "params" in message ? message.params : undefined;
       const info =
         params !== undefined && typeof params === "object" && params !== null
-          ? params.clientInfo
+          ? params.clientInfo ?? params._meta?.["io.modelcontextprotocol/clientInfo"]
           : undefined;
       const name =
         typeof info === "object" && info !== null && "name" in info && typeof info.name === "string"
@@ -430,35 +437,33 @@ export class LocalAgentMcpServer {
     const mcp = new McpServer(
       { name: "PwrSnap", version: this.version },
       {
+        // Direct IPC HTTP retains its existing initialize-based Session
+        // contract. The raw native endpoint also accepts modern discovery.
+        supportedProtocolVersions: [
+          ...(session.relayVersion === "direct HTTP (no relay)" ? [] : ["2026-07-28"]),
+          "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"
+        ],
         instructions:
           `Desktop ${this.version}; ${connection}. The desktop owns this MCP interface. ` +
           "Use PwrSnap tools only for captures and sizzle assets the user authorized for this local client. " +
           "Completed media tools attach capability-protected MCP resources. Read them with resources/read; no HTTP media URLs are served. " +
           "Use the returned resourceUri only in clients that explicitly support MCP resource reads. " +
-          `Before authoring a launch/demo reel, read ${SIZZLE_SKILL_URI} or call pwrsnap_sizzle_skill. ` +
-          "Discover the bundled skill and its references with resources/list; guidance reads require this approved Session but no media permissions."
+          `Before authoring a launch/demo reel, discover ${SIZZLE_SKILL_URI} with skills/list or skills/get (io.modelcontextprotocol/skills). ` +
+          "Let the host's skill loader verify the manifest and apply its approval policy; skill files use resources/read. " +
+          "pwrsnap_sizzle_skill is an ordinary reader fallback, not skill activation. Guidance requires an approved Session but no media permissions."
       }
     );
     this.registerTools(mcp, session);
     this.registerResources(mcp, session);
+    attachSizzleSkill(mcp, async () => {
+      const policy = await this.policy(session);
+      if (policy === null) throw new Error("unauthorized");
+      await this.recordUsage(policy.clientId);
+    });
     return mcp;
   }
 
   private registerResources(mcp: McpServer, session: Session): void {
-    for (const resource of sizzleSkillResources) {
-      mcp.registerResource(resource.name, resource.uri, {
-        title: resource.title,
-        description: resource.description,
-        mimeType: resource.mimeType
-      }, async (uri) => {
-        // Public product guidance needs no media scope or budget, but a
-        // revoked/disconnected Session must still fail closed on every read.
-        const policy = await this.policy(session);
-        if (policy === null) throw new Error("unauthorized");
-        await this.recordUsage(policy.clientId);
-        return { contents: [{ uri: uri.toString(), mimeType: resource.mimeType, text: resource.text }] };
-      });
-    }
     const templates = [
       ["capture-composite", "pwrsnap://capture/{captureId}/composite", "image/png"],
       ["capture-original", "pwrsnap://capture/{captureId}/original", "image/png"],
@@ -528,12 +533,12 @@ export class LocalAgentMcpServer {
         {
           title: tool.title,
           description: tool.description,
-          inputSchema: tool.inputSchema,
+          inputSchema: z.object(tool.inputSchema),
           annotations: tool.annotations
         },
         async (
           input: Record<string, unknown>,
-          extra: RequestHandlerExtra<ServerRequest, ServerNotification>
+          extra: ServerContext
         ) => {
           const auth = session.grantId === null ? null : { clientId: session.grantId };
           if (auth === null) {
@@ -558,10 +563,10 @@ export class LocalAgentMcpServer {
           const ctx: LocalAgentToolContext = {
             clientId: policy.clientId,
             capabilities: policy.capabilities,
-            signal: extra.signal,
+            signal: extra.mcpReq.signal,
             commandContext: {
               principal: "mcp",
-              signal: extra.signal,
+              signal: extra.mcpReq.signal,
               localAgent: policy
             }
           };

@@ -18,7 +18,7 @@ export type McpConnection = {
   relayVersion: string;
   identity: string | null;
   framing: "raw" | "http";
-  createTransport: (prepare?: (message: JSONRPCMessage) => Promise<void>) => McpByteTransport;
+  createTransport: (prepare?: (message: JSONRPCMessage) => Promise<void>, options?: { allowModernRequests?: boolean }) => McpByteTransport;
   createStream: () => NativeIpcStream;
 };
 
@@ -91,7 +91,7 @@ export class McpByteTransport implements Transport {
   readonly controller = new AbortController();
   private readonly decoder = new StringDecoder("utf8");
   private buffer = "";
-  private pending: JSONRPCMessage[] = [];
+  private pending: { message: JSONRPCMessage; bytes: number }[] = [];
   private pendingBytes = 0;
   private started = false;
   private ready = false;
@@ -100,7 +100,8 @@ export class McpByteTransport implements Transport {
   constructor(
     private readonly writeBytes: ByteWriter,
     private readonly disconnect: () => void,
-    private readonly beforeInitialize?: (message: JSONRPCMessage) => Promise<void>
+    private readonly beforeInitialize?: (message: JSONRPCMessage) => Promise<void>,
+    private readonly allowModernRequests = false
   ) {}
   async start(): Promise<void> {
     this.started = true;
@@ -125,7 +126,7 @@ export class McpByteTransport implements Transport {
         this.pendingBytes += Buffer.byteLength(line);
         if (this.pendingBytes > MAX_PENDING || this.pending.length >= 128)
           throw new Error("MCP input overflow");
-        this.pending.push(message);
+        this.pending.push({ message, bytes: Buffer.byteLength(line) });
         this.drain();
       } catch (cause) {
         this.fail(cause instanceof Error ? cause : new Error("invalid MCP message"));
@@ -137,9 +138,15 @@ export class McpByteTransport implements Transport {
   }
   private drain(): void {
     if (!this.started || this.closed || this.preparing || this.pending.length === 0) return;
-    if (!this.ready) {
-      const first = this.pending[0];
-      if (!("method" in first) || first.method !== "initialize")
+    if (!this.ready || this.allowModernRequests) {
+      const first = this.pending[0].message;
+      // External desktop servers can opt into per-request-versioned MCP.
+      // The desktop SDK validates that revision and its complete metadata;
+      // the desktop's admission callback runs before each delivered message.
+      // Internal endpoints retain their initialize-only gate by default.
+      const modern = this.allowModernRequests && "method" in first && "id" in first &&
+        typeof first.params?._meta?.["io.modelcontextprotocol/protocolVersion"] === "string";
+      if (!this.ready && (!("method" in first) || (first.method !== "initialize" && !modern)))
         return this.fail(new Error("Initialize MCP before using PwrSnap"));
       this.preparing = true;
       void Promise.resolve()
@@ -147,6 +154,12 @@ export class McpByteTransport implements Transport {
         .then(() => {
           this.preparing = false;
           this.ready = true;
+          if (this.allowModernRequests) {
+            if (this.closed) return;
+            const next = this.pending.shift()!;
+            this.pendingBytes -= next.bytes;
+            this.onmessage?.(next.message);
+          }
           this.drain();
         })
         .catch((cause: unknown) =>
@@ -157,7 +170,7 @@ export class McpByteTransport implements Transport {
     const messages = this.pending;
     this.pending = [];
     this.pendingBytes = 0;
-    for (const message of messages) {
+    for (const { message } of messages) {
       if (this.closed) break;
       this.onmessage?.(message);
     }
@@ -300,13 +313,14 @@ export class NativeMcpBridge {
         this.connections.set(frame.id, stream);
         return stream;
       },
-      createTransport: (prepare) => {
+      createTransport: (prepare, options) => {
         if (frame.framing === "http") throw new Error("HTTP bytes require the desktop HTTP parser");
         if (this.connections.has(frame.id)) throw new Error("duplicate connection");
         const transport = new McpByteTransport(
           (bytes) => this.sendBytes(frame.id, bytes),
           () => this.disconnect(frame.id),
-          prepare
+          prepare,
+          options?.allowModernRequests ?? false
         );
         this.connections.set(frame.id, transport);
         return transport;

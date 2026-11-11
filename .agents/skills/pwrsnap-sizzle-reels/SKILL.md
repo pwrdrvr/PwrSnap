@@ -11,9 +11,14 @@ product operations; it does not grant access to media or permission to publish.
 
 ## Discover and choose the workflow
 
+Skill-aware MCP hosts discover this skill with `skills/list` or `skills/get`
+and verify its complete manifest when loading it. Generic resource reads and
+`pwrsnap_sizzle_skill` return ordinary guidance; they do not activate a skill
+or grant additional permissions.
+
 Read [the timeline reference](references/timeline.md) for concrete tool inputs,
 a minimal timeline, launch-template fields, phrase cues and audio policies.
-Through MCP, read `pwrsnap://skills/pwrsnap-sizzle-reels/references/timeline.md`
+Through MCP, read `skill://pwrsnap-sizzle-reels/references/timeline.md`
 or call `pwrsnap_sizzle_skill({path: "references/timeline.md"})`.
 
 Start with `pwrsnap_sizzle_create`, then use `pwrsnap_sizzle_get` for assets,

@@ -1691,6 +1691,10 @@ checks, protected endpoint ownership and bounded I/O on both native roles.
   consent in `mcp-server.ts`. Its connection ceiling is enforced by
   `authorizeClient` as well as the MCP boundary, so command-bus role
   re-resolution cannot widen consent. A disconnect revokes the session.
+  Modern stdio `server/discover` may return public server metadata before
+  consent without creating a grant; every protected request, including skill
+  discovery/reads, still passes native consent. Internal ACP remains
+  initialize-only, and discovery-only connections keep their admission timeout.
 - Every tool/resource read retains capability, history, usage-budget,
   revocation and owner checks. Tool results keep `structuredContent` and a
   trailing text JSON block. Media is read through canonical MCP resources,
@@ -1709,6 +1713,7 @@ checks, protected endpoint ownership and bounded I/O on both native roles.
   Catalog snapshots/translation do not belong in a caller-launched adapter.
   List-change notifications require hosts to re-discover; loaded skills and
   initialization metadata do not refresh themselves.
+- **Advertise MCP skills through the [Skills extension (SEP-2640)](https://skills.extensions.modelcontextprotocol.io/specification/beta/skills):** declare `io.modelcontextprotocol/skills` in capabilities, implement `skills/list` / `skills/get` with verbatim frontmatter and complete SHA-256/byte-size file manifests, and serve files through `resources/read`; use the SDK's extension and the discovery mechanism for the supported protocol revision, with custom reader tools only as a compatibility fallback.
 
 Owners: `local-agents/mcp-server.ts`, `ai/mcp/native-mcp-bridge.ts`,
 `ai/mcp/pwrsnap-tool-rpc-server.ts`, and `crates/pwrsnap-mcp/`.

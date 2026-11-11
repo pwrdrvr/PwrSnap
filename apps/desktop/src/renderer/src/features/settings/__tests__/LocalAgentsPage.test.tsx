@@ -120,7 +120,8 @@ async function renderPage(
   const value: UseSettingsValue = {
     settings,
     secrets: {
-      openaiApiKey: { configured: false, lastSetAt: null }
+      openaiApiKey: { configured: false, lastSetAt: null },
+      chatgptPlanRegistration: { configured: false, lastSetAt: null }
     },
     loading: false,
     error: null,

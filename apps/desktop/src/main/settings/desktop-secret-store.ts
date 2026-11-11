@@ -39,7 +39,8 @@ import { getMainLogger } from "../log";
 type Logger = ReturnType<typeof getMainLogger>;
 
 export const KNOWN_SECRET_NAMES = [
-  "openaiApiKey"
+  "openaiApiKey",
+  "chatgptPlanRegistration"
 ] as const satisfies readonly Exclude<DesktopSettingsSecretName, `localAgentToken:${string}` | `customModelCredential:${string}`>[];
 
 // Compile-time check the other direction: adding a new

@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.3.1 - 2026-11-11
+
+This patch helps connected agents author Sizzle reels and improves the
+connection approval window.
+
+- Sizzle Reels - Added bundled authoring guidance discoverable through MCP,
+  including editable timelines, continuous narration, music, and preview and
+  export checks. Agents can read instructions and examples matching the installed
+  PwrSnap version without a source checkout or documentation download.
+- Agent Permissions - Fixed approval content scrolling beneath the window
+  controls, keeping the dialog's controls separate from its scrollable content.
+
 ## v1.3.0 - 2026-11-10
 
 PwrSnap's MCP integration has been rebuilt around protected local connections

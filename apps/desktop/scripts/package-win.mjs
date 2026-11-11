@@ -36,7 +36,7 @@
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pruneSharpNativePackages } from "./sharp-platform-packages.mjs";
 import { pruneBetterSqlite3Prebuilds } from "./better-sqlite3-prebuilds.mjs";
 import { stagedPnpmConfigEnv } from "./staged-pnpm-config.mjs";
@@ -62,6 +62,46 @@ const signStageOnly = args.includes("--sign-stage-only");
 const requireSigning =
   args.includes("--require-signing") || args.includes("--release") || publish;
 const releaseMode = publish || args.includes("--release") || requireSigning;
+
+// The signed updater smoke builds two synthetic versions from one prepared
+// stage, and their transient electron-builder output must never land under
+// release-stage/dist (the real-release publication glob). Keep this as a
+// narrow, internal environment seam instead of a general output override:
+// only the signed, no-publish, pre-staged path may write beneath the smoke
+// work directory. With the variable unset, normal packaging is unchanged.
+const defaultDistDir = join(stageDir, "dist");
+const updateSmokeWorkRoot = join(stageDir, "update-smoke-input", ".work");
+
+function resolvePackageDistDir() {
+  const requested = process.env.PWRSNAP_WINDOWS_PACKAGE_OUTPUT_DIR?.trim();
+  if (!requested) return defaultDistDir;
+  if (!signStageOnly || !requireSigning || publish) {
+    throw new Error(
+      "PWRSNAP_WINDOWS_PACKAGE_OUTPUT_DIR is restricted to --sign-stage-only " +
+        "--require-signing builds with --publish=never"
+    );
+  }
+
+  const candidate = resolve(stageDir, requested);
+  const fromWorkRoot = relative(updateSmokeWorkRoot, candidate);
+  // On Windows, path.relative returns the absolute target when the two paths
+  // are on different volumes. Treat that as outside the confined work root.
+  if (
+    fromWorkRoot.length === 0 ||
+    isAbsolute(fromWorkRoot) ||
+    fromWorkRoot === ".." ||
+    fromWorkRoot.startsWith(`..${sep}`) ||
+    resolve(candidate) === resolve(defaultDistDir)
+  ) {
+    throw new Error(
+      "PWRSNAP_WINDOWS_PACKAGE_OUTPUT_DIR must name a child of " +
+        "release-stage/update-smoke-input/.work"
+    );
+  }
+  return candidate;
+}
+
+const packageDistDir = resolvePackageDistDir();
 
 if (prepareOnly && signStageOnly) {
   throw new Error("--prepare-only and --sign-stage-only cannot be combined");
@@ -441,6 +481,9 @@ const builderArgs = [
   publish ? "--publish" : "--publish=never"
 ];
 if (publish) builderArgs.push("always");
+if (packageDistDir !== defaultDistDir) {
+  builderArgs.push(`--config.directories.output=${packageDistDir}`);
+}
 if (azureSign) {
   builderArgs.push(
     `--config.win.azureSignOptions.publisherName=${azureSign.publisherName}`,
@@ -459,7 +502,7 @@ runChecked("node", builderArgs.filter(Boolean), {
 //    slice degrades to a partial build), so assert the .exe exists here
 //    rather than letting CI upload an empty artifact and calling it green.
 step("verify installer artifact");
-const dist = join(stageDir, "dist");
+const dist = packageDistDir;
 for (const { name } of windowsInstallerArtifacts(dist)) {
   console.log(`  ✓ ${name}`);
 }

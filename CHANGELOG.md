@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.3.2 - 2026-11-11
+
+This patch simplifies local MCP relay connections and makes simultaneous
+agent Sessions easier to distinguish.
+
+- MCP Connections - Added role selection on the relay command line with
+  `--role <id>`, connecting without an approval prompt. Relay connections default
+  to Full Access when no role is specified; use a lower role such as
+  `--role builtin.preview` to restrict access. Unknown roles refuse the
+  connection. Direct IPC HTTP connections still require native approval.
+- Local Agents - Improved Session names by numbering simultaneous connections
+  that use the same name, making them easier to identify and revoke in Settings.
+
 ## v1.3.1 - 2026-11-11
 
 This patch helps connected agents author Sizzle reels and improves the

@@ -229,6 +229,41 @@ Media tools return canonical `pwrsnap://` MCP resource links. Use
 capabilities, capture-history horizon, usage budget and resource ownership.
 No HTTP URL or arbitrary filesystem path is exposed for media delivery.
 
+### Displaying resource links in a host
+
+Keep the typed `resource_link` block from a completed media tool, including
+when the host wraps that tool result in another envelope. Resolve its exact
+URI with `resources/read` on the same live MCP connection that issued the
+link. An export belongs to that connection's client; a separate connection
+with the same role cannot read it. A host's generic resource browser or a
+second MCP process is not a substitute for the issuing connection.
+
+For images, `contents[]` contains the URI, MIME type and a `blob` holding
+base64-encoded file bytes. Treat `blob` as opaque binary data throughout the
+host's transport and serialization path. Text summarization, token clipping,
+ellipsis insertion and pretty-printing must never alter it. A successful
+JSON parse alone does not establish byte fidelity: validate base64 strictly,
+then compare decoded length with the link's `size` and decode the image.
+Node's permissive base64 decoder can silently ignore invalid characters.
+
+The host can fetch once, retain bytes in its authorized session-owned media
+cache and display the image inline through its protected renderer media
+path. Display does not require printing base64 into model context or adding
+the same image as another model input. Reuse still needs the host's session
+ownership and revocation checks; a resource URI never grants filesystem
+access. Surface resource-read errors rather than rendering partial bytes or
+reconnecting with a broader grant. There is no need for a separate HTTP media
+route merely to display an MCP binary resource.
+
+The capture media byte oracles in `local-agents/__tests__/mcp-server.test.ts`
+exercise the real resource links, production handlers and native relay with
+synthetic PNG/JPEG files, including a PNG response larger than 1 MiB. They
+compare canonical base64, byte lengths, SHA-256 and decoded pixels over stdio
+and direct IPC HTTP, and check missing files, unknown URIs, cross-client
+export reads, narrowed capabilities and revocation. The same tests select a
+Unix socket on macOS/Linux and a named pipe on Windows; a local run only
+verifies its host platform. No operator capture or desktop launch is needed.
+
 ## Transport and permission boundaries
 
 Electron launches a native listener transport child and retains all MCP

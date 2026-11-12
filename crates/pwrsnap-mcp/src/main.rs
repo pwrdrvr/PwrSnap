@@ -25,6 +25,7 @@ enum Frame {
         id: u64,
         relay_version: String,
         identity: Option<String>,
+        role: Option<String>,
         framing: &'static str,
     },
     Data {
@@ -47,9 +48,10 @@ impl Frame {
                 id,
                 relay_version,
                 identity,
+                role,
                 framing,
             } => {
-                json!({"type":"open","id":id,"relay_version":relay_version,"identity":identity,"framing":framing})
+                json!({"type":"open","id":id,"relay_version":relay_version,"identity":identity,"role":role,"framing":framing})
             }
             Self::Data { id, data } => json!({"type":"data","id":id,"data":data}),
             Self::Close { id } => json!({"type":"close","id":id}),
@@ -106,6 +108,13 @@ async fn select<A: std::future::Future, B: std::future::Future>(
     })
     .await
 }
+/// A role id the desktop can look up: 1-64 of `[A-Za-z0-9._-]`.
+fn valid_role(role: &str) -> bool {
+    (1..=64).contains(&role.len())
+        && role
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
 fn error(message: impl Into<String>) -> io::Error {
     io::Error::other(message.into())
 }
@@ -144,14 +153,15 @@ async fn line<R: tokio::io::AsyncRead + Unpin>(
 async fn handshake(
     stream: &mut link::Stream,
     server: bool,
+    role: Option<&str>,
 ) -> io::Result<(String, Option<String>)> {
     tokio::time::timeout(Duration::from_secs(3), async {
         if !server {
             stream
                 .write_all(
-                    format!(
-                        "{WIRE} {VERSION} {}\n",
-                        std::env::var("PWRSNAP_MCP_TOKEN").unwrap_or_default()
+                    client_greeting(
+                        &std::env::var("PWRSNAP_MCP_TOKEN").unwrap_or_default(),
+                        role,
                     )
                     .as_bytes(),
                 )
@@ -188,10 +198,18 @@ async fn handshake(
     })
     .await?
 }
-async fn relay(path: &Path) -> io::Result<()> {
+/// The relay's greeting. The role field is sent only when `--role` was given,
+/// so a relay without it greets exactly as earlier relays did.
+fn client_greeting(identity: &str, role: Option<&str>) -> String {
+    match role {
+        Some(role) => format!("{WIRE} {VERSION} {identity} role={role}\n"),
+        None => format!("{WIRE} {VERSION} {identity}\n"),
+    }
+}
+async fn relay(path: &Path, role: Option<&str>) -> io::Result<()> {
     // Exactly one connection. No reconnect, operation retries or fallback.
     let mut stream = link::connect(path).await?;
-    let (desktop_transport, _) = handshake(&mut stream, false).await?;
+    let (desktop_transport, _) = handshake(&mut stream, false, role).await?;
     eprintln!(
         "pwrsnap-mcp relay {VERSION}; desktop transport {desktop_transport}; MCP interface/version is advertised by the desktop"
     );
@@ -306,20 +324,27 @@ async fn serve(path: &Path, allow_http: bool) -> io::Result<()> {
                 let task = tasks.spawn(async move {
                     let exchange = async {
                         let greeting = framing::accept(&mut stream, allow_http).await?;
-                        let (version, identity, mode, prefetched) = match greeting {
-                            framing::Greeting::Raw { version, identity } => {
+                        let (version, identity, role, mode, prefetched) = match greeting {
+                            framing::Greeting::Raw {
+                                version,
+                                identity,
+                                role,
+                            } => {
                                 stream
                                     .write_all(format!("{WIRE} {VERSION}\n").as_bytes())
                                     .await?;
-                                (version, identity, "raw", Vec::new())
+                                (version, identity, role, "raw", Vec::new())
                             }
-                            framing::Greeting::Http(bytes) => (String::new(), None, "http", bytes),
+                            framing::Greeting::Http(bytes) => {
+                                (String::new(), None, None, "http", bytes)
+                            }
                         };
                         events
                             .send(Frame::Open {
                                 id,
                                 relay_version: version,
                                 identity,
+                                role,
                                 framing: mode,
                             })
                             .await
@@ -383,6 +408,31 @@ async fn serve(path: &Path, allow_http: bool) -> io::Result<()> {
     while tasks.join_next().await.is_some() {}
     result
 }
+const USAGE: &str = "usage: pwrsnap-mcp [--role ROLE] [--endpoint PATH] | --version. \
+ROLE is a PwrSnap role id from Settings -> Local Agents, such as builtin.search, \
+builtin.preview, builtin.full-media, builtin.editor, builtin.sizzle or builtin.full-access \
+(the default). The builtin. prefix may be left off.";
+/// Remove `--role ROLE` or `--role=ROLE` from the arguments.
+fn take_role(args: &[String]) -> (io::Result<Option<String>>, Vec<String>) {
+    let mut role = None;
+    let mut rest = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let value = if arg == "--role" {
+            iter.next().cloned()
+        } else if let Some(value) = arg.strip_prefix("--role=") {
+            Some(value.to_owned())
+        } else {
+            rest.push(arg.clone());
+            continue;
+        };
+        match value {
+            Some(value) if role.is_none() && valid_role(&value) => role = Some(value),
+            _ => return (Err(error(USAGE)), rest),
+        }
+    }
+    (Ok(role), rest)
+}
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args == ["--version"] {
@@ -393,21 +443,27 @@ fn main() -> std::process::ExitCode {
     let rest = if listen { &args[1..] } else { &args[..] };
     let allow_http = listen && rest.first().is_some_and(|s| s == "--allow-http");
     let rest = if allow_http { &rest[1..] } else { rest };
-    let path = match rest {
+    let (role, rest) = if listen {
+        (Ok(None), rest.to_vec())
+    } else {
+        take_role(rest)
+    };
+    let path = match rest.as_slice() {
         [] => link::endpoint(),
         [flag, value] if flag == "--endpoint" => Ok(value.into()),
-        _ => Err(error("usage: pwrsnap-mcp [--endpoint PATH] | --version")),
+        _ => Err(error(USAGE)),
     };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("I/O runtime");
     let result = runtime.block_on(async {
+        let role = role?;
         let path = path?;
         if listen {
             serve(&path, allow_http).await
         } else {
-            relay(&path).await
+            relay(&path, role.as_deref()).await
         }
     });
     runtime.shutdown_background();
@@ -455,6 +511,62 @@ mod tests {
             ));
         });
     }
+    fn strings(args: &[&str]) -> Vec<String> {
+        args.iter().map(|s| (*s).to_owned()).collect()
+    }
+    #[test]
+    fn role_flag_is_taken_in_either_form_and_leaves_the_endpoint() {
+        for args in [
+            &["--role", "builtin.preview", "--endpoint", "/x"][..],
+            &["--role=builtin.preview", "--endpoint", "/x"][..],
+            &["--endpoint", "/x", "--role", "builtin.preview"][..],
+        ] {
+            let (role, rest) = take_role(&strings(args));
+            assert_eq!(role.unwrap().as_deref(), Some("builtin.preview"));
+            assert_eq!(rest, strings(&["--endpoint", "/x"]));
+        }
+        let (role, rest) = take_role(&strings(&["--endpoint", "/x"]));
+        assert_eq!(role.unwrap(), None);
+        assert_eq!(rest, strings(&["--endpoint", "/x"]));
+        for args in [
+            &["--role"][..],
+            &["--role="][..],
+            &["--role", "a b"][..],
+            &["--role", "a/b"][..],
+            &["--role", "a", "--role", "b"][..],
+        ] {
+            assert!(take_role(&strings(args)).0.is_err(), "{args:?}");
+        }
+    }
+    #[test]
+    fn every_relay_greeting_parses_back_to_its_role() {
+        runtime().block_on(async {
+            for identity in ["", "token"] {
+                for role in [
+                    None,
+                    Some("builtin.search"),
+                    Some("full-access"),
+                    Some(&*"r".repeat(64)),
+                ] {
+                    let hello = client_greeting(identity, role);
+                    // Without a role the greeting is the earlier one, which
+                    // an older desktop still accepts.
+                    if role.is_none() {
+                        assert_eq!(hello, format!("{WIRE} {VERSION} {identity}\n"));
+                    }
+                    let greeting = framing::accept(&mut hello.as_bytes(), false).await.unwrap();
+                    assert_eq!(
+                        greeting,
+                        framing::Greeting::Raw {
+                            version: VERSION.into(),
+                            identity: (!identity.is_empty()).then(|| identity.into()),
+                            role: role.map(str::to_owned),
+                        }
+                    );
+                }
+            }
+        });
+    }
     #[test]
     fn mixed_releases_negotiate_transport_not_application_equality() {
         runtime().block_on(async {
@@ -465,7 +577,7 @@ mod tests {
             let mut server = listener.accept().await.unwrap();
             client.write_all(b"PWRSNAP-MCP/1 0.0.1\n").await.unwrap();
             assert_eq!(
-                handshake(&mut server, true).await.unwrap(),
+                handshake(&mut server, true, None).await.unwrap(),
                 ("0.0.1".into(), None)
             );
             let mut ack = [0; 22];
@@ -483,7 +595,7 @@ mod tests {
                 let mut client = link::connect(&path).await.unwrap();
                 let mut server = listener.accept().await.unwrap();
                 client.write_all(hello.as_bytes()).await.unwrap();
-                assert!(handshake(&mut server, true).await.is_err());
+                assert!(handshake(&mut server, true, None).await.is_err());
             }
         });
     }

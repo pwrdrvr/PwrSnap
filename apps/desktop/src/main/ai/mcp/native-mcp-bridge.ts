@@ -17,6 +17,8 @@ export type McpConnection = {
   id: number;
   relayVersion: string;
   identity: string | null;
+  /** The role the relay's command line asked for (`--role`), if any. */
+  role: string | null;
   framing: "raw" | "http";
   createTransport: (prepare?: (message: JSONRPCMessage) => Promise<void>, options?: { allowModernRequests?: boolean }) => McpByteTransport;
   createStream: () => NativeIpcStream;
@@ -28,6 +30,7 @@ type Frame = {
   data?: string;
   relay_version?: string;
   identity?: string | null;
+  role?: string | null;
   framing?: "raw" | "http";
   endpoint?: string;
 };
@@ -305,6 +308,7 @@ export class NativeMcpBridge {
       id: frame.id,
       relayVersion: frame.relay_version,
       identity: frame.identity ?? null,
+      role: typeof frame.role === "string" ? frame.role : null,
       framing: frame.framing ?? "raw",
       createStream: () => {
         if (frame.framing !== "http" || !this.options.allowHttp) throw new Error("HTTP IPC disabled");

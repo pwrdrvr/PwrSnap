@@ -536,7 +536,7 @@ export function LocalAgentsPage(): ReactElement {
       <Card eyebrow="LOCAL AGENT ACCESS" title="MCP server">
         <Row
           label="Enable local-agent access"
-          sub="When off, PwrSnap does not listen for MCP connections. Saved Sessions and roles remain available. When on, every connection still requires native approval and an assigned RBAC role."
+          sub="When off, PwrSnap does not listen for MCP connections. Saved Sessions and roles remain available. When on, a relay connection gets the role named by its --role flag (Full Access when none), and direct IPC HTTP asks for approval."
           tag={listenerCopy.tag}
         >
           <Switch
@@ -555,10 +555,10 @@ export function LocalAgentsPage(): ReactElement {
           {listenerStatus.state === "listening" ? (
             <>
               <p className="pss__row-sub">
-                Run one of these in a terminal. The agent opens PwrSnap's approval window; pick a
-                Session Name and role there. Keep PwrSnap running. After a disconnect, reconnect
-                manually in the host. Replace existing TCP HTTP connections with stdio or direct
-                IPC HTTP below; approve a new Session.
+                Run one of these in a terminal. The agent connects with Full Access; add a
+                role id such as --role builtin.preview to give it less.
+                Keep PwrSnap running. After a disconnect, reconnect manually in the host. Replace
+                existing TCP HTTP connections with stdio or direct IPC HTTP below.
               </p>
               {recipes.map((recipe) => {
                 const feedback = copyFeedback?.id === recipe.id ? copyFeedback.status : null;
@@ -656,10 +656,10 @@ export function LocalAgentsPage(): ReactElement {
 
               <GraphColumn title="Sessions" count={grants.length}>
                 {grants.length === 0 ? (
-                  <div className="pss__auth-empty">No approved MCP Sessions yet.</div>
+                  <div className="pss__auth-empty">No MCP Sessions yet.</div>
                 ) : (
                   <p className="pss__auth-hint">
-                    Each approval is its own Session, even when the name repeats. Revoking
+                    Each connection is its own Session, even when the name repeats. Revoking
                     stops it; removing a revoked one deletes its saved entry.
                   </p>
                 )}
@@ -706,8 +706,8 @@ export function LocalAgentsPage(): ReactElement {
                           onClick={(event) => event.stopPropagation()}
                         >
                           <p>
-                            {grant.name} loses access now. To reconnect, the agent must ask
-                            again, and approving it creates a new Session.
+                            {grant.name} loses access now. Reconnecting the agent creates a
+                            new Session.
                           </p>
                           <div className="pss__auth-confirm-actions">
                             <button

@@ -1,4 +1,5 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,7 +8,8 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { Client as SkillsHost } from "@modelcontextprotocol/client";
 import { StdioClientTransport as SkillsTransport } from "@modelcontextprotocol/client/stdio";
 import { SkillsClient } from "@modelcontextprotocol/client/ext/skills";
-import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolResultSchema, ReadResourceResultSchema } from "@modelcontextprotocol/sdk/types.js";
+import sharp from "sharp";
 import { LOCAL_AGENT_CAPABILITIES, ok, resolveLocalAgentPolicy } from "@pwrsnap/shared";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { z } from "zod";
@@ -51,6 +53,16 @@ const consent = vi.fn();
 const dispatch = vi.fn(async (_input: unknown, ctx: { capabilities: readonly string[] }) =>
   ok({ caps: ctx.capabilities })
 );
+const fixtureUsageService = {
+  reserve: () => ({
+    ok: true as const,
+    reservation: {
+      id: "fixture", sessionId: "fixture", action: "search" as const,
+      used: 1, limit: 50, windowSeconds: 86400
+    }
+  }),
+  release: () => undefined
+};
 beforeEach(async () => {
   const dir = mkdtempSync(join(tmpdir(), "psm-"));
   endpoint =
@@ -77,20 +89,7 @@ beforeEach(async () => {
     grantService: grants,
     version: "9.8.7",
     requestConsent: consent,
-    usageService: {
-      reserve: () => ({
-        ok: true,
-        reservation: {
-          id: "fixture",
-          sessionId: "fixture",
-          action: "search",
-          used: 1,
-          limit: 50,
-          windowSeconds: 86400
-        }
-      }),
-      release: () => undefined
-    },
+    usageService: fixtureUsageService,
     bridgeFactory: (onConnection) => new NativeMcpBridge({ executable, endpoint, allowHttp: true, onConnection }),
     tools: [
       {
@@ -512,6 +511,113 @@ test("main's Sizzle catalog and protected media use the same production handlers
     bus.uninstallLocalAgentAuthorizerForTests();
   }
 });
+
+// File bytes and independently decoded pixels are the oracles. This exercises
+// the production capture tools and resource handler, not a mock MCP response.
+// In CI the same native boundary is a Unix socket or a Windows named pipe.
+test.each(["stdio", "http"] as const)("capture media byte oracle over %s native IPC", async (mode) => {
+  await server.stop();
+  relayRole = "builtin.full-access";
+  decision = { decision: "allow", sessionName: "Media oracle", roleId: relayRole,
+    capabilities: [...LOCAL_AGENT_CAPABILITIES] };
+  server = new LocalAgentMcpServer({ settings, grantService: grants, requestConsent: consent,
+    secrets: new DesktopSecretStore({ filePath: settingsPath + ".secrets" }),
+    usageService: fixtureUsageService,
+    captureCapturedAt: () => new Date().toISOString(),
+    bridgeFactory: (onConnection) => new NativeMcpBridge({ executable, endpoint, allowHttp: true, onConnection }) });
+  const mediaPath = settingsPath + ".media";
+  let fixture = { bytes: Buffer.alloc(0), width: 0, format: "png" as "png" | "jpeg" };
+  const render = vi.fn(async (input: { captureId: string; variant?: "composite" | "original"; preset?: "low" | "med" | "high" }) => ok({
+    captureId: input.captureId, variant: input.variant ?? "composite", format: fixture.format,
+    ...(input.preset === undefined ? {} : { preset: input.preset }),
+    path: mediaPath, mimeType: `image/${fixture.format}`, widthPx: fixture.width, heightPx: fixture.width,
+    byteSize: fixture.bytes.length, fromCache: true, exportId: "synthetic-export"
+  }));
+  bus.installLocalAgentAuthorizer((id) => grants.authorizeClient(id));
+  bus.register("render:captureExport", render);
+  try {
+    await server.start();
+    let sequence = 1;
+    const client = mode === "stdio" ? await connect() : undefined;
+    const send = httpHost();
+    const { token } = mode === "http"
+      ? await server.bootstrapHttp(new AbortController().signal) : { token: "unused" };
+    const initialized = mode === "http" ? await send(initializeHttp, { authorization: `Bearer ${token}` }) : undefined;
+    const headers = { authorization: `Bearer ${token}`, "mcp-session-id": initialized?.headers["mcp-session-id"] as string };
+    const requestMcp = async (method: "tools/call" | "resources/read", params: Record<string, unknown>): Promise<unknown> => {
+      const response = await send({ jsonrpc: "2.0", id: ++sequence, method, params }, headers);
+      const message = httpMessage(response.text);
+      if (message.error !== undefined) throw new Error(JSON.stringify(message.error));
+      expect(response.status).toBe(200);
+      return message.result;
+    };
+    const read = async (uri: string) => ReadResourceResultSchema.parse(client
+      ? await client.readResource({ uri }) : await requestMcp("resources/read", { uri }));
+    const call = async (name: string, args: Record<string, unknown>) => CallToolResultSchema.parse(client
+      ? await client.callTool({ name, arguments: args }) : await requestMcp("tools/call", { name, arguments: args }));
+    let exportUri = "";
+    for (const [width, format] of [[320, "png"], [640, "png"], [320, "jpeg"]] as const) {
+      // Synthetic noise avoids a tiny compressible PNG that misses clipping
+      // thresholds. Hash-counter bytes are deterministic and contain no media.
+      const pixels = Buffer.alloc(width * width * 3);
+      for (let offset = 0; offset < pixels.length; offset += 32)
+        createHash("sha256").update(String(offset)).digest().copy(pixels, offset);
+      const bytes = await sharp(pixels, { raw: { width, height: width, channels: 3 } })
+        .toFormat(format).toBuffer();
+      fixture = { bytes, width, format };
+      writeFileSync(mediaPath, bytes);
+      if (format === "png") expect(bytes.length).toBeGreaterThan(265_777);
+      if (width === 640) expect(bytes.toString("base64").length).toBeGreaterThan(1024 * 1024);
+      for (const name of format === "png" ? ["pwrsnap_capture_resource", "pwrsnap_capture_export"] : ["pwrsnap_capture_export"]) {
+        const result = await call(name, { captureId: "synthetic", variant: "composite",
+          ...(name === "pwrsnap_capture_export" ? { format, preset: "low" } : {}) });
+        expect(result.isError).not.toBe(true);
+        expect(result.content.some((item) => item.type === "image")).toBe(false);
+        const link = result.content.find((item) => item.type === "resource_link");
+        if (link?.type !== "resource_link") throw new Error("Missing typed resource link");
+        expect(link).toMatchObject({ mimeType: `image/${format}`, size: bytes.length });
+        expect(link.uri).toMatch(/^pwrsnap:\/\/capture\/synthetic\//);
+        const media = await read(link.uri);
+        expect(media.contents).toHaveLength(1);
+        const content = media.contents[0];
+        if (!("blob" in content)) throw new Error("Expected binary resource contents");
+        expect(content).toMatchObject({ uri: link.uri, mimeType: link.mimeType });
+        // Node's permissive decoder silently skips ellipses/invalid base64.
+        expect(content.blob).toMatch(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/);
+        expect(content.blob.length).toBe(4 * Math.ceil(bytes.length / 3));
+        const received = Buffer.from(content.blob, "base64");
+        expect(received.length).toBe(bytes.length);
+        const digest = (value: Buffer) => createHash("sha256").update(value).digest("hex");
+        expect(digest(received)).toBe(digest(bytes));
+        const decoded = await sharp(received).raw().toBuffer({ resolveWithObject: true });
+        expect(decoded.info).toMatchObject({ width, height: width, channels: 3 });
+        expect(decoded.data).toEqual(format === "png" ? pixels : await sharp(bytes).raw().toBuffer());
+        if (name === "pwrsnap_capture_export") exportUri = link.uri;
+      }
+    }
+    rmSync(mediaPath);
+    await expect(read(exportUri)).rejects.toThrow(/ENOENT/);
+    writeFileSync(mediaPath, fixture.bytes);
+    const readsBeforeDenials = render.mock.calls.length;
+    const [owner] = (await grants.list()).filter((grant) => grant.revokedAt === null);
+    // Another fully authorized Session cannot read this client's export.
+    const other = await connect();
+    await expect(other.readResource({ uri: exportUri })).rejects.toThrow(/another client/);
+    await expect(read("pwrsnap://capture/synthetic/export/never-issued")).rejects.toThrow(/not found/);
+    expect(render).toHaveBeenCalledTimes(readsBeforeDenials);
+    // Canonical resources also retain the live capability checks.
+    await grants.assignRole(owner.id, "builtin.search");
+    await expect(read(exportUri)).rejects.toThrow(/no longer permits/);
+    expect(render).toHaveBeenCalledTimes(readsBeforeDenials);
+    await grants.revokeGrant(owner.id);
+    await server.settingsChanged();
+    await expect(read(exportUri)).rejects.toThrow();
+  } finally {
+    bus.unregister("render:captureExport");
+    bus.uninstallLocalAgentAuthorizerForTests();
+    rmSync(mediaPath, { force: true });
+  }
+}, 20_000);
 test("schema validation and capability boundaries stay desktop-owned", async () => {
   const client = await connect();
   expect((await client.callTool({ name: "fixture_search", arguments: { query: 4 } })).isError).toBe(

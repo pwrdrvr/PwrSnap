@@ -5,7 +5,7 @@ import { globSync, writeFileSync, writeSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve, relative } from "node:path";
 import { createInterface } from "node:readline";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { setFlagsFromString } from "node:v8";
 import vm from "node:vm";
 import { isCliEntrypoint } from "./lib/cli-entrypoint.mjs";
@@ -14,10 +14,17 @@ const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = resolve(import.meta.dirname, "..");
 export const bytecodeBudget = 48 * 1024;
 
-export function rendererModules(root = repoRoot) {
-  return globSync("apps/desktop/src/renderer/src/**/*.{ts,tsx,js,jsx,mjs}", { cwd: root })
+export function rendererModules(root = repoRoot, discover = globSync) {
+  return discover("apps/desktop/src/renderer/src/**/*.{ts,tsx,js,jsx,mjs}", { cwd: root })
+    .map((file) => file.replaceAll("\\", "/"))
     .filter((file) => !/(?:^|\/)(?:__tests__|__fixtures__|fixtures)(?:\/|$)|\.(?:test|spec)\.|\.d\.ts$/.test(file))
-    .map((file) => file.replaceAll("\\", "/")).sort();
+    .sort();
+}
+
+export function importTool(modulePath) {
+  // Drive-letter paths are not ESM specifiers. File URLs also preserve #/%
+  // in real filenames rather than treating them as URL syntax.
+  return import(pathToFileURL(modulePath).href);
 }
 
 // Vitest 4's module-evaluator wrapper, including its CJS globals. Context
@@ -89,7 +96,7 @@ async function* transformedModules(context, files) {
   const environment = project?.vite.environments.ssr;
   if (!environment) throw new Error("The desktop-renderer SSR environment is missing");
   const desktopRequire = createRequire(resolve(repoRoot, "apps/desktop/package.json"));
-  const { fetchModule } = await import(desktopRequire.resolve("vite"));
+  const { fetchModule } = await importTool(desktopRequire.resolve("vite"));
   for (const file of files) {
     // jsdom tests run in Vitest's client environment; SSR covers the Node
     // transform too. Both receive the same real module-evaluator wrapper.
@@ -106,8 +113,8 @@ async function* appModules(files) {
   // hoist or a dependency owned by another worktree.
   const desktopRoot = resolve(repoRoot, "apps/desktop");
   const desktopRequire = createRequire(resolve(desktopRoot, "package.json"));
-  const vite = await import(desktopRequire.resolve("vite"));
-  const electronVite = await import(desktopRequire.resolve("electron-vite"));
+  const vite = await importTool(desktopRequire.resolve("vite"));
+  const electronVite = await importTool(desktopRequire.resolve("electron-vite"));
   const options = { root: desktopRoot, configFile: resolve(desktopRoot, "electron.vite.config.ts") };
   const devConfig = (await electronVite.resolveConfig({ ...options }, "serve", "development")).config?.renderer;
   if (!devConfig) throw new Error("Renderer development configuration is missing");

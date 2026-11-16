@@ -1,8 +1,38 @@
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { bytecodeBudget, measureModules, overBudget, rendererModules, wrapModule } from "./check-renderer-bytecode.mjs";
+
+test("resolved tools import the exact filesystem file even when its path contains URL syntax", () => {
+  const root = mkdtempSync(join(tmpdir(), "pwrsnap-bytecode-import-"));
+  try {
+    const modulePath = join(root, "tool # 100%.mjs");
+    writeFileSync(modulePath, "export const marker = 'loaded the filesystem file';");
+    // Use Node's actual ESM loader, not Vitest's dynamic-import transform.
+    const code = `import { importTool } from ${JSON.stringify(new URL("./check-renderer-bytecode.mjs", import.meta.url).href)};
+      process.stdout.write((await importTool(${JSON.stringify(modulePath)})).marker);`;
+    expect(execFileSync(process.execPath, ["--input-type=module", "--eval", code], {
+      encoding: "utf8", maxBuffer: 16 * 1024
+    })).toBe("loaded the filesystem file");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test.each(["/", "\\"])("module discovery excludes non-application files with %s path separators", (separator) => {
+  const prefix = "apps/desktop/src/renderer/src/";
+  const files = [
+    "area/Anonymous.tsx", "area/useNewHook.ts", "area/types.d.ts",
+    "area/Example.test.tsx", "area/Example.spec.ts",
+    "area/__tests__/nested/helper.ts", "area/__fixtures__/helper.tsx",
+    "area/fixtures/nested/helper.js"
+  ].map((file) => (prefix + file).replaceAll("/", separator));
+  expect(rendererModules("unused", () => files)).toEqual([
+    prefix + "area/Anonymous.tsx", prefix + "area/useNewHook.ts"
+  ]);
+});
 
 test("V8's oracle checks uncalled nested and anonymous functions without running imports or code", async () => {
   const largeBody = Array.from({ length: 6500 }, (_, index) => `sink(${index});`).join("\n");

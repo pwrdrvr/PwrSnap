@@ -85,6 +85,10 @@ Useful checks (all run from the repo root):
   including scripts and unit/E2E tests
 - `pnpm lint:typed` — production TypeScript receiver checks; inline suppression
   is rejected, and callback contracts may declare `this: void`
+- `pnpm check:renderer-bytecode` — compile all application renderer modules
+  through Vitest, development Vite, and production Rollup/esbuild transforms;
+  fail any function above 48 KiB of V8 bytecode. Runs inside `pnpm lint`
+  (including CI). It compiles without executing application imports.
 - `pnpm licenses:check` — verifies `THIRD_PARTY_LICENSES` matches a
   deterministic regeneration; run `pnpm licenses:generate` after dependency
   changes

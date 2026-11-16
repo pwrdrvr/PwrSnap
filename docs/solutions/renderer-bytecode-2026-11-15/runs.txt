@@ -1,0 +1,487 @@
+Bounded raw verbose test logs; workspace and home paths redacted.
+
+=== before plain 1 ===
+{"executable":"<nvm>/versions/node/v24.22.0/bin/node","args":["<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/vitest.mjs","run","--config",".local/bytecode-investigation/measurement.config.ts","--project","desktop-renderer","apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx","--reporter=verbose","--reporter=json","--outputFile","<worktree>/.local/bytecode-investigation/plain-1.json"],"node":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"},"os":"27.2.0","arch":"arm64","NODE_OPTIONS":""}
+
+ RUN  v4.1.12 <worktree>
+
+stdout | apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx
+Measurement worker {"execArgv":["--experimental-import-meta-resolve","--require","<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/suppress-warnings.cjs","--conditions","node","--conditions","development"],"versions":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"}}
+
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > shows the Git branch for a development checkout 55ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > keeps showing the package version without a development checkout 20ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'darwin' copies with its primary modifier and ignores the other platform's modifier 57ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'win32' copies with its primary modifier and ignores the other platform's modifier 51ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > focus mode leaves primary+digits to editor chrome without also copying 61ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > single click selects the tile without opening the editor 44ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > double-click opens the editor 56ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the real click→click→dblclick sequence lands in the editor 57ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter on the selected tile opens the editor 43ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter with nothing selected is a no-op 7ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > an arrow key in grid moves the selection (and doesn't open the editor) 9ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the hover Edit CTA opens the editor 11ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: opening Grid default-selects the first visible capture 9ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: selecting a tile updates in place and does not change data-right 10ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: selecting a tile does not open the sidebar or change data-right 15ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: palette copy + ⌘2 use clipboard:copy for the selected tile 16ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > layout toggle still opens the inspector after a closed-sidebar select 14ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned narrow Grid keeps the collapsed spine and default-selects 11ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid at the 480px minimum parks the nav on its spine; the spine peeks, not re-pins 12ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid keeps the pinned nav above the very-narrow tier 10ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Reel sheds the nav at ≤1024 and then the rail at ≤720 38ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a peek opened while auto-collapsed does not outlive the nav re-pinning 19ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a keyboard-opened peek closes when focus leaves the nav 16ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > the Windows in-toolbar menu reserve does not move the column breakpoints 16ms
+
+ Test Files  1 passed (1)
+      Tests  24 passed (24)
+   Start at  19:44:48
+   Duration  1.97s (transform 543ms, setup 10ms, import 692ms, tests 658ms, environment 491ms)
+
+JSON report written to <worktree>/.local/bytecode-investigation/plain-1.json
+
+=== before plain 2 ===
+{"executable":"<nvm>/versions/node/v24.22.0/bin/node","args":["<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/vitest.mjs","run","--config",".local/bytecode-investigation/measurement.config.ts","--project","desktop-renderer","apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx","--reporter=verbose","--reporter=json","--outputFile","<worktree>/.local/bytecode-investigation/plain-2.json"],"node":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"},"os":"27.2.0","arch":"arm64","NODE_OPTIONS":""}
+
+ RUN  v4.1.12 <worktree>
+
+stdout | apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx
+Measurement worker {"execArgv":["--experimental-import-meta-resolve","--require","<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/suppress-warnings.cjs","--conditions","node","--conditions","development"],"versions":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"}}
+
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > shows the Git branch for a development checkout 53ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > keeps showing the package version without a development checkout 20ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'darwin' copies with its primary modifier and ignores the other platform's modifier 56ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'win32' copies with its primary modifier and ignores the other platform's modifier 48ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > focus mode leaves primary+digits to editor chrome without also copying 60ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > single click selects the tile without opening the editor 42ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > double-click opens the editor 53ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the real click→click→dblclick sequence lands in the editor 54ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter on the selected tile opens the editor 44ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter with nothing selected is a no-op 9ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > an arrow key in grid moves the selection (and doesn't open the editor) 11ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the hover Edit CTA opens the editor 11ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: opening Grid default-selects the first visible capture 9ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: selecting a tile updates in place and does not change data-right 10ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: selecting a tile does not open the sidebar or change data-right 29ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: palette copy + ⌘2 use clipboard:copy for the selected tile 33ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > layout toggle still opens the inspector after a closed-sidebar select 14ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned narrow Grid keeps the collapsed spine and default-selects 11ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid at the 480px minimum parks the nav on its spine; the spine peeks, not re-pins 12ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid keeps the pinned nav above the very-narrow tier 10ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Reel sheds the nav at ≤1024 and then the rail at ≤720 39ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a peek opened while auto-collapsed does not outlive the nav re-pinning 19ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a keyboard-opened peek closes when focus leaves the nav 14ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > the Windows in-toolbar menu reserve does not move the column breakpoints 16ms
+
+ Test Files  1 passed (1)
+      Tests  24 passed (24)
+   Start at  19:44:50
+   Duration  1.77s (transform 531ms, setup 12ms, import 644ms, tests 678ms, environment 325ms)
+
+JSON report written to <worktree>/.local/bytecode-investigation/plain-2.json
+
+=== before plain 3 ===
+{"executable":"<nvm>/versions/node/v24.22.0/bin/node","args":["<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/vitest.mjs","run","--config",".local/bytecode-investigation/measurement.config.ts","--project","desktop-renderer","apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx","--reporter=verbose","--reporter=json","--outputFile","<worktree>/.local/bytecode-investigation/plain-3.json"],"node":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"},"os":"27.2.0","arch":"arm64","NODE_OPTIONS":""}
+
+ RUN  v4.1.12 <worktree>
+
+stdout | apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx
+Measurement worker {"execArgv":["--experimental-import-meta-resolve","--require","<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/suppress-warnings.cjs","--conditions","node","--conditions","development"],"versions":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"}}
+
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > shows the Git branch for a development checkout 53ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > keeps showing the package version without a development checkout 19ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'darwin' copies with its primary modifier and ignores the other platform's modifier 55ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'win32' copies with its primary modifier and ignores the other platform's modifier 51ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > focus mode leaves primary+digits to editor chrome without also copying 56ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > single click selects the tile without opening the editor 42ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > double-click opens the editor 52ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the real click→click→dblclick sequence lands in the editor 57ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter on the selected tile opens the editor 38ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter with nothing selected is a no-op 8ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > an arrow key in grid moves the selection (and doesn't open the editor) 10ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the hover Edit CTA opens the editor 11ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: opening Grid default-selects the first visible capture 9ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: selecting a tile updates in place and does not change data-right 10ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: selecting a tile does not open the sidebar or change data-right 17ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: palette copy + ⌘2 use clipboard:copy for the selected tile 13ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > layout toggle still opens the inspector after a closed-sidebar select 12ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned narrow Grid keeps the collapsed spine and default-selects 10ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid at the 480px minimum parks the nav on its spine; the spine peeks, not re-pins 12ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid keeps the pinned nav above the very-narrow tier 14ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Reel sheds the nav at ≤1024 and then the rail at ≤720 32ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a peek opened while auto-collapsed does not outlive the nav re-pinning 18ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a keyboard-opened peek closes when focus leaves the nav 17ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > the Windows in-toolbar menu reserve does not move the column breakpoints 12ms
+
+ Test Files  1 passed (1)
+      Tests  24 passed (24)
+   Start at  19:44:52
+   Duration  1.64s (transform 493ms, setup 13ms, import 594ms, tests 627ms, environment 301ms)
+
+JSON report written to <worktree>/.local/bytecode-investigation/plain-3.json
+
+=== before no-sparkplug 1 ===
+{"executable":"<nvm>/versions/node/v24.22.0/bin/node","args":["--no-sparkplug","<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/vitest.mjs","run","--config",".local/bytecode-investigation/measurement.config.ts","--project","desktop-renderer","apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx","--reporter=verbose","--reporter=json","--outputFile","<worktree>/.local/bytecode-investigation/no-sparkplug-1.json"],"node":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"},"os":"27.2.0","arch":"arm64","NODE_OPTIONS":""}
+
+ RUN  v4.1.12 <worktree>
+
+stdout | apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx
+Measurement worker {"execArgv":["--experimental-import-meta-resolve","--require","<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/suppress-warnings.cjs","--conditions","node","--conditions","development","--no-sparkplug"],"versions":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"}}
+
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > shows the Git branch for a development checkout 56ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > keeps showing the package version without a development checkout 21ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'darwin' copies with its primary modifier and ignores the other platform's modifier 24ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'win32' copies with its primary modifier and ignores the other platform's modifier 18ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > focus mode leaves primary+digits to editor chrome without also copying 24ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > single click selects the tile without opening the editor 15ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > double-click opens the editor 18ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the real click→click→dblclick sequence lands in the editor 19ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter on the selected tile opens the editor 19ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter with nothing selected is a no-op 8ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > an arrow key in grid moves the selection (and doesn't open the editor) 10ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the hover Edit CTA opens the editor 10ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: opening Grid default-selects the first visible capture 8ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: selecting a tile updates in place and does not change data-right 9ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: selecting a tile does not open the sidebar or change data-right 14ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: palette copy + ⌘2 use clipboard:copy for the selected tile 17ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > layout toggle still opens the inspector after a closed-sidebar select 13ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned narrow Grid keeps the collapsed spine and default-selects 11ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid at the 480px minimum parks the nav on its spine; the spine peeks, not re-pins 11ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid keeps the pinned nav above the very-narrow tier 11ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Reel sheds the nav at ≤1024 and then the rail at ≤720 37ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a peek opened while auto-collapsed does not outlive the nav re-pinning 19ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a keyboard-opened peek closes when focus leaves the nav 14ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > the Windows in-toolbar menu reserve does not move the column breakpoints 15ms
+
+ Test Files  1 passed (1)
+      Tests  24 passed (24)
+   Start at  19:44:54
+   Duration  1.48s (transform 502ms, setup 10ms, import 618ms, tests 425ms, environment 318ms)
+
+JSON report written to <worktree>/.local/bytecode-investigation/no-sparkplug-1.json
+
+=== before no-sparkplug 2 ===
+{"executable":"<nvm>/versions/node/v24.22.0/bin/node","args":["--no-sparkplug","<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/vitest.mjs","run","--config",".local/bytecode-investigation/measurement.config.ts","--project","desktop-renderer","apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx","--reporter=verbose","--reporter=json","--outputFile","<worktree>/.local/bytecode-investigation/no-sparkplug-2.json"],"node":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"},"os":"27.2.0","arch":"arm64","NODE_OPTIONS":""}
+
+ RUN  v4.1.12 <worktree>
+
+stdout | apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx
+Measurement worker {"execArgv":["--experimental-import-meta-resolve","--require","<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/suppress-warnings.cjs","--conditions","node","--conditions","development","--no-sparkplug"],"versions":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"}}
+
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > shows the Git branch for a development checkout 55ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > keeps showing the package version without a development checkout 19ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'darwin' copies with its primary modifier and ignores the other platform's modifier 26ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'win32' copies with its primary modifier and ignores the other platform's modifier 19ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > focus mode leaves primary+digits to editor chrome without also copying 26ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > single click selects the tile without opening the editor 18ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > double-click opens the editor 19ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the real click→click→dblclick sequence lands in the editor 22ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter on the selected tile opens the editor 20ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter with nothing selected is a no-op 9ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > an arrow key in grid moves the selection (and doesn't open the editor) 10ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the hover Edit CTA opens the editor 12ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: opening Grid default-selects the first visible capture 9ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: selecting a tile updates in place and does not change data-right 10ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: selecting a tile does not open the sidebar or change data-right 16ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: palette copy + ⌘2 use clipboard:copy for the selected tile 19ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > layout toggle still opens the inspector after a closed-sidebar select 15ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned narrow Grid keeps the collapsed spine and default-selects 12ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid at the 480px minimum parks the nav on its spine; the spine peeks, not re-pins 13ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid keeps the pinned nav above the very-narrow tier 11ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Reel sheds the nav at ≤1024 and then the rail at ≤720 38ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a peek opened while auto-collapsed does not outlive the nav re-pinning 20ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a keyboard-opened peek closes when focus leaves the nav 16ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > the Windows in-toolbar menu reserve does not move the column breakpoints 16ms
+
+ Test Files  1 passed (1)
+      Tests  24 passed (24)
+   Start at  19:44:56
+   Duration  1.58s (transform 545ms, setup 12ms, import 667ms, tests 454ms, environment 329ms)
+
+JSON report written to <worktree>/.local/bytecode-investigation/no-sparkplug-2.json
+
+=== before no-sparkplug 3 ===
+{"executable":"<nvm>/versions/node/v24.22.0/bin/node","args":["--no-sparkplug","<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/vitest.mjs","run","--config",".local/bytecode-investigation/measurement.config.ts","--project","desktop-renderer","apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx","--reporter=verbose","--reporter=json","--outputFile","<worktree>/.local/bytecode-investigation/no-sparkplug-3.json"],"node":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"},"os":"27.2.0","arch":"arm64","NODE_OPTIONS":""}
+
+ RUN  v4.1.12 <worktree>
+
+stdout | apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx
+Measurement worker {"execArgv":["--experimental-import-meta-resolve","--require","<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/suppress-warnings.cjs","--conditions","node","--conditions","development","--no-sparkplug"],"versions":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"}}
+
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > shows the Git branch for a development checkout 51ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > keeps showing the package version without a development checkout 20ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'darwin' copies with its primary modifier and ignores the other platform's modifier 25ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'win32' copies with its primary modifier and ignores the other platform's modifier 18ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > focus mode leaves primary+digits to editor chrome without also copying 24ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > single click selects the tile without opening the editor 17ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > double-click opens the editor 20ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the real click→click→dblclick sequence lands in the editor 21ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter on the selected tile opens the editor 19ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter with nothing selected is a no-op 8ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > an arrow key in grid moves the selection (and doesn't open the editor) 9ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the hover Edit CTA opens the editor 12ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: opening Grid default-selects the first visible capture 9ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: selecting a tile updates in place and does not change data-right 11ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: selecting a tile does not open the sidebar or change data-right 16ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: palette copy + ⌘2 use clipboard:copy for the selected tile 18ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > layout toggle still opens the inspector after a closed-sidebar select 13ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned narrow Grid keeps the collapsed spine and default-selects 12ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid at the 480px minimum parks the nav on its spine; the spine peeks, not re-pins 12ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid keeps the pinned nav above the very-narrow tier 11ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Reel sheds the nav at ≤1024 and then the rail at ≤720 37ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a peek opened while auto-collapsed does not outlive the nav re-pinning 19ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a keyboard-opened peek closes when focus leaves the nav 14ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > the Windows in-toolbar menu reserve does not move the column breakpoints 16ms
+
+ Test Files  1 passed (1)
+      Tests  24 passed (24)
+   Start at  19:44:58
+   Duration  1.53s (transform 516ms, setup 11ms, import 621ms, tests 433ms, environment 344ms)
+
+JSON report written to <worktree>/.local/bytecode-investigation/no-sparkplug-3.json
+
+=== after plain 1 ===
+{"executable":"<nvm>/versions/node/v24.22.0/bin/node","args":["<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/vitest.mjs","run","--config",".local/bytecode-investigation/measurement.config.ts","--project","desktop-renderer","apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx","--testNamePattern","^(?!.*parent renders preserve)","--reporter=verbose","--reporter=json","--outputFile","<worktree>/.local/bytecode-investigation/plain-1.json"],"node":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"},"os":"27.2.0","arch":"arm64","NODE_OPTIONS":""}
+
+ RUN  v4.1.12 <worktree>
+
+stdout | apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx
+Measurement worker {"execArgv":["--experimental-import-meta-resolve","--require","<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/suppress-warnings.cjs","--conditions","node","--conditions","development"],"versions":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"}}
+
+ ↓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > parent renders preserve focused controls and mounted subscriptions
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > shows the Git branch for a development checkout 53ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > keeps showing the package version without a development checkout 21ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'darwin' copies with its primary modifier and ignores the other platform's modifier 33ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'win32' copies with its primary modifier and ignores the other platform's modifier 28ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > focus mode leaves primary+digits to editor chrome without also copying 30ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > single click selects the tile without opening the editor 22ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > double-click opens the editor 26ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the real click→click→dblclick sequence lands in the editor 30ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter on the selected tile opens the editor 20ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter with nothing selected is a no-op 7ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > an arrow key in grid moves the selection (and doesn't open the editor) 9ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the hover Edit CTA opens the editor 10ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: opening Grid default-selects the first visible capture 9ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: selecting a tile updates in place and does not change data-right 9ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: selecting a tile does not open the sidebar or change data-right 18ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: palette copy + ⌘2 use clipboard:copy for the selected tile 13ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > layout toggle still opens the inspector after a closed-sidebar select 12ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned narrow Grid keeps the collapsed spine and default-selects 12ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid at the 480px minimum parks the nav on its spine; the spine peeks, not re-pins 13ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid keeps the pinned nav above the very-narrow tier 14ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Reel sheds the nav at ≤1024 and then the rail at ≤720 31ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a peek opened while auto-collapsed does not outlive the nav re-pinning 19ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a keyboard-opened peek closes when focus leaves the nav 17ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > the Windows in-toolbar menu reserve does not move the column breakpoints 11ms
+
+ Test Files  1 passed (1)
+      Tests  24 passed | 1 skipped (25)
+   Start at  19:51:41
+   Duration  1.62s (transform 576ms, setup 26ms, import 681ms, tests 468ms, environment 324ms)
+
+JSON report written to <worktree>/.local/bytecode-investigation/plain-1.json
+
+=== after plain 2 ===
+{"executable":"<nvm>/versions/node/v24.22.0/bin/node","args":["<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/vitest.mjs","run","--config",".local/bytecode-investigation/measurement.config.ts","--project","desktop-renderer","apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx","--testNamePattern","^(?!.*parent renders preserve)","--reporter=verbose","--reporter=json","--outputFile","<worktree>/.local/bytecode-investigation/plain-2.json"],"node":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"},"os":"27.2.0","arch":"arm64","NODE_OPTIONS":""}
+
+ RUN  v4.1.12 <worktree>
+
+stdout | apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx
+Measurement worker {"execArgv":["--experimental-import-meta-resolve","--require","<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/suppress-warnings.cjs","--conditions","node","--conditions","development"],"versions":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"}}
+
+ ↓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > parent renders preserve focused controls and mounted subscriptions
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > shows the Git branch for a development checkout 53ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > keeps showing the package version without a development checkout 21ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'darwin' copies with its primary modifier and ignores the other platform's modifier 33ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'win32' copies with its primary modifier and ignores the other platform's modifier 27ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > focus mode leaves primary+digits to editor chrome without also copying 34ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > single click selects the tile without opening the editor 22ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > double-click opens the editor 28ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the real click→click→dblclick sequence lands in the editor 29ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter on the selected tile opens the editor 25ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter with nothing selected is a no-op 8ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > an arrow key in grid moves the selection (and doesn't open the editor) 10ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the hover Edit CTA opens the editor 11ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: opening Grid default-selects the first visible capture 9ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: selecting a tile updates in place and does not change data-right 10ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: selecting a tile does not open the sidebar or change data-right 16ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: palette copy + ⌘2 use clipboard:copy for the selected tile 18ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > layout toggle still opens the inspector after a closed-sidebar select 13ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned narrow Grid keeps the collapsed spine and default-selects 10ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid at the 480px minimum parks the nav on its spine; the spine peeks, not re-pins 13ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid keeps the pinned nav above the very-narrow tier 10ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Reel sheds the nav at ≤1024 and then the rail at ≤720 38ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a peek opened while auto-collapsed does not outlive the nav re-pinning 21ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a keyboard-opened peek closes when focus leaves the nav 16ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > the Windows in-toolbar menu reserve does not move the column breakpoints 16ms
+
+ Test Files  1 passed (1)
+      Tests  24 passed | 1 skipped (25)
+   Start at  19:51:43
+   Duration  1.60s (transform 552ms, setup 12ms, import 665ms, tests 494ms, environment 320ms)
+
+JSON report written to <worktree>/.local/bytecode-investigation/plain-2.json
+
+=== after plain 3 ===
+{"executable":"<nvm>/versions/node/v24.22.0/bin/node","args":["<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/vitest.mjs","run","--config",".local/bytecode-investigation/measurement.config.ts","--project","desktop-renderer","apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx","--testNamePattern","^(?!.*parent renders preserve)","--reporter=verbose","--reporter=json","--outputFile","<worktree>/.local/bytecode-investigation/plain-3.json"],"node":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"},"os":"27.2.0","arch":"arm64","NODE_OPTIONS":""}
+
+ RUN  v4.1.12 <worktree>
+
+stdout | apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx
+Measurement worker {"execArgv":["--experimental-import-meta-resolve","--require","<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/suppress-warnings.cjs","--conditions","node","--conditions","development"],"versions":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"}}
+
+ ↓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > parent renders preserve focused controls and mounted subscriptions
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > shows the Git branch for a development checkout 56ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > keeps showing the package version without a development checkout 23ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'darwin' copies with its primary modifier and ignores the other platform's modifier 33ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'win32' copies with its primary modifier and ignores the other platform's modifier 30ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > focus mode leaves primary+digits to editor chrome without also copying 31ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > single click selects the tile without opening the editor 24ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > double-click opens the editor 28ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the real click→click→dblclick sequence lands in the editor 33ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter on the selected tile opens the editor 22ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter with nothing selected is a no-op 9ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > an arrow key in grid moves the selection (and doesn't open the editor) 10ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the hover Edit CTA opens the editor 12ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: opening Grid default-selects the first visible capture 10ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: selecting a tile updates in place and does not change data-right 10ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: selecting a tile does not open the sidebar or change data-right 18ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: palette copy + ⌘2 use clipboard:copy for the selected tile 16ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > layout toggle still opens the inspector after a closed-sidebar select 14ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned narrow Grid keeps the collapsed spine and default-selects 12ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid at the 480px minimum parks the nav on its spine; the spine peeks, not re-pins 13ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid keeps the pinned nav above the very-narrow tier 15ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Reel sheds the nav at ≤1024 and then the rail at ≤720 35ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a peek opened while auto-collapsed does not outlive the nav re-pinning 21ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a keyboard-opened peek closes when focus leaves the nav 18ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > the Windows in-toolbar menu reserve does not move the column breakpoints 12ms
+
+ Test Files  1 passed (1)
+      Tests  24 passed | 1 skipped (25)
+   Start at  19:51:45
+   Duration  1.70s (transform 605ms, setup 12ms, import 737ms, tests 507ms, environment 330ms)
+
+JSON report written to <worktree>/.local/bytecode-investigation/plain-3.json
+
+=== after no-sparkplug 1 ===
+{"executable":"<nvm>/versions/node/v24.22.0/bin/node","args":["--no-sparkplug","<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/vitest.mjs","run","--config",".local/bytecode-investigation/measurement.config.ts","--project","desktop-renderer","apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx","--testNamePattern","^(?!.*parent renders preserve)","--reporter=verbose","--reporter=json","--outputFile","<worktree>/.local/bytecode-investigation/no-sparkplug-1.json"],"node":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"},"os":"27.2.0","arch":"arm64","NODE_OPTIONS":""}
+
+ RUN  v4.1.12 <worktree>
+
+stdout | apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx
+Measurement worker {"execArgv":["--experimental-import-meta-resolve","--require","<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/suppress-warnings.cjs","--conditions","node","--conditions","development","--no-sparkplug"],"versions":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"}}
+
+ ↓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > parent renders preserve focused controls and mounted subscriptions
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > shows the Git branch for a development checkout 56ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > keeps showing the package version without a development checkout 21ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'darwin' copies with its primary modifier and ignores the other platform's modifier 25ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'win32' copies with its primary modifier and ignores the other platform's modifier 20ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > focus mode leaves primary+digits to editor chrome without also copying 24ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > single click selects the tile without opening the editor 17ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > double-click opens the editor 18ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the real click→click→dblclick sequence lands in the editor 19ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter on the selected tile opens the editor 20ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter with nothing selected is a no-op 8ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > an arrow key in grid moves the selection (and doesn't open the editor) 9ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the hover Edit CTA opens the editor 11ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: opening Grid default-selects the first visible capture 10ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: selecting a tile updates in place and does not change data-right 10ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: selecting a tile does not open the sidebar or change data-right 15ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: palette copy + ⌘2 use clipboard:copy for the selected tile 17ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > layout toggle still opens the inspector after a closed-sidebar select 15ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned narrow Grid keeps the collapsed spine and default-selects 11ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid at the 480px minimum parks the nav on its spine; the spine peeks, not re-pins 12ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid keeps the pinned nav above the very-narrow tier 9ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Reel sheds the nav at ≤1024 and then the rail at ≤720 39ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a peek opened while auto-collapsed does not outlive the nav re-pinning 19ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a keyboard-opened peek closes when focus leaves the nav 15ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > the Windows in-toolbar menu reserve does not move the column breakpoints 16ms
+
+ Test Files  1 passed (1)
+      Tests  24 passed | 1 skipped (25)
+   Start at  19:51:47
+   Duration  1.54s (transform 529ms, setup 11ms, import 644ms, tests 437ms, environment 332ms)
+
+JSON report written to <worktree>/.local/bytecode-investigation/no-sparkplug-1.json
+
+=== after no-sparkplug 2 ===
+{"executable":"<nvm>/versions/node/v24.22.0/bin/node","args":["--no-sparkplug","<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/vitest.mjs","run","--config",".local/bytecode-investigation/measurement.config.ts","--project","desktop-renderer","apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx","--testNamePattern","^(?!.*parent renders preserve)","--reporter=verbose","--reporter=json","--outputFile","<worktree>/.local/bytecode-investigation/no-sparkplug-2.json"],"node":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"},"os":"27.2.0","arch":"arm64","NODE_OPTIONS":""}
+
+ RUN  v4.1.12 <worktree>
+
+stdout | apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx
+Measurement worker {"execArgv":["--experimental-import-meta-resolve","--require","<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/suppress-warnings.cjs","--conditions","node","--conditions","development","--no-sparkplug"],"versions":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"}}
+
+ ↓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > parent renders preserve focused controls and mounted subscriptions
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > shows the Git branch for a development checkout 63ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > keeps showing the package version without a development checkout 29ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'darwin' copies with its primary modifier and ignores the other platform's modifier 25ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'win32' copies with its primary modifier and ignores the other platform's modifier 18ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > focus mode leaves primary+digits to editor chrome without also copying 21ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > single click selects the tile without opening the editor 16ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > double-click opens the editor 20ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the real click→click→dblclick sequence lands in the editor 22ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter on the selected tile opens the editor 16ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter with nothing selected is a no-op 8ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > an arrow key in grid moves the selection (and doesn't open the editor) 11ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the hover Edit CTA opens the editor 11ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: opening Grid default-selects the first visible capture 9ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: selecting a tile updates in place and does not change data-right 11ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: selecting a tile does not open the sidebar or change data-right 19ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: palette copy + ⌘2 use clipboard:copy for the selected tile 16ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > layout toggle still opens the inspector after a closed-sidebar select 13ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned narrow Grid keeps the collapsed spine and default-selects 12ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid at the 480px minimum parks the nav on its spine; the spine peeks, not re-pins 12ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid keeps the pinned nav above the very-narrow tier 14ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Reel sheds the nav at ≤1024 and then the rail at ≤720 33ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a peek opened while auto-collapsed does not outlive the nav re-pinning 19ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a keyboard-opened peek closes when focus leaves the nav 19ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > the Windows in-toolbar menu reserve does not move the column breakpoints 12ms
+
+ Test Files  1 passed (1)
+      Tests  24 passed | 1 skipped (25)
+   Start at  19:51:48
+   Duration  1.58s (transform 537ms, setup 11ms, import 654ms, tests 452ms, environment 337ms)
+
+JSON report written to <worktree>/.local/bytecode-investigation/no-sparkplug-2.json
+
+=== after no-sparkplug 3 ===
+{"executable":"<nvm>/versions/node/v24.22.0/bin/node","args":["--no-sparkplug","<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/vitest.mjs","run","--config",".local/bytecode-investigation/measurement.config.ts","--project","desktop-renderer","apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx","--testNamePattern","^(?!.*parent renders preserve)","--reporter=verbose","--reporter=json","--outputFile","<worktree>/.local/bytecode-investigation/no-sparkplug-3.json"],"node":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"},"os":"27.2.0","arch":"arm64","NODE_OPTIONS":""}
+
+ RUN  v4.1.12 <worktree>
+
+stdout | apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx
+Measurement worker {"execArgv":["--experimental-import-meta-resolve","--require","<worktree>/node_modules/.pnpm/vitest@4.1.12_@types+node@24.19.1_jsdom@29.1.1_@noble+hashes@1.8.0__vite@7.3.7_@types+node@24.19.1_jiti@2.7.0_/node_modules/vitest/suppress-warnings.cjs","--conditions","node","--conditions","development","--no-sparkplug"],"versions":{"node":"24.22.0","acorn":"8.18.0","ada":"4.0.0","amaro":"1.1.11","ares":"1.34.8","brotli":"1.2.0","cldr":"48.0","icu":"78.3","llhttp":"9.4.3","merve":"1.2.2","modules":"137","napi":"10","nbytes":"0.1.4","ncrypto":"0.0.1","nghttp2":"1.70.0","nghttp3":"","ngtcp2":"","openssl":"3.5.8","simdjson":"4.6.11","simdutf":"6.4.0","sqlite":"3.53.4","tz":"2026c","undici":"7.29.1","unicode":"17.0","uv":"1.52.1","uvwasi":"0.0.23","v8":"13.6.233.17-node.57","zlib":"1.3.2.1-motley-285e94b","zstd":"1.5.7"}}
+
+ ↓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > parent renders preserve focused controls and mounted subscriptions
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > shows the Git branch for a development checkout 58ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library runtime footer > keeps showing the package version without a development checkout 21ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'darwin' copies with its primary modifier and ignores the other platform's modifier 26ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > 'win32' copies with its primary modifier and ignores the other platform's modifier 20ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library keyboard shortcuts > focus mode leaves primary+digits to editor chrome without also copying 25ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > single click selects the tile without opening the editor 17ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > double-click opens the editor 19ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the real click→click→dblclick sequence lands in the editor 21ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter on the selected tile opens the editor 21ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > Enter with nothing selected is a no-op 8ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > an arrow key in grid moves the selection (and doesn't open the editor) 10ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid select vs edit > the hover Edit CTA opens the editor 12ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: opening Grid default-selects the first visible capture 9ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned: selecting a tile updates in place and does not change data-right 10ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: selecting a tile does not open the sidebar or change data-right 16ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > unpinned: palette copy + ⌘2 use clipboard:copy for the selected tile 20ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > layout toggle still opens the inspector after a closed-sidebar select 18ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > pinned narrow Grid keeps the collapsed spine and default-selects 12ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid at the 480px minimum parks the nav on its spine; the spine peeks, not re-pins 14ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Grid keeps the pinned nav above the very-narrow tier 11ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > Reel sheds the nav at ≤1024 and then the rail at ≤720 45ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a peek opened while auto-collapsed does not outlive the nav re-pinning 20ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > a keyboard-opened peek closes when focus leaves the nav 15ms
+ ✓ |desktop-renderer| apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx > Library grid selection does not reflow the inspector column > the Windows in-toolbar menu reserve does not move the column breakpoints 17ms
+
+ Test Files  1 passed (1)
+      Tests  24 passed | 1 skipped (25)
+   Start at  19:51:50
+   Duration  1.58s (transform 540ms, setup 10ms, import 657ms, tests 466ms, environment 334ms)
+
+JSON report written to <worktree>/.local/bytecode-investigation/no-sparkplug-3.json

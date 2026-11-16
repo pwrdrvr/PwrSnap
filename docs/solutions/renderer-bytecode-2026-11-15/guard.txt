@@ -1,0 +1,45 @@
+Original Library (exit 1)
+
+ RUN  v4.1.12 <worktree>
+
+apps/desktop/src/renderer/src/features/library/Library.tsx: Library (Vitest-client) 52740 bytes
+apps/desktop/src/renderer/src/features/library/Library.tsx: Library (Vitest-SSR) 52740 bytes
+apps/desktop/src/renderer/src/features/library/Library.tsx: Library (development) 47804 bytes
+apps/desktop/src/renderer/src/features/library/Library.tsx: dd (production) 42426 bytes
+apps/desktop/src/renderer/src/features/region/RegionSelector.tsx: RegionSelector (Vitest-client) 21363 bytes
+apps/desktop/src/renderer/src/features/region/RegionSelector.tsx: RegionSelector (Vitest-SSR) 21363 bytes
+apps/desktop/src/renderer/src/features/region/RegionSelector.tsx: RegionSelector (development) 19373 bytes
+apps/desktop/src/renderer/src/features/region/RegionSelector.tsx: gt (production) 17243 bytes
+apps/desktop/src/renderer/src/features/float-over/FloatOver.tsx: FloatOver (Vitest-client) 15249 bytes
+apps/desktop/src/renderer/src/features/float-over/FloatOver.tsx: FloatOver (Vitest-SSR) 15249 bytes
+apps/desktop/src/renderer/src/features/settings/pages/LocalAgentsPage.tsx: LocalAgentsPage (Vitest-client) 14650 bytes
+apps/desktop/src/renderer/src/features/settings/pages/LocalAgentsPage.tsx: LocalAgentsPage (Vitest-SSR) 14650 bytes
+apps/desktop/src/renderer/src/features/float-over/FloatOver.tsx: FloatOver (development) 13894 bytes
+apps/desktop/src/renderer/src/features/settings/pages/LocalAgentsPage.tsx: LocalAgentsPage (development) 13317 bytes
+apps/desktop/src/renderer/src/features/float-over/FloatOver.tsx: Kn (production) 12360 bytes
+apps/desktop/src/renderer/src/features/library/Library.tsx: Library (Vitest-client) uses 52740 bytes (limit 49152)
+apps/desktop/src/renderer/src/features/library/Library.tsx: Library (Vitest-SSR) uses 52740 bytes (limit 49152)
+2 functions exceed the 49152-byte budget
+
+Split Library (exit 0)
+$ node ./scripts/check-renderer-bytecode.mjs
+Node 24.22.0, V8 13.6.233.17-node.57: function limit 49152, TurboFan limit 61440 bytes
+
+ RUN  v4.1.12 <worktree>
+
+apps/desktop/src/renderer/src/features/library/Library.tsx: useLibraryController (Vitest-client) 24502 bytes
+apps/desktop/src/renderer/src/features/library/Library.tsx: useLibraryController (Vitest-SSR) 24502 bytes
+apps/desktop/src/renderer/src/features/library/Library.tsx: useLibraryController (development) 22435 bytes
+apps/desktop/src/renderer/src/features/library/Library.tsx: za (production) 22421 bytes
+apps/desktop/src/renderer/src/features/region/RegionSelector.tsx: RegionSelector (Vitest-client) 21363 bytes
+apps/desktop/src/renderer/src/features/region/RegionSelector.tsx: RegionSelector (Vitest-SSR) 21363 bytes
+apps/desktop/src/renderer/src/features/library/Library.tsx: renderLibrary (Vitest-client) 20886 bytes
+apps/desktop/src/renderer/src/features/library/Library.tsx: renderLibrary (Vitest-SSR) 20886 bytes
+apps/desktop/src/renderer/src/features/region/RegionSelector.tsx: RegionSelector (development) 19373 bytes
+apps/desktop/src/renderer/src/features/library/Library.tsx: renderLibrary (development) 19199 bytes
+apps/desktop/src/renderer/src/features/region/RegionSelector.tsx: gt (production) 17243 bytes
+apps/desktop/src/renderer/src/features/float-over/FloatOver.tsx: FloatOver (Vitest-client) 15249 bytes
+apps/desktop/src/renderer/src/features/float-over/FloatOver.tsx: FloatOver (Vitest-SSR) 15249 bytes
+apps/desktop/src/renderer/src/features/library/Library.tsx: Bs (production) 14955 bytes
+apps/desktop/src/renderer/src/features/settings/pages/LocalAgentsPage.tsx: LocalAgentsPage (Vitest-client) 14650 bytes
+Renderer bytecode budget passed: 301 modules, 27558 functions

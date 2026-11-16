@@ -831,7 +831,19 @@ export type LibraryProps = {
   readonly shortcutPlatform?: ShortcutPlatform;
 };
 
-export function Library({ shortcutPlatform = rendererShortcutPlatform() }: LibraryProps) {
+export function Library(props: LibraryProps) {
+  const render = useLibraryController(props);
+  return <LibraryView render={render} />;
+}
+
+// Keep this component identity stable so parent renders preserve controls,
+// refs and child effects. React calls it after the controller frame returns:
+// development JSX owner-stack capture is costly inside a large V8 frame.
+function LibraryView({ render }: { render: () => ReactNode }) {
+  return render();
+}
+
+function useLibraryController({ shortcutPlatform = rendererShortcutPlatform() }: LibraryProps) {
   const primaryModifierLabel =
     acceleratorToDisplayKeys("CommandOrControl", shortcutPlatform)[0] ?? "Ctrl";
   const altModifierLabel = acceleratorToDisplayKeys("Alt", shortcutPlatform)[0] ?? "Alt";
@@ -4366,7 +4378,10 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
 
   const leftState = leftEffectivePinned ? "pinned" : leftRevealed ? "peek" : "collapsed";
 
-  return (
+  return renderLibrary;
+
+  function renderLibrary() {
+    return (
     <DuplicateJobsContext.Provider value={duplicateJobStore}>
     <div
       className="psl"
@@ -5811,7 +5826,8 @@ export function Library({ shortcutPlatform = rendererShortcutPlatform() }: Libra
       ) : null}
     </div>
     </DuplicateJobsContext.Provider>
-  );
+    );
+  }
 }
 
 // ── Virtualized day-grouped grid (row-level) ─────────────────────

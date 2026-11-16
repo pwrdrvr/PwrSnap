@@ -214,6 +214,8 @@ jobs:
           cache-inputs: ${{ env.PWRSNAP_DEPENDENCY_CACHE_INPUTS }}
 
       - name: Lint
+        # Includes check:renderer-bytecode: actual renderer transforms must
+        # retain 12 KiB below V8's 60 KiB TurboFan optimization cutoff.
         run: pnpm run lint
 
   build:

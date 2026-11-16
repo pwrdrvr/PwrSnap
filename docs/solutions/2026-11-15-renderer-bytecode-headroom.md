@@ -8,8 +8,11 @@ lint` and CI. Timing is evidence for the Library split, not a test assertion.
 
 Both installed Node 24.22.0 / V8 13.6 and Electron 44.9.3 / V8 15.2 report
 `--max-optimized-bytecode-size=61440` and Sparkplug enabled through
-`--v8-options`. The guard fails above 49,152 bytes, retaining 12 KiB of
-headroom before that TurboFan cutoff. This is compiler eligibility, not a
+`--v8-options`. The guard now fails above **26,624 bytes (26 KiB)**, about
+8.7% above the post-split maximum of 24,502 bytes. The original 49,152-byte
+budget left too much room for functions to grow back toward the costly size;
+the tighter gate retains 34 KiB before the measured TurboFan cutoff.
+The cutoff describes compiler eligibility, not a
 promise that V8 will optimize a function or that an optimized function is fast.
 
 Automatic discovery covered 301 renderer application modules, including
@@ -28,6 +31,9 @@ VideoTimeline (8,411) bytes. These are bytecode measurements, not source sizes.
 
 The [bounded guard logs](renderer-bytecode-2026-11-15/guard.txt) show exit 1
 on the original Library (both Vitest variants) and success on the split.
+Those logs and the evidence JSON capture the initial 48 KiB budget, before
+it was tightened to 26 KiB. A V8 oracle fixture now verifies that a growing
+controller below the old 48 KiB limit is rejected by the tighter gate.
 Its oracle test also injects oversized, uncalled nested and
 anonymous functions alongside an unresolved import and a top-level throw:
 both oversized functions are detected without loading the import or running

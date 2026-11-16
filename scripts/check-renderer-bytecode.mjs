@@ -12,7 +12,9 @@ import { isCliEntrypoint } from "./lib/cli-entrypoint.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = resolve(import.meta.dirname, "..");
-export const bytecodeBudget = 48 * 1024;
+// Post-split maximum: 24,502 bytes. Keep growth near that measured size,
+// rather than allowing functions to approach the old 48 KiB guard again.
+export const bytecodeBudget = 26 * 1024;
 
 export function rendererModules(root = repoRoot, discover = globSync) {
   return discover("apps/desktop/src/renderer/src/**/*.{ts,tsx,js,jsx,mjs}", { cwd: root })

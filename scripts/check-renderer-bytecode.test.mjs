@@ -64,6 +64,18 @@ test("the budget includes its boundary and rejects invalid measurements", () => 
   expect(overBudget(records)).toEqual(records.slice(2));
 });
 
+test("the growth gate rejects a controller well below the former 48 KiB budget", async () => {
+  const body = Array.from({ length: 2200 }, (_, index) => `sink(${index});`).join("\n");
+  const records = await measureModules([{
+    file: "controller-growth.js", variant: "Vitest-client",
+    code: wrapModule(`globalThis.controller = function growingController() { const sink = globalThis.sink; ${body} };`)
+  }]);
+  const controller = records.find((record) => record.name === "growingController");
+  expect(controller).toBeDefined();
+  expect(controller.bytes).toBeLessThan(48 * 1024);
+  expect(overBudget(records)).toContainEqual(controller);
+});
+
 test("automatic discovery includes new hooks and modules without checking their export names", () => {
   const root = mkdtempSync(join(tmpdir(), "pwrsnap-bytecode-discovery-"));
   try {

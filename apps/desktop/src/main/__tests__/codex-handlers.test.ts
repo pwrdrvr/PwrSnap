@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { readFileSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -543,7 +543,8 @@ describe("Codex handlers", () => {
       const images = respond.args.flatMap((arg, i) => (arg === "--image" ? [respond.args[i + 1]] : []));
       expect(images).toHaveLength(1);
       // An app-prepared bounded copy, never the capture's own file.
-      expect(images[0]).toMatch(/^\//);
+      // Absolute on every platform (a Windows path starts with a drive).
+      expect(isAbsolute(images[0] ?? "")).toBe(true);
       expect(images[0]).not.toContain(tempRoot);
       expect(respond.stdin).toContain("Capture metadata:");
 

@@ -30,7 +30,10 @@ becomes the new source identity. The pin file contains a concrete blocker,
 not invented digests; both prepare jobs reject it before signing approval.
 Do not merge the consumer until publication and digest review are complete.
 
-The producer first requires repository immutable releases to be enabled. It
+The producer first requires repository immutable releases to be enabled and a
+repository-scoped `FFMPEG_IMMUTABILITY_READ_TOKEN` secret with
+Administration:read only. The settings API requires that permission; the
+normal workflow token handles build reads and publication separately. It
 validates successful owned `build.yml` run/attempt/commit provenance and both
 platform outputs, creates a draft at that exact commit, uploads all assets,
 checks API digests, then publishes immutable, non-Latest dependency assets.

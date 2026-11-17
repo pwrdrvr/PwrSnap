@@ -309,6 +309,7 @@ it("revalidates target changes, keeps installed runtimes usable offline, and rep
   expect(readFileSync(join(opts.electronDir, "electron.d.ts"), "utf8")).toBe("// fixture types\n");
 });
 
+// Three ZIP creations and three extractions launch PowerShell on Windows.
 it("separates versions and archive digests, rejecting unverified artifacts without damaging an install", async () => {
   const first = fixture("44.9.3", randomBytes(8192));
   const second = fixture("44.10.1", randomBytes(8192));
@@ -323,7 +324,7 @@ it("separates versions and archive digests, rejecting unverified artifacts witho
   expect(readFileSync(join(opts.electronDir, "dist/version"), "utf8")).toBe(second.version);
   expect(readFileSync(join(opts.electronDir, "dist/electron"))).toEqual(third.bytes);
   expect(readdirSync(opts.cacheRoot).filter((name) => /^[a-f0-9]{64}$/.test(name))).toHaveLength(3);
-});
+}, 60_000);
 
 it("uses isolated extraction when the cache is unavailable and releases the lock after errors", async () => {
   const setup = fixture("44.10.1", randomBytes(8192));

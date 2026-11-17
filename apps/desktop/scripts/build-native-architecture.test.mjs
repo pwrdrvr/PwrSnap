@@ -24,13 +24,13 @@ function mcpBuildArgs(universal) {
   `, buildNative], { env, encoding: "utf8" }));
 }
 
-it("native setup builds for the host unless universal staging is explicitly requested", () => {
+it("explicit native builds target the host unless universal staging is requested", () => {
   // Model: only the release opt-in may request cross compilation. Exercise
   // absent, enabled, misleading truthy values and generated environment text.
   const assertMode = (universal) => {
     const args = mcpBuildArgs(universal);
     expect(args[0]).toMatch(/[/\\]build-mcp\.mjs$/);
-    expect(args.slice(1)).toEqual(universal === "1" ? [] : ["--host", "--allow-missing-cargo"]);
+    expect(args.slice(1)).toEqual(universal === "1" ? [] : ["--host"]);
   };
   for (const mode of [undefined, "", "0", "1", "true"]) assertMode(mode);
   fc.assert(fc.property(fc.string({ maxLength: 12 }), assertMode), { numRuns: 25 });

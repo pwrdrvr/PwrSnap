@@ -5,23 +5,15 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveRustEnvironment } from "../../../scripts/lib/rust-environment.mjs";
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const manifest = join(root, "crates/pwrsnap-mcp/Cargo.toml");
 const output = join(root, "apps/desktop/build/mcp");
-// Local native setup can finish without Rust. Explicit MCP/app builds, CI and
-// release staging stay strict so they cannot ship a missing or stale helper.
-const allowMissingCargo = process.argv.includes("--allow-missing-cargo")
-  && process.argv.includes("--host")
-  && !process.env.CI
-  && process.env.PWRSNAP_NATIVE_UNIVERSAL !== "1";
+const rust = resolveRustEnvironment({ cwd: root });
+if (!rust) throw new Error("Cargo is unavailable. Install Rust or add its toolchain to PATH, then run pnpm build:native.");
 function run(command, args) {
-  const result = spawnSync(command, args, { cwd: root, stdio: "inherit", env: process.env });
-  if (command === "cargo" && result.error?.code === "ENOENT" && allowMissingCargo) {
-    console.warn("[build-mcp] WARNING: cargo was not found on PATH; skipping the Rust MCP helper. " +
-      "Native setup will continue, but MCP transport requires a built helper. " +
-      "Install Rust or add Cargo to PATH, then run pnpm --filter @pwrsnap/desktop build:mcp --host.");
-    process.exit(0);
-  }
+  const resolved = command === "cargo" ? rust.cargo : command === "rustup" ? rust.rustup ?? command : command;
+  const result = spawnSync(resolved, args, { cwd: root, stdio: "inherit", env: rust.env });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`${command} failed (${result.status})`);
 }

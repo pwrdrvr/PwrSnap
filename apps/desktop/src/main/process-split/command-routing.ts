@@ -84,6 +84,7 @@ const PREFIX_OWNERS: ReadonlyArray<readonly [string, CommandOwner]> = [
   ["permissions:", "agent"],
   ["acp:", "agent"],
   ["customModels:", "agent"],
+  ["appleFm:", "agent"],
   ["codex:", "agent"],
   ["app:update:", "agent"],
   // Library: everything that renders, edits, or organizes captures in

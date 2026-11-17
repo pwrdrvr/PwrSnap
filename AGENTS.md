@@ -13,8 +13,9 @@
 - Shipped-behavior references live at the top level of `docs/` — the release
   runbook, the Windows guide and signing doc, the ffmpeg build reference, the
   third-party license notices doc, the
-  [third-party agent connection guide](docs/mcp-third-party-agents.md), and
-  the [Linux tray support statement](docs/linux-tray-support.md).
+  [third-party agent connection guide](docs/mcp-third-party-agents.md), the
+  [Linux tray support statement](docs/linux-tray-support.md), and the
+  [on-device Apple captions reference](docs/apple-intelligence-captions.md).
 - Two documents that began as plans survive as living references, because
   each is the only written statement of something still true: the
   [bundle format spec](docs/architecture-bundle-format.md) and the
@@ -292,7 +293,10 @@ warns in the job summary that CI will not re-run.
 
 ## AI backends: installed agents and custom direct APIs
 
-Built-in Codex/ACP paths remain agent clients. User-configured direct API
+Built-in Codex/ACP paths remain agent clients. On macOS 27, captions can also
+run on Apple's on-device model through a fixed `fm` command line (see
+"Apple's on-device model runs through a fixed fm command line" below); it is
+selected as `apple:system`, for captions only. User-configured direct API
 connections additionally call OpenAI Responses, OpenAI-compatible Chat
 Completions, or Anthropic Messages from main, without an agent or proxy. This is
 the explicit exception to the former agent-only rule. See `docs/architecture.md`
@@ -549,6 +553,77 @@ had a test asserting exactly that — but the test covered
 pointing into `~/Documents/PwrSnap`. The doc and the test agreed with each
 other and both disagreed with what shipped. When you pin a security
 property, pin the production wiring, not the default.
+
+## Apple's on-device model runs through a fixed fm command line
+
+**Captions on Apple's on-device model go through `/usr/bin/fm` with an argv
+PwrSnap builds, and through nothing else. The model gets no tool, no second
+destination and no state that outlives the run; PwrSnap never agrees to
+Apple's terms or changes fm's configuration; and a failure never moves the
+capture to another provider.** Owners:
+[fm-cli.ts](apps/desktop/src/main/ai/apple-fm/fm-cli.ts) (the spawn site and
+its argv rules), [status.ts](apps/desktop/src/main/ai/apple-fm/status.ts) (what
+macOS reports) and
+[enrichment.ts](apps/desktop/src/main/ai/apple-fm/enrichment.ts) (one run).
+Pinned by their tests under `apps/desktop/src/main/ai/apple-fm/__tests__/` and
+by the "on-device Apple enrichment" cases in
+[codex-handlers.test.ts](apps/desktop/src/main/__tests__/codex-handlers.test.ts),
+which drive the production handler. User-facing reference:
+[docs/apple-intelligence-captions.md](docs/apple-intelligence-captions.md).
+
+This is a third enrichment posture beside Codex and ACP. It has no agent
+sandbox to configure, because there is no agent: `fm respond` is one model
+turn with no tool unless `--tool` is passed. What keeps it inside the
+contract is therefore the command line.
+
+- **`assertAppleFmArgs` runs at the spawn site, for every call.** It allows
+  four commands (`respond`, `models`, `license --status`, `config get`) and
+  refuses `--tool`, `--model-provider`, `--model-provider-header`, `--resume`,
+  `--save-transcript`, `--guardrails` and the `serve` flags. Do not add a
+  caller that bypasses `runAppleFm`, and do not loosen the list to make a
+  feature work: `--tool ocr` is exactly a tool on the enrichment path.
+- **`--model system`, always explicit, exactly once.** `pcc` is Apple's cloud
+  model and leaves the Mac. The tool also has a user-level default model
+  provider (`~/.fm/config.json`) that can be a network endpoint, and it
+  ignores `HOME`, so that file cannot be isolated. Whether `--model system`
+  overrides a configured provider could not be measured without changing the
+  operator's setup, so the run is refused while one is set
+  (`provider-override`), **per run**, not from the cached status.
+- **The binary is the absolute path, never a `PATH` lookup.** `/usr/bin` is on
+  the sealed system volume; a `fm` earlier on `PATH` is not.
+- **Capture metadata travels on stdin.** It holds the source app and the
+  user's tags; argv is visible to other processes. Images are the app-prepared
+  bounded copies, passed as absolute paths.
+- **The child gets `appleFmEnv()`, not the app's environment**, and the
+  scratch jail as its cwd.
+- **The file being there is not readiness.** `/usr/bin/fm` ships on Macs that
+  cannot run the model. `ready` means `fm models` showed `✓ system`, the terms
+  are agreed, and no default provider is set. `fm models` exits 1 whenever any
+  model is unavailable, the cloud one included, so its exit status is ignored.
+- **A sentence this build does not recognise is `unavailable`, verbatim.**
+  The states are classified from the tool's own sentences. Do not add a guess
+  for an unknown one.
+- **`AppleFmError` is not a fallback trigger.** `isEnrichmentBackendUnavailable`
+  does not accept it, on purpose: a refusal by Apple's safety checks, missing
+  terms or a model still downloading is something the operator should see
+  (see "AI backends" above on not widening the trigger set).
+- **Nothing polls, and nothing probes for a user who did not choose it.** The
+  status is read when its Settings screen asks, or while captions are set to
+  it. "Check again" forces a re-read; a setup-related run failure invalidates
+  the cache.
+- **The agent prompt is shipped text that another agent will act on.** It may
+  name only commands the tool documents itself plus read-only system ones,
+  must tell the agent not to agree to Apple's terms, install, change settings
+  or bypass a protection, and quotes macOS's sentence through
+  `quotableAppleFmDetail` so quoted text cannot read as a command. Pinned by
+  [apple-fm.test.ts](packages/shared/src/__tests__/apple-fm.test.ts).
+- **Unit tests never run the model.** `apple-fm-real.test.ts` does, on a
+  synthetic image, and only under `PWRSNAP_APPLE_FM_REAL=1`.
+
+The framework route (a Swift helper on FoundationModels) cannot ship image
+input from the `macos-26` runners, and Apple's terms for the tool leave
+application use unsettled. Both, with the measurements:
+[docs/solutions/2026-11-17-apple-fm-cli-captions-feasibility.md](docs/solutions/2026-11-17-apple-fm-cli-captions-feasibility.md).
 
 ## Only the operator's re-run is exempt from the enrichment budget
 

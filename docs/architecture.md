@@ -433,10 +433,35 @@ sends app-prepared image bytes and validates the same structured result as the
 agent paths. The model cannot execute code, read paths, call tools, or select
 additional network destinations: only main's fixed inference request is made.
 
+On macOS 27 and later, captions can instead run on Apple's on-device
+Foundation Model, selected as `apple:system`. It is a caption backend only:
+`settings:write` refuses it for the chat surfaces, and it has no model choice,
+effort or usage accounting. Main reaches the model through `/usr/bin/fm`, the
+command-line tool macOS ships, because the framework's image-input API needs a
+macOS 27 SDK that the release runners do not have. Each run is one
+`fm respond` with an app-built argv: the on-device model named explicitly, the
+shared enrichment instructions and schema, the app-prepared bounded image as
+an absolute path, and the capture's metadata on stdin. No tool flag, model
+provider, transcript or cloud model is ever passed, and the run is refused
+while the user's own fm configuration names a default model provider. Runs
+queue one at a time.
+
+Readiness is what macOS reports, never the tool's presence: terms agreed, no
+default provider configured, and the system model listed as available. Each
+other answer is a distinct state (needs macOS 27, terms not agreed, model not
+ready, Apple Intelligence off, device not eligible, an unrecognised reason
+shown verbatim). Settings explains the state and offers a prompt for the
+user's own agent; PwrSnap only reads, and never agrees to Apple's terms or
+changes fm's configuration. The status is read on request and cached with no
+timer. A failure, including a refusal by Apple's safety checks, fails the run
+and is never a caption-fallback trigger. The provider is absent on Windows and
+Linux. [The shipped reference](apple-intelligence-captions.md) covers setup.
+
 **Capture enrichment is a jailed, unattended path.** A screenshot is
 untrusted input that can carry text engineered to steer a model. Enrichment
 runs with no tools, no model-initiated network, no filesystem beyond the
-agent scratch jail (or bounded image bytes for direct APIs), no inherited
+agent scratch jail (or bounded image bytes for direct APIs and the on-device
+model), no inherited
 Codex lifecycle hooks or notification commands, and no UI to
 approve anything — enforced in the transport, not the prompt. This is
 the most security-sensitive surface in the app; AGENTS.md §"Capture

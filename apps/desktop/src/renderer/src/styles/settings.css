@@ -3379,3 +3379,98 @@ a.pss__top-btn[aria-disabled="true"]:hover {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
+
+/* ── AI Providers › Apple Intelligence ─────────────────────────────────────
+   The on-device model's status block, its copyable agent prompt and its
+   plain lists. Tone follows the sidebar dot: grey for a Mac that cannot run
+   it, amber for a missing step, red once captions depend on it. */
+.pss__afm-status {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+}
+.pss__afm-status.is-ok { border-color: var(--success-border); }
+.pss__afm-status.is-warn { border-color: var(--warn-border); }
+.pss__afm-status.is-bad { border-color: var(--danger-border); }
+.pss__afm-status-hdr {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.pss__afm-status-title {
+  flex: 1;
+  min-width: 0;
+  font: 600 13px/1.35 var(--font-sans);
+  color: var(--text-primary);
+}
+.pss__afm-status-body {
+  margin: 0;
+  font: 400 12px/1.5 var(--font-sans);
+  color: var(--text-secondary);
+  text-wrap: pretty;
+}
+.pss__afm-status-said {
+  margin: 0;
+  font: 500 11.5px/1.45 var(--font-mono);
+  color: var(--text-secondary);
+  user-select: text;
+  -webkit-user-select: text;
+  overflow-wrap: anywhere;
+}
+.pss__afm-status-said > span { color: var(--text-muted); }
+.pss__afm-checked {
+  font: 400 11px/1.3 var(--font-mono);
+  color: var(--text-muted);
+}
+.pss__afm-adopt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.pss__afm-note {
+  font: 400 11.5px/1.45 var(--font-sans);
+  color: var(--text-muted);
+  text-wrap: pretty;
+}
+.pss__afm-facts,
+.pss__afm-links {
+  margin: 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font: 400 12px/1.5 var(--font-sans);
+  color: var(--text-secondary);
+}
+.pss__afm-facts > li > b { color: var(--text-primary); font-weight: 600; }
+.pss__afm-links { list-style: none; padding-left: 0; }
+.pss__afm-prompt {
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--bg-input);
+  overflow: hidden;
+}
+.pss__afm-prompt-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 8px 8px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-panel-elevated);
+  font: 600 12px/1.3 var(--font-sans);
+  color: var(--text-primary);
+}
+/* The prompt is read and copied whole, so it wraps and never scrolls. */
+.pss__afm-prompt-text {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-secondary);
+}

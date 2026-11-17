@@ -13,10 +13,13 @@
 // bus, the window factory and electron-updater into a file whose whole
 // job is one string predicate, and into every test of it.
 
+import { APPLE_FM_LINK_URLS } from "@pwrsnap/shared";
+
 /** URLs PwrSnap is allowed to open in the user's default browser. Keeps
  *  `shell.openExternal` from becoming an arbitrary-navigation gadget: a
  *  compromised/buggy renderer can only reach the product site, the docs
- *  site, PwrDrvr's own GitHub org, and the Codex release index. https-only. GitHub is scoped to
+ *  site, PwrDrvr's own GitHub org, the Codex release index, and three exact
+ *  Apple pages about the on-device model. https-only. GitHub is scoped to
  *  the `/pwrdrvr/*` path so an attacker can't bounce the user to an
  *  arbitrary repo/gist/profile under the (trusted) github.com host. */
 export function isAllowedExternalUrl(raw: string): boolean {
@@ -29,6 +32,10 @@ export function isAllowedExternalUrl(raw: string): boolean {
   if (url.protocol !== "https:") return false;
   const host = url.hostname.toLowerCase();
   if (host === "pwrsnap.com" || host.endsWith(".pwrsnap.com")) return true;
+  // Apple's own pages on the on-device model, linked from Settings → AI
+  // Providers → Apple Intelligence. Exact URLs only: neither Apple host is
+  // opened for anything else.
+  if (APPLE_FM_LINK_URLS.includes(raw)) return true;
   if (host === "github.com") {
     // Codex upgrade help links to this one upstream release index only.
     if (url.pathname === "/openai/codex/releases" && !url.search && !url.hash) return true;

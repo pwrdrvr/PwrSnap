@@ -174,6 +174,7 @@ import { useSurfaceCopyShortcuts } from "../shared/useSurfaceCopyShortcuts";
 import { AiConsentDialog } from "../shared/AiConsentDialog";
 import { enrichmentBackendLabel } from "../shared/CodexStatusPill";
 import { isEnrichmentProviderAvailable } from "../shared/enrichment-provider-availability";
+import { useAppleFmStatusWhenSelected } from "../shared/useAppleFmStatus";
 // Thumb (synthetic per-app gradient) is the fallback for the empty
 // state and for fixture rows in dev. Real captures render via
 // <img src="pwrsnap-cache://"> through CellThumb below.
@@ -1177,15 +1178,17 @@ function useLibraryController({ shortcutPlatform = rendererShortcutPlatform() }:
     [enrichmentProvider, customModels]
   );
 
+  const appleFm = useAppleFmStatusWhenSelected(enrichmentProvider);
   const enrichmentProviderAvailable = useMemo(
     () =>
       isEnrichmentProviderAvailable({
         provider: enrichmentProvider,
         customModels,
         codexAvailable,
-        acpDiscovery
+        acpDiscovery,
+        appleFm
       }),
-    [enrichmentProvider, codexAvailable, acpDiscovery, customModels]
+    [enrichmentProvider, codexAvailable, acpDiscovery, customModels, appleFm]
   );
 
   useEffect(() => {

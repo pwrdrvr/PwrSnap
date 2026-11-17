@@ -1,4 +1,4 @@
-import type { AiUsageCostEstimate, AiUsageTokenBreakdown } from "@pwrsnap/shared";
+import { isAppleFmProvider, type AiUsageCostEstimate, type AiUsageTokenBreakdown } from "@pwrsnap/shared";
 import {
   AI_PRICING_CATALOG_VERSION,
   entryToRateSnapshot,
@@ -11,6 +11,7 @@ export function estimateAiUsageCost(input: {
   serviceTier: string | null;
   tokens: AiUsageTokenBreakdown | null;
 }): AiUsageCostEstimate {
+  if (isAppleFmProvider(input.provider)) return { status: "unavailable", reason: "The on-device model is not billed" };
   if (input.provider?.startsWith("custom:")) return { status: "unavailable", reason: "Custom endpoint pricing is not configured" };
   if (input.tokens === null) {
     return { status: "unavailable", reason: "usage unavailable" };

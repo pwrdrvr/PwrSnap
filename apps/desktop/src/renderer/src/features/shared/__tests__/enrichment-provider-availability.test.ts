@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import type { AcpAgentDiscovery } from "@pwrsnap/shared";
+import { APPLE_FM_STATES, type AcpAgentDiscovery, type AppleFmState, type AppleFmStatus } from "@pwrsnap/shared";
 import { isEnrichmentProviderAvailable } from "../enrichment-provider-availability";
 
 function discovery(
@@ -104,6 +104,38 @@ describe("isEnrichmentProviderAvailable", () => {
           acpDiscovery: undefined
         })
       ).toBeUndefined();
+    });
+  });
+
+  describe("Apple's on-device model", () => {
+    const status = (state: AppleFmState): AppleFmStatus => ({
+      state, modelLabel: null, detail: null, macosVersion: "27.2", checkedAt: 0
+    });
+
+    test("unknown until macOS has answered, so nothing flashes Configure AI", () => {
+      expect(
+        isEnrichmentProviderAvailable({ provider: "apple:system", codexAvailable: true, acpDiscovery: undefined })
+      ).toBeUndefined();
+    });
+
+    test("property: available exactly when macOS says ready, whatever Codex is doing", () => {
+      for (const state of APPLE_FM_STATES) {
+        for (const codexAvailable of [true, false, undefined]) {
+          expect(
+            isEnrichmentProviderAvailable({
+              provider: "apple:system", codexAvailable, acpDiscovery: undefined, appleFm: status(state)
+            })
+          ).toBe(state === "ready");
+        }
+      }
+    });
+
+    test("a status for the on-device model never makes another provider available", () => {
+      expect(
+        isEnrichmentProviderAvailable({
+          provider: "", codexAvailable: false, acpDiscovery: undefined, appleFm: status("ready")
+        })
+      ).toBe(false);
     });
   });
 });

@@ -69,6 +69,7 @@ import {
 import type { VideoCopyShortcutRequest } from "../shared/VideoExportPresetsPanel";
 import { enrichmentBackendLabel, enrichmentRunBackend } from "../shared/CodexStatusPill";
 import { isEnrichmentProviderAvailable } from "../shared/enrichment-provider-availability";
+import { useAppleFmStatusWhenSelected } from "../shared/useAppleFmStatus";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { useSurfaceCopyShortcuts } from "../shared/useSurfaceCopyShortcuts";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
@@ -312,11 +313,14 @@ export function FloatOverHost({
   const activeCaptureRefreshSequenceRef = useRef(0);
   if (state.kind === "loaded" && state.settings !== null) lastSettingsRef.current = state.settings;
   const loadedSettings = state.kind === "loaded" ? state.settings : null;
+  // Asked only while captions are set to the on-device model.
+  const appleFm = useAppleFmStatusWhenSelected(loadedSettings?.ai.defaults.enrichment.provider);
   const enrichmentProviderAvailable = isEnrichmentProviderAvailable({
     provider: loadedSettings?.ai.defaults.enrichment.provider,
     customModels: loadedSettings?.ai.customModels,
     codexAvailable,
-    acpDiscovery
+    acpDiscovery,
+    appleFm
   });
   aiWillRunRef.current =
     loadedSettings !== null &&

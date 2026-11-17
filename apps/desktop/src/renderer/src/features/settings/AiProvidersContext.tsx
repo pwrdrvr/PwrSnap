@@ -34,10 +34,12 @@ import {
 import type {
   AcpAgentDiscovery,
   AcpAgentModelOption,
+  AppleFmStatus,
   DesktopCodexDiscoverySnapshot
 } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
 import {
+  appleFmInUse,
   describeAiProviders,
   enabledAcpAgentIdsForModelProbes,
   type AiProviderStatus
@@ -59,6 +61,12 @@ export type AiProvidersValue = {
   acpModelErrors: Readonly<Record<string, string | undefined>>;
   acpModelsLoadingIds: readonly string[];
   fetchAcpModels: (agentId: string, refresh?: boolean) => Promise<void>;
+  /** What macOS reports about Apple's on-device model. Null until the first
+   *  read lands; a state of "unsupported-platform" means "not a Mac". */
+  appleFm: AppleFmStatus | null;
+  appleFmLoading: boolean;
+  /** `force` asks macOS again; otherwise main may answer from its cache. */
+  refreshAppleFm: (force?: boolean) => Promise<void>;
   /** Every provider's status, in sidebar order. */
   statuses: readonly AiProviderStatus[];
   /** Every Direct API connection's status, in sidebar order. Read from
@@ -79,6 +87,8 @@ export function AiProvidersProvider({ children }: { children: ReactNode }): Reac
   const [acpModels, setAcpModels] = useState<Record<string, readonly AcpAgentModelOption[]>>({});
   const [acpModelErrors, setAcpModelErrors] = useState<Record<string, string | undefined>>({});
   const [acpModelsLoadingIds, setAcpModelsLoadingIds] = useState<readonly string[]>([]);
+  const [appleFm, setAppleFm] = useState<AppleFmStatus | null>(null);
+  const [appleFmLoading, setAppleFmLoading] = useState<boolean>(false);
 
   // Last-issued-wins. Two reads overlap routinely (Pin writes settings, which
   // triggers the dependency re-read below, then asks for a forced one), and
@@ -113,6 +123,19 @@ export function AiProvidersProvider({ children }: { children: ReactNode }): Reac
     setAcpDiscoveryLoading(false);
   }, []);
 
+  // Last-issued-wins, like the reads above: "Check again" can overlap the
+  // first read. A failed read keeps the previous answer rather than blanking
+  // the row.
+  const appleFmSeq = useRef<number>(0);
+  const refreshAppleFm = useCallback(async (force = false): Promise<void> => {
+    const seq = ++appleFmSeq.current;
+    setAppleFmLoading(true);
+    const result = await dispatch("appleFm:status", { force });
+    if (seq !== appleFmSeq.current) return;
+    if (result.ok) setAppleFm(result.value);
+    setAppleFmLoading(false);
+  }, []);
+
   // Per agent, last-issued-wins like the reads above: the page's first-pass
   // probe and a Refresh overlap routinely. An older probe settling last must
   // not overwrite the newer answer, nor clear the loading flag the newer
@@ -145,7 +168,8 @@ export function AiProvidersProvider({ children }: { children: ReactNode }): Reac
     requestedRef.current = true;
     void refreshCodexSnapshot(false);
     void refreshAcpDiscovery(false);
-  }, [refreshCodexSnapshot, refreshAcpDiscovery]);
+    void refreshAppleFm(false);
+  }, [refreshCodexSnapshot, refreshAcpDiscovery, refreshAppleFm]);
 
   // Re-read when a setting that discovery depends on changes — Codex mode /
   // pinned path / profile, or an agent's enablement / picked install /
@@ -189,6 +213,7 @@ export function AiProvidersProvider({ children }: { children: ReactNode }): Reac
 
   const enabledAgentIds = settings?.ai.acp.enabledAgentIds;
   const openaiKey = secrets?.openaiApiKey ?? null;
+  const appleFmUsed = appleFmInUse(settings);
   const statuses = useMemo(
     () =>
       describeAiProviders({
@@ -198,7 +223,9 @@ export function AiProvidersProvider({ children }: { children: ReactNode }): Reac
         acpDiscoveryLoading,
         enabledAgentIds: enabledAgentIds ?? [],
         acpModelErrors,
-        openaiKey
+        openaiKey,
+        appleFm,
+        appleFmInUse: appleFmUsed
       }),
     [
       codexSnapshot,
@@ -207,7 +234,9 @@ export function AiProvidersProvider({ children }: { children: ReactNode }): Reac
       acpDiscoveryLoading,
       enabledAgentIds,
       acpModelErrors,
-      openaiKey
+      openaiKey,
+      appleFm,
+      appleFmUsed
     ]
   );
 
@@ -227,6 +256,9 @@ export function AiProvidersProvider({ children }: { children: ReactNode }): Reac
       acpModelErrors,
       acpModelsLoadingIds,
       fetchAcpModels,
+      appleFm,
+      appleFmLoading,
+      refreshAppleFm,
       statuses,
       connections
     }),
@@ -243,6 +275,9 @@ export function AiProvidersProvider({ children }: { children: ReactNode }): Reac
       acpModelErrors,
       acpModelsLoadingIds,
       fetchAcpModels,
+      appleFm,
+      appleFmLoading,
+      refreshAppleFm,
       statuses,
       connections
     ]

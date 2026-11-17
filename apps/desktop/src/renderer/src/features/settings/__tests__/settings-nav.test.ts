@@ -4,7 +4,8 @@
 // link leap to the top and then scroll all the way back down.
 
 import { describe, expect, test } from "vitest";
-import { paneScrollForRoute, type PaneRoute } from "../settings-nav";
+import type { AiProviderStatus } from "../ai-provider-status";
+import { paneScrollForRoute, settingsNavChildren, type PaneRoute } from "../settings-nav";
 
 function route(page: PaneRoute["page"], sub: string | null = null, request = 0): PaneRoute {
   return { page, sub, request };
@@ -31,5 +32,30 @@ describe("paneScrollForRoute", () => {
     ["a re-click of a plain page", route("hotkeys"), route("hotkeys", null, 1), "none"]
   ])("%s", (_label, prev, next, expected) => {
     expect(paneScrollForRoute(prev, next)).toBe(expected);
+  });
+});
+
+describe("settingsNavChildren — AI Providers", () => {
+  const provider = (sub: AiProviderStatus["sub"], label: string): AiProviderStatus => ({
+    sub, label, badge: "Ready", meta: "", tone: "ok"
+  });
+
+  test("the on-device model sits under its own heading, between the agents and Direct API", () => {
+    const children = settingsNavChildren("ai", [
+      provider("codex", "Codex"),
+      provider("openai", "OpenAI voiceover"),
+      provider("apple", "Apple Intelligence")
+    ]);
+    expect(children.map((child) => [child.label, child.heading])).toEqual([
+      ["Codex", undefined],
+      ["OpenAI voiceover", undefined],
+      ["Apple Intelligence", "On this Mac"],
+      ["Add connection", "Direct API"]
+    ]);
+  });
+
+  test("without it (Windows, Linux) there is no such heading", () => {
+    const children = settingsNavChildren("ai", [provider("codex", "Codex")]);
+    expect(children.some((child) => child.heading === "On this Mac")).toBe(false);
   });
 });

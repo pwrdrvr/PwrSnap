@@ -1,5 +1,6 @@
 import { mcpExecutablePath, quoteMcpExecutable } from "../ai/mcp/mcp-executable";
 import { registerCustomModelHandlers } from "./custom-model-handlers";
+import { registerAppleFmHandlers } from "./apple-fm-handlers";
 // Lazy module-level singletons because `app.getPath("userData")` is
 // unavailable at module load (tests mock `electron` without an app
 // instance, production hasn't fired `app.whenReady()` yet). Every
@@ -380,6 +381,7 @@ export function registerSettingsDataHandlers(options: {
     hotkeyRegistrationManager = options.hotkeyRegistrationManager;
   }
   registerCustomModelHandlers();
+  registerAppleFmHandlers();
   bus.register("settings:read", async () => {
     // E2E-only fault injection: hold EVERY settings:read dispatched
     // while the env var is set (there is deliberately no first-read

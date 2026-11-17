@@ -1,4 +1,4 @@
-import type { AcpAgentDiscovery, CustomModel } from "@pwrsnap/shared";
+import { isAppleFmProvider, type AcpAgentDiscovery, type AppleFmStatus, type CustomModel } from "@pwrsnap/shared";
 
 /**
  * Whether the enrichment backend the user selected in Settings → AI can
@@ -13,6 +13,9 @@ import type { AcpAgentDiscovery, CustomModel } from "@pwrsnap/shared";
  *     (`codexAvailable`: resolved path + authenticated).
  *   - "acp:<id>"   → a local ACP agent. Availability is whether `acp:discover`
  *     reports that agent INSTALLED.
+ *   - "apple:system" → Apple's on-device model. Availability is what macOS
+ *     reports (`appleFm:status`), never the fm tool merely existing: it ships
+ *     on Macs that cannot run the model.
  *
  * We key the ACP case off INSTALL state, not the enabled set, because the
  * enrichment runtime routes on the provider string alone (`enrichmentAcpAgentId`
@@ -30,8 +33,12 @@ export function isEnrichmentProviderAvailable(params: {
   customModels?: readonly CustomModel[] | undefined;
   codexAvailable: boolean | undefined;
   acpDiscovery: AcpAgentDiscovery | undefined;
+  appleFm?: AppleFmStatus | undefined;
 }): boolean | undefined {
   const provider = params.provider ?? "";
+  if (isAppleFmProvider(provider)) {
+    return params.appleFm === undefined ? undefined : params.appleFm.state === "ready";
+  }
   if (provider.startsWith("custom:")) return params.customModels?.some((m) => `custom:${m.id}` === provider && m.capabilities.vision === true) ?? false;
   if (!provider.startsWith("acp:")) {
     return params.codexAvailable;

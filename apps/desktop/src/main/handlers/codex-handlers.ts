@@ -1,4 +1,12 @@
 import { DirectEnrichmentBackend } from "../ai/direct-api/enrichment";
+import {
+  APPLE_FM_ENRICHMENT_TIMEOUT_MS,
+  APPLE_FM_QUEUE_CONCURRENCY,
+  APPLE_FM_QUEUE_LANE,
+  AppleFmEnrichmentBackend,
+  AppleFmError
+} from "../ai/apple-fm/enrichment";
+import { getAppleFmStatusService } from "../ai/apple-fm/service";
 import { DirectApiError } from "../ai/direct-api/transport";
 import { EnrichmentQueue, DIRECT_ENRICHMENT_TIMEOUT_MS } from "../ai/direct-api/enrichment-queue";
 import { getCustomModelService } from "./custom-model-handlers";
@@ -21,7 +29,11 @@ import {
   resolveManagedCodexEnrichmentModel,
   resolveCustomModel,
   err,
-  ok
+  ok,
+  APPLE_FM_DISPLAY_NAME,
+  APPLE_FM_MODEL_ID,
+  APPLE_FM_PROVIDER,
+  isAppleFmProvider
 } from "@pwrsnap/shared";
 import type {
   AiEnrichmentBudgetStatus,
@@ -399,9 +411,11 @@ export function withUsageModelLabels(
   // can serve the same ID under different user-chosen names.
   const custom = detail.modelProvider?.startsWith("custom:") === true;
   const entry = customModels?.find((m) => `custom:${m.id}` === detail.modelProvider);
-  const label = (id: string): string | undefined => custom
-    ? (entry?.modelId === id ? entry.displayName : "Custom model unavailable")
-    : lookupLabel(id);
+  const label = (id: string): string | undefined => isAppleFmProvider(detail.modelProvider)
+    ? `${APPLE_FM_DISPLAY_NAME} (on-device)`
+    : custom
+      ? (entry?.modelId === id ? entry.displayName : "Custom model unavailable")
+      : lookupLabel(id);
   return {
     ...detail,
     modelLabel:
@@ -423,6 +437,7 @@ export function enrichmentSelectedModel(
   acpAgentId: string | undefined,
   managedModel: string = DEFAULT_CODEX_CAPTION_MODEL
 ): string {
+  if (isAppleFmProvider(settings.ai.defaults.enrichment.provider)) return APPLE_FM_MODEL_ID;
   if (settings.ai.defaults.enrichment.provider?.startsWith("custom:")) {
     return settings.ai.customModels?.find((m) => `custom:${m.id}` === settings.ai.defaults.enrichment.provider)?.modelId ?? "";
   }
@@ -462,8 +477,11 @@ function enrichmentAcpAgentId(settings: Settings): string | undefined {
  *  settings snapshot at enqueue time. A run carries one for its primary and,
  *  when `ai.enrichmentFallback` is armed, one for the fallback. */
 type EnrichmentBackendPlan = {
-  /** "codex", "acp:<id>" or "custom:<uuid>": logs and the run record. */
+  /** "codex", "acp:<id>", "custom:<uuid>" or "apple:system": logs and the
+   *  run record. */
   provider: string;
+  /** Set when the backend is Apple's on-device model (`/usr/bin/fm`). */
+  appleFm?: true;
   /** The model id sent to the backend; "" → the ACP agent's own default. */
   selectedModel: string;
   /** A Direct API model's "custom:<uuid>", sent as `modelProvider`. */
@@ -501,6 +519,20 @@ function resolveEnrichmentBackendPlan(
     ? resolveCustomModel(settings.ai.customConnections, settings.ai.customModels, custom.slice("custom:".length))
     : null;
   const customConnection = settings.ai.customConnections?.find((c) => c.id === customModel?.connectionId);
+  if (isAppleFmProvider(provider)) {
+    // The on-device model has no model choice, no reasoning effort and no
+    // account. An explicit per-call deadline still wins (tests, repair).
+    return {
+      provider: APPLE_FM_PROVIDER,
+      selectedModel: APPLE_FM_MODEL_ID,
+      selectedProvider: APPLE_FM_PROVIDER,
+      appleFm: true,
+      effort: "",
+      // A little past the backend's own deadline, so its kill-and-explain
+      // wins the race against the generic turn timeout.
+      turnTimeoutMs: turnTimeoutOverrideMs ?? APPLE_FM_ENRICHMENT_TIMEOUT_MS + 10_000
+    };
+  }
   return {
     provider: custom ?? (acpAgentId !== undefined ? `acp:${acpAgentId}` : "codex"),
     selectedModel: enrichmentSelectedModel(settings, acpAgentId, managedEnrichment?.id),
@@ -839,7 +871,7 @@ export function registerCodexHandlers(params?: {
         const catalogKey = codexCatalogKey(fallbackSettings);
         const { provider, model } = fallbackSettings.ai.defaults.enrichment;
         const codexBacked = enrichmentAcpAgentId(fallbackSettings) === undefined &&
-          provider?.startsWith("custom:") !== true;
+          provider?.startsWith("custom:") !== true && !isAppleFmProvider(provider);
         if (refreshDefaultsBeforeEnrichment && codexBacked && !model &&
             !managedEnrichmentByCatalog.has(catalogKey)) {
           const catalog = await bus.dispatch("codex:models", {}, { principal: "ipc" });
@@ -1288,7 +1320,8 @@ async function runCaptureEnrichment(params: {
   // A Direct API backend shares its connection's concurrency slots with every
   // other run on that endpoint; wait for one before talking to it.
   const enterBackend = async (plan: EnrichmentBackendPlan): Promise<void> => {
-    if (plan.selectedProvider?.startsWith("custom:")) {
+    if (plan.selectedProvider !== undefined &&
+        (plan.selectedProvider.startsWith("custom:") || plan.appleFm)) {
       saveAiRunUsage({ aiRunId: params.runId, modelProvider: plan.selectedProvider,
         usageStatus: "unavailable", usageUnavailableReason: "Run queued or in progress",
         cost: { status: "unavailable", reason: "usage unavailable" } });
@@ -1296,6 +1329,13 @@ async function runCaptureEnrichment(params: {
     if (plan.customConnection) {
       slot = directEnrichmentQueue.acquire(plan.customConnection.id,
         customEnrichmentConcurrency(plan.customConnection), abortController.signal);
+      await slot.ready;
+    }
+    if (plan.appleFm) {
+      // One on-device run at a time, in capture order: the model shares this
+      // Mac's memory with whatever the user is doing.
+      slot = directEnrichmentQueue.acquire(APPLE_FM_QUEUE_LANE, APPLE_FM_QUEUE_CONCURRENCY,
+        abortController.signal);
       await slot.ready;
     }
   };
@@ -1424,7 +1464,9 @@ async function runCaptureEnrichment(params: {
     const runTurn = async (plan: EnrichmentBackendPlan): Promise<CaptureEnrichmentResponse> => {
       const acpAgentId = plan.acpAgentId;
       abortController.signal.throwIfAborted();
-      if (plan.selectedProvider?.startsWith("custom:")) {
+      if (plan.appleFm) {
+        client = new AppleFmEnrichmentBackend();
+      } else if (plan.selectedProvider?.startsWith("custom:")) {
         const service = getCustomModelService();
         const selected = await service.selected(plan.selectedProvider, plan.selectedModel);
         if (plan.customModel && (selected.connectionId !== plan.customModel.connectionId
@@ -1458,7 +1500,7 @@ async function runCaptureEnrichment(params: {
           // agent default, so a stale value can't break the run); "" → null → agent
           // default. For Codex it's the caption model.
           model: plan.selectedModel.length > 0 ? plan.selectedModel : null,
-          ...(acpAgentId === undefined && plan.selectedProvider !== undefined
+          ...(acpAgentId === undefined && plan.selectedProvider !== undefined && !plan.appleFm
             ? { modelProvider: plan.selectedProvider }
             : {}),
           effort: plan.effort,
@@ -1609,12 +1651,17 @@ async function runCaptureEnrichment(params: {
     });
   } catch (error) {
     const latencyMs = Math.round(performance.now() - startedAt);
+    // A setup failure (terms, model not ready, fm reconfigured) means the
+    // cached status is stale; the next Settings read asks macOS again.
+    if (error instanceof AppleFmError && error.setupRelated) getAppleFmStatusService().invalidate();
     const isTimeout = error instanceof EnrichmentTimeoutError;
     const isAbort = !isTimeout && (abortController.signal.aborted || (error instanceof DOMException && error.name === "AbortError"));
     try {
       saveAiRunUsage({
         aiRunId: params.runId,
-        ...(active.selectedProvider?.startsWith("custom:") ? { modelProvider: active.selectedProvider } : {}),
+        ...(active.selectedProvider !== undefined && (active.selectedProvider.startsWith("custom:") || active.appleFm)
+          ? { modelProvider: active.selectedProvider }
+          : {}),
         usageStatus: "unavailable",
         usageUnavailableReason: isAbort
           ? "AI run was cancelled before token usage was reported"

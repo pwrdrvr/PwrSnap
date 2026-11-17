@@ -7,9 +7,12 @@ import type {
   DesktopCodexDiscoverySnapshot,
   Settings
 } from "@pwrsnap/shared";
-import { isSettingsSub } from "@pwrsnap/shared";
+import { APPLE_FM_STATES, isSettingsSub, type AppleFmState, type AppleFmStatus } from "@pwrsnap/shared";
 import {
   AI_PROVIDER_SUBS,
+  appleFmInUse,
+  describeAppleFmStatus,
+  type AiProviderStatusInput,
   describeAcpAgentStatus,
   describeAiProviders,
   describeCodexStatus,
@@ -76,7 +79,9 @@ describe("AI provider sub ids", () => {
     }), false)).toMatchObject({ chip: "check", badge: "Auth check failed" });
   });
   test("Codex leads, OpenAI trails, Gemini sorts last among the ACP agents", () => {
-    expect(AI_PROVIDER_SUBS).toEqual(["codex", "grok", "kimi", "qwen", "gemini", "openai"]);
+    // The on-device model is last: it sits under its own "On this Mac"
+    // heading, after the agents and the voiceover key.
+    expect(AI_PROVIDER_SUBS).toEqual(["codex", "grok", "kimi", "qwen", "gemini", "openai", "apple"]);
   });
 
   test("only known provider ids are AI Providers subs", () => {
@@ -222,10 +227,83 @@ describe("describeAiProviders", () => {
       acpModelErrors: {},
       openaiKey: { configured: false, lastSetAt: null }
     });
-    expect(statuses.map((s) => s.sub)).toEqual([...AI_PROVIDER_SUBS]);
+    // No answer from macOS yet: the on-device model has no row at all.
+    expect(statuses.map((s) => s.sub)).toEqual(AI_PROVIDER_SUBS.filter((sub) => sub !== "apple"));
     expect(statuses.find((s) => s.sub === "kimi")?.tone).toBe("ok");
     // An agent discovery did not report, and that is disabled, is still off.
     expect(statuses.find((s) => s.sub === "grok")).toMatchObject({ tone: "off", label: "Grok" });
+  });
+});
+
+describe("Apple's on-device model", () => {
+  const base: AiProviderStatusInput = {
+    codex: codexSnapshot(),
+    codexLoading: false,
+    acpDiscovery: { agents: [] },
+    acpDiscoveryLoading: false,
+    enabledAgentIds: [],
+    acpModelErrors: {},
+    openaiKey: null
+  };
+  function apple(state: AppleFmState, extra: Partial<AppleFmStatus> = {}): AppleFmStatus {
+    return { state, modelLabel: null, detail: null, macosVersion: "27.2", checkedAt: 0, ...extra };
+  }
+
+  test("is listed on a Mac, last, in every state macOS can report", () => {
+    for (const state of APPLE_FM_STATES) {
+      const subs = describeAiProviders({ ...base, appleFm: apple(state) }).map((s) => s.sub);
+      if (state === "unsupported-platform") expect(subs).not.toContain("apple");
+      else expect(subs).toEqual([...AI_PROVIDER_SUBS]);
+    }
+  });
+
+  test("Windows and Linux get no row, no dot and no chip", () => {
+    expect(describeAiProviders({ ...base, appleFm: apple("unsupported-platform") }).some((s) => s.sub === "apple")).toBe(false);
+    expect(describeAiProviders({ ...base, appleFm: null }).some((s) => s.sub === "apple")).toBe(false);
+  });
+
+  test("ready is green and names the model macOS reports", () => {
+    expect(describeAppleFmStatus(apple("ready", { modelLabel: "AFM 3 Core" }), false)).toEqual({
+      sub: "apple",
+      label: "Apple Intelligence",
+      tone: "ok",
+      badge: "Ready",
+      meta: "AFM 3 Core · on this Mac"
+    });
+  });
+
+  test("a missing step is amber; a Mac that cannot run it is grey, not red", () => {
+    expect(describeAppleFmStatus(apple("license-required"), false)).toMatchObject({ tone: "warn", chip: "terms", badge: "Agree to terms" });
+    expect(describeAppleFmStatus(apple("model-not-ready"), false)).toMatchObject({ tone: "warn", chip: "wait" });
+    expect(describeAppleFmStatus(apple("needs-macos"), false)).toMatchObject({ tone: "off", chip: "macos 27", badge: "Needs macOS 27" });
+    expect(describeAppleFmStatus(apple("device-not-eligible"), false)).toMatchObject({ tone: "off", chip: "n/a" });
+  });
+
+  test("property: any not-ready state is red once captions depend on it, and never green", () => {
+    for (const state of APPLE_FM_STATES) {
+      if (state === "ready" || state === "unsupported-platform") continue;
+      const inUse = describeAppleFmStatus(apple(state), true);
+      expect(inUse.tone).toBe("bad");
+      // Colour is never the only channel: a word rides with every fault.
+      expect(inUse.chip).toBeDefined();
+      expect(describeAppleFmStatus(apple(state), false).tone).not.toBe("ok");
+    }
+    expect(describeAppleFmStatus(apple("ready"), true).tone).toBe("ok");
+  });
+
+  test("in use means captions or their fallback, never chat", () => {
+    const settings = (enrichment: string | undefined, fallback: string | null | undefined): Settings =>
+      ({
+        ai: {
+          defaults: { enrichment: enrichment === undefined ? {} : { provider: enrichment }, libraryChat: {}, sizzleChat: {} },
+          enrichmentFallback: fallback === null || fallback === undefined ? fallback ?? null : { provider: fallback },
+          acp: { enabledAgentIds: [] }
+        }
+      }) as unknown as Settings;
+    expect(appleFmInUse(settings("apple:system", null))).toBe(true);
+    expect(appleFmInUse(settings("acp:kimi", "apple:system"))).toBe(true);
+    expect(appleFmInUse(settings(undefined, null))).toBe(false);
+    expect(appleFmInUse(null)).toBe(false);
   });
 });
 
@@ -251,6 +329,13 @@ describe("routedSurfaces", () => {
   test("unset, empty and 'codex' all run on Codex", () => {
     const settings = settingsWith({ libraryChat: "", sizzleChat: "codex" }, []);
     expect(routedSurfaces(settings, "codex")).toEqual(["enrichment", "libraryChat", "sizzleChat"]);
+  });
+
+  test("captions on the on-device model belong to its screen, not Codex's", () => {
+    const settings = settingsWith({ enrichment: "apple:system" }, []);
+    expect(routedSurfaces(settings, "apple")).toEqual(["enrichment"]);
+    expect(routedSurfaces(settings, "codex")).toEqual(["libraryChat", "sizzleChat"]);
+    expect(routedSurfaces(settingsWith({}, []), "apple")).toEqual([]);
   });
 
   test("an enabled agent takes the jobs routed to it", () => {

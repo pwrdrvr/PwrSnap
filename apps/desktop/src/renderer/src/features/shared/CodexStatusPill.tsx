@@ -1,4 +1,5 @@
 import type { CSSProperties, ReactElement, ReactNode } from "react";
+import { APPLE_FM_DISPLAY_NAME, isAppleFmProvider } from "@pwrsnap/shared";
 import { type AiRunStatus, type CustomModel, type CustomConnection, type Settings } from "@pwrsnap/shared";
 
 // CodexStatusPill — single source of truth for "what is Codex doing"
@@ -39,6 +40,8 @@ export function enrichmentBackendLabel(
   custom: { customModels?: readonly CustomModel[] | undefined; customConnections?: readonly CustomConnection[] | undefined } = {}
 ): { providerLabel: string; modelLabel: string | undefined } {
   const provider = enrichment?.provider ?? "";
+  // The on-device model has one model and no choice of it, so no model label.
+  if (isAppleFmProvider(provider)) return { providerLabel: APPLE_FM_DISPLAY_NAME, modelLabel: undefined };
   if (provider.startsWith("custom:")) {
     const model = custom.customModels?.find((m) => `custom:${m.id}` === provider);
     const connection = custom.customConnections?.find((c) => c.id === model?.connectionId);

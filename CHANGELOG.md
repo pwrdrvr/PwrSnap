@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.3.3 - 2026-11-16
+## v1.3.3 - 2026-11-17
 
 This is a maintenance release with no new user-facing features or intentional
 changes to Library navigation, selection, or editing behavior.

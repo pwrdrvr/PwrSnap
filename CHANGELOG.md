@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.3.3 - 2026-11-16
+
+This is a maintenance release with no new user-facing features or intentional
+changes to Library navigation, selection, or editing behavior.
+
+- MCP Integrations - Added guidance for agent hosts to display capture images
+  inline, preserve image bytes, and read media through the connection that
+  created it. Existing MCP connection settings and permissions are unchanged.
+
 ## v1.3.2 - 2026-11-11
 
 This patch simplifies local MCP relay connections and makes simultaneous

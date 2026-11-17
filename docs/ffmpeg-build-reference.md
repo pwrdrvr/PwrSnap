@@ -15,39 +15,61 @@ ffmpegs — see "Why the local builder is gone" below.
 
 ## How the binary reaches a release
 
-`.github/workflows/release.yml` pins an exact commit of the build repo and
-downloads that run's artifact:
+`.github/workflows/release.yml` and the Windows dev provisioner consume the
+same `scripts/ffmpeg/release-pin.json`. The dependency repository publishes
+immutable releases named `ffmpeg-build-<full-build-harness-commit-SHA>`.
+These raw dependency assets are independent of expiring Actions artifacts.
 
-| var | value at time of writing |
+The consumer pins build commit
+`027e89b29b9cb656111dd20f75e6176fa86c88ba`, published as
+`ffmpeg-build-027e89b29b9cb656111dd20f75e6176fa86c88ba` from successful
+build run **44093988582**, attempt **1**, on standard `macos-26` and Windows
+runners. FFmpeg **8.1.1**, source SHA-256
+`b6863adde98898f42602017462871b5f6333e65aec803fdd7a6308639c52edf3`, and
+profile **pwrsnap-lgpl-clean-v1** are unchanged. The retired build commit
+`3d775403a83990a2ad9503d865f5d481d9c0316a` lost its Actions artifacts;
+the new immutable release removes that retention dependency.
+
+The independently reviewed pins in `scripts/ffmpeg/release-pin.json` are:
+
+| Asset | SHA-256 |
 |---|---|
-| `FFMPEG_BUILD_REPO` | `pwrdrvr/pwrsnap-ffmpeg-builds` |
-| `FFMPEG_BUILD_WORKFLOW` | `build.yml` |
-| `FFMPEG_BUILD_SHA` | `3d775403a83990a2ad9503d865f5d481d9c0316a` |
-| `FFMPEG_BUILD_PROFILE` | `pwrsnap-lgpl-clean-v1` |
-| macOS artifact | `ffmpeg-8.1.1-macos-universal` → `release-stage/build/ffmpeg/ffmpeg` |
-| Windows artifact | `ffmpeg-8.1.1-windows-x64` → injected by `scripts/package-win.mjs` as `PwrSnapFFmpeg.exe` |
+| `release-manifest.json` | `f2381d5f60552c268db3f4d8a3969280324481cd5117712e0f0f481d734faef7` |
+| `ffmpeg-8.1.1-macos-universal.tar.gz` | `b9d2871da756968551dae3c4ccd8fc3e7abd8bf79f0e12e2407c48921fab9073` |
+| `ffmpeg-8.1.1-windows-x64.tar.gz` | `92fedcacf1f49dbb817917af0d2cc77e1832a23d703c282ce0d5cd454bfc06ad` |
 
-Apple Silicon packages extract the ARM64 slice of that verified universal
-artifact before signing. The additional `ffmpeg-macos-arm64-slice.json` release
-asset records the original and extracted hashes; it does not replace the
-original universal manifest, source tarball, or LGPL offer.
+Repository immutable releases must be enabled. The producer uses the normal
+workflow token, without a privileged settings preflight or an additional PAT.
+It validates successful owned `build.yml` run/attempt/commit provenance and both
+platform outputs, creates a draft at that exact commit, uploads all assets,
+checks API digests, then publishes non-Latest dependency assets. Before it
+prints consumer pins, it verifies the actual published release is immutable,
+is no longer a draft, remains a prerelease, and has the exact source tag identity.
+Existing tags/releases are never overwritten. PR builds cannot publish.
 
-CI verifies the downloaded `manifest.json` (sha256, forbidden flags, required
-encoders, required decoders, required devices) before packaging.
+For a future update, independently review the publisher's new
+pin object: `buildSha`, `manifestSha256`, and `archives` with SHA-256 values
+for **both** `macos-universal` and `windows-x64`. Review these independently
+in the PwrSnap PR; never adopt hashes from a download automatically. The
+release manifest itself binds exact source identity and run provenance to
+both archive hashes, sizes, and every payload file's digest and size.
 
-The decoder assertion exists because it was missing: encoders and devices were
-verified from the start, decoders never were, and a build with **no PNG
-decoder** shipped for two months. Every image-backed Sizzle reel failed with
-`Decoding requested, but no decoder found for: png`.
+The consumer requires a published immutable release, its tag pointing directly
+at the pinned build commit, an exact asset inventory, API digests matching
+independent pins, matching downloaded bytes, then full source/profile/target,
+configuration, codec, binary and legal-payload validation. Forbidden flags
+come from owned code, never solely from the downloaded manifest's list.
+Every platform must supply `manifest.json`, `SOURCE-OFFER.txt`,
+`LGPL-NOTICE.txt`, and `source/ffmpeg-8.1.1.tar.xz` with its checksum.
+The source archive is hashed as opaque bytes; no source is inspected.
+No mutable release or transient-artifact fallback exists.
 
-> ⚠️ **`FFMPEG_BUILD_SHA` is pinned by three consumers** — the macOS and
-> Windows jobs in `release.yml`, plus the Windows dev provisioner in
-> `apps/desktop/scripts/dev-ffmpeg.mjs` — and is restated in the table above.
-> Landing a fix in the build repo does nothing until **all** are bumped to the
-> new commit. PR previews intentionally use digest-pinned public release
-> build artifacts instead of private-repo credentials or release downloads.
-> `apps/desktop/scripts/windows-release-config.test.mjs` asserts every pin
-> agrees, so drift fails CI instead of shipping.
+macOS consumes `ffmpeg-8.1.1-macos-universal.tar.gz`. Apple Silicon packages
+extract its ARM64 slice before signing; `ffmpeg-macos-arm64-slice.json`
+records original and extracted hashes. Windows consumes
+`ffmpeg-8.1.1-windows-x64.tar.gz`. Platform manifests/offers/notices accompany
+the PwrSnap release; the identical source archive and checksum are shared.
+These changes do not alter any signing requirement.
 
 ## Preview dependency retention
 
@@ -83,9 +105,9 @@ Bump all of these together:
 | `FFMPEG_VERSION` + `FFMPEG_ARTIFACT_NAME` | `.github/workflows/release.yml` — **both** the macOS and Windows jobs |
 | `FFMPEG_ARTIFACT_NAME` | `.github/workflows/preview-build.yml` |
 | the `ffmpeg-<version>-*-{manifest.json,SOURCE-OFFER.txt,LGPL-NOTICE.txt}` copy targets | both workflows — six shell literals, easy to miss because they are not `env:` values |
-| `FFMPEG_BUILD_SHA` | both release jobs **and** `apps/desktop/scripts/dev-ffmpeg.mjs` (see the warning above) |
-| `FFMPEG_SOURCE_SHA256` | both release jobs only — the preview job does not pin it |
-| Windows dev artifact pin | `apps/desktop/scripts/dev-ffmpeg.mjs` (`buildSha`, `artifactName`, version/source/profile contract) |
+| Build commit and independent asset digests | `scripts/ffmpeg/release-pin.json`; review producer source/run and both platforms together |
+| `FFMPEG_SOURCE_SHA256` | both release jobs and `scripts/ffmpeg/contract.mjs` |
+| Windows dev artifact pin | shared `scripts/ffmpeg/release-pin.json` and `scripts/ffmpeg/contract.mjs` |
 | the pin tables | this file, `docs/desktop-release-runbook.md`, `docs/windows/README.md` |
 
 Two independent checks catch a partial bump:
@@ -192,8 +214,11 @@ Three reasons, in order of how much damage each did:
 
 **Consequence to know about:** there is no longer any way to build ffmpeg from
 this repo. On Windows, `pnpm dev` downloads the exact pinned controlled artifact
-on first use, verifies its manifest and binary SHA-256, and caches it under
-`~/.pwrsnap/dev/bin/ffmpeg/<build-sha>/windows-x64/`. It then sets
+on first use, verifies the same independent release and payload pins, and caches it under
+`~/.pwrsnap/dev/bin/ffmpeg/<build-sha>/<archive-sha256>/windows-x64/`.
+Every reuse verifies the pinned release manifest and full payload, including
+source, notices and binary; old caches containing only a self-hashed manifest
+are not accepted. It then sets
 `PWRSNAP_FFMPEG_PATH` only in the dev child environment. The download uses the
 authenticated GitHub CLI because the build repo is private; run
 `gh auth login --hostname github.com` or provide an explicit vetted
@@ -245,5 +270,5 @@ PwrSnap-side `electron-builder.yml` / `release.yml` wiring — lives in the comm
 where the profile used to be in the build repo's `scripts/lib/config.mjs`.
 
 **This did not require a pin bump.** The macOS and Windows profiles are unchanged
-by the drop, so there is nothing for PwrSnap to pick up; `FFMPEG_BUILD_SHA` stays
-where it is.
+by the drop. That historical cleanup did not change the consumer pin.
+The retention repair above requires a new build identity for its runner change.

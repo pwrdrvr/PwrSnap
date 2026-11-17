@@ -48,7 +48,7 @@ it("dev repair oracle: the default repair entry point reuses the common verified
       for (const file of ["dev.mjs", "dev-ffmpeg.mjs", "ensure-electron-runtime.mjs", "electron-runtime-cache.mjs"]) {
         cpSync(join(here, file), join(scripts, file));
       }
-      for (const file of ["check-node-version.mjs", "linux-sandbox.mjs", "lib/cli-entrypoint.mjs"]) {
+      for (const file of ["check-node-version.mjs", "linux-sandbox.mjs", "lib/cli-entrypoint.mjs", "ffmpeg/contract.mjs", "ffmpeg/download.mjs", "ffmpeg/release-pin.json"]) {
         const destination = join(project, "scripts", file);
         mkdirSync(dirname(destination), { recursive: true });
         cpSync(join(repo, "scripts", file), destination);

@@ -1,193 +1,39 @@
-import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, test, vi } from "vitest";
-import {
-  ensureWindowsDevFfmpeg,
-  verifyWindowsDevFfmpegDirectory,
-  WINDOWS_DEV_FFMPEG_PIN,
-  windowsDevFfmpegCacheDirectory
-} from "./dev-ffmpeg.mjs";
-
-const tempDirs = [];
-
-function tempDir(prefix = "pwrsnap-dev-ffmpeg-test-") {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
-  tempDirs.push(dir);
-  return dir;
-}
-
-function writeArtifact(directory, options = {}) {
-  mkdirSync(directory, { recursive: true });
-  const binaryName = options.binaryName ?? WINDOWS_DEV_FFMPEG_PIN.artifactBinary;
-  const binary = options.binary ?? Buffer.from("controlled ffmpeg test binary");
-  writeFileSync(join(directory, binaryName), binary);
-  const manifest = {
-    version: WINDOWS_DEV_FFMPEG_PIN.version,
-    sourceSha256: WINDOWS_DEV_FFMPEG_PIN.sourceSha256,
-    buildProfile: WINDOWS_DEV_FFMPEG_PIN.buildProfile,
-    platform: WINDOWS_DEV_FFMPEG_PIN.manifestPlatform,
-    arch: WINDOWS_DEV_FFMPEG_PIN.manifestArch,
-    binary: WINDOWS_DEV_FFMPEG_PIN.artifactBinary,
-    sha256: createHash("sha256").update(binary).digest("hex"),
-    configuration: "--disable-autodetect --enable-zlib --enable-mediafoundation",
-    forbiddenConfigFlags: ["--enable-gpl", "--enable-nonfree", "--enable-libx264"],
-    requiredEncoders: [...WINDOWS_DEV_FFMPEG_PIN.requiredEncoders],
-    requiredDecoders: [...WINDOWS_DEV_FFMPEG_PIN.requiredDecoders],
-    requiredDevices: [...WINDOWS_DEV_FFMPEG_PIN.requiredDevices],
-    ...options.manifest
-  };
-  writeFileSync(join(directory, "manifest.json"), JSON.stringify(manifest));
-  return { binary, manifest };
-}
-
-afterEach(() => {
-  for (const dir of tempDirs.splice(0)) {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-describe("Windows development FFmpeg provisioning", () => {
-  test("uses one build-SHA-versioned cache shared by worktrees", () => {
-    const home = join("C:\\Users", "developer");
-    const cache = windowsDevFfmpegCacheDirectory({ home });
-    expect(cache).toContain(join(".pwrsnap", "dev", "bin", "ffmpeg"));
-    expect(cache).toContain(WINDOWS_DEV_FFMPEG_PIN.buildSha);
-    expect(cache).toMatch(/windows-x64$/);
+import { describe, expect, test, vi } from "vitest";
+import { ensureWindowsDevFfmpeg, verifyWindowsDevFfmpegDirectory, windowsDevFfmpegCacheDirectory } from "./dev-ffmpeg.mjs";
+const pin = { buildSha: "1".repeat(40), manifestSha256: "2".repeat(64), archives: { "windows-x64": "3".repeat(64), "macos-universal": "4".repeat(64) } };
+describe("Windows development durable FFmpeg provisioning", () => {
+  test("cache is shared across worktrees and keyed by commit AND reviewed bytes", () => {
+    const cache = windowsDevFfmpegCacheDirectory({ home: "/test-home", pin });
+    expect(cache).toContain(join(".pwrsnap", "dev", "bin", "ffmpeg", pin.buildSha, pin.archives["windows-x64"], "windows-x64"));
   });
-
-  test("accepts only the pinned target and complete codec contract", () => {
-    const artifact = tempDir();
-    const { manifest } = writeArtifact(artifact);
-
-    expect(verifyWindowsDevFfmpegDirectory(artifact)).toMatchObject({ manifest });
+  test("cached manifest cannot replace an independently pinned digest", () => {
+    const temp = mkdtempSync(join(tmpdir(), "ffmpeg-cache-"));
+    try {
+      writeFileSync(join(temp, "release-manifest.json"), JSON.stringify({ sha256: "untrusted", requiredEncoders: ["h264_mf"] }));
+      expect(() => verifyWindowsDevFfmpegDirectory(temp, { pin })).toThrow(/cached release manifest digest mismatch/);
+    } finally { rmSync(temp, { recursive: true, force: true }); }
   });
-
-  test("rejects a hash mismatch and a manifest missing h264_mf", () => {
-    const badHash = tempDir();
-    writeArtifact(badHash);
-    writeFileSync(join(badHash, "ffmpeg.exe"), "tampered");
-    expect(() => verifyWindowsDevFfmpegDirectory(badHash)).toThrow(
-      /binary SHA-256 mismatch/
-    );
-
-    const missingEncoder = tempDir();
-    writeArtifact(missingEncoder, {
-      manifest: { requiredEncoders: ["aac"] }
-    });
-    expect(() => verifyWindowsDevFfmpegDirectory(missingEncoder)).toThrow(
-      /missing required encoder check: h264_mf/
-    );
-  });
-
-  test("reuses a verified cached PwrSnapFFmpeg.exe without invoking gh", () => {
-    const cacheDir = tempDir();
-    writeArtifact(cacheDir, { binaryName: WINDOWS_DEV_FFMPEG_PIN.installedBinary });
+  test("explicit override and non-Windows execution require no provisioning", () => {
     const runner = vi.fn();
-
-    const result = ensureWindowsDevFfmpeg(
-      {},
-      { platform: "win32", arch: "x64", cacheDir, runner }
-    );
-
-    expect(result).toEqual({
-      path: join(cacheDir, WINDOWS_DEV_FFMPEG_PIN.installedBinary),
-      source: "cache"
-    });
+    expect(ensureWindowsDevFfmpeg({}, { platform: "darwin", runner })).toBeNull();
+    expect(ensureWindowsDevFfmpeg({ PWRSNAP_FFMPEG_PATH: "C:\\vetted\\ffmpeg.exe" }, { platform: "win32", runner })).toEqual({ path: "C:\\vetted\\ffmpeg.exe", source: "override" });
     expect(runner).not.toHaveBeenCalled();
   });
-
-  test("downloads the exact successful pinned run and installs it atomically", () => {
-    const root = tempDir();
-    const cacheDir = join(root, "cache", "windows-x64");
-    const commands = [];
-    const runner = vi.fn((_command, argv) => {
-      commands.push(argv);
-      if (argv[0] === "run" && argv[1] === "list") {
-        return {
-          status: 0,
-          stdout: JSON.stringify([
-            {
-              databaseId: 123,
-              headSha: "0000000000000000000000000000000000000000",
-              conclusion: "success",
-              status: "completed"
-            },
-            {
-              databaseId: 8675309,
-              headSha: WINDOWS_DEV_FFMPEG_PIN.buildSha,
-              conclusion: "success",
-              status: "completed"
-            }
-          ]),
-          stderr: ""
-        };
-      }
-      if (argv[0] === "run" && argv[1] === "download") {
-        const outputDir = argv[argv.indexOf("--dir") + 1];
-        writeArtifact(outputDir);
-        return { status: 0, stdout: "", stderr: "" };
-      }
-      throw new Error(`unexpected gh call: ${argv.join(" ")}`);
-    });
-
-    const result = ensureWindowsDevFfmpeg(
-      { PATH: "C:\\Program Files\\GitHub CLI" },
-      {
-        platform: "win32",
-        arch: "x64",
-        cacheDir,
-        tempRoot: root,
-        runner,
-        logger: { log: vi.fn(), warn: vi.fn() }
-      }
-    );
-
-    expect(result).toEqual({
-      path: join(cacheDir, WINDOWS_DEV_FFMPEG_PIN.installedBinary),
-      source: "download"
-    });
-    expect(commands[0]).toContain(WINDOWS_DEV_FFMPEG_PIN.repo);
-    expect(commands[1]).toContain("8675309");
-    expect(commands[1]).toContain(WINDOWS_DEV_FFMPEG_PIN.artifactName);
-    expect(
-      verifyWindowsDevFfmpegDirectory(cacheDir, {
-        binaryName: WINDOWS_DEV_FFMPEG_PIN.installedBinary
-      }).binaryPath
-    ).toBe(result.path);
+  test("blocked publication cannot be bypassed by cache or an Actions download", () => {
+    const runner = vi.fn();
+    expect(() => ensureWindowsDevFfmpeg({}, { platform: "win32", arch: "x64", pin: { blocked: "corrected producer awaits publication" }, runner })).toThrow(/corrected producer awaits publication/);
+    expect(runner).not.toHaveBeenCalled();
   });
-
-  test("honors an explicit override and gives an actionable auth failure", () => {
-    expect(
-      ensureWindowsDevFfmpeg(
-        { PWRSNAP_FFMPEG_PATH: "C:\\tools\\ffmpeg.exe" },
-        { platform: "win32", arch: "x64", runner: vi.fn() }
-      )
-    ).toEqual({ path: "C:\\tools\\ffmpeg.exe", source: "override" });
-
-    const root = tempDir();
-    expect(() =>
-      ensureWindowsDevFfmpeg(
-        {},
-        {
-          platform: "win32",
-          arch: "x64",
-          cacheDir: join(root, "missing-cache"),
-          tempRoot: root,
-          runner: () => ({
-            status: null,
-            stdout: "",
-            stderr: "",
-            error: Object.assign(new Error("spawn gh ENOENT"), { code: "ENOENT" })
-          }),
-          logger: { log: vi.fn(), warn: vi.fn() }
-        }
-      )
-    ).toThrow(/gh auth login[\s\S]*PWRSNAP_FFMPEG_PATH[\s\S]*gh run list could not start/);
-  });
-
-  test("is a no-op outside Windows", () => {
-    expect(ensureWindowsDevFfmpeg({}, { platform: "darwin" })).toBeNull();
+  test("auth failure is actionable and never falls back to transient artifacts", () => {
+    const temp = mkdtempSync(join(tmpdir(), "ffmpeg-dev-"));
+    const runner = vi.fn(() => ({ status: 1, stderr: "auth denied" }));
+    try {
+      expect(() => ensureWindowsDevFfmpeg({}, { platform: "win32", arch: "x64", pin, cacheDir: join(temp, "cache"), runner })).toThrow(/Authenticate gh.*PWRSNAP_FFMPEG_PATH.*auth denied/);
+      expect(runner.mock.calls).toHaveLength(1);
+      expect(runner.mock.calls[0][1][0]).toBe("api");
+    } finally { rmSync(temp, { recursive: true, force: true }); }
   });
 });

@@ -80,9 +80,13 @@ release infrastructure plan.
      variable:
      - `FFMPEG_BUILDS_APP_CLIENT_ID`
    - The FFmpeg GitHub App must be installed on
-     `pwrdrvr/pwrsnap-ffmpeg-builds` with read-only Actions and Contents
-     permissions. The signing job uses the one-hour installation token only
-     to download the pinned `ffmpeg-8.1.1-macos-universal` artifact.
+     `pwrdrvr/pwrsnap-ffmpeg-builds` with read-only Contents
+     permission. The signing job uses the one-hour installation token only
+     to download independently pinned immutable raw FFmpeg dependency assets
+     (`ffmpeg-8.1.1-macos-universal.tar.gz`). See
+     [the FFmpeg dependency contract](ffmpeg-build-reference.md).
+     Prepare jobs validate the complete reviewed pin contract in
+     `scripts/ffmpeg/release-pin.json` before signing approval.
    To migrate the existing repo-level secrets into the environment, run
    from your workstation (the `--env apple-signing` flag is what scopes the
    secret to the environment):

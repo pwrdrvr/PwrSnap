@@ -1,0 +1,8 @@
+{
+  "buildSha": "027e89b29b9cb656111dd20f75e6176fa86c88ba",
+  "manifestSha256": "f2381d5f60552c268db3f4d8a3969280324481cd5117712e0f0f481d734faef7",
+  "archives": {
+    "macos-universal": "b9d2871da756968551dae3c4ccd8fc3e7abd8bf79f0e12e2407c48921fab9073",
+    "windows-x64": "92fedcacf1f49dbb817917af0d2cc77e1832a23d703c282ce0d5cd454bfc06ad"
+  }
+}

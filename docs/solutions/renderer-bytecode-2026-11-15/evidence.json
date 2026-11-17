@@ -1,0 +1,1528 @@
+{
+  "baselineCommit": "e08e3de1e57bf3289f1f9771193323cb6ed870e1",
+  "platform": {
+    "os": "macOS 27.2 (26B123)",
+    "arch": "arm64",
+    "cpu": "Apple M2 Max"
+  },
+  "versions": {
+    "node": "24.22.0",
+    "v8": "13.6.233.17-node.57",
+    "electron": "44.9.3",
+    "electronV8": "15.2.124.43-electron.0",
+    "react": "19.3.1",
+    "vitest": "4.1.12",
+    "vite": "7.3.7"
+  },
+  "runtimeDefaults": {
+    "nodeTurboFanBytes": 61440,
+    "electronTurboFanBytes": 61440,
+    "sparkplug": true,
+    "budgetBytes": 49152
+  },
+  "compilerFlags": [
+    "--no-lazy",
+    "--no-compilation-cache",
+    "--experimental-vm-modules"
+  ],
+  "testFile": "apps/desktop/src/renderer/src/features/library/__tests__/Library.shortcuts.test.tsx",
+  "beforeRuns": [
+    {
+      "variant": "plain",
+      "run": 1,
+      "wholeProcessMs": 2192.0288330000003,
+      "reportedFileSpanMs": 655.525390625
+    },
+    {
+      "variant": "plain",
+      "run": 2,
+      "wholeProcessMs": 1976.3084170000002,
+      "reportedFileSpanMs": 676.6044921875
+    },
+    {
+      "variant": "plain",
+      "run": 3,
+      "wholeProcessMs": 1852.5482080000002,
+      "reportedFileSpanMs": 625.856201171875
+    },
+    {
+      "variant": "no-sparkplug",
+      "run": 1,
+      "wholeProcessMs": 1722.0276249999997,
+      "reportedFileSpanMs": 423.633544921875
+    },
+    {
+      "variant": "no-sparkplug",
+      "run": 2,
+      "wholeProcessMs": 1804.2450000000008,
+      "reportedFileSpanMs": 451.9921875
+    },
+    {
+      "variant": "no-sparkplug",
+      "run": 3,
+      "wholeProcessMs": 1764.7084590000013,
+      "reportedFileSpanMs": 431.975341796875
+    }
+  ],
+  "afterRuns": [
+    {
+      "variant": "plain",
+      "run": 1,
+      "wholeProcessMs": 1839.2930840000001,
+      "reportedFileSpanMs": 465.98388671875
+    },
+    {
+      "variant": "plain",
+      "run": 2,
+      "wholeProcessMs": 1811.4743339999998,
+      "reportedFileSpanMs": 492.240966796875
+    },
+    {
+      "variant": "plain",
+      "run": 3,
+      "wholeProcessMs": 1915.9037080000003,
+      "reportedFileSpanMs": 505.0771484375
+    },
+    {
+      "variant": "no-sparkplug",
+      "run": 1,
+      "wholeProcessMs": 1782.8454579999998,
+      "reportedFileSpanMs": 434.909912109375
+    },
+    {
+      "variant": "no-sparkplug",
+      "run": 2,
+      "wholeProcessMs": 1812.4205410000004,
+      "reportedFileSpanMs": 449.979736328125
+    },
+    {
+      "variant": "no-sparkplug",
+      "run": 3,
+      "wholeProcessMs": 1814.1889999999985,
+      "reportedFileSpanMs": 463.84326171875
+    }
+  ],
+  "cases": [
+    {
+      "name": "Library runtime footer shows the Git branch for a development checkout",
+      "before": {
+        "plain": [
+          54.90429099999983,
+          53.3393329999999,
+          52.81833300000005
+        ],
+        "no-sparkplug": [
+          55.95795799999996,
+          55.39633299999991,
+          50.92312500000003
+        ]
+      },
+      "after": {
+        "plain": [
+          52.92270899999994,
+          53.46833399999991,
+          56.16383300000007
+        ],
+        "no-sparkplug": [
+          55.88691700000004,
+          63.38633299999992,
+          58.161583000000064
+        ]
+      }
+    },
+    {
+      "name": "Library runtime footer keeps showing the package version without a development checkout",
+      "before": {
+        "plain": [
+          19.57183299999997,
+          20.05558300000007,
+          19.270459000000074
+        ],
+        "no-sparkplug": [
+          21.45420799999988,
+          19.39083299999993,
+          20.000334000000066
+        ]
+      },
+      "after": {
+        "plain": [
+          21.036624999999958,
+          20.89908300000002,
+          22.61562499999991
+        ],
+        "no-sparkplug": [
+          20.729249999999865,
+          28.685708000000204,
+          20.692250000000058
+        ]
+      }
+    },
+    {
+      "name": "Library keyboard shortcuts 'darwin' copies with its primary modifier and ignores the other platform's modifier",
+      "before": {
+        "plain": [
+          56.618208000000095,
+          55.977916999999934,
+          54.80420800000002
+        ],
+        "no-sparkplug": [
+          24.32883300000003,
+          25.692375000000084,
+          24.792707999999948
+        ]
+      },
+      "after": {
+        "plain": [
+          32.583624999999984,
+          32.94399999999996,
+          32.88887499999987
+        ],
+        "no-sparkplug": [
+          25.181666999999834,
+          24.516582999999855,
+          25.621832999999924
+        ]
+      }
+    },
+    {
+      "name": "Library keyboard shortcuts 'win32' copies with its primary modifier and ignores the other platform's modifier",
+      "before": {
+        "plain": [
+          51.284042,
+          48.0625,
+          50.69875000000002
+        ],
+        "no-sparkplug": [
+          18.474917000000005,
+          19.174667,
+          17.583417000000054
+        ]
+      },
+      "after": {
+        "plain": [
+          27.7193749999999,
+          26.77458300000012,
+          29.56925000000001
+        ],
+        "no-sparkplug": [
+          19.52083400000015,
+          18.2622080000001,
+          19.976333000000068
+        ]
+      }
+    },
+    {
+      "name": "Library keyboard shortcuts focus mode leaves primary+digits to editor chrome without also copying",
+      "before": {
+        "plain": [
+          61.466249999999945,
+          60.23091700000009,
+          56.238374999999905
+        ],
+        "no-sparkplug": [
+          23.70883300000014,
+          26.309540999999854,
+          23.944792000000007
+        ]
+      },
+      "after": {
+        "plain": [
+          29.848792000000003,
+          34.30166600000007,
+          31.171749999999975
+        ],
+        "no-sparkplug": [
+          23.560999999999922,
+          21.240583000000015,
+          25.498207999999977
+        ]
+      }
+    },
+    {
+      "name": "Library grid select vs edit single click selects the tile without opening the editor",
+      "before": {
+        "plain": [
+          44.12216699999999,
+          41.82508400000006,
+          41.91641699999991
+        ],
+        "no-sparkplug": [
+          15.47720900000013,
+          18.007500000000164,
+          17.399999999999864
+        ]
+      },
+      "after": {
+        "plain": [
+          22.045000000000073,
+          22.29691600000001,
+          24.464749999999867
+        ],
+        "no-sparkplug": [
+          16.92595799999981,
+          16.36566700000003,
+          16.576000000000022
+        ]
+      }
+    },
+    {
+      "name": "Library grid select vs edit double-click opens the editor",
+      "before": {
+        "plain": [
+          56.465333999999984,
+          52.576458999999886,
+          51.980125000000044
+        ],
+        "no-sparkplug": [
+          17.88370800000007,
+          19.097749999999905,
+          19.728917000000138
+        ]
+      },
+      "after": {
+        "plain": [
+          25.998415999999906,
+          27.63799999999992,
+          27.86020799999983
+        ],
+        "no-sparkplug": [
+          18.429958999999826,
+          20.054999999999836,
+          18.99966600000016
+        ]
+      }
+    },
+    {
+      "name": "Library grid select vs edit the real click→click→dblclick sequence lands in the editor",
+      "before": {
+        "plain": [
+          57.464500000000044,
+          54.14191600000004,
+          56.54104100000018
+        ],
+        "no-sparkplug": [
+          18.886625000000095,
+          21.865625000000136,
+          20.665666999999985
+        ]
+      },
+      "after": {
+        "plain": [
+          29.687124999999924,
+          29.025667000000112,
+          33.19200000000001
+        ],
+        "no-sparkplug": [
+          19.403957999999875,
+          22.331957999999986,
+          21.026582999999846
+        ]
+      }
+    },
+    {
+      "name": "Library grid select vs edit Enter on the selected tile opens the editor",
+      "before": {
+        "plain": [
+          42.625958999999966,
+          43.656833000000006,
+          37.656000000000176
+        ],
+        "no-sparkplug": [
+          18.628959000000123,
+          20.377707999999984,
+          19.418083000000024
+        ]
+      },
+      "after": {
+        "plain": [
+          20.23416700000007,
+          24.635582999999997,
+          21.57116700000006
+        ],
+        "no-sparkplug": [
+          19.80554099999995,
+          16.05104099999994,
+          20.58858299999997
+        ]
+      }
+    },
+    {
+      "name": "Library grid select vs edit Enter with nothing selected is a no-op",
+      "before": {
+        "plain": [
+          7.222625000000107,
+          8.630125000000135,
+          7.563375000000178
+        ],
+        "no-sparkplug": [
+          7.95354199999997,
+          8.518957999999884,
+          8.125709000000143
+        ]
+      },
+      "after": {
+        "plain": [
+          7.148208000000068,
+          7.958041000000094,
+          9.211249999999836
+        ],
+        "no-sparkplug": [
+          7.655791000000136,
+          8.432166999999936,
+          8.088500000000067
+        ]
+      }
+    },
+    {
+      "name": "Library grid select vs edit an arrow key in grid moves the selection (and doesn't open the editor)",
+      "before": {
+        "plain": [
+          9.228458000000046,
+          10.52579199999991,
+          9.703666000000112
+        ],
+        "no-sparkplug": [
+          10.10850000000005,
+          10.285833000000139,
+          9.491624999999885
+        ]
+      },
+      "after": {
+        "plain": [
+          8.85029099999997,
+          9.894166000000041,
+          10.236124999999902
+        ],
+        "no-sparkplug": [
+          9.054875000000038,
+          10.53170799999998,
+          10.27299999999991
+        ]
+      }
+    },
+    {
+      "name": "Library grid select vs edit the hover Edit CTA opens the editor",
+      "before": {
+        "plain": [
+          11.051041000000168,
+          11.250749999999925,
+          11.086542000000009
+        ],
+        "no-sparkplug": [
+          10.385209000000032,
+          11.644708000000037,
+          11.741958000000068
+        ]
+      },
+      "after": {
+        "plain": [
+          9.711958000000095,
+          11.020749999999907,
+          11.946040999999923
+        ],
+        "no-sparkplug": [
+          10.839375000000018,
+          11.253959000000123,
+          11.923874999999953
+        ]
+      }
+    },
+    {
+      "name": "Library grid selection does not reflow the inspector column pinned: opening Grid default-selects the first visible capture",
+      "before": {
+        "plain": [
+          8.586457999999993,
+          8.94054200000005,
+          8.50754199999983
+        ],
+        "no-sparkplug": [
+          8.362334000000146,
+          9.454833000000008,
+          9.259000000000015
+        ]
+      },
+      "after": {
+        "plain": [
+          8.550125000000207,
+          8.834708000000091,
+          9.70895900000005
+        ],
+        "no-sparkplug": [
+          9.717249999999922,
+          9.261416999999938,
+          9.432542000000012
+        ]
+      }
+    },
+    {
+      "name": "Library grid selection does not reflow the inspector column pinned: selecting a tile updates in place and does not change data-right",
+      "before": {
+        "plain": [
+          9.909832999999935,
+          9.857792000000018,
+          9.935541000000057
+        ],
+        "no-sparkplug": [
+          9.338040999999976,
+          10.333000000000084,
+          10.842583000000104
+        ]
+      },
+      "after": {
+        "plain": [
+          9.235290999999961,
+          10.25929199999996,
+          10.4607910000002
+        ],
+        "no-sparkplug": [
+          10.406666000000087,
+          10.500750000000153,
+          10.48112500000002
+        ]
+      }
+    },
+    {
+      "name": "Library grid selection does not reflow the inspector column unpinned: selecting a tile does not open the sidebar or change data-right",
+      "before": {
+        "plain": [
+          14.572333000000071,
+          28.55687499999999,
+          17.301625000000058
+        ],
+        "no-sparkplug": [
+          13.951082999999926,
+          15.760917000000063,
+          15.774165999999923
+        ]
+      },
+      "after": {
+        "plain": [
+          17.99062499999991,
+          15.619666999999936,
+          18.063333000000057
+        ],
+        "no-sparkplug": [
+          14.539375000000064,
+          18.89066700000012,
+          15.541749999999865
+        ]
+      }
+    },
+    {
+      "name": "Library grid selection does not reflow the inspector column unpinned: palette copy + ⌘2 use clipboard:copy for the selected tile",
+      "before": {
+        "plain": [
+          16.145665999999892,
+          33.080875000000106,
+          12.849665999999843
+        ],
+        "no-sparkplug": [
+          16.902207999999973,
+          19.234959000000117,
+          17.596874999999955
+        ]
+      },
+      "after": {
+        "plain": [
+          13.11520900000005,
+          18.238583999999946,
+          15.558999999999969
+        ],
+        "no-sparkplug": [
+          17.240375000000085,
+          15.618458000000146,
+          19.70937499999991
+        ]
+      }
+    },
+    {
+      "name": "Library grid selection does not reflow the inspector column layout toggle still opens the inspector after a closed-sidebar select",
+      "before": {
+        "plain": [
+          13.636250000000018,
+          14.42883299999994,
+          12.042832999999973
+        ],
+        "no-sparkplug": [
+          13.323541999999861,
+          14.996250000000146,
+          13.3159169999999
+        ]
+      },
+      "after": {
+        "plain": [
+          11.817167000000154,
+          13.138582999999926,
+          13.88087500000006
+        ],
+        "no-sparkplug": [
+          14.503458000000137,
+          13.219125000000076,
+          17.731583
+        ]
+      }
+    },
+    {
+      "name": "Library grid selection does not reflow the inspector column pinned narrow Grid keeps the collapsed spine and default-selects",
+      "before": {
+        "plain": [
+          11.252792,
+          10.682457999999997,
+          9.996541999999863
+        ],
+        "no-sparkplug": [
+          10.79666700000007,
+          11.923166999999921,
+          11.917999999999893
+        ]
+      },
+      "after": {
+        "plain": [
+          11.644625000000133,
+          10.393000000000029,
+          11.896541999999954
+        ],
+        "no-sparkplug": [
+          11.449959000000035,
+          11.861083000000008,
+          11.795542000000069
+        ]
+      }
+    },
+    {
+      "name": "Library grid selection does not reflow the inspector column Grid at the 480px minimum parks the nav on its spine; the spine peeks, not re-pins",
+      "before": {
+        "plain": [
+          11.652667000000065,
+          12.467458999999963,
+          11.940499999999929
+        ],
+        "no-sparkplug": [
+          11.073541999999861,
+          13.428208999999924,
+          12.221207999999933
+        ]
+      },
+      "after": {
+        "plain": [
+          13.11891700000001,
+          13.301499999999805,
+          12.873583000000053
+        ],
+        "no-sparkplug": [
+          11.927416999999878,
+          12.304792000000134,
+          13.890499999999975
+        ]
+      }
+    },
+    {
+      "name": "Library grid selection does not reflow the inspector column Grid keeps the pinned nav above the very-narrow tier",
+      "before": {
+        "plain": [
+          9.871958000000177,
+          10.076999999999998,
+          13.554167000000007
+        ],
+        "no-sparkplug": [
+          10.65691599999991,
+          11.003999999999905,
+          10.55645800000002
+        ]
+      },
+      "after": {
+        "plain": [
+          13.995666999999912,
+          9.88454200000001,
+          14.766624999999976
+        ],
+        "no-sparkplug": [
+          9.120332999999846,
+          13.904417000000194,
+          10.811374999999998
+        ]
+      }
+    },
+    {
+      "name": "Library grid selection does not reflow the inspector column Reel sheds the nav at ≤1024 and then the rail at ≤720",
+      "before": {
+        "plain": [
+          37.56679200000008,
+          38.50754199999983,
+          31.64470899999992
+        ],
+        "no-sparkplug": [
+          36.918084000000135,
+          38.409124999999904,
+          37.18858299999988
+        ]
+      },
+      "after": {
+        "plain": [
+          30.77929199999994,
+          37.99095800000009,
+          34.990084000000024
+        ],
+        "no-sparkplug": [
+          39.205791999999974,
+          33.333167,
+          44.58208300000001
+        ]
+      }
+    },
+    {
+      "name": "Library grid selection does not reflow the inspector column a peek opened while auto-collapsed does not outlive the nav re-pinning",
+      "before": {
+        "plain": [
+          19.182207999999946,
+          19.370707999999922,
+          18.167625000000044
+        ],
+        "no-sparkplug": [
+          19.036000000000058,
+          19.634874999999965,
+          18.700458000000026
+        ]
+      },
+      "after": {
+        "plain": [
+          19.360333000000082,
+          20.966707999999926,
+          21.0318749999999
+        ],
+        "no-sparkplug": [
+          18.687208000000055,
+          19.29645800000003,
+          20.25937500000009
+        ]
+      }
+    },
+    {
+      "name": "Library grid selection does not reflow the inspector column a keyboard-opened peek closes when focus leaves the nav",
+      "before": {
+        "plain": [
+          15.688333000000057,
+          14.286790999999994,
+          17.29512499999987
+        ],
+        "no-sparkplug": [
+          14.398249999999962,
+          15.540750000000116,
+          14.274083000000019
+        ]
+      },
+      "after": {
+        "plain": [
+          17.441082999999935,
+          15.677416999999878,
+          18.38933299999985
+        ],
+        "no-sparkplug": [
+          14.836916999999858,
+          18.712916999999834,
+          14.760957999999846
+        ]
+      }
+    },
+    {
+      "name": "Library grid selection does not reflow the inspector column the Windows in-toolbar menu reserve does not move the column breakpoints",
+      "before": {
+        "plain": [
+          15.52537499999994,
+          15.604499999999916,
+          11.856167000000141
+        ],
+        "no-sparkplug": [
+          14.633458000000019,
+          15.992083000000093,
+          15.975334000000203
+        ]
+      },
+      "after": {
+        "plain": [
+          10.983999999999924,
+          16.24091700000008,
+          12.077208999999812
+        ],
+        "no-sparkplug": [
+          15.909832999999935,
+          11.979708000000073,
+          16.843166999999994
+        ]
+      }
+    }
+  ],
+  "moduleCount": 301,
+  "beforeBytecode": {
+    "Vitest-client": {
+      "library": [
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "Vitest-client",
+          "name": "Library",
+          "bytes": 52740
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "Vitest-client",
+          "name": "(anonymous)",
+          "bytes": 3885
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "Vitest-client",
+          "name": "(anonymous)",
+          "bytes": 2338
+        }
+      ],
+      "largestModules": [
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "Vitest-client",
+          "name": "Library",
+          "bytes": 52740
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/region/RegionSelector.tsx",
+          "variant": "Vitest-client",
+          "name": "RegionSelector",
+          "bytes": 21363
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/float-over/FloatOver.tsx",
+          "variant": "Vitest-client",
+          "name": "FloatOver",
+          "bytes": 15249
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/settings/pages/LocalAgentsPage.tsx",
+          "variant": "Vitest-client",
+          "name": "LocalAgentsPage",
+          "bytes": 14650
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/editor/Editor.tsx",
+          "variant": "Vitest-client",
+          "name": "EditorLoaded",
+          "bytes": 11921
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/shared/chat/ChatPanelSurface.tsx",
+          "variant": "Vitest-client",
+          "name": "ChatPanelSurface",
+          "bytes": 8663
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/float-over/FloatOverHost.tsx",
+          "variant": "Vitest-client",
+          "name": "FloatOverHost",
+          "bytes": 8586
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/shared/VideoTimeline.tsx",
+          "variant": "Vitest-client",
+          "name": "VideoTimeline",
+          "bytes": 8411
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/sizzle/SizzleApp.tsx",
+          "variant": "Vitest-client",
+          "name": "SizzleApp",
+          "bytes": 7669
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/permission-guide/PermissionGuide.tsx",
+          "variant": "Vitest-client",
+          "name": "PermissionGuide",
+          "bytes": 6967
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/tray/TrayMenu.tsx",
+          "variant": "Vitest-client",
+          "name": "TrayMenu",
+          "bytes": 6861
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/DetailRail.tsx",
+          "variant": "Vitest-client",
+          "name": "DetailTab",
+          "bytes": 6810
+        }
+      ]
+    },
+    "Vitest-SSR": {
+      "library": [
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "Vitest-SSR",
+          "name": "Library",
+          "bytes": 52740
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "Vitest-SSR",
+          "name": "(anonymous)",
+          "bytes": 3885
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "Vitest-SSR",
+          "name": "(anonymous)",
+          "bytes": 2338
+        }
+      ],
+      "largestModules": [
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "Vitest-SSR",
+          "name": "Library",
+          "bytes": 52740
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/region/RegionSelector.tsx",
+          "variant": "Vitest-SSR",
+          "name": "RegionSelector",
+          "bytes": 21363
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/float-over/FloatOver.tsx",
+          "variant": "Vitest-SSR",
+          "name": "FloatOver",
+          "bytes": 15249
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/settings/pages/LocalAgentsPage.tsx",
+          "variant": "Vitest-SSR",
+          "name": "LocalAgentsPage",
+          "bytes": 14650
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/editor/Editor.tsx",
+          "variant": "Vitest-SSR",
+          "name": "EditorLoaded",
+          "bytes": 11921
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/shared/chat/ChatPanelSurface.tsx",
+          "variant": "Vitest-SSR",
+          "name": "ChatPanelSurface",
+          "bytes": 8663
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/float-over/FloatOverHost.tsx",
+          "variant": "Vitest-SSR",
+          "name": "FloatOverHost",
+          "bytes": 8586
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/shared/VideoTimeline.tsx",
+          "variant": "Vitest-SSR",
+          "name": "VideoTimeline",
+          "bytes": 8411
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/sizzle/SizzleApp.tsx",
+          "variant": "Vitest-SSR",
+          "name": "SizzleApp",
+          "bytes": 7669
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/permission-guide/PermissionGuide.tsx",
+          "variant": "Vitest-SSR",
+          "name": "PermissionGuide",
+          "bytes": 6967
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/tray/TrayMenu.tsx",
+          "variant": "Vitest-SSR",
+          "name": "TrayMenu",
+          "bytes": 6861
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/DetailRail.tsx",
+          "variant": "Vitest-SSR",
+          "name": "DetailTab",
+          "bytes": 6810
+        }
+      ]
+    },
+    "development": {
+      "library": [
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "development",
+          "name": "Library",
+          "bytes": 47804
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "development",
+          "name": "(anonymous)",
+          "bytes": 2082
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "development",
+          "name": "LibraryCaptureContextMenu",
+          "bytes": 1683
+        }
+      ],
+      "largestModules": [
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "development",
+          "name": "Library",
+          "bytes": 47804
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/region/RegionSelector.tsx",
+          "variant": "development",
+          "name": "RegionSelector",
+          "bytes": 19373
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/float-over/FloatOver.tsx",
+          "variant": "development",
+          "name": "FloatOver",
+          "bytes": 13894
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/settings/pages/LocalAgentsPage.tsx",
+          "variant": "development",
+          "name": "LocalAgentsPage",
+          "bytes": 13317
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/editor/Editor.tsx",
+          "variant": "development",
+          "name": "EditorLoaded",
+          "bytes": 10985
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/float-over/FloatOverHost.tsx",
+          "variant": "development",
+          "name": "FloatOverHost",
+          "bytes": 7911
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/shared/chat/ChatPanelSurface.tsx",
+          "variant": "development",
+          "name": "ChatPanelSurface",
+          "bytes": 7870
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/shared/VideoTimeline.tsx",
+          "variant": "development",
+          "name": "VideoTimeline",
+          "bytes": 7593
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/sizzle/SizzleApp.tsx",
+          "variant": "development",
+          "name": "SizzleApp",
+          "bytes": 6837
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/permission-guide/PermissionGuide.tsx",
+          "variant": "development",
+          "name": "PermissionGuide",
+          "bytes": 6409
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/DetailRail.tsx",
+          "variant": "development",
+          "name": "DetailTab",
+          "bytes": 6311
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/tray/TrayMenu.tsx",
+          "variant": "development",
+          "name": "TrayMenu",
+          "bytes": 5975
+        }
+      ]
+    },
+    "production": {
+      "library": [
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "production",
+          "name": "dd",
+          "bytes": 42426
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "production",
+          "name": "(anonymous)",
+          "bytes": 1552
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "production",
+          "name": "Ka",
+          "bytes": 1381
+        }
+      ],
+      "largestModules": [
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "production",
+          "name": "dd",
+          "bytes": 42426
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/region/RegionSelector.tsx",
+          "variant": "production",
+          "name": "gt",
+          "bytes": 17243
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/float-over/FloatOver.tsx",
+          "variant": "production",
+          "name": "Kn",
+          "bytes": 12360
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/settings/pages/LocalAgentsPage.tsx",
+          "variant": "production",
+          "name": "$s",
+          "bytes": 11804
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/editor/Editor.tsx",
+          "variant": "production",
+          "name": "vo",
+          "bytes": 10451
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/float-over/FloatOverHost.tsx",
+          "variant": "production",
+          "name": "Qt",
+          "bytes": 7733
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/shared/chat/ChatPanelSurface.tsx",
+          "variant": "production",
+          "name": "xt",
+          "bytes": 7377
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/shared/VideoTimeline.tsx",
+          "variant": "production",
+          "name": "Me",
+          "bytes": 6889
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/sizzle/SizzleApp.tsx",
+          "variant": "production",
+          "name": "mt",
+          "bytes": 6080
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/DetailRail.tsx",
+          "variant": "production",
+          "name": "Xi",
+          "bytes": 5837
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/permission-guide/PermissionGuide.tsx",
+          "variant": "production",
+          "name": "ee",
+          "bytes": 5294
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/sizzle/useSizzleProject.ts",
+          "variant": "production",
+          "name": "gt",
+          "bytes": 5218
+        }
+      ]
+    }
+  },
+  "afterBytecode": {
+    "Vitest-client": {
+      "library": [
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "Vitest-client",
+          "name": "useLibraryController",
+          "bytes": 24502
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "Vitest-client",
+          "name": "renderLibrary",
+          "bytes": 20886
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "Vitest-client",
+          "name": "(anonymous)",
+          "bytes": 3897
+        }
+      ],
+      "largestModules": [
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "Vitest-client",
+          "name": "useLibraryController",
+          "bytes": 24502
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/region/RegionSelector.tsx",
+          "variant": "Vitest-client",
+          "name": "RegionSelector",
+          "bytes": 21363
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/float-over/FloatOver.tsx",
+          "variant": "Vitest-client",
+          "name": "FloatOver",
+          "bytes": 15249
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/settings/pages/LocalAgentsPage.tsx",
+          "variant": "Vitest-client",
+          "name": "LocalAgentsPage",
+          "bytes": 14650
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/editor/Editor.tsx",
+          "variant": "Vitest-client",
+          "name": "EditorLoaded",
+          "bytes": 11921
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/shared/chat/ChatPanelSurface.tsx",
+          "variant": "Vitest-client",
+          "name": "ChatPanelSurface",
+          "bytes": 8663
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/float-over/FloatOverHost.tsx",
+          "variant": "Vitest-client",
+          "name": "FloatOverHost",
+          "bytes": 8586
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/shared/VideoTimeline.tsx",
+          "variant": "Vitest-client",
+          "name": "VideoTimeline",
+          "bytes": 8411
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/sizzle/SizzleApp.tsx",
+          "variant": "Vitest-client",
+          "name": "SizzleApp",
+          "bytes": 7669
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/permission-guide/PermissionGuide.tsx",
+          "variant": "Vitest-client",
+          "name": "PermissionGuide",
+          "bytes": 6967
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/tray/TrayMenu.tsx",
+          "variant": "Vitest-client",
+          "name": "TrayMenu",
+          "bytes": 6861
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/DetailRail.tsx",
+          "variant": "Vitest-client",
+          "name": "DetailTab",
+          "bytes": 6810
+        }
+      ]
+    },
+    "Vitest-SSR": {
+      "library": [
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "Vitest-SSR",
+          "name": "useLibraryController",
+          "bytes": 24502
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "Vitest-SSR",
+          "name": "renderLibrary",
+          "bytes": 20886
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "Vitest-SSR",
+          "name": "(anonymous)",
+          "bytes": 3897
+        }
+      ],
+      "largestModules": [
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "Vitest-SSR",
+          "name": "useLibraryController",
+          "bytes": 24502
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/region/RegionSelector.tsx",
+          "variant": "Vitest-SSR",
+          "name": "RegionSelector",
+          "bytes": 21363
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/float-over/FloatOver.tsx",
+          "variant": "Vitest-SSR",
+          "name": "FloatOver",
+          "bytes": 15249
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/settings/pages/LocalAgentsPage.tsx",
+          "variant": "Vitest-SSR",
+          "name": "LocalAgentsPage",
+          "bytes": 14650
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/editor/Editor.tsx",
+          "variant": "Vitest-SSR",
+          "name": "EditorLoaded",
+          "bytes": 11921
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/shared/chat/ChatPanelSurface.tsx",
+          "variant": "Vitest-SSR",
+          "name": "ChatPanelSurface",
+          "bytes": 8663
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/float-over/FloatOverHost.tsx",
+          "variant": "Vitest-SSR",
+          "name": "FloatOverHost",
+          "bytes": 8586
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/shared/VideoTimeline.tsx",
+          "variant": "Vitest-SSR",
+          "name": "VideoTimeline",
+          "bytes": 8411
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/sizzle/SizzleApp.tsx",
+          "variant": "Vitest-SSR",
+          "name": "SizzleApp",
+          "bytes": 7669
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/permission-guide/PermissionGuide.tsx",
+          "variant": "Vitest-SSR",
+          "name": "PermissionGuide",
+          "bytes": 6967
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/tray/TrayMenu.tsx",
+          "variant": "Vitest-SSR",
+          "name": "TrayMenu",
+          "bytes": 6861
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/DetailRail.tsx",
+          "variant": "Vitest-SSR",
+          "name": "DetailTab",
+          "bytes": 6810
+        }
+      ]
+    },
+    "development": {
+      "library": [
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "development",
+          "name": "useLibraryController",
+          "bytes": 22435
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "development",
+          "name": "renderLibrary",
+          "bytes": 19199
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "development",
+          "name": "(anonymous)",
+          "bytes": 2082
+        }
+      ],
+      "largestModules": [
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "development",
+          "name": "useLibraryController",
+          "bytes": 22435
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/region/RegionSelector.tsx",
+          "variant": "development",
+          "name": "RegionSelector",
+          "bytes": 19373
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/float-over/FloatOver.tsx",
+          "variant": "development",
+          "name": "FloatOver",
+          "bytes": 13894
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/settings/pages/LocalAgentsPage.tsx",
+          "variant": "development",
+          "name": "LocalAgentsPage",
+          "bytes": 13317
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/editor/Editor.tsx",
+          "variant": "development",
+          "name": "EditorLoaded",
+          "bytes": 10985
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/float-over/FloatOverHost.tsx",
+          "variant": "development",
+          "name": "FloatOverHost",
+          "bytes": 7911
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/shared/chat/ChatPanelSurface.tsx",
+          "variant": "development",
+          "name": "ChatPanelSurface",
+          "bytes": 7870
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/shared/VideoTimeline.tsx",
+          "variant": "development",
+          "name": "VideoTimeline",
+          "bytes": 7593
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/sizzle/SizzleApp.tsx",
+          "variant": "development",
+          "name": "SizzleApp",
+          "bytes": 6837
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/permission-guide/PermissionGuide.tsx",
+          "variant": "development",
+          "name": "PermissionGuide",
+          "bytes": 6409
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/DetailRail.tsx",
+          "variant": "development",
+          "name": "DetailTab",
+          "bytes": 6311
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/tray/TrayMenu.tsx",
+          "variant": "development",
+          "name": "TrayMenu",
+          "bytes": 5975
+        }
+      ]
+    },
+    "production": {
+      "library": [
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "production",
+          "name": "za",
+          "bytes": 22421
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "production",
+          "name": "Bs",
+          "bytes": 14955
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "production",
+          "name": "(anonymous)",
+          "bytes": 1552
+        }
+      ],
+      "largestModules": [
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/Library.tsx",
+          "variant": "production",
+          "name": "za",
+          "bytes": 22421
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/region/RegionSelector.tsx",
+          "variant": "production",
+          "name": "gt",
+          "bytes": 17243
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/float-over/FloatOver.tsx",
+          "variant": "production",
+          "name": "Kn",
+          "bytes": 12360
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/settings/pages/LocalAgentsPage.tsx",
+          "variant": "production",
+          "name": "$s",
+          "bytes": 11804
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/editor/Editor.tsx",
+          "variant": "production",
+          "name": "vo",
+          "bytes": 10451
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/float-over/FloatOverHost.tsx",
+          "variant": "production",
+          "name": "Qt",
+          "bytes": 7733
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/shared/chat/ChatPanelSurface.tsx",
+          "variant": "production",
+          "name": "xt",
+          "bytes": 7377
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/shared/VideoTimeline.tsx",
+          "variant": "production",
+          "name": "Me",
+          "bytes": 6889
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/sizzle/SizzleApp.tsx",
+          "variant": "production",
+          "name": "mt",
+          "bytes": 6080
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/library/DetailRail.tsx",
+          "variant": "production",
+          "name": "Xi",
+          "bytes": 5837
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/permission-guide/PermissionGuide.tsx",
+          "variant": "production",
+          "name": "ee",
+          "bytes": 5294
+        },
+        {
+          "file": "apps/desktop/src/renderer/src/features/sizzle/useSizzleProject.ts",
+          "variant": "production",
+          "name": "gt",
+          "bytes": 5218
+        }
+      ]
+    }
+  }
+}

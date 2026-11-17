@@ -214,6 +214,8 @@ jobs:
           cache-inputs: ${{ env.PWRSNAP_DEPENDENCY_CACHE_INPUTS }}
 
       - name: Lint
+        # Includes check:renderer-bytecode: the 26 KiB function budget tracks
+        # the post-split maximum, well below V8's 60 KiB TurboFan cutoff.
         run: pnpm run lint
 
   build:

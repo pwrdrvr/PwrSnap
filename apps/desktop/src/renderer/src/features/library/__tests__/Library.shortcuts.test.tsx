@@ -218,6 +218,32 @@ beforeEach(() => {
 });
 
 describe("Library runtime footer", () => {
+  test("parent renders preserve focused controls and mounted subscriptions", async () => {
+    const unsubscribe = vi.fn();
+    subscribeMock.mockImplementation(() => unsubscribe);
+    try {
+      await act(async () => {
+        root?.render(createElement(Library));
+      });
+      const search = container?.querySelector<HTMLInputElement>("input.psl__search");
+      expect(search).toBeInstanceOf(HTMLInputElement);
+      search?.focus();
+      const subscriptionCount = subscribeMock.mock.calls.length;
+      expect(subscriptionCount).toBeGreaterThan(0);
+      const cleanupCount = unsubscribe.mock.calls.length;
+
+      await act(async () => {
+        root?.render(createElement(Library));
+      });
+      expect(container?.querySelector("input.psl__search")).toBe(search);
+      expect(document.activeElement).toBe(search);
+      expect(subscribeMock.mock.calls.length).toBe(subscriptionCount);
+      expect(unsubscribe.mock.calls.length).toBe(cleanupCount);
+    } finally {
+      subscribeMock.mockImplementation(() => () => undefined);
+    }
+  });
+
   test("shows the Git branch for a development checkout", async () => {
     appVersionInfo = {
       version: "0.0.0-test",

@@ -332,9 +332,16 @@ not serve MCP.
 
 ## Build and release checks
 
-`pnpm build` builds the host relay before Electron. `build:native` and the
-macOS release stage build both Darwin architectures and combine them with
-`lipo`; ARM64 stages thin the isolated copy. The relay ships as an actual
+Run `pnpm build:native` explicitly after a fresh checkout and after changing
+native sources. It builds the host relay and platform helpers. `pnpm install`,
+`pnpm dev`, `pnpm build`, and the normal test commands do not compile them;
+run the native build before tests that exercise the real helper. Rust is
+required for the relay; macOS helpers also require Xcode command-line tools,
+and Windows helpers require the Visual Studio C++ workload.
+
+CI and packaging invoke native builds explicitly. The macOS release stage
+sets `PWRSNAP_NATIVE_UNIVERSAL=1` to build both Darwin architectures and combine
+them with `lipo`; ARM64 stages thin the isolated copy. The relay ships as an actual
 resource executable and follows the existing Developer ID/notarization or
 Windows Authenticode signing path. Release verification requires its presence,
 architecture and signature. Production signing is performed by guarded release

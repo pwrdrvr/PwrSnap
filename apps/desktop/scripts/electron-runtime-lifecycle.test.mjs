@@ -13,7 +13,7 @@ const electronRequire = createRequire(require.resolve("electron/package.json"));
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const postinstall = JSON.parse(readFileSync(join(here, "../package.json"), "utf8")).scripts.postinstall;
 
-it("all Codex setup paths reach the shared installer before native builds and sandbox checks", () => {
+it("all Codex setup paths install the runtime and check the sandbox without native compilation", () => {
   const environment = readFileSync(join(here, "../../../.codex/environments/environment.toml"), "utf8");
   const setup = environment.match(/\[setup(?:\.win32)?\]\s*script = '''([\s\S]*?)'''/g);
   expect(setup).toHaveLength(2);
@@ -21,7 +21,7 @@ it("all Codex setup paths reach the shared installer before native builds and sa
     expect(script).toMatch(/pnpm(?:\.cmd)? install/);
     expect(script).not.toMatch(/--ignore-scripts|--ignore-dep-scripts|ELECTRON_SKIP_BINARY_DOWNLOAD/);
   }
-  expect(postinstall).toBe("node ./scripts/ensure-electron-runtime.mjs && pnpm run rebuild:electron-native && node ../../scripts/linux-sandbox.mjs --warn");
+  expect(postinstall).toBe("node ./scripts/ensure-electron-runtime.mjs && node ../../scripts/linux-sandbox.mjs --warn");
 });
 
 // Select the install command from the real lifecycle hook. This same oracle

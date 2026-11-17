@@ -30,7 +30,7 @@ it("native setup builds for the host unless universal staging is explicitly requ
   const assertMode = (universal) => {
     const args = mcpBuildArgs(universal);
     expect(args[0]).toMatch(/[/\\]build-mcp\.mjs$/);
-    expect(args.slice(1)).toEqual(universal === "1" ? [] : ["--host"]);
+    expect(args.slice(1)).toEqual(universal === "1" ? [] : ["--host", "--allow-missing-cargo"]);
   };
   for (const mode of [undefined, "", "0", "1", "true"]) assertMode(mode);
   fc.assert(fc.property(fc.string({ maxLength: 12 }), assertMode), { numRuns: 25 });

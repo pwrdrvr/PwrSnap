@@ -46,7 +46,7 @@ const desktopRoot = resolve(__dirname, "..");
 // opts into both macOS architectures, matching the other native helpers.
 execFileSync(process.execPath, [
   join(__dirname, "build-mcp.mjs"),
-  ...(process.env.PWRSNAP_NATIVE_UNIVERSAL === "1" ? [] : ["--host"])
+  ...(process.env.PWRSNAP_NATIVE_UNIVERSAL === "1" ? [] : ["--host", "--allow-missing-cargo"])
 ], {stdio:"inherit"});
 const nativeRoot = join(desktopRoot, "native");
 const buildRoot = join(desktopRoot, "build", "native");

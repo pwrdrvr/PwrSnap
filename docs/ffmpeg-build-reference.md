@@ -20,15 +20,23 @@ same `scripts/ffmpeg/release-pin.json`. The dependency repository publishes
 immutable releases named `ffmpeg-build-<full-build-harness-commit-SHA>`.
 These raw dependency assets are independent of expiring Actions artifacts.
 
-**Activation is currently blocked.** The old build commit
-`3d775403a83990a2ad9503d865f5d481d9c0316a` lost its Actions artifacts and
-uses a retired macOS runner. The corrected producer must use standard
-`macos-26`, with FFmpeg **8.1.1**, source SHA-256
+The consumer pins build commit
+`027e89b29b9cb656111dd20f75e6176fa86c88ba`, published as
+`ffmpeg-build-027e89b29b9cb656111dd20f75e6176fa86c88ba` from successful
+build run **44093988582**, attempt **1**, on standard `macos-26` and Windows
+runners. FFmpeg **8.1.1**, source SHA-256
 `b6863adde98898f42602017462871b5f6333e65aec803fdd7a6308639c52edf3`, and
-profile **pwrsnap-lgpl-clean-v1** unchanged. Its new build-harness commit
-becomes the new source identity. The pin file contains a concrete blocker,
-not invented digests; both prepare jobs reject it before signing approval.
-Do not merge the consumer until publication and digest review are complete.
+profile **pwrsnap-lgpl-clean-v1** are unchanged. The retired build commit
+`3d775403a83990a2ad9503d865f5d481d9c0316a` lost its Actions artifacts;
+the new immutable release removes that retention dependency.
+
+The independently reviewed pins in `scripts/ffmpeg/release-pin.json` are:
+
+| Asset | SHA-256 |
+|---|---|
+| `release-manifest.json` | `f2381d5f60552c268db3f4d8a3969280324481cd5117712e0f0f481d734faef7` |
+| `ffmpeg-8.1.1-macos-universal.tar.gz` | `b9d2871da756968551dae3c4ccd8fc3e7abd8bf79f0e12e2407c48921fab9073` |
+| `ffmpeg-8.1.1-windows-x64.tar.gz` | `92fedcacf1f49dbb817917af0d2cc77e1832a23d703c282ce0d5cd454bfc06ad` |
 
 Repository immutable releases must be enabled. The producer uses the normal
 workflow token, without a privileged settings preflight or an additional PAT.
@@ -39,7 +47,7 @@ prints consumer pins, it verifies the actual published release is immutable,
 is no longer a draft, remains a prerelease, and has the exact source tag identity.
 Existing tags/releases are never overwritten. PR builds cannot publish.
 
-To activate consumption, replace the blocker with the publisher's reviewed
+For a future update, independently review the publisher's new
 pin object: `buildSha`, `manifestSha256`, and `archives` with SHA-256 values
 for **both** `macos-universal` and `windows-x64`. Review these independently
 in the PwrSnap PR; never adopt hashes from a download automatically. The

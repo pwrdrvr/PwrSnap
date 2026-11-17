@@ -85,8 +85,8 @@ release infrastructure plan.
      to download independently pinned immutable raw FFmpeg dependency assets
      (`ffmpeg-8.1.1-macos-universal.tar.gz`). See
      [the FFmpeg dependency contract](ffmpeg-build-reference.md).
-     Prepare jobs fail before signing approval until the producer release and
-     all reviewed hashes are present in `scripts/ffmpeg/release-pin.json`.
+     Prepare jobs validate the complete reviewed pin contract in
+     `scripts/ffmpeg/release-pin.json` before signing approval.
    To migrate the existing repo-level secrets into the environment, run
    from your workstation (the `--env apple-signing` flag is what scopes the
    secret to the environment):

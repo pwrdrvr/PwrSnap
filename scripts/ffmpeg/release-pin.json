@@ -1,3 +1,8 @@
 {
-  "blocked": "Await the parent-reviewed immutable publication of the successful macos-26 producer build in pwrdrvr/pwrsnap-ffmpeg-builds, then review and pin the release manifest and BOTH platform archive SHA-256 values. The expired 3d775403a83990a2ad9503d865f5d481d9c0316a build cannot be recovered on its retired runner."
+  "buildSha": "027e89b29b9cb656111dd20f75e6176fa86c88ba",
+  "manifestSha256": "f2381d5f60552c268db3f4d8a3969280324481cd5117712e0f0f481d734faef7",
+  "archives": {
+    "macos-universal": "b9d2871da756968551dae3c4ccd8fc3e7abd8bf79f0e12e2407c48921fab9073",
+    "windows-x64": "92fedcacf1f49dbb817917af0d2cc77e1832a23d703c282ce0d5cd454bfc06ad"
+  }
 }

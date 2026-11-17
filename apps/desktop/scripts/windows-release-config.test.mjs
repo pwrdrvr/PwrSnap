@@ -260,8 +260,8 @@ describe("Windows release configuration", () => {
     expect(workflow).toContain("secrets.AZURE_TENANT_ID");
     expect(workflow).toContain("secrets.AZURE_CLIENT_ID");
     expect(workflow).toContain("secrets.AZURE_CLIENT_SECRET");
-    expect(workflow).toContain("pwrdrvr/pwrsnap-ffmpeg-builds");
-    expect(workflow).toContain("3d775403a83990a2ad9503d865f5d481d9c0316a");
+    expect(read("scripts/ffmpeg/contract.mjs")).toContain("pwrdrvr/pwrsnap-ffmpeg-builds");
+    expect(workflow).toContain("scripts/ffmpeg/download.mjs");
     expect(workflow).toContain(`ffmpeg-${BUNDLED_FFMPEG.version}-macos-universal`);
     expect(workflow).toContain(`ffmpeg-${BUNDLED_FFMPEG.version}-windows-x64`);
     expect(workflow).toContain("apps/desktop/electron-builder.yml");
@@ -568,44 +568,34 @@ describe("Windows release configuration", () => {
     expect(workflow.match(/requiredDecoders/g) ?? []).toHaveLength(2);
   });
 
-  test("every FFmpeg build pin agrees across workflows and docs", () => {
-    // The protected macOS + Windows release jobs and the reference doc pin the
-    // private build-repo commit independently. PR previews intentionally use
-    // no private-repo credential; the public-release digest contract above
-    // pins their exact derived payloads instead.
-    const found = [];
-
-    const devProvisioner = read("apps/desktop/scripts/dev-ffmpeg.mjs");
-    for (const match of devProvisioner.matchAll(/buildSha:\s*["']([0-9a-f]{40})["']/g)) {
-      found.push({ source: "apps/desktop/scripts/dev-ffmpeg.mjs", sha: match[1] });
+  test("release and development consume one durable dependency pin with no Actions fallback", () => {
+    const pin = JSON.parse(read("scripts/ffmpeg/release-pin.json"));
+    const workflow = read(".github/workflows/release.yml");
+    const dev = read("apps/desktop/scripts/dev-ffmpeg.mjs");
+    expect(dev).toContain('from "../../../scripts/ffmpeg/download.mjs"');
+    expect(workflow).toContain('node scripts/ffmpeg/download.mjs macos-universal "$dir"');
+    expect(workflow).toContain('node scripts/ffmpeg/download.mjs windows-x64 $dir');
+    expect(workflow.match(/node scripts\/ffmpeg\/download.mjs --check-pin/g)).toHaveLength(2);
+    expect(workflow).not.toContain("gh run list");
+    expect(workflow).not.toContain("gh run download");
+    expect(dev).not.toContain('"run", "list"');
+    expect(dev).not.toContain('"run", "download"');
+    expect(workflow).not.toContain("FFMPEG_BUILD_SHA:");
+    expect(workflow.split("tar -czf")[1].split("sha256=")[0]).toContain("scripts/ffmpeg");
+    expect(read("scripts/release/archive-windows-signing-input.ps1")).toContain('"scripts/ffmpeg"');
+    // A concrete blocker is intentional until the corrected producer's bytes
+    // exist. Never invent digests or silently fetch the old transient artifact.
+    if (pin.blocked) {
+      expect(pin.blocked).toContain("macos-26");
+      expect(pin.blocked).toContain("both".toUpperCase());
+      expect(pin.buildSha).toBeUndefined();
+      expect(pin.archives).toBeUndefined();
+    } else {
+      expect(pin.buildSha).toMatch(/^[a-f0-9]{40}$/);
+      expect(pin.manifestSha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(Object.keys(pin.archives).sort()).toEqual(["macos-universal", "windows-x64"]);
+      for (const sha of Object.values(pin.archives)) expect(sha).toMatch(/^[a-f0-9]{64}$/);
     }
-
-    const workflowDir = resolve(repoRoot, ".github/workflows");
-    for (const entry of readdirSync(workflowDir)) {
-      if (!/\.ya?ml$/.test(entry)) continue;
-      const text = read(`.github/workflows/${entry}`);
-      for (const match of text.matchAll(/FFMPEG_BUILD_SHA:\s*([0-9a-f]{40})\b/g)) {
-        found.push({ source: entry, sha: match[1] });
-      }
-    }
-
-    // Optional: the reference doc tabulates the same pin.
-    const docPath = "docs/ffmpeg-build-reference.md";
-    if (existsSync(resolve(repoRoot, docPath))) {
-      for (const match of read(docPath).matchAll(
-        /`FFMPEG_BUILD_SHA`\s*\|\s*`([0-9a-f]{40})`/g
-      )) {
-        found.push({ source: docPath, sha: match[1] });
-      }
-    }
-
-    expect(found.length).toBeGreaterThanOrEqual(2);
-
-    const distinct = [...new Set(found.map((entry) => entry.sha))];
-    expect(
-      distinct,
-      `FFmpeg build pins disagree: ${found.map((e) => `${e.source}=${e.sha}`).join(", ")}`
-    ).toHaveLength(1);
   });
 
   test("every FFmpeg version pin agrees with the version THIRD_PARTY_LICENSES claims", () => {

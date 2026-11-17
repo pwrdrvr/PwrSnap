@@ -37,6 +37,7 @@ $paths = @(
   # imports and fails if this list falls behind again.
   "scripts/lib/cli-entrypoint.mjs",
   "scripts/check-bundled-ffmpeg-notice.mjs",
+  "scripts/ffmpeg",
   "scripts/release/install-trusted-signing.ps1"
 )
 foreach ($path in $paths) {

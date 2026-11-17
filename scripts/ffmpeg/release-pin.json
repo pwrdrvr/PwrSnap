@@ -1,0 +1,3 @@
+{
+  "blocked": "Enable immutable releases in pwrdrvr/pwrsnap-ffmpeg-builds, land the macos-26 producer, publish its successful exact-commit build, then review and pin the release manifest and BOTH platform archive SHA-256 values. The expired 3d775403a83990a2ad9503d865f5d481d9c0316a build cannot be recovered on its retired runner."
+}

@@ -1403,7 +1403,12 @@ function isAppDestinationWindow(window: BrowserWindow): boolean {
 function activateWindowState(window: BrowserWindow): ActivateWindowState {
   if (window.isDestroyed() || !isAppDestinationWindow(window)) return "gone";
   if (window.isMinimized()) return "minimized";
-  return window.isVisible() ? "visible" : "hidden";
+  // Deliberately NOT `isVisible()`. On macOS Electron reports false for a
+  // window another app fully covers (and for every window while the app is
+  // hidden), which is exactly the state a Dock click starts from. Nothing
+  // ever `hide()`s a destination window, so a live, unminimized one is one
+  // the user can come back to.
+  return "visible";
 }
 
 /**
@@ -1413,18 +1418,23 @@ function activateWindowState(window: BrowserWindow): ActivateWindowState {
  */
 export function installAppWindowFocusTracking(): void {
   app.on("browser-window-focus", (_event, window) => {
-    if (isAppDestinationWindow(window)) appWindowFocusOrder.noteFocused(window);
+    if (!isAppDestinationWindow(window)) return;
+    if (appWindowFocusOrder.noteFocused(window)) {
+      window.once("closed", () => appWindowFocusOrder.forget(window));
+    }
   });
 }
 
 /**
- * Raise the window a Dock click should bring back: the destination
- * window focused most recently, falling back to the Library (created if
- * needed). Returns the window raised.
+ * Raise the window a Dock click or a relaunch should bring back: the
+ * destination window focused most recently, falling back to the Library
+ * (created if needed). Returns the window raised.
  */
 export function raiseWindowForAppActivate(): BrowserWindow {
-  const target = appWindowFocusOrder.pickForActivate(activateWindowState);
-  const window = target?.window ?? findMainLibraryWindow() ?? createMainWindow();
+  const window =
+    appWindowFocusOrder.pickForActivate(activateWindowState) ??
+    findMainLibraryWindow() ??
+    createMainWindow();
   if (window.isMinimized()) window.restore();
   if (!window.isVisible()) window.show();
   window.focus();

@@ -173,6 +173,30 @@ describe("Dock click (app activate) raises the last focused window", () => {
     expect(sink.focus).not.toHaveBeenCalled();
   });
 
+  test("a window another app covers still comes back (macOS isVisible() is false when occluded)", async () => {
+    const { createSettingsWindow, installAppWindowFocusTracking, raiseWindowForAppActivate, showAppDocumentWindow } =
+      await import("../window");
+    installAppWindowFocusTracking();
+    const doc = showAppDocumentWindow("changelog") as unknown as WindowSpy;
+    const settings = createSettingsWindow() as unknown as WindowSpy;
+    emitAppEvent("browser-window-focus", doc);
+    emitAppEvent("browser-window-focus", settings);
+    // The app the user switched to fully covers Settings.
+    settings.isVisible.mockReturnValue(false);
+    doc.focus.mockClear();
+
+    expect(raiseWindowForAppActivate()).toBe(settings);
+    expect(doc.focus).not.toHaveBeenCalled();
+  });
+
+  test("a closed window is forgotten as soon as it closes", async () => {
+    const { createSettingsWindow, installAppWindowFocusTracking } = await import("../window");
+    installAppWindowFocusTracking();
+    const settings = createSettingsWindow() as unknown as WindowSpy;
+    emitAppEvent("browser-window-focus", settings);
+    expect(settings.once).toHaveBeenCalledWith("closed", expect.any(Function));
+  });
+
   test("a minimized last window is restored when nothing else is on screen", async () => {
     const { createSettingsWindow, installAppWindowFocusTracking, raiseWindowForAppActivate } =
       await import("../window");
@@ -195,5 +219,17 @@ describe("Dock click (app activate) raises the last focused window", () => {
     expect(handler).toContain("raiseWindowForAppActivate()");
     expect(handler).not.toContain("findMainLibraryWindow");
     expect(source).toContain("installAppWindowFocusTracking()");
+  });
+
+  test("index.ts routes a relaunch (second-instance) through the same rule", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { fileURLToPath } = await import("node:url");
+    const source = await readFile(fileURLToPath(new URL("../index.ts", import.meta.url)), "utf8");
+    const start = source.indexOf('app.on("second-instance"');
+    expect(start).toBeGreaterThan(-1);
+    // The handler's own raise sits right after its split-mode early return.
+    const handler = source.slice(start, source.indexOf("// If the second instance", start));
+    expect(handler).toContain("raiseWindowForAppActivate()");
+    expect(handler).not.toMatch(/findMainLibraryWindow\(\) \?\? createMainWindow\(\)/);
   });
 });

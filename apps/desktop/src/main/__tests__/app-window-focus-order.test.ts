@@ -1,10 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import {
-  AppWindowFocusOrder,
-  type ActivateTarget,
-  type ActivateWindowState
-} from "../app-window-focus-order";
+import { AppWindowFocusOrder, type ActivateWindowState } from "../app-window-focus-order";
 
 /**
  * Model test for what a Dock click brings back. The model keeps every
@@ -43,19 +39,19 @@ type World = {
  *  identity that changes on every reopen. */
 type Handle = { name: Win; generation: number };
 
-function modelPick(world: World): { name: Win; restore: boolean } | null {
+function modelPick(world: World): Win | null {
   const focused = [...world.lastFocusedAt.entries()]
     .filter(([name]) => world.state.get(name) !== "gone")
     .sort((a, b) => b[1] - a[1])
     .map(([name]) => name);
   const visible = focused.find((name) => world.state.get(name) === "visible");
-  if (visible !== undefined) return { name: visible, restore: false };
+  if (visible !== undefined) return visible;
   const minimized = focused.find((name) => world.state.get(name) === "minimized");
-  if (minimized !== undefined) return { name: minimized, restore: true };
+  if (minimized !== undefined) return minimized;
   return null;
 }
 
-function run(events: readonly Event[], pick: (order: AppWindowFocusOrder<Handle>, stateOf: (h: Handle) => ActivateWindowState) => ActivateTarget<Handle> | null): void {
+function run(events: readonly Event[], pick: (order: AppWindowFocusOrder<Handle>, stateOf: (h: Handle) => ActivateWindowState) => Handle | null): void {
   const order = new AppWindowFocusOrder<Handle>();
   const world: World = { state: new Map(), lastFocusedAt: new Map() };
   const live = new Map<Win, Handle>();
@@ -98,10 +94,8 @@ function run(events: readonly Event[], pick: (order: AppWindowFocusOrder<Handle>
 
     const actual = pick(order, stateOf);
     const expected = modelPick(world);
-    expect(
-      actual === null ? null : { name: actual.window.name, restore: actual.restore }
-    ).toEqual(expected);
-    if (actual !== null) expect(stateOf(actual.window)).not.toBe("gone");
+    expect(actual === null ? null : actual.name).toEqual(expected);
+    if (actual !== null) expect(stateOf(actual)).not.toBe("gone");
   }
 }
 
@@ -121,11 +115,11 @@ describe("AppWindowFocusOrder — Dock click brings back the last window", () =>
     const alwaysLibrary = (
       order: AppWindowFocusOrder<Handle>,
       stateOf: (h: Handle) => ActivateWindowState
-    ): ActivateTarget<Handle> | null => {
+    ): Handle | null => {
       const real = order.pickForActivate(stateOf);
       if (real === null) return null;
       const library = order.snapshot().find((h) => h.name === "library");
-      return library !== undefined ? { window: library, restore: false } : real;
+      return library ?? real;
     };
     expect(() =>
       fc.assert(
@@ -141,9 +135,6 @@ describe("AppWindowFocusOrder — Dock click brings back the last window", () =>
     const order = new AppWindowFocusOrder<string>();
     order.noteFocused("library");
     order.noteFocused("settings");
-    expect(order.pickForActivate(() => "visible")).toEqual({
-      window: "settings",
-      restore: false
-    });
+    expect(order.pickForActivate(() => "visible")).toBe("settings");
   });
 });

@@ -1730,10 +1730,9 @@ export function bootstrapApp(): void {
         handleSecondInstanceArgv(argv, additionalData);
         return;
       }
-      const main = findMainLibraryWindow() ?? createMainWindow();
-      if (main.isMinimized()) main.restore();
-      if (!main.isVisible()) main.show();
-      main.focus();
+      // Same rule as a Dock click: the window the user was last in, with
+      // the Library as the fallback (app-window-focus-order.ts).
+      raiseWindowForAppActivate();
       // If the second instance was launched with a file path, route it
       // to the open-file pipeline. Paths can come from argv (CLI /
       // drag-to-Dock) or from the losing process's open-file queue

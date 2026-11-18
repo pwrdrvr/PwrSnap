@@ -186,6 +186,22 @@ describe("DesktopSettingsService.write", () => {
       .toEqual({ provider });
   });
 
+  test("the on-device Apple selector survives a restart, without a model or an effort", async () => {
+    const filePath = join(workDir, "settings.json");
+    const raw = defaultSettings();
+    raw.ai.defaults.enrichment = { provider: "apple:system", model: "gpt-6-luna", reasoning: "low" };
+    raw.ai.enrichmentFallback = { provider: "apple:system" };
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+    const read = await new DesktopSettingsService({ filePath }).read();
+    expect(read.ai.defaults.enrichment).toEqual({ provider: "apple:system" });
+    expect(read.ai.enrichmentFallback).toEqual({ provider: "apple:system" });
+
+    // Anything near it that is not the exact selector falls back to Codex.
+    raw.ai.defaults.enrichment = { provider: "apple:pcc" };
+    writeFileSync(filePath, JSON.stringify(raw), "utf8");
+    expect((await new DesktopSettingsService({ filePath }).read()).ai.defaults.enrichment.provider).toBeUndefined();
+  });
+
   test("clears a legacy custom model string on an unrelated settings write", async () => {
     const filePath = join(workDir, "settings.json");
     const raw = defaultSettings();

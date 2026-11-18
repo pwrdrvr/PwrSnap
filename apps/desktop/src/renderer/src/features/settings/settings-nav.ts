@@ -13,6 +13,7 @@
 // validates `settings:open` deep links against.
 
 import {
+  APPLE_FM_SETTINGS_SUB,
   NEW_CONNECTION_SETTINGS_SUB,
   SETTINGS_PAGE_SUBS,
   type AiFeaturesSettingsSub,
@@ -65,7 +66,9 @@ export function settingsNavChildren(
         ...providerStatuses.map((status) => ({
           sub: status.sub,
           label: status.label,
-          status
+          status,
+          // Neither an installed agent nor a connection: it is the Mac.
+          ...(status.sub === APPLE_FM_SETTINGS_SUB ? { heading: "On this Mac" } : {})
         })),
         ...connections.map((status, i) => ({
           sub: status.sub,

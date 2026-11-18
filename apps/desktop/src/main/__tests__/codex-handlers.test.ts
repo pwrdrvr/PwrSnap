@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { readFileSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -11,6 +11,8 @@ import { CustomModelService } from "../ai/direct-api/service";
 import type { CustomCredentials } from "../ai/direct-api/credentials";
 import { body, json, model, server } from "../ai/direct-api/__tests__/fixtures";
 import { ENRICHMENT_QUEUE_MAX_AGE_MS } from "../ai/direct-api/enrichment-queue";
+import * as appleFmCli from "../ai/apple-fm/fm-cli";
+import { getAppleFmStatusService } from "../ai/apple-fm/service";
 
 let testDb: Database.Database;
 let tempRoot: string;
@@ -478,6 +480,94 @@ describe("Codex handlers", () => {
     },
     10_000
   );
+
+  // Production wiring for Apple's on-device model: the real handler, plan
+  // resolution, image preparation, queue and run persistence; only the fm
+  // process itself is scripted. Three rules ride on this: the on-device
+  // selector never reaches Codex, the tool is run with the fixed argv, and a
+  // failure is never moved to the caption fallback.
+  test.each([
+    { scenario: "success", expected: "completed" },
+    { scenario: "guardrail", expected: "failed" },
+    { scenario: "terms-with-fallback-armed", expected: "failed" }
+  ] as const)("on-device Apple enrichment: $scenario → $expected", async ({ scenario, expected }) => {
+    let finish!: (run: { id: string; status: string }) => void;
+    const finished = new Promise<{ id: string; status: string }>((resolve) => { finish = resolve; });
+    electronMock.windows.push({
+      isDestroyed: () => false,
+      webContents: { send: (channel, payload) => {
+        const run = (payload as { run?: { id: string; status: string } | null }).run;
+        if (channel === EVENT_CHANNELS.aiRunUpdated && run && ["completed", "failed"].includes(run.status))
+          finish(run);
+      } }
+    });
+    const fmCalls: Array<{ args: string[]; stdin: string | undefined }> = [];
+    const runSpy = vi.spyOn(appleFmCli, "runAppleFm").mockImplementation(async (args, options) => {
+      appleFmCli.assertAppleFmArgs(args);
+      fmCalls.push({ args: [...args], stdin: options.stdin });
+      if (args[0] === "config") return { code: 0, signal: null, stdout: "(none)\n", stderr: "" };
+      if (scenario === "guardrail") {
+        return { code: 1, signal: null, stdout: "", stderr: "Error: The model's safety guardrails were triggered.\n" };
+      }
+      if (scenario === "terms-with-fallback-armed") {
+        return { code: 1, signal: null, stdout: "", stderr: "Not agreed. Run 'sudo fm license' to review and agree.\n" };
+      }
+      return { code: 0, signal: null, stderr: "", stdout: JSON.stringify({
+        title: "On-device fixture", description: "Synthetic image captioned on this Mac", ocrText: "",
+        filenameStem: "on-device-fixture", textAnchors: [], tags: []
+      }) };
+    });
+    // The tool is macOS-only; the wiring under test is not.
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const invalidate = vi.spyOn(getAppleFmStatusService(), "invalidate");
+    const settings = testSettings();
+    settings.ai.enabled = true;
+    settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+    settings.ai.defaults.enrichment = { provider: "apple:system" };
+    if (scenario === "terms-with-fallback-armed") settings.ai.enrichmentFallback = {};
+    const clientFactory = vi.fn(() => { throw new Error("On-device selection reached Codex"); });
+    try {
+      registerCodexHandlers({ clientFactory, settingsReader: async () => settings });
+      const result = await bus.dispatch("codex:enrich", { captureId: "cap_1" }, { principal: "ipc" });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(await finished).toMatchObject({ id: result.value.runId, status: expected });
+      const run = getAiRun(result.value.runId);
+      expect(run).toMatchObject({ status: expected, selectedModel: "system", fallbackFrom: null });
+      expect(clientFactory).not.toHaveBeenCalled();
+
+      // The guard, then exactly one model turn, with the fixed argv.
+      expect(fmCalls.map((call) => call.args[0])).toEqual(["config", "respond"]);
+      const respond = fmCalls[1]!;
+      expect(respond.args.slice(0, 5)).toEqual(["respond", "--no-stream", "--greedy", "--model", "system"]);
+      const images = respond.args.flatMap((arg, i) => (arg === "--image" ? [respond.args[i + 1]] : []));
+      expect(images).toHaveLength(1);
+      // An app-prepared bounded copy, never the capture's own file.
+      // Absolute on every platform (a Windows path starts with a drive).
+      expect(isAbsolute(images[0] ?? "")).toBe(true);
+      expect(images[0]).not.toContain(tempRoot);
+      expect(respond.stdin).toContain("Capture metadata:");
+
+      const usage = await bus.dispatch("codex:usageRunDetail", { runId: result.value.runId }, { principal: "ipc" });
+      expect(usage).toMatchObject({ ok: true, value: { modelProvider: "apple:system" } });
+      if (scenario === "success") {
+        expect(getCaptureEnrichment("cap_1")?.suggestedDescription).toBe("Synthetic image captioned on this Mac");
+        expect(usage).toMatchObject({ ok: true, value: { modelLabel: "Apple Intelligence (on-device)" } });
+        expect(invalidate).not.toHaveBeenCalled();
+      } else if (scenario === "guardrail") {
+        expect(run?.error).toContain("Apple's safety checks declined it");
+        expect(invalidate).not.toHaveBeenCalled();
+      } else {
+        expect(run?.error).toContain("haven't been agreed to");
+        // A setup failure makes the cached status stale.
+        expect(invalidate).toHaveBeenCalledTimes(1);
+      }
+    } finally {
+      runSpy.mockRestore();
+      platformSpy.mockRestore();
+      invalidate.mockRestore();
+    }
+  }, 10_000);
 
   // A stopped local server is what `ai.enrichmentFallback` exists for. The
   // primary's failure decides: nothing answered → the SAME run moves to the

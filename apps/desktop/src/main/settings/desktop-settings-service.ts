@@ -60,6 +60,7 @@ import type {
   UpdateTrain
 } from "@pwrsnap/shared";
 import {
+  isAppleFmProvider,
   isAiEnrichmentRateLimit,
   isOverlayOutlineMode,
   isStrokePatternStyle,
@@ -1198,6 +1199,9 @@ function parseAiSurfaceDefault(raw: unknown): AiSurfaceDefault {
     // dropped → Codex default. "" / "codex" also drop to the implicit default.
     const provider = rec.provider.trim();
     if (/^custom:[0-9a-f-]{36}$/i.test(provider)) out.provider = provider;
+    // Apple's on-device model. Only the captions surfaces can be set to it
+    // (settings:write refuses it elsewhere); it has no model or effort.
+    if (isAppleFmProvider(provider)) out.provider = provider;
     if (provider.startsWith("acp:") && isBuiltInAcpAgentId(provider.slice("acp:".length))) {
       out.provider = provider;
     }
@@ -1210,6 +1214,10 @@ function parseAiSurfaceDefault(raw: unknown): AiSurfaceDefault {
   if (out.provider?.startsWith("custom:")) delete out.model;
   if (isAiReasoningEffort(rec.reasoning)) {
     out.reasoning = rec.reasoning;
+  }
+  if (isAppleFmProvider(out.provider)) {
+    delete out.model;
+    delete out.reasoning;
   }
   return out;
 }

@@ -1,6 +1,7 @@
 import type { AvatarStyle, CameraTrackMetadata, PresenterSpan, RecordingCamera } from "./camera";
 import type { RecordingDevicePreference, RecordingMicrophone } from "./recording-devices";
 import type { CustomConnection, CustomConnectionInput, CustomModel, CustomModelDiscovery, CustomModelInput } from "./custom-models";
+import { APPLE_FM_SETTINGS_SUB, type AppleFmStatus, type AppleFmTestResult } from "./apple-fm";
 // Typed `Commands` registry. Single source of truth across main /
 // preload / renderer / external transports (HTTP RPC in Phase 7, MCP
 // later). Every command-bus.dispatch(name, req) call typechecks the
@@ -2476,7 +2477,7 @@ export function builtInAcpAgentDisplayName(id: string): string {
  *  renderer code. Declared after `BUILT_IN_ACP_AGENT_IDS` because it spreads
  *  it at module load. */
 export const SETTINGS_PAGE_SUBS = {
-  ai: ["codex", ...BUILT_IN_ACP_AGENT_IDS, "openai"],
+  ai: ["codex", ...BUILT_IN_ACP_AGENT_IDS, APPLE_FM_SETTINGS_SUB, "openai"],
   "ai-features": ["default-agents", "enrichment", "usage", "guidance"]
 } as const satisfies Partial<Record<SettingsPage, readonly string[]>>;
 
@@ -5149,6 +5150,16 @@ export type Commands = {
   /** Asks one saved model to reply; a few tokens on the provider's bill. */
   "customModels:test": { req: { id: string }; res: { message: string; ms: number } };
   "customModels:models": { req: { id: string }; res: { models: { id: string; label: string; isDefault: boolean }[] } };
+  /** What macOS reports about Apple's on-device model. Read-only: it never
+   *  agrees to Apple's terms, changes fm's configuration, or runs a model
+   *  turn. `force: false` may return the cached answer; nothing polls. */
+  "appleFm:status": { req: { force?: boolean }; res: AppleFmStatus };
+  /** One short text prompt to the on-device model, timed. No capture. */
+  "appleFm:test": { req: Record<string, never>; res: AppleFmTestResult };
+  /** Launches Terminal, empty, so an administrator can paste
+   *  `APPLE_FM_LICENSE_COMMAND`. macOS and the Settings window only; it types
+   *  nothing and runs nothing. */
+  "appleFm:openTerminal": { req: Record<string, never>; res: void };
   "settings:replaceSecret": {
     req: { name: DesktopSettingsSecretName; value: string };
     res: SecretStatus;

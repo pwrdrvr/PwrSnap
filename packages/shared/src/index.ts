@@ -48,6 +48,7 @@ export * from "./popover-sizing";
 export * from "./ai-enrichment-rate-limit";
 
 export * from "./custom-models";
+export * from "./apple-fm";
 export * from "./codex-model-policy";
 
 export * from "./camera";

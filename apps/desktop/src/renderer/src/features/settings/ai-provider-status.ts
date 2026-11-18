@@ -21,7 +21,16 @@ import type {
   SecretStatus,
   Settings
 } from "@pwrsnap/shared";
-import { BUILT_IN_ACP_AGENT_IDS, builtInAcpAgentDisplayName } from "@pwrsnap/shared";
+import {
+  APPLE_FM_DISPLAY_NAME,
+  APPLE_FM_SETTINGS_SUB,
+  BUILT_IN_ACP_AGENT_IDS,
+  appleFmStateCopy,
+  builtInAcpAgentDisplayName,
+  isAppleFmOffered,
+  isAppleFmProvider,
+  type AppleFmStatus
+} from "@pwrsnap/shared";
 
 /** Sub-route ids under the `ai` Settings page. One per provider screen. The
  *  SET is owned by `SETTINGS_PAGE_SUBS` in @pwrsnap/shared — main validates
@@ -42,7 +51,9 @@ export const ACP_AGENT_DISPLAY_ORDER: readonly BuiltInAcpAgentId[] = [
 export const AI_PROVIDER_SUBS: readonly AiProviderSub[] = [
   "codex",
   ...ACP_AGENT_DISPLAY_ORDER,
-  "openai"
+  "openai",
+  // Last: it sits under its own "On this Mac" heading in the sidebar.
+  APPLE_FM_SETTINGS_SUB
 ];
 
 /**
@@ -92,6 +103,11 @@ export type AiProviderStatusInput = {
    *  AI Providers page issues those probes; the sidebar just reflects them. */
   acpModelErrors: Readonly<Record<string, string | undefined>>;
   openaiKey: SecretStatus | null;
+  /** What macOS reports about the on-device model; null until asked. */
+  appleFm?: AppleFmStatus | null;
+  /** Whether captions (or their fallback) are set to the on-device model. A
+   *  not-ready state is a fault only when something depends on it. */
+  appleFmInUse?: boolean;
 };
 
 export function describeCodexStatus(
@@ -194,6 +210,48 @@ export function describeOpenAiStatus(key: SecretStatus | null): AiProviderStatus
     : { ...base, tone: "off", chip: "no key", badge: "No key", meta };
 }
 
+/**
+ * Apple's on-device model. Three tones, on purpose:
+ *
+ * - ready → `ok`.
+ * - a missing step (terms, model still downloading) → `warn`.
+ * - a Mac that cannot run it as it is (older macOS, unsupported) → `off`:
+ *   that Mac has done nothing wrong, so the row is grey, not red.
+ *
+ * Any not-ready state becomes `bad` when captions are routed here, because
+ * then every new capture's caption is failing.
+ */
+export function describeAppleFmStatus(status: AppleFmStatus, inUse: boolean): AiProviderStatus {
+  const base = { sub: APPLE_FM_SETTINGS_SUB, label: APPLE_FM_DISPLAY_NAME } as const;
+  const copy = appleFmStateCopy(status);
+  if (status.state === "ready") {
+    return {
+      ...base,
+      tone: "ok",
+      badge: copy.badge,
+      meta: `${status.modelLabel ?? "On-device model"} · on this Mac`
+    };
+  }
+  const tone: AiProviderTone = inUse ? "bad" : copy.severity === "needs" ? "off" : "warn";
+  return {
+    ...base,
+    tone,
+    ...(copy.chip !== undefined ? { chip: copy.chip } : {}),
+    badge: copy.badge,
+    meta: copy.title
+  };
+}
+
+/** Whether a job's stored `provider` (or the caption fallback's) names the
+ *  on-device model. */
+export function appleFmInUse(settings: Settings | null | undefined): boolean {
+  if (settings === null || settings === undefined) return false;
+  return (
+    isAppleFmProvider(settings.ai.defaults.enrichment.provider) ||
+    isAppleFmProvider(settings.ai.enrichmentFallback?.provider)
+  );
+}
+
 /** Every provider, in sidebar order. */
 export function describeAiProviders(input: AiProviderStatusInput): AiProviderStatus[] {
   const enabled = new Set(input.enabledAgentIds);
@@ -209,7 +267,12 @@ export function describeAiProviders(input: AiProviderStatusInput): AiProviderSta
         input.acpModelErrors[id]
       )
     ),
-    describeOpenAiStatus(input.openaiKey)
+    describeOpenAiStatus(input.openaiKey),
+    // Absent until macOS has answered, and absent for good off macOS: no
+    // row, no dot, nothing to explain on Windows or Linux.
+    ...(isAppleFmOffered(input.appleFm) && input.appleFm
+      ? [describeAppleFmStatus(input.appleFm, input.appleFmInUse === true)]
+      : [])
   ];
 }
 
@@ -243,7 +306,10 @@ export function routedSurfaces(settings: Settings | null, sub: AiProviderSub): A
   if (settings === null || sub === "openai") return [];
   const enabled = new Set(settings.ai.acp.enabledAgentIds);
   return AI_SURFACE_ORDER.filter((surface) => {
-    const agentId = acpAgentIdOfProvider(settings.ai.defaults[surface].provider);
+    const provider = settings.ai.defaults[surface].provider;
+    // Captions only: a chat surface cannot be set to the on-device model.
+    if (surface === "enrichment" && isAppleFmProvider(provider)) return sub === APPLE_FM_SETTINGS_SUB;
+    const agentId = acpAgentIdOfProvider(provider);
     const backend = agentId !== null && enabled.has(agentId) ? agentId : "codex";
     return backend === sub;
   });

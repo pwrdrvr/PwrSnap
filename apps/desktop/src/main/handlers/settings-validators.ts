@@ -24,6 +24,7 @@ import {
   DEFAULT_HOTKEYS,
   isAiReasoningEffort,
   isBuiltInAcpAgentId,
+  isAppleFmProvider,
   isAppearanceTheme,
   isCodexCaptionModel,
   isColorToken,
@@ -1062,6 +1063,15 @@ function validateChatSurfaceProvider(
   value: string
 ): PwrSnapError | null {
   if (value === "" || value === "codex" || /^custom:[0-9a-f-]{36}$/i.test(value)) return null;
+  if (isAppleFmProvider(value)) {
+    // The on-device model writes captions and nothing else: it has no chat
+    // transport, so a chat surface naming it would have nothing to run on.
+    if (surface === "enrichment" || surface === "enrichmentFallback") return null;
+    return validationError(
+      `${aiSurfaceErrorCode(surface)}_provider`,
+      `settings:write: ${aiSurfaceSettingPath(surface)}.provider cannot be the on-device Apple model; it is available for captions only`
+    );
+  }
   if (value.startsWith("acp:")) {
     const id = value.slice("acp:".length);
     if (isBuiltInAcpAgentId(id)) return null;

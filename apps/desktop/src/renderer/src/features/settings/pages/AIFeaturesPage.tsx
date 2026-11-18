@@ -24,6 +24,13 @@ import type {
   CodexModelOption
 } from "@pwrsnap/shared";
 import {
+  APPLE_FM_DISPLAY_NAME,
+  APPLE_FM_MODEL_ID,
+  APPLE_FM_PROVIDER,
+  appleFmStateCopy,
+  isAppleFmOffered,
+  isAppleFmProvider,
+  isAppleFmReady,
   AI_ENRICHMENT_RATE_LIMIT_BOUNDS,
   AI_ENRICHMENT_RATE_LIMIT_DEFAULT,
   AI_REASONING_EFFORTS,
@@ -80,7 +87,8 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
     acpModels,
     acpModelErrors,
     acpModelsLoadingIds,
-    fetchAcpModels
+    fetchAcpModels,
+    appleFm
   } = useAiProvidersContext();
   const acpAgentIdsInUse = useInUseAcpModelProbes();
   const [budgetStatus, setBudgetStatus] = useState<AiEnrichmentBudgetStatus | null>(null);
@@ -183,9 +191,27 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
     (settings?.ai.customModels ?? [])
       .filter((m) => surface !== "enrichment" || m.capabilities.vision === true)
       .map((m) => ({ value: `custom:${m.id}`, label: `${m.displayName} · ${connectionNames.get(m.connectionId) ?? "Direct API"}` }));
+  // Apple's on-device model: captions only, and only where macOS offers it
+  // at all (never on Windows or Linux). When it cannot run, the entry stays
+  // visible but unpickable, with the missing step beside it.
+  const appleProviderOptions = (surface: AiSurfaceId, selected: string | undefined): AcpChatProviderOption[] => {
+    if (surface !== "enrichment" || appleFm === null || !isAppleFmOffered(appleFm)) return [];
+    const ready = isAppleFmReady(appleFm);
+    return [{
+      value: APPLE_FM_PROVIDER,
+      label: ready
+        ? `${APPLE_FM_DISPLAY_NAME} · on this Mac`
+        : `${APPLE_FM_DISPLAY_NAME} · ${appleFmStateCopy(appleFm).reason}`,
+      // Never disable the saved choice: the select must keep showing it.
+      ...(ready || isAppleFmProvider(selected) ? {} : { disabled: true })
+    }];
+  };
   const acpModelsForProvider = (
     provider: string | undefined
   ): readonly AcpAgentModelOption[] | undefined => {
+    if (isAppleFmProvider(provider)) {
+      return [{ id: APPLE_FM_MODEL_ID, label: "On-device model", isDefault: true }];
+    }
     if (provider?.startsWith("custom:")) {
       const m = settings?.ai.customModels?.find((entry) => `custom:${entry.id}` === provider);
       return m ? [{ id: m.modelId, label: m.displayName, isDefault: true }] : [];
@@ -253,7 +279,8 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
           value={value}
           models={codexModels?.models ?? []}
           modelsLoading={codexModelsLoading}
-          acpProviderOptions={[...acpChatProviderOptions, ...customProviderOptions("enrichment")]
+          acpProviderOptions={[...acpChatProviderOptions, ...appleProviderOptions("enrichment", value.provider),
+            ...customProviderOptions("enrichment")]
             .filter((o) => o.value !== enrichmentPrimary)}
           acpModelOptions={acpModelsForProvider(value.provider)}
           acpModelsLoading={acpModelsLoadingForProvider(value.provider)}
@@ -276,7 +303,8 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
         value={value}
         models={codexModels?.models ?? []}
         modelsLoading={codexModelsLoading}
-        acpProviderOptions={[...acpChatProviderOptions, ...customProviderOptions(surface)]}
+        acpProviderOptions={[...acpChatProviderOptions, ...appleProviderOptions(surface, value.provider),
+          ...customProviderOptions(surface)]}
         acpModelOptions={acpModelsForProvider(value.provider)}
         acpModelsLoading={acpModelsLoadingForProvider(value.provider)}
         acpModelError={acpModelErrorForProvider(value.provider)}
@@ -463,7 +491,7 @@ function modelLabel(model: CodexModelOption): string {
   return model.displayName.length > 0 ? model.displayName : model.id;
 }
 
-export type AcpChatProviderOption = { value: string; label: string };
+export type AcpChatProviderOption = { value: string; label: string; disabled?: boolean };
 
 /** Build the chat-surface provider dropdown options from the enabled agent ids.
  *  The label comes from discovery's display name once it resolves, else the
@@ -569,7 +597,10 @@ export function AiSurfaceDefaultControl({
   const chatProviderValue = providerValue === "codex" ? "" : providerValue;
   // Model choices follow the selected BACKEND: Codex models for Codex, the ACP
   // agent's advertised models for an acp:<id> provider.
-  const isCustomProvider = chatProviderValue.startsWith("custom:");
+  // The on-device Apple model behaves like a Direct API model here: one fixed
+  // model, no reasoning control.
+  const isAppleProvider = isAppleFmProvider(chatProviderValue);
+  const isCustomProvider = chatProviderValue.startsWith("custom:") || isAppleProvider;
   const isAcpProvider = chatProviderValue.startsWith("acp:") || isCustomProvider;
   const codexModels = surfaceModelOptions(models);
   // Enrichment's managed default is resolved against the live catalog at run
@@ -748,18 +779,20 @@ export function AiSurfaceDefaultControl({
               // only for the backend that advertised it (a Gemini model can't
               // run on Codex), so fall back to Default rather than carrying a
               // stale value across providers.
-              onChange({ provider: e.target.value, model: "", ...(isCustomProvider || e.target.value.startsWith("custom:") ? { reasoning: "" } : {}) });
+              onChange({ provider: e.target.value, model: "", ...(isCustomProvider || e.target.value.startsWith("custom:") || isAppleFmProvider(e.target.value) ? { reasoning: "" } : {}) });
             }}
           >
             <option value="">Codex</option>
             {acpProviderOptions.map((o) => (
-              <option key={o.value} value={o.value}>
+              <option key={o.value} value={o.value} disabled={o.disabled === true}>
                 {o.label}
               </option>
             ))}
             {showsStaleAcp ? (
               <option value={chatProviderValue}>
-                {chatProviderValue.slice("acp:".length)} (not enabled)
+                {isAppleProvider
+                  ? `${APPLE_FM_DISPLAY_NAME} (not available)`
+                  : `${chatProviderValue.slice("acp:".length)} (not enabled)`}
               </option>
             ) : null}
           </select>
@@ -845,7 +878,9 @@ export function AiSurfaceDefaultControl({
             ))}
           </select>
         </label>}
-        {isCustomProvider && <span className="pss__opt-sub">Direct API · no tools, reasoning controls or pricing estimate</span>}
+        {isCustomProvider && <span className="pss__opt-sub">{isAppleProvider
+          ? "Runs on this Mac · captures are not sent anywhere"
+          : "Direct API · no tools, reasoning controls or pricing estimate"}</span>}
       </div>
   );
   if (embedded) return controls;

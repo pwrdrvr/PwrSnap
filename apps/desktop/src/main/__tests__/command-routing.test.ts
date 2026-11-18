@@ -10,6 +10,10 @@ import { commandOwner, peerOwnsCommand } from "../process-split/command-routing"
 describe("commandOwner", () => {
   test("capture surface belongs to the agent", () => {
     expect(commandOwner("capture:interactive")).toBe("agent");
+    // The on-device model's status and test run beside enrichment itself.
+    expect(commandOwner("appleFm:status")).toBe("agent");
+    expect(commandOwner("appleFm:test")).toBe("agent");
+    expect(commandOwner("appleFm:openTerminal")).toBe("agent");
     expect(commandOwner("recording:start")).toBe("agent");
     expect(commandOwner("float-over:dismiss")).toBe("agent");
     expect(commandOwner("clipboard:copy")).toBe("agent");

@@ -1,5 +1,6 @@
 import { ConnectionIndex } from "./ConnectionIndex";
 import { ConnectionPage } from "./ConnectionPage";
+import { AppleIntelligenceCard } from "./AppleIntelligenceCard";
 import { CodexUpgradeStrip } from "../CodexUpgradeHelp";
 // The "Using" pill follows `snapshot.resolvedPath`, NOT
 // `settings.codex.mode` — same logic stdio-transport uses to spawn
@@ -19,6 +20,9 @@ import type {
   SettingsPatch
 } from "@pwrsnap/shared";
 import {
+  APPLE_FM_PROVIDER,
+  APPLE_FM_SETTINGS_SUB,
+  isAppleFmProvider,
   connectionIdOfSettingsSub,
   executablePathExample,
   NEW_CONNECTION_SETTINGS_SUB,
@@ -35,6 +39,7 @@ import {
 } from "../components";
 import { useAiProvidersContext, useInUseAcpModelProbes } from "../AiProvidersContext";
 import {
+  appleFmInUse,
   routedSurfaces,
   statusBadgeClass,
   type AiProviderStatus,
@@ -97,6 +102,9 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
     refreshAcpDiscovery,
     acpModelErrors,
     fetchAcpModels,
+    appleFm,
+    appleFmLoading,
+    refreshAppleFm,
     statuses,
     connections
   } = useAiProvidersContext();
@@ -175,6 +183,30 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
           }}
           onSelectProfile={(name) => {
             void patch({ codex: { profile: name } });
+          }}
+        />
+      );
+    } else if (focused.sub === APPLE_FM_SETTINGS_SUB) {
+      help =
+        "The language model built into macOS. It reads each capture on this Mac and writes the title, description and tags. Nothing is sent to a server.";
+      body = (
+        <AppleIntelligenceCard
+          // "Copied" and a test result describe one detected state. Remount
+          // when it changes, so neither is shown over a different one.
+          key={appleFm?.state ?? "unknown"}
+          status={appleFm}
+          loading={appleFmLoading}
+          inUse={appleFmInUse(settings)}
+          captionsRouted={isAppleFmProvider(settings?.ai.defaults.enrichment.provider)}
+          onRecheck={() => {
+            void refreshAppleFm(true);
+          }}
+          onUseForCaptions={() => {
+            void patch({
+              ai: {
+                defaults: { enrichment: { provider: APPLE_FM_PROVIDER, model: "", reasoning: "" } }
+              }
+            });
           }}
         />
       );
@@ -274,6 +306,7 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
   // Two ways to run AI, one card each, in sidebar order: the installed
   // agents, then the Direct API connections PwrSnap calls itself.
 
+  const onThisMac = statuses.filter((status) => status.sub === APPLE_FM_SETTINGS_SUB);
   const addConnection = (): void => {
     setActivePage("ai", NEW_CONNECTION_SETTINGS_SUB);
   };
@@ -284,9 +317,10 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
           <div className="pss__main-eyebrow">General</div>
           <h1 className="pss__main-title">AI Providers</h1>
           <p className="pss__main-sub">
-            Two ways to run AI. Installed agents are CLIs you already use, signed in to your
-            own account. Direct API connections are called by PwrSnap itself, with your key,
-            on your provider's bill. Pick which one does each job in{" "}
+            {onThisMac.length > 0
+              ? "Three ways to run AI. Installed agents are CLIs you already use, signed in to your own account. The on-device model is built into macOS. Direct API connections are called by PwrSnap itself, with your key, on your provider's bill. "
+              : "Two ways to run AI. Installed agents are CLIs you already use, signed in to your own account. Direct API connections are called by PwrSnap itself, with your key, on your provider's bill. "}
+            Pick which one does each job in{" "}
             <button
               type="button"
               className="pss__text-link"
@@ -307,13 +341,28 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
           sub="Green is ready. Amber needs attention, usually a sign-in. Red is turned on but can't run. Grey is off or not installed. The same list sits under AI Providers in the sidebar."
         >
           <ProviderIndex
-            statuses={statuses}
+            statuses={statuses.filter((status) => status.sub !== APPLE_FM_SETTINGS_SUB)}
             onOpen={(next) => {
               setActivePage("ai", next);
             }}
           />
         </Row>
       </Card>
+      {onThisMac.length > 0 ? (
+        <Card eyebrow="ON THIS MAC" title="Built into macOS">
+          <Row
+            label="No account, no key"
+            sub="Apple's on-device model. Captions run on this Mac and the capture is not sent anywhere. Captions only."
+          >
+            <ProviderIndex
+              statuses={onThisMac}
+              onOpen={(next) => {
+                setActivePage("ai", next);
+              }}
+            />
+          </Row>
+        </Card>
+      ) : null}
       <Card
         eyebrow="DIRECT API"
         title="Connections"

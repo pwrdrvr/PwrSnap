@@ -102,256 +102,178 @@
 
 ## Topic rules — read the linked file before touching the area
 
-**This file must stay under 32 KiB**: Codex's default `project_doc_max_bytes`
-silently truncates past it, and `pnpm agents-md:check` (in `pnpm lint`) fails
-first. Each section below lists the rules one file in
-[docs/agents/](docs/agents/) holds, and when to read it. A summary is not the
-rule: when your change is in the area, read the file. A new topic rule goes in
-the matching file, with a one-line summary here.
+**Keep this file under 24 KiB** (`pnpm lint:agent-instructions`, also checked
+by CI's classifier). Codex silently drops AGENTS.md text past 32 KiB. Put
+details in a linked document and leave a line here saying when to read it.
+Each file in [docs/agents/](docs/agents/) holds the rules named under it,
+verbatim. A summary here is not the rule: in that area, read the file.
 
 ### Dependency licensing
 
-Read [docs/agents/licensing.md](docs/agents/licensing.md) **before adding,
-bumping or even looking at a third-party dependency's source**, or touching
-any license script, `THIRD_PARTY_LICENSES`, or `dependabot-licenses.yml`.
+Read [docs/agents/licensing.md](docs/agents/licensing.md) before adding,
+bumping or reading the source of any dependency, or touching a license script.
 
-- **Dependency licensing — what we ship and what we even look at.** Never read
-  source of, depend on, or copy patterns from a source-available /
-  restrictively licensed project. **Remotion is banned.** Only MIT, BSD,
-  Apache-2.0, MPL-2.0, ISC, 0BSD, Unlicense, CC0 are always allowed; anything
-  else, pause and ask. Adding an id to `ALLOWED_LICENSE_IDS` is a legal
-  decision, never a way to make CI green.
+- **Dependency licensing — what we ship and what we even look at.** Never
+  read, depend on or copy from a source-available project; **Remotion is
+  banned**. Anything outside MIT, BSD, Apache-2.0, MPL-2.0, ISC, 0BSD,
+  Unlicense, CC0: ask first. Widening `ALLOWED_LICENSE_IDS` is a legal
+  decision, never a CI fix.
 
 ### AI backends and capture enrichment
 
-Read [docs/agents/ai-backends.md](docs/agents/ai-backends.md) **before
-changing any AI provider, direct-API connection, fallback, enrichment thread
-config, ACP pooling, the Apple `fm` path, or the enrichment budget.**
+Read [docs/agents/ai-backends.md](docs/agents/ai-backends.md) before changing
+an AI provider, direct API, fallback, enrichment thread, ACP, `fm`, or budget.
 
-- **AI backends: installed agents and custom direct APIs.** Never route a
-  custom model through Codex/ACP as a silent fallback; `ai.enrichmentFallback`
-  is opt-in, captions only, and only for an unreachable primary. Never infer
-  capabilities from a model name or URL. The protocol package is
-  `@pwrdrvr/codex-app-server-protocol`, pinned exactly; never vendor it.
-- **Capture enrichment runs in a sandbox jail.** An agent-backed enrichment
-  turn may not run a command, call a tool, read outside its scratch jail, or
-  reach the network, enforced in the transport
-  (`enrichment-sandbox.ts`). Never loosen it to make a feature work; ACP is
-  materially weaker than Codex.
+- **AI backends: installed agents and custom direct APIs.** No silent
+  fallback through Codex/ACP; never infer capabilities from a model name or
+  URL; never vendor the protocol package.
+- **Capture enrichment runs in a sandbox jail.** No command, tool, read
+  outside the jail, or network, enforced in the transport. Never loosen it.
 - **Apple's on-device model runs through a fixed fm command line.** Only
-  `/usr/bin/fm` with an argv that passes `assertAppleFmArgs`, `--model system`,
-  no tools; never agree to Apple's terms or change fm's config; `AppleFmError`
-  is never a fallback trigger.
-- **Only the operator's re-run is exempt from the enrichment budget.**
-  `codex:enrich` always spends a token; only the Library re-run job, via the
-  `EnrichmentRepairDispatcher`, skips it. Never key an exemption on a request
-  field.
+  `/usr/bin/fm` through `assertAppleFmArgs`; never agree to Apple's terms;
+  `AppleFmError` never falls back.
+- **Only the operator's re-run is exempt from the enrichment budget.** Never
+  key an exemption on a request field.
 
 ### Bundle format
 
-Read [docs/agents/bundle-format.md](docs/agents/bundle-format.md) **before
-touching capture persistence, the compositor read path or `.pwrsnap` parsing.**
+Read [docs/agents/bundle-format.md](docs/agents/bundle-format.md) before
+touching capture persistence or `.pwrsnap` parsing.
 
 - **Bundle format v2 — the only bundle format (v1 fully removed).**
-  `persistCaptureFromTempV2` is the one write entrypoint and the coordinator
-  throws on non-v2. Videos carry a vestigial `bundle_format_version = 1`.
 
 ### Capture, TCC and clipboard
 
 Read [docs/agents/capture-and-clipboard.md](docs/agents/capture-and-clipboard.md)
-**before adding filesystem reads in main, touching clipboard reads or menu
-enablement, or changing screen grabs, the region selector, or Linux/Wayland
-capture.**
+before a filesystem read in main, a clipboard read, or screen-grab, selector
+or Linux/Wayland capture work.
 
 - **Never block the main thread on a TCC-gated path.** No sync fs read under
-  the captures/chats roots in main; use bounded, shared async reads, and
-  budget the 4-thread libuv pool.
+  the captures/chats roots; bound and share async reads.
 - **Clipboard bytes are read only for a paste or copy the user started.**
-  Everything else lists types only (`pasteboard-types.ts`); Electron's
-  `clipboard.read()` / `has()` are not types-only.
-- **A screen grab must prove it is the display it claims to be.**
-  `desktopCapturer` pixels are shape-checked against the display
-  (`grab-geometry.ts`); region capture is refused on Wayland with more than
-  one display, in the handler only, with a visible notice; the Linux selector
-  must be fullscreen and resizable.
+  Everything else lists types only.
+- **A screen grab must prove it is the display it claims to be.** Shape-check
+  `desktopCapturer` pixels; refuse region capture on multi-display Wayland,
+  visibly, in the handler only.
 
 ### Renderer focus, tooltips, layout measures and chrome
 
-Read [docs/agents/renderer-ui.md](docs/agents/renderer-ui.md) **before adding
-an overlay, tooltip or focus style, measuring DOM geometry, or changing any
-title strip.** Also read
-[apps/desktop/src/renderer/src/lib/AGENTS.md](apps/desktop/src/renderer/src/lib/AGENTS.md)
-for overlays and tooltips.
+Read [docs/agents/renderer-ui.md](docs/agents/renderer-ui.md) (and
+[lib/AGENTS.md](apps/desktop/src/renderer/src/lib/AGENTS.md)) before adding an
+overlay, tooltip or focus style, measuring DOM geometry, or changing a title
+strip.
 
-- **Overlays get Escape, Tab and focus from the renderer's focus hooks.** Use
-  `useModal` / `useDismissable` / `useFocusTrap` / `useMenuNavigation` /
-  `useFocusReturn`; never add an overlay keydown listener for Escape or Tab.
-- **Icon-only controls name themselves with `data-tip`, not `title`.** Plus an
-  `aria-label`; never `data-tip` and `title` together.
+- **Overlays get Escape, Tab and focus from the renderer's focus hooks.** No
+  overlay keydown listener for Escape or Tab.
+- **Icon-only controls name themselves with `data-tip`, not `title`.**
 - **Never mix a post-transform rect with a layout measure.**
-  `getBoundingClientRect()` is post-transform; `offsetWidth`/`clientWidth`/
-  `borderBoxSize` are layout. A `ResizeObserver` never corrects a value read
-  mid-transform.
-- **Focus rings.** Every ring uses `--focus-ring`, reaches 3:1, and must be
-  measured on screen in a browser; `outline: none` in a focus rule must be
-  followed by a ring.
-- **The Pwr-family title strip.** 40px band, stoplights at `{ x: 16, y: 13 }`,
-  brand at x=96, shared with PwrGit and PwrAgent: change all three together.
+- **Focus rings.** `--focus-ring`, 3:1, measured on screen in a browser.
+- **The Pwr-family title strip.** Shared with PwrGit and PwrAgent: change all
+  three together.
 
 ### Annotation sizing and draw strokes
 
-Read [docs/agents/annotations.md](docs/agents/annotations.md) **before
-changing how any annotation, arrow, shape, text or Draw stroke is sized,
-stored, erased or baked.**
+Read [docs/agents/annotations.md](docs/agents/annotations.md) before changing
+how an annotation or Draw stroke is sized, stored, erased or baked.
 
-- **Annotation sizing — one basis, one ladder.** Every size divides
-  `annotationBasisPx(sourceW, sourceH)` from SOURCE raster dims, never canvas
-  dims or `device_pixel_ratio`.
-- **Draw strokes — one geometry, canvas-normalized points.** Everything that
-  paints a stroke goes through `strokeGeometry`; a cut stroke stays one layer;
-  no per-pointer-event work may scale with what was drawn before.
+- **Annotation sizing — one basis, one ladder.** `annotationBasisPx` from
+  SOURCE dims, never canvas dims or `device_pixel_ratio`.
+- **Draw strokes — one geometry, canvas-normalized points.** Everything goes
+  through `strokeGeometry`; no per-event work that scales with history.
 
 ### Render cache, cache deletion and video export
 
 Read [docs/agents/cache-and-video-export.md](docs/agents/cache-and-video-export.md)
-**before deleting anything under `<cacheRoot>`, adding a cache writer, bumping
-`BAKE_PIPELINE_VERSION`, or adding an MP4 export path.**
+before deleting under `<cacheRoot>`, adding a cache writer, or adding an MP4
+export path.
 
-- **Bake render cache — orphans are tolerated, not swept.** A
-  `BAKE_PIPELINE_VERSION` bump orphans files; nothing auto-sweeps them.
-- **Every deleter of `<cacheRoot>` goes through the admission gate.** Take
-  `withDerivedCacheCleanup`; the five derived-video lanes publish inside
-  `runGatedCacheWrite`, registered synchronously.
-- **An MP4 with no audio choice gets the user's, never "every track".** Every
-  MP4 export resolves audio through `resolveExportAudio`; unreadable means
-  silent.
+- **Bake render cache — orphans are tolerated, not swept.**
+- **Every deleter of `<cacheRoot>` goes through the admission gate.**
+- **An MP4 with no audio choice gets the user's, never "every track".**
 
 ### Profiling, tracing and React DevTools
 
-Read [docs/agents/profiling.md](docs/agents/profiling.md) **before profiling
-startup, the GPU process or renderers, or changing those harnesses.**
+Read [docs/agents/profiling.md](docs/agents/profiling.md) before profiling or
+changing a harness; always on a scratch userData.
 
-- **Startup profiling harness — `PWRSNAP_STARTUP_PROFILE=1`.** Profiling
-  runs are passive observers: no global hotkeys, boot GC or filename
-  maintenance.
-- **Multi-process trace harness — `PWRSNAP_TRACE=1`.** Close DevTools first;
-  use `ps -o time=` deltas, not `%CPU`.
-- **React DevTools renderer profiling — `PWRSNAP_REACT_DEVTOOLS=1`.** Always
-  on a scratch userData with `PWRSNAP_E2E=1` + `PWRSNAP_USER_DATA`; never add
-  `react-devtools` to `package.json`; packaging refuses a remote `<script>`.
+- **Startup profiling harness — `PWRSNAP_STARTUP_PROFILE=1`.**
+- **Multi-process trace harness — `PWRSNAP_TRACE=1`.**
+- **React DevTools renderer profiling — `PWRSNAP_REACT_DEVTOOLS=1`.** Never
+  add `react-devtools` to `package.json`.
 
 ### Local agent access (MCP)
 
-Read [docs/agents/local-mcp.md](docs/agents/local-mcp.md) and
-[docs/mcp-third-party-agents.md](docs/mcp-third-party-agents.md) **before
-touching `pwrsnap-mcp`, the native MCP bridge, roles, or MCP skills.**
+Read [docs/agents/local-mcp.md](docs/agents/local-mcp.md) before touching
+`pwrsnap-mcp`, the native MCP bridge, roles, or MCP skills.
 
-- **Local agent access — desktop-owned MCP, native approval.** The Rust relay
-  is a byte relay only; Electron main owns the MCP interface. No TCP or
-  WebSocket listener; a relay gets exactly its named role; every read keeps
-  its capability and owner checks.
+- **Local agent access — desktop-owned MCP, native approval.** The relay
+  only relays bytes; no TCP or WebSocket listener.
 
 ### Main-process navigation, quit and renderer intents
 
-Read [docs/agents/main-process.md](docs/agents/main-process.md) **before
-creating a webContents, opening a URL, adding a quit listener, or sending a
-one-shot event to a renderer.**
+Read [docs/agents/main-process.md](docs/agents/main-process.md) before
+creating a webContents, opening a URL, deferring quit, or sending a one-shot
+event to a renderer.
 
-- **No webContents opens a window, and none navigates away.** Every
-  webContents is covered by `navigation-guard.ts`; URLs leave only through
-  `isAllowedExternalUrl`, into the user's browser.
+- **No webContents opens a window, and none navigates away.**
 - **A deferred quit is retried from a macrotask, never from its own promise
-  chain.** Use `retryQuitAfterDispatch`; nothing defers a quit with nothing to
-  wait for.
-- **A one-shot intent sent to a renderer must not be droppable.** Send once,
-  after `did-stop-loading`, on a preload-latched channel; no grace timer.
+  chain.**
+- **A one-shot intent sent to a renderer must not be droppable.**
 
-### BrowserWindow sizing and placement
+### Windows, tray, float-over and recording
 
 Read [docs/agents/window-placement.md](docs/agents/window-placement.md)
-**before creating a window that resizes to content or is positioned to line
-up with something on screen.**
+before sizing a window to content or placing one over something on screen:
 
 - **BrowserWindow sizing — `setMinimumSize(0, 0)` after construction.**
-  Required for any window later sized with `setContentSize`.
-- **macOS MOVES a window placed outside the work area.** Plan against
-  `display.workArea`; negative recording-frame insets are intentional.
-
-### Tray and popover sizing
+- **macOS MOVES a window placed outside the work area.**
 
 Read [docs/agents/tray-and-popover-sizing.md](docs/agents/tray-and-popover-sizing.md)
-and [docs/linux-tray-support.md](docs/linux-tray-support.md) **before changing
-the tray, its menu, the popover's show/hide, or how the tray or float-over
-sizes itself.**
+before changing the tray, its menu, or popover show, hide or sizing:
 
-- **The Linux tray is a native menu, not the popover.** Never call
-  `setContextMenu` on macOS/Windows; nothing time-varying in the Linux menu.
-- **Tray popover hide — `setOpacity(0)` before `hide()` on macOS.** Always
-  `hideTrayWindowNow` / `showTrayWindowNow`; never on Windows.
+- **The Linux tray is a native menu, not the popover.**
+- **Tray popover hide — `setOpacity(0)` before `hide()` on macOS.**
 - **Tray + float-over popover sizing — outer `inline-block` measurer.**
-  Measure an `inline-block` wrapper outside the styled container, never
-  hardcoded heights; past the ceiling the float-over scrolls, and its cap is
-  never derived from the window's current size.
 
-### Float-over state and dock
-
-Read [docs/agents/float-over.md](docs/agents/float-over.md) **before changing
-how the float-over gets its state or how the dock tucks, shows or hides.**
+Read [docs/agents/float-over.md](docs/agents/float-over.md) before changing
+float-over state delivery or the dock:
 
 - **The float-over asks for its state; main never sends it on a timer.**
-  Subscribe, then `requestFloatOverState()`.
 - **The float-over dock is the toast's own window, and it never lands in a
-  capture.** Inside the work area, content-protected, parked for every
-  snapshot and recording; the sidebar setting hides, never dismisses.
+  capture.**
 
-### Recording frame, mid-take UI and activation
+Read [docs/agents/recording.md](docs/agents/recording.md) before changing the
+recording frame, the HUD, anything shown during a take, or activation:
 
-Read [docs/agents/recording.md](docs/agents/recording.md) **before changing
-the recording frame, HUD, anything shown during a take, or activation and
-Dock-reclaim behavior.**
-
-- **The recording frame may never paint inside the recorded rect.** On
-  platforms that cannot hide our window from the recorder, every lit pixel is
-  outside the rect; `outset` is the safe base CSS.
-- **Mid-take UI: only the HUD asks questions, and nothing takes focus.** No
-  native dialog and no `setFocusable(true)` during a take.
-- **The Dock reclaim is not an activation recovery.** It restores activation
-  policy, not activation or z-order.
+- **The recording frame may never paint inside the recorded rect.**
+- **Mid-take UI: only the HUD asks questions, and nothing takes focus.**
+- **The Dock reclaim is not an activation recovery.**
 
 ### Settings substrate
 
-Read [docs/agents/settings.md](docs/agents/settings.md) **before adding or
-reading a setting or secret, or touching settings persistence or agent
-discovery.**
+Read [docs/agents/settings.md](docs/agents/settings.md) before adding or
+reading a setting or secret, or touching settings persistence or discovery.
 
-- **Settings substrate — every setting + secret goes through one place.**
-  `DesktopSettingsService` + `DesktopSecretStore` over the command bus: no new
-  IPC channel, sibling JSON file, or plaintext secret; atomic writes; only
-  `getValue()` decrypts and it is never on the bus; `pnpm settings-store:check`
-  is executable policy.
+- **Settings substrate — every setting + secret goes through one place.** No
+  new IPC channel, sibling JSON file or plaintext secret; never put
+  `getValue()` on the bus.
 
-### Release and distribution
+### Release, distribution and native modules
 
-Read [docs/agents/release.md](docs/agents/release.md) **before touching
-packaging, signing, the app icon, Electron fuses, `THIRD_PARTY_LICENSES`, or
-`package.json` `description`.**
+Read [docs/agents/release.md](docs/agents/release.md) before touching
+packaging, signing, the app icon, fuses, `THIRD_PARTY_LICENSES` or
+`package.json` `description`:
 
-- **Release / Distribution.** macOS (signed/notarized DMGs) and Windows (NSIS)
-  ship; Linux is E2E only. Never hand-edit `THIRD_PARTY_LICENSES`. Subsections:
-  *macOS app icon* (ship the `.icon`, never a hand-built `.icns`),
-  *Electron fuses are pinned* (`enableCookieEncryption` stays `false`), and
-  *`package.json` `description` is shipped UI on Windows*.
+- **Release / Distribution.** Also *macOS app icon*, *Electron fuses are
+  pinned* (`enableCookieEncryption` stays `false`), and *`package.json`
+  `description` is shipped UI on Windows*.
 
-### Native modules: better-sqlite3 and sharp
-
-Read [docs/agents/native-modules.md](docs/agents/native-modules.md) **before
-touching native-module install, packaging prunes, `allowBuilds`, or sharp
-loading.**
+Read [docs/agents/native-modules.md](docs/agents/native-modules.md) before
+touching native-module install, packaging prunes, or sharp loading:
 
 - **better-sqlite3 loads its own N-API prebuild — nothing is rebuilt for
-  Electron.** No `nativeBinding` override or Electron rebuild.
-- **sharp in Electron on Linux runs its WebAssembly build.** Every entry that
-  can load sharp imports `sharp-wasm-steer.ts` first.
+  Electron.**
+- **sharp in Electron on Linux runs its WebAssembly build.**
 
 ## A bug fix ships a property, model or oracle test
 

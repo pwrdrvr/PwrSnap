@@ -69,6 +69,21 @@ jobs:
       code_impacting: ${{ steps.classify.outputs.code_impacting }}
       docs_only: ${{ steps.classify.outputs.docs_only }}
     steps:
+      # Docs-only PRs skip Lint, so the instruction-size guard runs here,
+      # where every PR and push passes through.
+      - name: Checkout agent instructions
+        uses: actions/checkout@v5
+        timeout-minutes: 5
+        with:
+          sparse-checkout: |
+            AGENTS.md
+            scripts/check-agent-instructions-size.mjs
+            scripts/lib/cli-entrypoint.mjs
+          sparse-checkout-cone-mode: false
+
+      - name: Check root AGENTS.md size
+        run: node ./scripts/check-agent-instructions-size.mjs
+
       - name: Classify changed files
         id: classify
         uses: actions/github-script@v9
@@ -195,13 +210,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [changes, install-deps]
-    if: needs.changes.outputs.code_impacting == 'true'
+    # Branch protection counts a skipped required check as satisfied. When
+    # the classifier fails (for example, its root AGENTS.md size check),
+    # every job that needs it would skip, so Lint runs instead and fails
+    # on its own copy of the check.
+    if: >-
+      !cancelled() &&
+      (needs.changes.result != 'success'
+        || needs.changes.outputs.code_impacting == 'true')
     env:
       # Prevent pnpm 12 run commands from implicitly repairing a restored tree.
       PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: "false"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+
+      # Before the dependency restore, with the runner's own Node: when the
+      # classifier failed, install-deps skipped and the restore below misses,
+      # and the failure must still name the real cause.
+      - name: Root AGENTS.md size
+        timeout-minutes: 1
+        run: node ./scripts/check-agent-instructions-size.mjs
 
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1

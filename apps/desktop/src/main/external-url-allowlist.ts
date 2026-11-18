@@ -19,17 +19,7 @@ import { CHATGPT_PLAN_HELP_URL, CHATGPT_USAGE_URL } from "@pwrsnap/shared";
 /** Links the Sign in with ChatGPT surfaces open, compared whole. */
 const CHATGPT_URLS: ReadonlySet<string> = new Set([CHATGPT_USAGE_URL, CHATGPT_PLAN_HELP_URL]);
 
-/** URLs PwrSnap is allowed to open in the user's default browser. Keeps
- *  `shell.openExternal` from becoming an arbitrary-navigation gadget: a
- *  compromised/buggy renderer can only reach the product site, the docs
- *  site, PwrDrvr's own GitHub org, the Codex release index, and three exact
- *  Apple pages about the on-device model. https-only. GitHub is scoped to
- *  the `/pwrdrvr/*` path so an attacker can't bounce the user to an
- *  arbitrary repo/gist/profile under the (trusted) github.com host. */
- *  site, PwrDrvr's own GitHub org, the Codex release index, and the two
- *  ChatGPT plan pages (usage settings, help article). https-only. GitHub
- *  is scoped to the `/pwrdrvr/*` path so an attacker can't bounce the user
- *  to an arbitrary repo/gist/profile under the (trusted) github.com host. */
+/** Only product, approved provider help, and scoped repository URLs may open externally. */
 export function isAllowedExternalUrl(raw: string): boolean {
   let url: URL;
   try {

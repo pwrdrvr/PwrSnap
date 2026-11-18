@@ -16,6 +16,7 @@ import {
   type HotCpuProfileTarget,
   type Settings
 } from "@pwrsnap/shared";
+import { AppWindowFocusOrder, type ActivateWindowState } from "./app-window-focus-order";
 import { bus } from "./command-bus";
 import { installDevelopmentDockIcon, showDockWithDevelopmentIcon } from "./development-dock-icon";
 import { createHotCpuProfileSession } from "./diagnostics/hot-cpu-profile-session";
@@ -1380,6 +1381,54 @@ export function listOpenAppWindows(): OpenAppWindow[] {
       ? [{ window, label }]
       : []
   );
+}
+
+const appWindowFocusOrder = new AppWindowFocusOrder<BrowserWindow>();
+
+/** A window a person opened and can switch to: the singletons
+ *  `listOpenAppWindows` reads, regardless of visibility. */
+function isAppDestinationWindow(window: BrowserWindow): boolean {
+  if (
+    window === libraryWindow ||
+    window === settingsWindow ||
+    window === sizzleWindow ||
+    window === logsWindow
+  ) {
+    return true;
+  }
+  for (const doc of appDocumentWindows.values()) if (doc === window) return true;
+  return false;
+}
+
+function activateWindowState(window: BrowserWindow): ActivateWindowState {
+  if (window.isDestroyed() || !isAppDestinationWindow(window)) return "gone";
+  if (window.isMinimized()) return "minimized";
+  return window.isVisible() ? "visible" : "hidden";
+}
+
+/**
+ * Remember which destination window the user focused last, so a Dock
+ * click can bring THAT one back (see app-window-focus-order.ts). Install
+ * once, before any window exists.
+ */
+export function installAppWindowFocusTracking(): void {
+  app.on("browser-window-focus", (_event, window) => {
+    if (isAppDestinationWindow(window)) appWindowFocusOrder.noteFocused(window);
+  });
+}
+
+/**
+ * Raise the window a Dock click should bring back: the destination
+ * window focused most recently, falling back to the Library (created if
+ * needed). Returns the window raised.
+ */
+export function raiseWindowForAppActivate(): BrowserWindow {
+  const target = appWindowFocusOrder.pickForActivate(activateWindowState);
+  const window = target?.window ?? findMainLibraryWindow() ?? createMainWindow();
+  if (window.isMinimized()) window.restore();
+  if (!window.isVisible()) window.show();
+  window.focus();
+  return window;
 }
 
 export function showAppDocumentWindow(

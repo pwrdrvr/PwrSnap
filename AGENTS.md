@@ -591,6 +591,16 @@ contract is therefore the command line.
   (`provider-override`), **per run**, not from the cached status.
 - **The binary is the absolute path, never a `PATH` lookup.** `/usr/bin` is on
   the sealed system volume; a `fm` earlier on `PATH` is not.
+- **PwrSnap's one route to Terminal launches it and stops.** For missing terms,
+  Settings shows `APPLE_FM_LICENSE_COMMAND` (`sudo /usr/bin/fm license`: the
+  command macOS names, with the absolute path because macOS `sudo` searches the
+  user's `PATH`) beside Copy and Open Terminal. `appleFm:openTerminal` opens the
+  fixed `/System/Applications/Utilities/Terminal.app`, takes nothing from the
+  request, and refuses any principal but `ipc` and any platform but darwin. Never
+  pre-type, pipe or AppleScript the command into Terminal, and never run it: the
+  administrator reads the terms and agrees themselves. The command is a constant,
+  never parsed out of macOS's sentence. Pinned by `apple-fm.test.ts` and
+  `apple-fm-handlers.test.ts`.
 - **Capture metadata travels on stdin.** It holds the source app and the
   user's tags; argv is visible to other processes. Images are the app-prepared
   bounded copies, passed as absolute paths.

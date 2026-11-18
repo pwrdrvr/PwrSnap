@@ -29,7 +29,7 @@ mean the model can run: it also ships on Macs that cannot run it.
 | Settings shows | What macOS reported | What to do |
 |---|---|---|
 | **Ready** | The system model is available. | Nothing. |
-| **Agree to terms** | Apple's Legal Notice & Terms for the tool have not been agreed to on this Mac. | An administrator agrees once per Mac, in Terminal. The tool names the command itself. PwrSnap never agrees for you. |
+| **Agree to terms** | Apple's Legal Notice & Terms for the tool have not been agreed to on this Mac. | An administrator agrees once per Mac, in Terminal. The screen shows the command with **Copy** and **Open Terminal**. PwrSnap never agrees for you. |
 | **Not ready** | The model is not available yet. | Wait. macOS downloads and prepares the model by itself. |
 | **Off in macOS** | Apple Intelligence is not enabled. | Check the language, region and any device management on this Mac. |
 | **Not supported** | This device does not support Apple Intelligence. | Check Apple's requirements; some can be changed, the chip cannot. |
@@ -45,6 +45,13 @@ that is missing. Each prompt tells the agent to check before it advises, not to
 install anything, not to change settings for you, not to bypass a macOS
 protection, and never to agree to Apple's terms on your behalf.
 
+For **Agree to terms**, the status block also has a **Run in Terminal** step:
+`sudo /usr/bin/fm license`, a **Copy** button and an **Open Terminal** button.
+That is the command macOS names (`sudo fm license`) with the tool's full path,
+because `sudo` on macOS searches your `PATH`. **Open Terminal** only launches
+Terminal. PwrSnap types nothing into it and runs nothing: you paste the command,
+read Apple's terms there, and agree or not. Then choose **Check again**.
+
 **Check again** re-reads the state. Nothing polls. A caption that fails for a
 setup reason also makes the next read ask macOS again.
 
@@ -53,6 +60,8 @@ Apple's own pages, linked from the screen:
 - [Apple Intelligence requirements](https://support.apple.com/en-us/121115)
 - [Why a model can be unavailable](https://developer.apple.com/documentation/foundationmodels/detecting-available-apple-foundation-models)
 - [Apple's Foundation Models and the fm tool](https://developer.apple.com/foundation-models-framework/)
+- [Apple's acceptable use requirements for the model](https://developer.apple.com/support/terms/acceptable-use-requirements-for-the-foundation-models-framework/)
+  (in the **Run in Terminal** step)
 
 On Windows and Linux the provider does not appear anywhere.
 
@@ -79,6 +88,11 @@ to Apple's models "except as expressly permitted". Apple documents the tool
 for scripts and automation. PwrSnap runs the tool on your Mac, at your choice,
 with a fixed command line. Read Apple's terms (`fm license --show`) and decide
 whether that use suits you before turning this on.
+
+What the model may be used for is set out separately, in Apple's
+[acceptable use requirements for the Foundation Models framework](https://developer.apple.com/support/terms/acceptable-use-requirements-for-the-foundation-models-framework/).
+The license the tool shows links only to Apple's general license index, so
+the Run in Terminal step links this page directly.
 
 ## For contributors
 

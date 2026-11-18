@@ -3427,6 +3427,59 @@ a.pss__top-btn[aria-disabled="true"]:hover {
   font: 400 11px/1.3 var(--font-mono);
   color: var(--text-muted);
 }
+/* The terms state's one administrator step: the command, Copy, and a
+   button that launches Terminal empty. Sits inside the status block, under
+   macOS's own sentence. */
+.pss__afm-term {
+  margin-top: 4px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+}
+.pss__afm-term-hdr {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.pss__afm-term-k {
+  font: 600 10px/1.2 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.pss__afm-term-hint {
+  font: 400 11.5px/1.4 var(--font-sans);
+  color: var(--text-secondary);
+  text-wrap: pretty;
+}
+.pss__afm-term-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pss__afm-term-cmd {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: 5px;
+  font: 500 12px/1.3 var(--font-mono);
+  color: var(--text-primary);
+  user-select: all;
+  -webkit-user-select: all;
+  overflow-wrap: anywhere;
+}
+.pss__afm-term-foot {
+  margin: 0;
+  font: 400 11.5px/1.4 var(--font-sans);
+  color: var(--text-muted);
+}
 .pss__afm-adopt {
   display: flex;
   align-items: center;

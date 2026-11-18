@@ -24,6 +24,19 @@ export const APPLE_FM_SETTINGS_SUB = "apple";
 
 export const APPLE_FM_DISPLAY_NAME = "Apple Intelligence";
 
+/** What an administrator runs, in Terminal, to read and agree to Apple's
+ *  terms for the tool. macOS's own sentence names `sudo fm license`; this is
+ *  that command with the tool's full path, because sudo on macOS searches the
+ *  user's PATH and a `fm` earlier on it would run as root. PwrSnap only
+ *  offers it to copy. It never runs it, and never types it into Terminal. */
+export const APPLE_FM_LICENSE_COMMAND = "sudo /usr/bin/fm license";
+
+/** The Terminal step Settings offers for a state, or null when no command an
+ *  administrator can type would fix it. Only missing terms qualify. */
+export function appleFmTerminalCommand(status: AppleFmStatus): string | null {
+  return status.state === "license-required" ? APPLE_FM_LICENSE_COMMAND : null;
+}
+
 export function isAppleFmProvider(provider: string | null | undefined): boolean {
   return provider === APPLE_FM_PROVIDER;
 }
@@ -109,6 +122,13 @@ export const APPLE_FM_LINKS = {
   tool: {
     label: "Apple's Foundation Models and the fm tool",
     url: "https://developer.apple.com/foundation-models-framework/"
+  },
+  // What Apple's terms let the model be used for. `fm license` links only to
+  // Apple's generic license index, so this page is hard to find on one's own.
+  // Fetched 2026-11-18.
+  acceptableUse: {
+    label: "Apple's acceptable use requirements for the model",
+    url: "https://developer.apple.com/support/terms/acceptable-use-requirements-for-the-foundation-models-framework/"
   }
 } as const;
 
@@ -154,6 +174,8 @@ export function appleFmStateCopy(status: AppleFmStatus): AppleFmStateCopy {
         body: "Apple's Foundation Models command-line tool won't answer until its Legal Notice & Terms are agreed to. That takes an administrator, in Terminal, once per Mac. PwrSnap never agrees for you.",
         severity: "attention",
         reason: "terms not agreed",
+        // The acceptable-use page is linked from the Terminal step itself, beside
+        // the command that shows the terms, so it is not repeated here.
         links: ["tool"]
       };
     case "model-not-ready":
@@ -280,11 +302,12 @@ export function appleFmAgentPrompt(status: AppleFmStatus): string | null {
         "",
         "Please help me, without agreeing to anything on my behalf:",
         "1. Run `/usr/bin/fm license --status` and `/usr/bin/fm license --show`, and show me the output so I can read the terms myself.",
+        `   Apple's acceptable use requirements for the model, which say what it may be used for, are at ${APPLE_FM_LINKS.acceptableUse.url}. Point me to them as well; the tool's own license output does not link to them.`,
         "2. The tool says to run `sudo fm license` in Terminal. Tell me what that does (the agreement applies to every user on this Mac) and let me run it myself. Do not run it for me.",
         "3. When I say I've done it, run `/usr/bin/fm license --status` and `/usr/bin/fm models`, and tell me whether `system` is available.",
         "",
         PROMPT_GUARD,
-        `Reference: ${APPLE_FM_LINKS.tool.url}`
+        `References: ${APPLE_FM_LINKS.tool.url} and ${APPLE_FM_LINKS.acceptableUse.url}`
       ].join("\n");
     case "model-not-ready":
     case "apple-intelligence-off":

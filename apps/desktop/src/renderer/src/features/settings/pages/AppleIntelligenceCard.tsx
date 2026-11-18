@@ -12,6 +12,7 @@ import {
   APPLE_FM_LINKS,
   appleFmAgentPrompt,
   appleFmStateCopy,
+  appleFmTerminalCommand,
   type AppleFmStatus,
   type AppleFmTestResult
 } from "@pwrsnap/shared";
@@ -48,6 +49,85 @@ function openLink(url: string): void {
   void dispatch("app:openExternal", { url });
 }
 
+type TerminalOpenState = "idle" | "opening" | "failed";
+
+/** The one step only an administrator can take: copy the command, open
+ *  Terminal, paste it there. PwrSnap launches Terminal empty and types
+ *  nothing, so reading and agreeing to Apple's terms stays with the user. */
+function TerminalStep({ command }: { command: string }): ReactElement {
+  const { state: copyState, copy } = useCopyCommand(command);
+  const [openState, setOpenState] = useState<TerminalOpenState>("idle");
+  const openTerminal = (): void => {
+    setOpenState("opening");
+    void dispatch("appleFm:openTerminal", {}).then((result) => {
+      setOpenState(result.ok ? "idle" : "failed");
+    });
+  };
+  return (
+    <div className="pss__afm-term">
+      <div className="pss__afm-term-hdr">
+        <span className="pss__afm-term-k" id="pss-afm-term-title">
+          Run in Terminal
+        </span>
+        <span className="pss__afm-term-hint">
+          Needs an administrator's password. Apple's terms open in Terminal to read before
+          agreeing.
+        </span>
+      </div>
+      <p className="pss__afm-term-hint">
+        What the terms let the model be used for is in{" "}
+        <a
+          className="pss__text-link"
+          href={APPLE_FM_LINKS.acceptableUse.url}
+          onClick={(event) => {
+            // Same pairing as the "From Apple" links: the guard refuses a
+            // navigation; this path opens the browser and reports failure.
+            event.preventDefault();
+            openLink(APPLE_FM_LINKS.acceptableUse.url);
+          }}
+        >
+          {APPLE_FM_LINKS.acceptableUse.label}
+        </a>
+        . The license Terminal shows does not link to it.
+      </p>
+      <div className="pss__afm-term-row">
+        <code className="pss__afm-term-cmd" aria-labelledby="pss-afm-term-title">
+          {command}
+        </code>
+        <button
+          className="pss__key-btn"
+          type="button"
+          aria-label={
+            copyState === "copied"
+              ? "Copied the Terminal command"
+              : copyState === "failed"
+                ? "Copying the Terminal command failed"
+                : "Copy the Terminal command"
+          }
+          onClick={() => {
+            void copy();
+          }}
+        >
+          {copyLabel(copyState, "Copy")}
+        </button>
+        <button
+          className="pss__key-btn is-primary"
+          type="button"
+          disabled={openState === "opening"}
+          onClick={openTerminal}
+        >
+          Open Terminal
+        </button>
+      </div>
+      <p className="pss__afm-term-foot">
+        {openState === "failed"
+          ? "Terminal couldn't be opened. Open it from Applications › Utilities and paste the command there."
+          : "The command macOS names, with the tool's full path. Afterwards, press Check again."}
+      </p>
+    </div>
+  );
+}
+
 export function AppleIntelligenceCard({
   status,
   loading,
@@ -58,6 +138,7 @@ export function AppleIntelligenceCard({
 }: AppleIntelligenceCardProps): ReactElement {
   const [test, setTest] = useState<TestState>({ phase: "idle" });
   const prompt = status !== null ? appleFmAgentPrompt(status) : null;
+  const terminalCommand = status !== null ? appleFmTerminalCommand(status) : null;
   const { state: copyState, copy } = useCopyCommand(prompt ?? undefined);
 
   const recheck = (
@@ -118,6 +199,7 @@ export function AppleIntelligenceCard({
               {status.detail}
             </p>
           ) : null}
+          {terminalCommand !== null ? <TerminalStep command={terminalCommand} /> : null}
           {!ready && inUse ? (
             <p className="pss__afm-status-body">
               Captions are set to this model, so new captures won't get one until it is ready.

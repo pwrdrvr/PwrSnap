@@ -8,6 +8,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import {
+  APPLE_FM_LICENSE_COMMAND,
   APPLE_FM_LINKS,
   APPLE_FM_STATES,
   appleFmAgentPrompt,
@@ -24,10 +25,12 @@ beforeAll(() => {
 type Dispatched = { name: string; req: unknown };
 const dispatched: Dispatched[] = [];
 let testAnswer: unknown = { ok: true, value: { ms: 1712, modelLabel: "AFM 3 Core" } };
+let terminalAnswer: unknown = { ok: true, value: undefined };
 
 beforeEach(() => {
   dispatched.length = 0;
   testAnswer = { ok: true, value: { ms: 1712, modelLabel: "AFM 3 Core" } };
+  terminalAnswer = { ok: true, value: undefined };
   Object.defineProperty(window, "pwrsnapApi", {
     configurable: true,
     value: {
@@ -35,6 +38,7 @@ beforeEach(() => {
       dispatch: async (name: string, req: unknown) => {
         dispatched.push({ name, req });
         if (name === "appleFm:test") return testAnswer;
+        if (name === "appleFm:openTerminal") return terminalAnswer;
         return { ok: true, value: undefined };
       },
       on: () => () => undefined
@@ -199,6 +203,64 @@ describe("the agent prompt", () => {
     });
     expect(event.defaultPrevented).toBe(true);
     expect(dispatched).toEqual([{ name: "app:openExternal", req: { url: APPLE_FM_LINKS.requirements.url } }]);
+  });
+});
+
+describe("the Terminal step", () => {
+  const TERMS = status("license-required", { detail: "Not agreed. Run 'sudo fm license' to review and agree." });
+
+  test("property: only missing terms show it, for every state macOS can report", async () => {
+    for (const state of APPLE_FM_STATES) {
+      if (state === "unsupported-platform") continue;
+      const el = await render({ status: status(state) });
+      expect(el.querySelector(".pss__afm-term") !== null).toBe(state === "license-required");
+      expect(button(el, "Open Terminal") !== undefined).toBe(state === "license-required");
+      await act(async () => {
+        root?.unmount();
+      });
+      container?.remove();
+    }
+  });
+
+  test("shows the command inside the status block, under what macOS said", async () => {
+    const el = await render({ status: TERMS });
+    const block = el.querySelector(".pss__afm-status")!;
+    expect(block.querySelector(".pss__afm-term-cmd")?.textContent).toBe(APPLE_FM_LICENSE_COMMAND);
+    const said = block.querySelector(".pss__afm-status-said")!;
+    const step = block.querySelector(".pss__afm-term")!;
+    expect(said.compareDocumentPosition(step) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  test("Copy puts exactly the command on the clipboard, and nothing is opened", async () => {
+    const el = await render({ status: TERMS });
+    const copyButton = button(el, "Copy")!;
+    expect(copyButton.getAttribute("aria-label")).toBe("Copy the Terminal command");
+    await click(copyButton);
+    expect(dispatched).toEqual([{ name: "clipboard:copyText", req: { text: APPLE_FM_LICENSE_COMMAND } }]);
+    expect(button(el, "Copied")?.getAttribute("aria-label")).toBe("Copied the Terminal command");
+  });
+
+  test("Open Terminal asks main to launch it and sends no command", async () => {
+    const el = await render({ status: TERMS });
+    await click(button(el, "Open Terminal")!);
+    expect(dispatched).toEqual([{ name: "appleFm:openTerminal", req: {} }]);
+    expect(el.querySelector(".pss__afm-term-foot")?.textContent).toContain("press Check again");
+  });
+
+  test("links Apple's acceptable-use requirements through the browser path", async () => {
+    const el = await render({ status: TERMS });
+    const link = el.querySelector<HTMLAnchorElement>(".pss__afm-term a.pss__text-link")!;
+    expect(link.getAttribute("href")).toBe(APPLE_FM_LINKS.acceptableUse.url);
+    await click(link);
+    expect(dispatched).toEqual([{ name: "app:openExternal", req: { url: APPLE_FM_LINKS.acceptableUse.url } }]);
+  });
+
+  test("a launch failure says where to find Terminal instead", async () => {
+    terminalAnswer = { ok: false, error: { kind: "unknown", code: "apple_fm_terminal_failed", message: "x" } };
+    const el = await render({ status: TERMS });
+    await click(button(el, "Open Terminal")!);
+    expect(el.querySelector(".pss__afm-term-foot")?.textContent).toContain("Applications › Utilities");
+    expect(button(el, "Open Terminal")?.disabled).toBe(false);
   });
 });
 

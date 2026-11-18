@@ -5156,6 +5156,10 @@ export type Commands = {
   "appleFm:status": { req: { force?: boolean }; res: AppleFmStatus };
   /** One short text prompt to the on-device model, timed. No capture. */
   "appleFm:test": { req: Record<string, never>; res: AppleFmTestResult };
+  /** Launches Terminal, empty, so an administrator can paste
+   *  `APPLE_FM_LICENSE_COMMAND`. macOS and the Settings window only; it types
+   *  nothing and runs nothing. */
+  "appleFm:openTerminal": { req: Record<string, never>; res: void };
   "settings:replaceSecret": {
     req: { name: DesktopSettingsSecretName; value: string };
     res: SecretStatus;

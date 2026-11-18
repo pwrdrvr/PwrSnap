@@ -6,12 +6,14 @@
 import fc from "fast-check";
 import { describe, expect, test } from "vitest";
 import {
+  APPLE_FM_LICENSE_COMMAND,
   APPLE_FM_LINKS,
   APPLE_FM_LINK_URLS,
   APPLE_FM_PROVIDER,
   APPLE_FM_STATES,
   appleFmAgentPrompt,
   appleFmStateCopy,
+  appleFmTerminalCommand,
   isAppleFmOffered,
   isAppleFmProvider,
   isAppleFmReady,
@@ -173,5 +175,42 @@ describe("agent prompt", () => {
   test("what macOS said is quoted for the agent", () => {
     const prompt = appleFmAgentPrompt(status("model-not-ready", "The model is not available. Try again later.")) ?? "";
     expect(prompt).toContain('The tool said: "The model is not available. Try again later."');
+  });
+});
+
+describe("the Terminal step", () => {
+  test("property: only missing terms offer a command, and it is always the same one", () => {
+    fc.assert(
+      fc.property(fc.constantFrom(...APPLE_FM_STATES), fc.option(fc.string(), { nil: null }), (state, detail) => {
+        const command = appleFmTerminalCommand(status(state, detail));
+        // What macOS said never changes the command: it is not parsed out of
+        // the tool's sentence, so that sentence cannot put words in it.
+        expect(command).toBe(state === "license-required" ? APPLE_FM_LICENSE_COMMAND : null);
+      })
+    );
+  });
+
+  test("is the command macOS names, with the tool's absolute path and nothing added", () => {
+    expect(APPLE_FM_LICENSE_COMMAND).toBe("sudo /usr/bin/fm license");
+    // sudo on macOS searches the user's PATH; only the full path pins the
+    // binary that runs as root to the one on the sealed system volume.
+    expect(APPLE_FM_LICENSE_COMMAND.replace("/usr/bin/fm", "fm")).toBe("sudo fm license");
+    // No flag that would agree, or skip showing the terms.
+    expect(APPLE_FM_LICENSE_COMMAND).not.toMatch(/--|\byes\b|accept|agree/);
+  });
+
+  test("the agent prompt for missing terms points at Apple's acceptable-use requirements", () => {
+    // `fm license` links only to Apple's generic license index, so the page
+    // that says what the model may be used for has to come from us.
+    const url = APPLE_FM_LINKS.acceptableUse.url;
+    expect(url).toBe(
+      "https://developer.apple.com/support/terms/acceptable-use-requirements-for-the-foundation-models-framework/"
+    );
+    expect(APPLE_FM_LINK_URLS).toContain(url);
+    expect(appleFmAgentPrompt(status("license-required", "Not agreed."))).toContain(url);
+    // The screen links it once, from the Terminal step, not again under "From Apple".
+    for (const state of APPLE_FM_STATES) {
+      expect(appleFmStateCopy(status(state, null)).links).not.toContain("acceptableUse");
+    }
   });
 });

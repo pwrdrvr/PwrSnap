@@ -97,6 +97,81 @@ export type AppleFmStatus = {
 /** `appleFm:test` result: one text prompt, timed. No capture is involved. */
 export type AppleFmTestResult = { ms: number; modelLabel: string | null };
 
+/** `EVENT_CHANNELS.appleFmStatusChanged` payload. `null` = the cached answer
+ *  was invalidated (a caption run failed for a setup reason) and macOS has
+ *  not been asked again yet: what a window holds is stale. */
+export type AppleFmStatusChangedEvent = { status: AppleFmStatus | null };
+
+function isStringOrNull(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+/** Validate a status that crossed a process boundary. Null when it is not one. */
+export function parseAppleFmStatus(value: unknown): AppleFmStatus | null {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.state !== "string" || !(APPLE_FM_STATES as readonly string[]).includes(v.state)) {
+    return null;
+  }
+  if (!isStringOrNull(v.modelLabel) || !isStringOrNull(v.detail) || !isStringOrNull(v.macosVersion)) {
+    return null;
+  }
+  if (typeof v.checkedAt !== "number" || !Number.isFinite(v.checkedAt)) return null;
+  return {
+    state: v.state as AppleFmState,
+    modelLabel: v.modelLabel,
+    detail: v.detail,
+    macosVersion: v.macosVersion,
+    checkedAt: v.checkedAt
+  };
+}
+
+/** Validate the broadcast payload. Null when it is malformed, which a
+ *  subscriber ignores rather than treating as "invalidated". */
+export function parseAppleFmStatusChangedEvent(payload: unknown): AppleFmStatusChangedEvent | null {
+  if (typeof payload !== "object" || payload === null || !("status" in payload)) return null;
+  const raw = (payload as { status: unknown }).status;
+  if (raw === null) return { status: null };
+  const status = parseAppleFmStatus(raw);
+  return status === null ? null : { status };
+}
+
+/**
+ * Which of two answers a window should hold. A read and a broadcast can
+ * arrive in either order, so the later CHECK wins, not the later arrival:
+ * an older answer never replaces a newer one.
+ */
+export function newerAppleFmStatus(
+  current: AppleFmStatus | null | undefined,
+  incoming: AppleFmStatus
+): AppleFmStatus {
+  if (current === null || current === undefined) return incoming;
+  return incoming.checkedAt >= current.checkedAt ? incoming : current;
+}
+
+/**
+ * What Settings holds after `appleFm:status` itself failed (the request, not
+ * the model). On a Mac that is a `probe-failed` status carrying the error, so
+ * the provider stays listed with "Check failed" and "Check again" stays
+ * reachable. Off macOS there is no provider to show, so whatever was held
+ * (nothing, or "not a Mac") is kept and the row stays absent.
+ */
+export function appleFmStatusAfterFailedRead(input: {
+  platform: string | undefined;
+  message: string;
+  previous: AppleFmStatus | null;
+  now: number;
+}): AppleFmStatus | null {
+  if (input.platform !== "darwin") return input.previous;
+  return {
+    state: "probe-failed",
+    modelLabel: null,
+    detail: quotableAppleFmDetail(input.message),
+    macosVersion: input.previous?.macosVersion ?? null,
+    checkedAt: input.now
+  };
+}
+
 export function isAppleFmReady(status: AppleFmStatus | null | undefined): boolean {
   return status?.state === "ready";
 }

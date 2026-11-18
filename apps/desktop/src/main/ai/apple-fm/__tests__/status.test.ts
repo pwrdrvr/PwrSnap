@@ -326,3 +326,83 @@ describe("AppleFmStatusService", () => {
     expect(await service.get()).toBe(ready);
   });
 });
+
+describe("AppleFmStatusService change notifications", () => {
+  const at = (state: AppleFmState, checkedAt: number): AppleFmStatus => ({
+    state, modelLabel: null, detail: null, macosVersion: "27.2", checkedAt
+  });
+
+  test("a cached answer and an invalidation are each announced once", async () => {
+    const probeFn = vi.fn<() => Promise<AppleFmStatus>>()
+      .mockResolvedValueOnce(at("model-not-ready", 1))
+      .mockResolvedValue(at("ready", 2));
+    const service = new AppleFmStatusService(probeFn);
+    const seen: Array<AppleFmStatus | null> = [];
+    const unsubscribe = service.subscribe((status) => seen.push(status));
+
+    await service.get();
+    await service.get(); // served from cache: nothing changed, nothing announced
+    await service.get(true);
+    service.invalidate();
+    service.invalidate(); // nothing held, so nothing went stale
+    expect(seen.map((s) => s?.state ?? null)).toEqual(["model-not-ready", "ready", null]);
+
+    unsubscribe();
+    await service.get();
+    expect(seen).toHaveLength(3);
+  });
+
+  test("a throwing listener fails neither the read nor the other listeners", async () => {
+    const service = new AppleFmStatusService(async () => at("ready", 1));
+    const seen: Array<AppleFmStatus | null> = [];
+    service.subscribe(() => { throw new Error("broadcast failed"); });
+    service.subscribe((status) => seen.push(status));
+    await expect(service.get()).resolves.toMatchObject({ state: "ready" });
+    expect(seen).toHaveLength(1);
+  });
+
+  // Model: whatever a subscriber was last told IS the cache. Every window
+  // follows these announcements instead of polling, so a change that is
+  // cached but not announced (or announced but not cached) leaves a window
+  // wrong until it reloads. Checked over arbitrary interleavings of reads,
+  // forced reads, invalidations and probes settling in any order.
+  test("model: the last announcement always equals the cached answer", async () => {
+    type Op = "get" | "force" | "invalidate" | "settle-oldest" | "settle-newest";
+    const opArb = fc.constantFrom<Op>("get", "force", "invalidate", "settle-oldest", "settle-newest");
+    const flush = async (): Promise<void> => {
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    };
+    await fc.assert(
+      fc.asyncProperty(fc.array(opArb, { maxLength: 30 }), async (ops) => {
+        let clock = 0;
+        const pending: Array<(status: AppleFmStatus) => void> = [];
+        const service = new AppleFmStatusService(
+          () => new Promise<AppleFmStatus>((resolve) => { pending.push(resolve); })
+        );
+        // `undefined` = never told anything, which must mean an empty cache.
+        let told: AppleFmStatus | null | undefined;
+        let announcements = 0;
+        service.subscribe((status) => { told = status; announcements += 1; });
+        const settle = (resolve: ((status: AppleFmStatus) => void) | undefined): void => {
+          clock += 1;
+          resolve?.(at(clock % 2 === 0 ? "ready" : "model-not-ready", clock));
+        };
+        for (const op of ops) {
+          const before = announcements;
+          const cachedBefore = service.peek();
+          if (op === "get") void service.get().catch(() => undefined);
+          else if (op === "force") void service.get(true).catch(() => undefined);
+          else if (op === "invalidate") service.invalidate();
+          else if (op === "settle-oldest") settle(pending.shift());
+          else settle(pending.pop());
+          await flush();
+          expect(told ?? null).toBe(service.peek());
+          // And nothing is announced unless the cache actually changed.
+          if (service.peek() === cachedBefore) expect(announcements).toBe(before);
+        }
+      }),
+      { numRuns: 300 }
+    );
+  });
+});
+

@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.3.4 - 2026-11-18
+
+- Capture Captions - Added opt-in Apple Intelligence captions on supported Macs
+  running macOS 27 or later. Generate capture titles, descriptions, tags, and
+  file names on your Mac without sending captures to a server. Choose Apple
+  Intelligence in Settings > AI Providers; Library and Sizzle Reel chat are
+  unchanged.
+- Apple Intelligence - Improved setup guidance and kept model readiness current
+  across open windows, so captions become available after setup without an app
+  restart. PwrSnap never agrees to Apple's terms on your behalf.
+- macOS Windows - Fixed clicking the Dock icon to bring back the last focused
+  window instead of opening a different one.
+
 ## v1.3.3 - 2026-11-17
 
 This is a maintenance release with no new user-facing features or intentional

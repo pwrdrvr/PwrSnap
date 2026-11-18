@@ -286,7 +286,9 @@ import {
   findMainLibraryWindow,
   findSettingsWindow,
   installMainProcessHotCpuMonitor,
+  installAppWindowFocusTracking,
   listOpenAppWindows,
+  raiseWindowForAppActivate,
   reclaimDockIconIfLibraryAlive,
   scheduleDockReclaim,
   refreshWindowsTitleBarOverlay,
@@ -1728,10 +1730,9 @@ export function bootstrapApp(): void {
         handleSecondInstanceArgv(argv, additionalData);
         return;
       }
-      const main = findMainLibraryWindow() ?? createMainWindow();
-      if (main.isMinimized()) main.restore();
-      if (!main.isVisible()) main.show();
-      main.focus();
+      // Same rule as a Dock click: the window the user was last in, with
+      // the Library as the fallback (app-window-focus-order.ts).
+      raiseWindowForAppActivate();
       // If the second instance was launched with a file path, route it
       // to the open-file pipeline. Paths can come from argv (CLI /
       // drag-to-Dock) or from the losing process's open-file queue
@@ -1991,6 +1992,7 @@ export function bootstrapApp(): void {
     if (role !== "agent") {
       wireAppMenuBridge();
       wireWindowMenuRefresh();
+      installAppWindowFocusTracking();
     }
     // The other half of a renderer-painted Linux strip: minimize / maximize /
     // close, which no OS API provides for a frameless window there.
@@ -2691,10 +2693,11 @@ export function bootstrapApp(): void {
       // Agent role: no Dock icon, no library window to raise — and we
       // must never create one in this process.
       if (role === "agent") return;
-      const main = findMainLibraryWindow() ?? createMainWindow();
-      if (main.isMinimized()) main.restore();
-      if (!main.isVisible()) main.show();
-      main.focus();
+      // Bring back the window the user was last in (Settings, Sizzle,
+      // Logs, a document window), not always the Library: macOS has
+      // already restored the key window by now, and forcing the Library
+      // to the front overrode it. Library is the fallback.
+      raiseWindowForAppActivate();
     });
 
     // Defense-in-depth Dock-icon recovery. The capture flow re-claims

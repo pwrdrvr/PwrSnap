@@ -55,7 +55,12 @@ Terminal. PwrSnap types nothing into it and runs nothing: you paste the command,
 read Apple's terms there, and agree or not. Then choose **Check again**.
 
 **Check again** re-reads the state. Nothing polls. A caption that fails for a
-setup reason also makes the next read ask macOS again.
+setup reason also makes the next read ask macOS again. A change is sent to every
+open PwrSnap window, so after Check again shows Ready the Library and the
+capture toast offer AI again without a restart.
+
+If PwrSnap cannot ask at all, a Mac shows the provider as **Check failed** with
+the error, and Check again stays available.
 
 Apple's own pages, linked from the screen:
 

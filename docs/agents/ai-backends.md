@@ -341,6 +341,25 @@ contract is therefore the command line.
   selected. "Check again" forces a re-read; a setup-related run failure
   invalidates the cache, and an invalidation outlives a probe already in
   flight.
+- **Windows FOLLOW the status; they do not re-ask.** `AppleFmStatusService`
+  announces every change to its cache (`subscribe`), and
+  `registerAppleFmHandlers` sends it on `EVENT_CHANNELS.appleFmStatusChanged`
+  to every window and across the process split. An invalidation is announced when an answer was
+  cached or a probe was still in flight. What a subscriber was last
+  told always equals the cache: a model test in `status.test.ts` holds that
+  over arbitrary interleavings. A window takes a broadcast status as it
+  arrives, with no read, and keeps the later CHECK (`newerAppleFmStatus`),
+  not the later arrival. `status: null` is an invalidation: the window drops
+  its answer and asks main once, never forced, which main coalesces. Do not
+  add a focus, visibility or timer re-read to keep a window current, and do
+  not subscribe a window that has not selected the model or opened the AI
+  pages. Pinned by `useAppleFmStatus.test.tsx` and `AiProvidersNav.test.tsx`.
+- **A failed status READ is shown, on a Mac.** When `appleFm:status` itself
+  fails, Settings holds a `probe-failed` status carrying the error
+  (`appleFmStatusAfterFailedRead`), so the provider stays listed as "Check
+  failed" and its screen, with Check again, stays reachable. Off macOS the
+  same failure leaves the provider absent. The renderer learns "this is a
+  Mac" from the preload's `platform`, never from the status it failed to read.
 - **The agent prompt is shipped text that another agent will act on.** It may
   name only commands the tool documents itself plus read-only system ones,
   must tell the agent not to agree to Apple's terms, install, change settings

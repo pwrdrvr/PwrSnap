@@ -9,6 +9,8 @@
 
 import {
   APPLE_FM_MODEL_ID,
+  EVENT_CHANNELS,
+  type AppleFmStatusChangedEvent,
   appleFmStateCopy,
   err,
   ok,
@@ -19,7 +21,9 @@ import {
 } from "@pwrsnap/shared";
 import { shell } from "electron";
 import { bus } from "../command-bus";
+import { broadcastRendererEventToLocalWindows } from "../events";
 import { getMainLogger } from "../log";
+import { relayRendererEventToPeer } from "../process-split/event-relay";
 import { appleFmErrorFromOutput, appleFmScratchDir } from "../ai/apple-fm/enrichment";
 import { AppleFmTimeoutError, runAppleFm, type FmRunner } from "../ai/apple-fm/fm-cli";
 import { getAppleFmStatusService } from "../ai/apple-fm/service";
@@ -38,9 +42,18 @@ export const APPLE_FM_TEST_PROMPT = "Reply with the single word: OK";
  *  name or bundle id, and never an app the caller names. */
 export const MACOS_TERMINAL_APP = "/System/Applications/Utilities/Terminal.app";
 
+/** Tell every window, in this process and across the split, what the cached
+ *  status now is. Same two-step shape as the AI run and budget broadcasts. */
+export function broadcastAppleFmStatusChanged(payload: AppleFmStatusChangedEvent): void {
+  broadcastRendererEventToLocalWindows(EVENT_CHANNELS.appleFmStatusChanged, payload);
+  relayRendererEventToPeer(EVENT_CHANNELS.appleFmStatusChanged, payload);
+}
+
 export function registerAppleFmHandlers(
   deps: {
     status?: AppleFmStatusService;
+    /** Where a status change is announced. Tests stand in for the windows. */
+    broadcast?: (payload: AppleFmStatusChangedEvent) => void;
     run?: FmRunner;
     scratchDir?: string;
     platform?: () => NodeJS.Platform;
@@ -48,6 +61,14 @@ export function registerAppleFmHandlers(
   } = {}
 ): void {
   const status = deps.status ?? getAppleFmStatusService();
+  const broadcast = deps.broadcast ?? broadcastAppleFmStatusChanged;
+  // The service is the one owner of the answer, so it is the one place a
+  // change is announced from: a forced re-read, a read that lands, and an
+  // invalidation after a failed caption run all go out the same way. A
+  // window follows these and never has to ask on a timer or on focus.
+  status.subscribe((next) => {
+    broadcast({ status: next });
+  });
   const run = deps.run ?? runAppleFm;
   const platform = deps.platform ?? (() => process.platform);
   const openPath = deps.openPath ?? ((path: string) => shell.openPath(path));

@@ -9,15 +9,31 @@ import { afterAll, beforeEach, describe, expect, test, vi } from "vitest";
 vi.mock("../../log", () => ({
   getMainLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() })
 }));
+const sentToWindows: Array<{ channel: string; payload: unknown }> = [];
 vi.mock("electron", (): Partial<typeof import("electron")> => ({
-  shell: { openExternal: vi.fn() } as unknown as typeof import("electron").shell
+  shell: { openExternal: vi.fn() } as unknown as typeof import("electron").shell,
+  BrowserWindow: {
+    getAllWindows: () => [
+      { isDestroyed: () => false, webContents: { send: (channel: string, payload: unknown) => { sentToWindows.push({ channel, payload }); } } },
+      { isDestroyed: () => true, webContents: { send: () => { throw new Error("sent to a destroyed window"); } } }
+    ]
+  } as unknown as typeof import("electron").BrowserWindow
 }));
 
-import type { AppleFmStatus } from "@pwrsnap/shared";
+import { EVENT_CHANNELS, type AppleFmStatus, type AppleFmStatusChangedEvent } from "@pwrsnap/shared";
 import { bus } from "../../command-bus";
 import { AppleFmTimeoutError, assertAppleFmArgs, type FmRunOptions, type FmRunResult } from "../../ai/apple-fm/fm-cli";
 import { AppleFmStatusService } from "../../ai/apple-fm/status";
-import { APPLE_FM_TEST_PROMPT, MACOS_TERMINAL_APP, registerAppleFmHandlers } from "../apple-fm-handlers";
+import {
+  installRendererEventForwarder,
+  uninstallRendererEventForwarderForTests
+} from "../../process-split/event-relay";
+import {
+  APPLE_FM_TEST_PROMPT,
+  MACOS_TERMINAL_APP,
+  broadcastAppleFmStatusChanged,
+  registerAppleFmHandlers
+} from "../apple-fm-handlers";
 
 const READY: AppleFmStatus = {
   state: "ready", modelLabel: "AFM 3 Core", detail: null, macosVersion: "27.2", checkedAt: 1
@@ -34,9 +50,13 @@ let platform: NodeJS.Platform = "darwin";
 const opened: string[] = [];
 let openFailure = "";
 
+const broadcasts: AppleFmStatusChangedEvent[] = [];
 // Registered once: the bus throws on a duplicate register.
 registerAppleFmHandlers({
   status,
+  broadcast: (payload) => {
+    broadcasts.push(payload);
+  },
   scratchDir,
   platform: () => platform,
   openPath: async (path) => {
@@ -52,6 +72,8 @@ registerAppleFmHandlers({
 });
 
 beforeEach(() => {
+  broadcasts.length = 0;
+  sentToWindows.length = 0;
   platform = "darwin";
   opened.length = 0;
   openFailure = "";
@@ -186,3 +208,50 @@ describe("appleFm:openTerminal", () => {
     });
   });
 });
+
+describe("status changes reach every window", () => {
+  // The Library and the Float-Over follow these instead of asking again, so
+  // each way the cached answer can change must be announced.
+  test("a first read, a forced re-read and an invalidation are each broadcast", async () => {
+    await bus.dispatch("appleFm:status", {}, { principal: "ipc" });
+    expect(broadcasts).toEqual([{ status: READY }]);
+
+    // Served from the cache: nothing changed, nothing is sent.
+    await bus.dispatch("appleFm:status", {}, { principal: "ipc" });
+    expect(broadcasts).toHaveLength(1);
+
+    probed = { ...READY, state: "model-not-ready", modelLabel: null, checkedAt: 2 };
+    await bus.dispatch("appleFm:status", { force: true }, { principal: "ipc" });
+    expect(broadcasts.at(-1)).toEqual({ status: probed });
+
+    // What a failed caption run does (see codex-handlers).
+    status.invalidate();
+    expect(broadcasts.at(-1)).toEqual({ status: null });
+    expect(broadcasts).toHaveLength(3);
+  });
+
+  test("a failed test run that disproves the status is announced too", async () => {
+    await status.get();
+    broadcasts.length = 0;
+    answer = { code: 1, stderr: "Error: The model is not available. Try again later.\n" };
+    await bus.dispatch("appleFm:test", {}, { principal: "ipc" });
+    // The fresh read the test starts with, then the invalidation.
+    expect(broadcasts).toEqual([{ status: READY }, { status: null }]);
+  });
+
+  test("the default broadcast reaches live windows and the peer process, on the status channel", () => {
+    const relayed: Array<{ channel: string; payload: unknown }> = [];
+    installRendererEventForwarder((channel, payload) => {
+      relayed.push({ channel, payload });
+    });
+    try {
+      broadcastAppleFmStatusChanged({ status: READY });
+    } finally {
+      uninstallRendererEventForwarderForTests();
+    }
+    const expected = [{ channel: EVENT_CHANNELS.appleFmStatusChanged, payload: { status: READY } }];
+    expect(sentToWindows).toEqual(expected);
+    expect(relayed).toEqual(expected);
+  });
+});
+

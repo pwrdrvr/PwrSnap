@@ -20,6 +20,7 @@ import type {
   SettingsPatch
 } from "@pwrsnap/shared";
 import {
+  APPLE_FM_DISPLAY_NAME,
   APPLE_FM_PROVIDER,
   APPLE_FM_SETTINGS_SUB,
   isAppleFmProvider,
@@ -29,6 +30,7 @@ import {
   normalizeManualExecutablePath
 } from "@pwrsnap/shared";
 import { dispatch } from "../../../lib/pwrsnap";
+import { rendererShortcutPlatform } from "../../../lib/shortcut-platform";
 import {
   Card,
   ProviderDefaultsStrip,
@@ -145,7 +147,16 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
   // Each sidebar child opens one of these. They share the page's state, so
   // moving between them (or back to the hub) re-fetches nothing.
 
-  const focused = sub !== null ? statuses.find((status) => status.sub === sub) : undefined;
+  // On a Mac the Apple screen is reachable before macOS has answered (a deep
+  // link, or a slow first read): it shows "Asking macOS…" and its Check
+  // again, instead of falling through to the hub. Off macOS there is no such
+  // screen, so the same link lands on the hub.
+  const appleWhileUnknown: AiProviderStatus | undefined =
+    sub === APPLE_FM_SETTINGS_SUB && appleFm === null && rendererShortcutPlatform() === "darwin"
+      ? { sub: APPLE_FM_SETTINGS_SUB, label: APPLE_FM_DISPLAY_NAME, badge: "Checking…", meta: "Asking macOS" }
+      : undefined;
+  const focused =
+    sub !== null ? statuses.find((status) => status.sub === sub) ?? appleWhileUnknown : undefined;
   if (focused !== undefined) {
     const routed = routedSurfaces(settings, focused.sub);
     let body: ReactElement;

@@ -113,3 +113,106 @@ test("the expected slices cover each CI test selection", () => {
   const expected = expectedSlices().map(({ kind, platform, lane }) => `${kind}:${platform}:${lane}`);
   assert.deepEqual(expected, ["unit:linux:1", "unit:windows:1", "unit:windows:2", "e2e:linux:1", "e2e:macos:1", "e2e:windows:1"]);
 });
+
+// Property: after "Re-run failed jobs", the downloaded slices are spread over
+// attempts 1..N. The aggregate must report every slice that any attempt
+// uploaded, each from its newest attempt, and call a slice missing only when
+// no attempt uploaded it. Oracle: a per-key max over the generated uploads.
+test("slices spread over attempts resolve to each slice's newest attempt", () => {
+  let seed = 0x5eed;
+  const random = () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
+  const expected = expectedSlices();
+  const sliceAt = (dimension, attempt) => createSlice({ ...dimension, attempt, first: dimension.kind === "unit"
+    ? unit([item(`from-${attempt}`, "failed")]) : { status: "failed", complete: true, errors: 0, tests: [{ id: `from-${attempt}`, name: "t", outcome: "unexpected", completed: true }] },
+  retries: [] });
+  for (let run = 0; run < 300; run += 1) {
+    const attempts = 1 + Math.floor(random() * 4);
+    const uploads = [];
+    const newest = new Map();
+    for (const dimension of expected) {
+      // Every slice uploads in attempt 1 unless this run drops it entirely;
+      // each later attempt re-runs it (a failed job or a dependent) at random.
+      if (random() < 0.15) continue;
+      for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        if (attempt > 1 && random() < 0.5) continue;
+        uploads.push(sliceAt(dimension, attempt));
+        newest.set(dimension.key, attempt);
+      }
+    }
+    for (let i = uploads.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(random() * (i + 1));
+      [uploads[i], uploads[j]] = [uploads[j], uploads[i]];
+    }
+    const report = aggregateSlices({ slices: uploads, attempt: String(attempts) });
+    assert.deepEqual(report.slices.map(({ key, attempt }) => [key, attempt]),
+      expected.filter(({ key }) => newest.has(key)).map(({ key }) => [key, newest.get(key)]));
+    assert.deepEqual(report.missingSlices.map(({ key }) => key), expected.filter(({ key }) => !newest.has(key)).map(({ key }) => key));
+    for (const slice of report.slices) {
+      assert.equal(slice.reused, slice.attempt < attempts);
+      assert.deepEqual(slice.failures.map(({ id }) => id), [`from-${slice.attempt}`]);
+    }
+    assert.deepEqual(report.reusedSlices, report.slices.filter((s) => s.attempt < attempts).map(({ key, attempt }) => ({ key, attempt })));
+    assert.equal(report.supersededSlices.length, uploads.length - report.slices.length);
+    assert.equal(report.totals.initialFailures, report.slices.length);
+  }
+});
+
+test("a slice uploaded twice by one attempt, or by a future attempt, is refused", () => {
+  const dimension = expectedSlices()[0];
+  const slice = createSlice({ ...dimension, attempt: 2, first: null, retries: [] });
+  assert.throws(() => aggregateSlices({ slices: [slice, slice], attempt: "2" }), /duplicate/i);
+  assert.throws(() => aggregateSlices({ slices: [slice], attempt: "1" }), /invalid attempt/i);
+  // An unset or empty run attempt means attempt 1, not attempt 0.
+  const first = createSlice({ ...dimension, attempt: 1, first: null, retries: [] });
+  for (const attempt of [undefined, ""]) assert.equal(aggregateSlices({ slices: [first], attempt }).attempt, 1);
+});
+
+test("the CLI completes a partial re-run report from earlier attempts' artifacts", async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join, resolve } = await import("node:path");
+  const { spawnSync } = await import("node:child_process");
+  const cwd = mkdtempSync(join(tmpdir(), "flake-rerun-test-"));
+  const script = resolve("scripts/ci/write-flake-report.mjs");
+  const passing = (kind) => kind === "unit" ? unit([item("passing", "passed")])
+    : { status: "passed", complete: true, errors: 0, tests: [{ id: "passing", name: "passing", outcome: "expected", completed: true }] };
+  // The PR #824 shape: attempt 1 uploads all six; attempt 2 re-runs only the
+  // Windows unit job (both of its lanes).
+  const artifactName = ({ kind, platform, lane }, attempt) => `flake-slice-${attempt}-${kind}-${platform}-${lane}`;
+  try {
+    const downloads = join(cwd, ".local/ci/flake-slices");
+    const summary = join(cwd, "summary.md");
+    const upload = (dimension, attempt, { recordAttempt = true } = {}) => {
+      const slice = createSlice({ ...dimension, ...(recordAttempt ? { attempt } : {}), first: passing(dimension.kind), retries: [] });
+      const dir = join(downloads, artifactName(dimension, attempt));
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "flake-slice.json"), JSON.stringify(slice));
+    };
+    const aggregate = () => {
+      writeFileSync(summary, "");
+      const result = spawnSync(process.execPath, [script, "aggregate"], { cwd, encoding: "utf8",
+        env: { ...process.env, FLAKE_SAMPLES: "1", GITHUB_RUN_ATTEMPT: "2", GITHUB_STEP_SUMMARY: summary } });
+      return { status: result.status, stderr: result.stderr, report: JSON.parse(readFileSync(join(cwd, ".local/ci/flake-report/flake-report.json"))), summary: readFileSync(summary, "utf8") };
+    };
+    const expected = expectedSlices();
+    const rerun = (d) => d.kind === "unit" && d.platform === "windows";
+    for (const dimension of expected) upload(dimension, 1, { recordAttempt: dimension.kind === "e2e" });
+    for (const dimension of expected.filter(rerun)) upload(dimension, 2);
+
+    const complete = aggregate();
+    assert.equal(complete.status, 0, complete.stderr + complete.summary);
+    assert.equal(complete.report.missingSlices.length, 0);
+    assert.deepEqual(complete.report.slices.map(({ key, attempt }) => [key, attempt]), expected.map((d) => [d.key, rerun(d) ? 2 : 1]));
+    assert.match(complete.summary, /Slices received: 6\/6; missing: 0/);
+    assert.match(complete.summary, /Reused from earlier attempts \(no upload in attempt 2\): unit-linux-lane-1-sample-1 \(attempt 1\), e2e-linux-lane-1-sample-1 \(attempt 1\)/);
+
+    // A slice no attempt uploaded still fails the job.
+    rmSync(join(downloads, artifactName(expected[3], 1)), { recursive: true });
+    const missing = aggregate();
+    assert.equal(missing.status, 1);
+    assert.deepEqual(missing.report.missingSlices.map(({ key }) => key), [expected[3].key]);
+    assert.match(missing.summary, /Not found in any attempt's artifacts \(never uploaded, or expired\): e2e-linux-lane-1-sample-1\./);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});

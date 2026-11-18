@@ -29,6 +29,7 @@ runs:
         FLAKE_PLATFORM: ${{ inputs.platform }}
         FLAKE_LANE: ${{ inputs.lane }}
         FLAKE_SAMPLE: "1"
+        FLAKE_ATTEMPT: ${{ github.run_attempt }}
         FLAKE_FIRST_OUTCOME: ${{ inputs.first-outcome }}
         FLAKE_RETRY_OUTCOME: ${{ inputs.retry-outcome }}
         PWRSNAP_CI_RETRY_DIR: ${{ inputs.directory }}

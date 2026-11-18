@@ -869,7 +869,10 @@ jobs:
       - uses: actions/download-artifact@v8
         continue-on-error: true
         with:
-          pattern: flake-slice-${{ github.run_attempt }}-*
+          # Every attempt, not just this one: "Re-run failed jobs" re-runs only
+          # the failed jobs, and the other slices were uploaded by earlier
+          # attempts of this run. The aggregator keeps each slice's newest.
+          pattern: flake-slice-*
           path: .local/ci/flake-slices
       - name: Consolidate reports
         env:

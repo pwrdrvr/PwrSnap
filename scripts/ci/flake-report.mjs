@@ -19,7 +19,7 @@ function relativeFile(file, workspace) {
     ? normalized.slice(root.length + 1) : normalized;
 }
 
-export function createSlice({ kind, platform, lane, sample = 1, workspace, first, retries, jobStatus, firstOutcome, retryOutcome }) {
+export function createSlice({ kind, platform, lane, sample = 1, attempt, workspace, first, retries, jobStatus, firstOutcome, retryOutcome }) {
   const slice = { kind, platform, lane: Number(lane), sample: Number(sample) };
   const firstTests = kind === "unit"
     ? (first?.suites ?? []).flatMap((suite) => (suite.tests ?? []).map((test) => ({ ...test, project: suite.project, file: relativeFile(suite.file, workspace) })))
@@ -40,7 +40,8 @@ export function createSlice({ kind, platform, lane, sample = 1, workspace, first
     return { id: test.id, name: test.name, ...(kind === "unit" ? { project: test.project, file: test.file } : {}), retry };
   });
   return {
-    ...slice, slice: kind === "unit" && platform === "windows" && Number(lane) === 2 ? "native-clipboard-smoke" : "full", key: keyOf(slice), jobStatus, firstOutcome, retryOutcome,
+    ...slice, ...(attempt === undefined || attempt === "" ? {} : { attempt: Number(attempt) }),
+    slice: kind === "unit" && platform === "windows" && Number(lane) === 2 ? "native-clipboard-smoke" : "full", key: keyOf(slice), jobStatus, firstOutcome, retryOutcome,
     first: { available: !!first, complete: first?.complete === true, status: first?.reason ?? first?.status ?? null,
       tests: first ? firstTests.length : null, errors: first ? (kind === "unit" ? first.unhandledErrors + (first.suites ?? []).reduce((n, suite) => n + (suite.errors ?? 0), 0) : first.errors) : null,
       ...(kind === "unit" && first?.completion ? { completion: first.completion } : {}) },
@@ -48,20 +49,40 @@ export function createSlice({ kind, platform, lane, sample = 1, workspace, first
   };
 }
 
+const isAttempt = (value) => Number.isInteger(value) && value >= 1;
+
+// A "Re-run failed jobs" attempt re-runs only the failed jobs and their
+// dependents; every other job's slice was uploaded by an earlier attempt of the
+// same run and is still downloadable. So the input holds slices from attempts
+// 1..N, and each slice identity is reported from the NEWEST attempt that
+// uploaded it. A slice absent from every attempt is still missing.
 export function aggregateSlices({ slices, runId, attempt, sha, headSha, warnings = [] }) {
   const expected = expectedSlices();
+  const reportAttempt = Number(attempt ?? 1);
   const byKey = new Map();
+  const superseded = [];
   const allowed = new Set(expected.map((slice) => slice.key));
-  for (const slice of slices) {
+  for (const input of slices) {
+    const slice = { ...input, attempt: Number(input.attempt ?? reportAttempt) };
     if (!allowed.has(slice.key) || slice.key !== keyOf(slice)) throw new Error(`Unexpected slice: ${slice.key}`);
-    if (byKey.has(slice.key)) throw new Error(`Duplicate slice: ${slice.key}`);
+    if (!isAttempt(slice.attempt) || slice.attempt > reportAttempt) throw new Error(`Slice ${slice.key} has invalid attempt ${input.attempt}`);
+    const held = byKey.get(slice.key);
+    if (held && held.attempt === slice.attempt) throw new Error(`Duplicate slice: ${slice.key} (attempt ${slice.attempt})`);
+    if (held && held.attempt > slice.attempt) {
+      superseded.push({ key: slice.key, attempt: slice.attempt });
+      continue;
+    }
+    if (held) superseded.push({ key: held.key, attempt: held.attempt });
     byKey.set(slice.key, slice);
   }
   const missingSlices = expected.filter((slice) => !byKey.has(slice.key));
-  const ordered = expected.filter((slice) => byKey.has(slice.key)).map((slice) => byKey.get(slice.key));
+  const ordered = expected.filter((slice) => byKey.has(slice.key))
+    .map((slice) => ({ ...byKey.get(slice.key), reused: byKey.get(slice.key).attempt < reportAttempt }));
   const failures = ordered.flatMap((slice) => slice.failures);
-  return { schemaVersion: 1, runId: runId ?? null, attempt: Number(attempt ?? 1), sha: sha ?? null, headSha: headSha || null,
+  return { schemaVersion: 1, runId: runId ?? null, attempt: reportAttempt, sha: sha ?? null, headSha: headSha || null,
     generatedAt: new Date().toISOString(), expectedSlices: expected.length, missingSlices, warnings,
+    reusedSlices: ordered.filter((slice) => slice.reused).map(({ key, attempt: from }) => ({ key, attempt: from })),
+    supersededSlices: superseded.sort((a, b) => a.key.localeCompare(b.key) || a.attempt - b.attempt),
     totals: { initialFailures: failures.length, recovered: failures.filter((test) => test.retry === "recovered").length,
       failed: failures.filter((test) => test.retry === "failed").length, unknown: failures.filter((test) => test.retry === "unknown").length },
     slices: ordered };

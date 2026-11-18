@@ -72,18 +72,26 @@
 
 - Keep a sibling `CLAUDE.md` symlink next to every `AGENTS.md`, pointing at
   that `AGENTS.md`, so Codex and Claude read the same local guidance.
+- **Every AGENTS.md is loaded automatically**, for any work under its folder,
+  even just reading code; a linked document is read only when an agent
+  decides to. So an AGENTS.md holds headline rules and "read X before Y"
+  triggers, and full rules, history and tool instructions live in a linked
+  file under [docs/agents/](docs/agents/). A nested AGENTS.md stays under
+  8 KiB, so it fits beside this file in Codex's 32 KiB budget
+  (`nested-agent-instructions-size.test.mjs`).
 - Project root: `CLAUDE.md → AGENTS.md` (this file).
 - `design/`: `CLAUDE.md → AGENTS.md` — the brand-mark, wordmark, token and
   Claude Design provenance rules for `design/**`. It was a bare `CLAUDE.md`
   until the README-chip work put a load-bearing path rule in it that Codex
-  could not see.
+  could not see ([full rules](docs/agents/brand-and-design.md)).
 - `apps/desktop/src/renderer/src/lib/`: `CLAUDE.md → AGENTS.md` — the focus
   hooks every dialog, popover and menu uses (Escape, Tab, focus return), the
-  app's fast hover tooltip, and why each rule in them is there.
+  app's fast hover tooltip ([full rules](docs/agents/renderer-focus-hooks.md)).
 - `apps/desktop/src/renderer/src/features/update/`: `CLAUDE.md → AGENTS.md` —
-  the app-update banner, row and check channels.
-- `docs/agents/*.md` are not instruction files that agents auto-load. They are
-  topic documents this file links to, so they need no `CLAUDE.md` sibling.
+  the app-update banner, row and check channels
+  ([full rules](docs/agents/app-update-ui.md)).
+- `docs/agents/*.md` are not auto-loaded instruction files, so they need no
+  `CLAUDE.md` sibling.
 
 ## Brand and Identity
 
@@ -158,10 +166,11 @@ or Linux/Wayland capture work.
 
 ### Renderer focus, tooltips, layout measures and chrome
 
-Read [docs/agents/renderer-ui.md](docs/agents/renderer-ui.md) (and
-[lib/AGENTS.md](apps/desktop/src/renderer/src/lib/AGENTS.md)) before adding an
-overlay, tooltip or focus style, measuring DOM geometry, or changing a title
-strip.
+Read [docs/agents/renderer-ui.md](docs/agents/renderer-ui.md) (and, for
+overlays and tooltips,
+[docs/agents/renderer-focus-hooks.md](docs/agents/renderer-focus-hooks.md))
+before adding an overlay, tooltip or focus style, measuring DOM geometry, or
+changing a title strip.
 
 - **Overlays get Escape, Tab and focus from the renderer's focus hooks.** No
   overlay keydown listener for Escape or Tab.

@@ -246,6 +246,8 @@ INNER='set -euo pipefail
 cd /work
 echo "==install==" >&2
 pnpm install --frozen-lockfile=false 2>&1 | tail -2
+echo "==native helpers==" >&2
+pnpm build:native 2>&1 | tail -2
 echo "==build==" >&2
 pnpm --filter @pwrsnap/desktop build 2>&1 | tail -2
 cd apps/desktop'

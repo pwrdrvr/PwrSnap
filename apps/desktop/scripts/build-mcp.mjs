@@ -5,11 +5,15 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveRustEnvironment } from "../../../scripts/lib/rust-environment.mjs";
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const manifest = join(root, "crates/pwrsnap-mcp/Cargo.toml");
 const output = join(root, "apps/desktop/build/mcp");
+const rust = resolveRustEnvironment({ cwd: root });
+if (!rust) throw new Error("Cargo is unavailable. Install Rust or add its toolchain to PATH, then run pnpm build:native.");
 function run(command, args) {
-  const result = spawnSync(command, args, { cwd: root, stdio: "inherit", env: process.env });
+  const resolved = command === "cargo" ? rust.cargo : command === "rustup" ? rust.rustup ?? command : command;
+  const result = spawnSync(resolved, args, { cwd: root, stdio: "inherit", env: rust.env });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`${command} failed (${result.status})`);
 }

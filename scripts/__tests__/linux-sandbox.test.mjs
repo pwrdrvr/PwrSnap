@@ -78,22 +78,21 @@ describe("Linux sandbox integration", () => {
     // Our verified runtime installer runs first: the advisory checks its
     // setuid helper, and `pnpm preview` launches it.
     expect(desktop.postinstall).toBe(
-      "node ./scripts/ensure-electron-runtime.mjs && pnpm run rebuild:electron-native && node ../../scripts/linux-sandbox.mjs --warn"
+      "node ./scripts/ensure-electron-runtime.mjs && node ../../scripts/linux-sandbox.mjs --warn"
     );
     expect(desktop.preview).toBe("node ../../scripts/linux-sandbox.mjs --warn && electron-vite preview");
     expect(desktop.dev).toBe("node ./scripts/dev.mjs");
   });
-  it("checks dev after Electron repair and before native staging and launch", () => {
+  it("checks dev after Electron repair and before launch without native compilation", () => {
     const dev = read("../../apps/desktop/scripts/dev.mjs");
     expect(dev).toContain('import { runCli as checkLinuxSandbox } from "../../../scripts/linux-sandbox.mjs"');
     const repair = dev.indexOf("const electronStatus = ensureElectronInstalled(env)");
     const check = dev.indexOf('checkLinuxSandbox(["--warn"])');
-    const staging = dev.indexOf('"./scripts/build-native.mjs"', repair);
     const launch = dev.indexOf('return runLongLived(node, [electronViteJs, "dev"');
     expect(repair).toBeGreaterThan(-1);
     expect(check).toBeGreaterThan(repair);
-    expect(staging).toBeGreaterThan(check);
-    expect(launch).toBeGreaterThan(staging);
+    expect(dev).not.toContain('"./scripts/build-native.mjs"');
+    expect(launch).toBeGreaterThan(check);
   });
   it("rejects invalid arguments before inspecting or modifying the helper", () => {
     const { deps } = fixture();

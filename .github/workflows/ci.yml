@@ -267,6 +267,9 @@ jobs:
           cache-key-suffix: ${{ env.PWRSNAP_DEPENDENCY_CACHE_POLICY }}
           cache-inputs: ${{ env.PWRSNAP_DEPENDENCY_CACHE_INPUTS }}
 
+      - name: Build native helpers
+        run: pnpm build:native
+
       - name: Test
         id: unit-tests
         continue-on-error: true
@@ -341,6 +344,9 @@ jobs:
           cache-mode: restore
           cache-key-suffix: ${{ env.PWRSNAP_DEPENDENCY_CACHE_POLICY }}
           cache-inputs: ${{ env.PWRSNAP_DEPENDENCY_CACHE_INPUTS }}
+
+      - name: Build native helpers
+        run: pnpm build:native
 
       - name: Prepare E2E report directory
         run: |
@@ -436,8 +442,7 @@ jobs:
         with:
           lfs: true
 
-      # pnpm's postinstall builds the MCP relay. Pin its Rust toolchain
-      # before dependency lifecycle scripts run on the hosted image.
+      # Native builds are explicit. Pin Rust before the build step below.
       - name: Install Rust toolchain
         shell: bash
         run: |

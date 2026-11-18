@@ -42,8 +42,12 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const desktopRoot = resolve(__dirname, "..");
-// Release native staging always builds both macOS architectures.
-execFileSync(process.execPath, [join(__dirname, "build-mcp.mjs")], {stdio:"inherit"});
+// Development and install builds use the host architecture. Release staging
+// opts into both macOS architectures, matching the other native helpers.
+execFileSync(process.execPath, [
+  join(__dirname, "build-mcp.mjs"),
+  ...(process.env.PWRSNAP_NATIVE_UNIVERSAL === "1" ? [] : ["--host"])
+], {stdio:"inherit"});
 const nativeRoot = join(desktopRoot, "native");
 const buildRoot = join(desktopRoot, "build", "native");
 
@@ -200,8 +204,8 @@ for (const target of targets) {
   console.log(`[build-native] compiling ${target.name}…`);
   // Release-mode universal builds compile twice (one per arch) and
   // lipo together so end-user installs work on both Apple Silicon and
-  // Intel. Dev/postinstall stays single-arch — universal doubles the
-  // compile time and devs only run the binary on their own host.
+  // Intel. Explicit local builds stay single-arch — universal doubles
+  // the compile time and devs only run the binary on their own host.
   if (process.env.PWRSNAP_NATIVE_UNIVERSAL === "1") {
     const slicePaths = [];
     for (const arch of ["arm64", "x86_64"]) {

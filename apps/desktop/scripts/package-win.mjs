@@ -321,6 +321,9 @@ if (!signStageOnly) {
   step("license notices check");
   runChecked("pnpm", ["licenses:check"], { cwd: repoRoot });
 
+  step("build native helpers");
+  runChecked("pnpm", ["build:native"], { cwd: repoRoot });
+
   // 2. Build (electron-vite -> apps/desktop/out/).
   step("electron-vite build");
   runChecked("pnpm", ["--filter", "@pwrsnap/desktop", "build"], { cwd: repoRoot });

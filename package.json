@@ -10,6 +10,7 @@
   "scripts": {
     "preinstall": "node ./scripts/check-node-version.mjs",
     "build": "pnpm --filter @pwrsnap/desktop build",
+    "build:native": "pnpm --filter @pwrsnap/desktop build:native",
     "dev": "pnpm --filter @pwrsnap/desktop dev",
     "design": "npx --yes serve design -l 4321",
     "rebuild:electron-native": "pnpm --filter @pwrsnap/desktop rebuild:electron-native",
@@ -25,7 +26,7 @@
     "settings-store:check": "node ./scripts/check-settings-store-boundary.mjs",
     "check:renderer-bytecode": "node ./scripts/check-renderer-bytecode.mjs",
     "lint": "pnpm deps:check && pnpm metadata:check && pnpm fuses:check && pnpm typecheck && pnpm licenses:check && pnpm settings-store:check && pnpm check:renderer-bytecode && pnpm lint:colors && pnpm lint:syntax && pnpm lint:typed",
-    "test": "node ./apps/desktop/scripts/build-mcp.mjs --host && vitest run --config vitest.workspace.ts",
+    "test": "vitest run --config vitest.workspace.ts",
     "test:watch": "vitest --config vitest.workspace.ts",
     "test:desktop-e2e": "pnpm --filter @pwrsnap/desktop build && pnpm --filter @pwrsnap/desktop test:e2e",
     "test:desktop-e2e:windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/e2e/run-windows.ps1",

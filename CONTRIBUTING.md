@@ -26,12 +26,22 @@ cd PwrSnap
 source ~/.nvm/nvm.sh
 nvm use
 pnpm install
+pnpm build:native
 pnpm dev
 ```
 
 The root `preinstall` script refuses an install under a Node that does not
 satisfy `^<.nvmrc>`: the same major, and no older than the pin, so any later
 24.x passes. Do not bypass it.
+
+Native compilation is explicit: `pnpm install`, `pnpm dev`, `pnpm build`, and
+the normal test commands never rebuild the Rust/Swift/C++ helpers. Run
+`pnpm build:native` once per checkout, and again after changing native sources.
+It builds only for the host architecture; packaging explicitly requests the
+release architectures. Rust is required for the MCP transport, Xcode command-line
+tools for the macOS helpers, and Visual Studio's C++ workload for Windows helpers.
+Without built helpers, features that use them are unavailable. CI and packaging
+run the native build explicitly before tests or staging.
 
 Keep a separate `pnpm install` in each worktree. Sharing root `node_modules`
 does not supply all package-local dependency links, and sharing package
@@ -75,7 +85,8 @@ Useful checks (all run from the repo root):
   unused-binding errors, then measure three sequential pairs on this machine;
   results are written to `.local/check-performance/paired.json`. Set
   `CHECK_BENCH_ITERATIONS` (1–20) or `CHECK_BENCH_OUTPUT` to customize a run.
-- `pnpm test` — Vitest unit + integration suite
+- `pnpm build:native` — compile the host's native helpers explicitly
+- `pnpm test` — Vitest unit + integration suite (run `pnpm build:native` first)
 - `pnpm test:desktop-e2e` — Playwright + Electron end-to-end suite
 - `pnpm test:desktop-e2e:docker` — the Linux/xvfb E2E subset on Docker, used
   to reproduce GitHub Actions failures locally

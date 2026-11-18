@@ -22,7 +22,7 @@
     "licenses:allowlist": "node ./scripts/check-third-party-license-allowlist.mjs",
     "licenses:check": "node ./scripts/check-package-license-policy.mjs && node ./scripts/check-third-party-license-allowlist.mjs && node ./scripts/generate-third-party-licenses.mjs --check",
     "licenses:generate": "node ./scripts/generate-third-party-licenses.mjs",
-    "lint:agent-instructions": "node ./scripts/check-agent-instructions-size.mjs",
+    "lint:agent-instructions": "node ./scripts/check-agent-instructions-size.mjs && node ./scripts/check-nested-agent-instructions-size.mjs",
     "lint:colors": "node ./scripts/lint-renderer-colors.mjs",
     "settings-store:check": "node ./scripts/check-settings-store-boundary.mjs",
     "check:renderer-bytecode": "node ./scripts/check-renderer-bytecode.mjs",

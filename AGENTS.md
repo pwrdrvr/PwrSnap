@@ -77,8 +77,8 @@
   decides to. So an AGENTS.md holds headline rules and "read X before Y"
   triggers, and full rules, history and tool instructions live in a linked
   file under [docs/agents/](docs/agents/). A nested AGENTS.md stays under
-  8 KiB, so it fits beside this file in Codex's 32 KiB budget
-  (`nested-agent-instructions-size.test.mjs`).
+  8 KiB, and the AGENTS.md files on any path total under Codex's 32 KiB
+  (`pnpm lint:agent-instructions`, also checked by CI's classifier).
 - Project root: `CLAUDE.md → AGENTS.md` (this file).
 - `design/`: `CLAUDE.md → AGENTS.md` — the brand-mark, wordmark, token and
   Claude Design provenance rules for `design/**`. It was a bare `CLAUDE.md`

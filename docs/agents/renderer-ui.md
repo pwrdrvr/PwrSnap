@@ -18,7 +18,8 @@ first window-capture keydown listener, and it stops the key it claims.
 That is why the app's own Escape handlers (Library view, editor, Sizzle
 inspector) never need a `defaultPrevented` check, and why a second overlay
 listener would break the ordering. Rules, measurements and test recipes:
-[apps/desktop/src/renderer/src/lib/AGENTS.md](../../apps/desktop/src/renderer/src/lib/AGENTS.md).
+[docs/agents/renderer-focus-hooks.md](renderer-focus-hooks.md) (the full text
+of `apps/desktop/src/renderer/src/lib/AGENTS.md`).
 
 ## Icon-only controls name themselves with `data-tip`, not `title`
 
@@ -31,7 +32,7 @@ restarts it on every pointer move, so an icon took seconds to say anything.
 it, and no element carries `data-tip` and `title` together or nested.
 Two places keep `title` on purpose: the recording HUD and the float-over
 dock, windows too small for an in-page tooltip. Rules and the list:
-[apps/desktop/src/renderer/src/lib/AGENTS.md](../../apps/desktop/src/renderer/src/lib/AGENTS.md)
+[docs/agents/renderer-focus-hooks.md](renderer-focus-hooks.md)
 §"Hover tooltips". Pinned by
 [fast-tooltip-contract.test.ts](../../apps/desktop/src/renderer/src/lib/__tests__/fast-tooltip-contract.test.ts)
 and [useFastTooltip.test.tsx](../../apps/desktop/src/renderer/src/lib/__tests__/useFastTooltip.test.tsx).

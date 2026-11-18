@@ -77,12 +77,17 @@ jobs:
         with:
           sparse-checkout: |
             AGENTS.md
+            */AGENTS.md
             scripts/check-agent-instructions-size.mjs
+            scripts/check-nested-agent-instructions-size.mjs
             scripts/lib/cli-entrypoint.mjs
           sparse-checkout-cone-mode: false
 
       - name: Check root AGENTS.md size
         run: node ./scripts/check-agent-instructions-size.mjs
+
+      - name: Check nested AGENTS.md sizes
+        run: node ./scripts/check-nested-agent-instructions-size.mjs
 
       - name: Classify changed files
         id: classify
@@ -231,6 +236,10 @@ jobs:
       - name: Root AGENTS.md size
         timeout-minutes: 1
         run: node ./scripts/check-agent-instructions-size.mjs
+
+      - name: Nested AGENTS.md sizes
+        timeout-minutes: 1
+        run: node ./scripts/check-nested-agent-instructions-size.mjs
 
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1

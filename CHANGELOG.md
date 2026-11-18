@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.3.5 - 2026-11-18
+
+Apple Foundation Models are now an option for AI enrichment on Macs with Apple
+Silicon, keeping capture processing on your Mac.
+
+- AI Enrichment - Added opt-in capture titles, descriptions, tags, and file names
+  using Apple's on-device model on supported Apple Silicon Macs running macOS
+  27 or later. Captures are not uploaded to a server, and no API key or cloud
+  account is needed. Choose Apple Intelligence in Settings > AI Providers, then
+  Use for captions once the model is ready. Library and Sizzle Reel chat are
+  unchanged.
+- Apple Intelligence - Improved setup guidance and kept model readiness current
+  across open windows, so enrichment becomes available after setup without
+  restarting PwrSnap. You review and accept Apple's terms yourself.
+- macOS Windows - Fixed clicking the Dock icon to restore the last focused
+  window instead of opening a different one.
+
 ## v1.3.4 - 2026-11-18
 
 - Capture Captions - Added opt-in Apple Intelligence captions on supported Macs

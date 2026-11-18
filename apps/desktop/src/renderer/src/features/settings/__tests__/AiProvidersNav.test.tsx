@@ -95,6 +95,7 @@ const READ_FAILED = {
   error: { kind: "unknown", code: "bridge_down", message: "agent process unavailable" }
 };
 let appleFmAnswers: unknown[] = [];
+let onStatusRead: (() => void) | null = null;
 let fakePlatform = "darwin";
 const eventListeners = new Map<string, Set<(payload: unknown) => void>>();
 
@@ -113,6 +114,7 @@ function installFakeApi(): void {
       dispatch: async (name: string, req: unknown) => {
         dispatchCalls.push({ name, req });
         if (name === "appleFm:status") {
+          onStatusRead?.();
           // Scripted answers in order; the last one repeats.
           const next = appleFmAnswers.length > 1 ? appleFmAnswers.shift() : appleFmAnswers[0];
           return next ?? { ok: true, value: APPLE_NOT_OFFERED };
@@ -248,6 +250,7 @@ afterEach(async () => {
   heldModelsProbe = null;
   customAnswers = {};
   appleFmAnswers = [];
+  onStatusRead = null;
   fakePlatform = "darwin";
   eventListeners.clear();
   secrets = SECRETS;
@@ -1065,6 +1068,27 @@ describe("Apple on-device model — failed reads and followed changes", () => {
     await emitEvent(EVENT_CHANNELS.appleFmStatusChanged, { status: null });
     expect(statusReads()).toEqual([{ force: false }, { force: false }]);
     expect(chip(subRow("Apple Intelligence"))).toBe("wait");
+  });
+
+  test("a real answer replaces this window's own Check failed, whatever its timestamp", async () => {
+    appleFmAnswers = [READ_FAILED];
+    await render(createElement(Sidebar, { active: "ai", sub: null }));
+    expect(chip(subRow("Apple Intelligence"))).toBe("check");
+    // A probe that STARTED long before the read failed: older checkedAt.
+    await emitEvent(EVENT_CHANNELS.appleFmStatusChanged, { status: apple("ready", 1) });
+    expect([dotTone(subRow("Apple Intelligence")), chip(subRow("Apple Intelligence"))]).toEqual(["ok", null]);
+  });
+
+  test("it subscribes before its first read is issued", async () => {
+    let listenersAtRead = -1;
+    onStatusRead = () => {
+      if (listenersAtRead === -1) {
+        listenersAtRead = eventListeners.get(EVENT_CHANNELS.appleFmStatusChanged)?.size ?? 0;
+      }
+    };
+    appleFmAnswers = [{ ok: true, value: apple("ready", 10) }];
+    await render(createElement(Sidebar, { active: "ai", sub: null }));
+    expect(listenersAtRead).toBe(1);
   });
 
   test("a Settings window that never opened the AI pages neither reads nor follows", async () => {

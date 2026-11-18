@@ -215,12 +215,14 @@ export class AppleFmStatusService {
 
   invalidate(): void {
     this.epoch += 1;
-    const hadAnswer = this.cached !== null;
+    // A probe still in flight counts: its answer goes to whoever asked but
+    // is never cached, so that window must be told what it gets is stale.
+    const wentStale = this.cached !== null || this.inflight !== null;
     this.cached = null;
     // The next read must ask macOS again, not join the stale probe.
     this.inflight = null;
-    // Only a real change is announced: nothing was held, nothing went stale.
-    if (hadAnswer) this.emit(null);
+    // Only a real change is announced: nothing held or pending, nothing stale.
+    if (wentStale) this.emit(null);
   }
 
   async get(force = false): Promise<AppleFmStatus> {

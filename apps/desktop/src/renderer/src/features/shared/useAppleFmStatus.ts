@@ -39,9 +39,13 @@ export function useAppleFmStatusWhenSelected(provider: string | undefined): Appl
       // A read and a broadcast can land in either order; the later CHECK wins.
       setStatus((current) => newerAppleFmStatus(current, incoming));
     };
+    // Bumped by an invalidation. A read issued before it can still return the
+    // answer the invalidation disproved, so its reply is dropped.
+    let generation = 0;
     const read = (): void => {
+      const issued = generation;
       void dispatch("appleFm:status", {}).then((result) => {
-        if (!cancelled && result.ok) take(result.value);
+        if (!cancelled && issued === generation && result.ok) take(result.value);
       });
     };
     // Subscribe before asking, so a change that lands while the first read
@@ -51,6 +55,7 @@ export function useAppleFmStatusWhenSelected(provider: string | undefined): Appl
       const event = parseAppleFmStatusChangedEvent(payload);
       if (event === null) return;
       if (event.status === null) {
+        generation += 1;
         setStatus(undefined);
         read();
         return;

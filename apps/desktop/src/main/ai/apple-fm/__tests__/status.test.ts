@@ -352,6 +352,23 @@ describe("AppleFmStatusService change notifications", () => {
     expect(seen).toHaveLength(3);
   });
 
+  test("an invalidation during the first probe is announced, though nothing was cached", async () => {
+    // The window that asked is about to be handed an answer that is never
+    // cached. Unless it is told, it holds that answer with nothing to correct it.
+    let release!: (status: AppleFmStatus) => void;
+    const service = new AppleFmStatusService(
+      () => new Promise<AppleFmStatus>((resolve) => { release = resolve; })
+    );
+    const seen: Array<AppleFmStatus | null> = [];
+    service.subscribe((status) => seen.push(status));
+    const early = service.get();
+    service.invalidate();
+    release(at("ready", 1));
+    await early;
+    expect(seen).toEqual([null]);
+    expect(service.peek()).toBeNull();
+  });
+
   test("a throwing listener fails neither the read nor the other listeners", async () => {
     const service = new AppleFmStatusService(async () => at("ready", 1));
     const seen: Array<AppleFmStatus | null> = [];
@@ -397,8 +414,12 @@ describe("AppleFmStatusService change notifications", () => {
           else settle(pending.pop());
           await flush();
           expect(told ?? null).toBe(service.peek());
-          // And nothing is announced unless the cache actually changed.
-          if (service.peek() === cachedBefore) expect(announcements).toBe(before);
+          // And nothing is announced unless the cache actually changed. The
+          // one exception is an invalidation: with a probe still in flight it
+          // says "stale" once though the cache was already empty, because
+          // that probe's answer goes to its caller uncached.
+          if (op === "invalidate") expect(announcements - before).toBeLessThanOrEqual(1);
+          else if (service.peek() === cachedBefore) expect(announcements).toBe(before);
         }
       }),
       { numRuns: 300 }

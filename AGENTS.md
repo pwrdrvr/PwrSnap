@@ -627,7 +627,8 @@ contract is therefore the command line.
 - **Windows FOLLOW the status; they do not re-ask.** `AppleFmStatusService`
   announces every change to its cache (`subscribe`), and
   `registerAppleFmHandlers` sends it on `EVENT_CHANNELS.appleFmStatusChanged`
-  to every window and across the process split. What a subscriber was last
+  to every window and across the process split. An invalidation is announced when an answer was
+  cached or a probe was still in flight. What a subscriber was last
   told always equals the cache: a model test in `status.test.ts` holds that
   over arbitrary interleavings. A window takes a broadcast status as it
   arrives, with no read, and keeps the later CHECK (`newerAppleFmStatus`),

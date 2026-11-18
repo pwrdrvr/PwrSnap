@@ -143,6 +143,17 @@ describe("while the on-device model is selected", () => {
     expect(seen?.state).toBe("license-required");
   });
 
+  test("a read issued before an invalidation cannot bring the disproved answer back", async () => {
+    await mount("apple:system");
+    // First read still in flight when main invalidates.
+    await broadcast({ status: null });
+    expect(dispatched).toEqual(["appleFm:status", "appleFm:status"]);
+    await answerRead(0, status("ready", 10));
+    expect(seen).toBeUndefined();
+    await answerRead(1, status("license-required", 30));
+    expect(seen?.state).toBe("license-required");
+  });
+
   test("a failed read leaves the answer unknown rather than inventing one", async () => {
     await mount("apple:system");
     await answerRead(0, { error: "bridge unavailable" });

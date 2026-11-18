@@ -17,6 +17,10 @@ import {
   isAppleFmOffered,
   isAppleFmProvider,
   isAppleFmReady,
+  appleFmStatusAfterFailedRead,
+  newerAppleFmStatus,
+  parseAppleFmStatus,
+  parseAppleFmStatusChangedEvent,
   quotableAppleFmDetail,
   type AppleFmState,
   type AppleFmStatus
@@ -222,3 +226,78 @@ describe("the Terminal step", () => {
     }
   });
 });
+
+describe("status changes across a process boundary", () => {
+  const good = status("ready");
+
+  test("a well-formed status and an invalidation both parse", () => {
+    expect(parseAppleFmStatusChangedEvent({ status: good })).toEqual({ status: good });
+    expect(parseAppleFmStatusChangedEvent({ status: null })).toEqual({ status: null });
+  });
+
+  test("property: anything that is not a status is rejected, never read as an invalidation", () => {
+    fc.assert(
+      fc.property(fc.anything(), (junk) => {
+        // A malformed payload must not look like "invalidated": that would
+        // make a window drop a good answer and ask main again.
+        const parsed = parseAppleFmStatusChangedEvent({ status: junk });
+        if (junk === null) return;
+        if (parsed !== null) expect(parseAppleFmStatus(junk)).toEqual(parsed.status);
+        else expect(parseAppleFmStatus(junk)).toBeNull();
+      })
+    );
+    for (const junk of [undefined, null, 3, "ready", [], {}, { status: undefined }]) {
+      if (junk !== null && typeof junk === "object" && "status" in junk) continue;
+      expect(parseAppleFmStatusChangedEvent(junk)).toBeNull();
+    }
+    expect(parseAppleFmStatus({ ...good, state: "made-up" })).toBeNull();
+    expect(parseAppleFmStatus({ ...good, checkedAt: Number.NaN })).toBeNull();
+    expect(parseAppleFmStatus({ ...good, detail: 4 })).toBeNull();
+  });
+
+  test("property: the later check wins whichever order two answers arrive in", () => {
+    fc.assert(
+      fc.property(fc.integer({ min: 0, max: 1_000 }), fc.integer({ min: 0, max: 1_000 }), (a, b) => {
+        const first = { ...good, checkedAt: a };
+        const second = { ...status("model-not-ready"), checkedAt: b };
+        const oneWay = newerAppleFmStatus(newerAppleFmStatus(undefined, first), second);
+        const otherWay = newerAppleFmStatus(newerAppleFmStatus(undefined, second), first);
+        expect(oneWay.checkedAt).toBe(Math.max(a, b));
+        expect(otherWay.checkedAt).toBe(Math.max(a, b));
+        if (a !== b) expect(oneWay).toEqual(otherWay);
+      })
+    );
+    expect(newerAppleFmStatus(null, good)).toBe(good);
+  });
+});
+
+describe("a failed status read", () => {
+  test("on a Mac it becomes a visible 'Check failed' status carrying the error", () => {
+    const failed = appleFmStatusAfterFailedRead({
+      platform: "darwin", message: "bridge `unavailable`\nretry", previous: null, now: 42
+    });
+    expect(failed).toEqual({
+      state: "probe-failed", modelLabel: null, detail: "bridge unavailable retry", macosVersion: null, checkedAt: 42
+    });
+    expect(isAppleFmOffered(failed)).toBe(true);
+    expect(appleFmStateCopy(failed!).badge).toBe("Check failed");
+    // A stale "Ready" is never left standing over a failed re-check.
+    expect(
+      appleFmStatusAfterFailedRead({ platform: "darwin", message: "x", previous: status("ready"), now: 43 })
+    ).toMatchObject({ state: "probe-failed", macosVersion: "26.5", checkedAt: 43 });
+  });
+
+  test("property: off macOS a failed read never makes the provider appear", () => {
+    const platformArb = fc.oneof(fc.constantFrom("win32", "linux", undefined, ""), fc.string());
+    const previousArb = fc.constantFrom<AppleFmStatus | null>(null, status("unsupported-platform"));
+    fc.assert(
+      fc.property(platformArb, previousArb, fc.string(), (platform, previous, message) => {
+        fc.pre(platform !== "darwin");
+        const after = appleFmStatusAfterFailedRead({ platform, message, previous, now: 1 });
+        expect(after).toBe(previous);
+        expect(isAppleFmOffered(after)).toBe(false);
+      })
+    );
+  });
+});
+

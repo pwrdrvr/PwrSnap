@@ -180,8 +180,33 @@ export class AppleFmStatusService {
    *  world the invalidation just disproved, so its answer is returned to
    *  whoever asked but never cached. */
   private epoch = 0;
+  private readonly listeners = new Set<(status: AppleFmStatus | null) => void>();
 
   constructor(private readonly probe: () => Promise<AppleFmStatus>) {}
+
+  /**
+   * Be told whenever the cached answer changes: a probe's answer was cached
+   * (`status`), or the cache was invalidated (`null`). What a listener was
+   * last told always equals `peek()`. That is the whole contract, and it
+   * is what lets a window follow the status without ever asking on a timer.
+   * Returns the unsubscribe.
+   */
+  subscribe(listener: (status: AppleFmStatus | null) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private emit(status: AppleFmStatus | null): void {
+    for (const listener of [...this.listeners]) {
+      try {
+        listener(status);
+      } catch {
+        // A listener is a broadcaster; its failure must not fail a read.
+      }
+    }
+  }
 
   /** The last answer without probing, or null if nothing has asked yet. */
   peek(): AppleFmStatus | null {
@@ -190,9 +215,14 @@ export class AppleFmStatusService {
 
   invalidate(): void {
     this.epoch += 1;
+    // A probe still in flight counts: its answer goes to whoever asked but
+    // is never cached, so that window must be told what it gets is stale.
+    const wentStale = this.cached !== null || this.inflight !== null;
     this.cached = null;
     // The next read must ask macOS again, not join the stale probe.
     this.inflight = null;
+    // Only a real change is announced: nothing held or pending, nothing stale.
+    if (wentStale) this.emit(null);
   }
 
   async get(force = false): Promise<AppleFmStatus> {
@@ -200,7 +230,10 @@ export class AppleFmStatusService {
     if (this.inflight !== null) return this.inflight;
     const epoch = this.epoch;
     const run = this.probe().then((status) => {
-      if (epoch === this.epoch) this.cached = status;
+      if (epoch === this.epoch) {
+        this.cached = status;
+        this.emit(status);
+      }
       return status;
     });
     const tracked = run.finally(() => {

@@ -13,7 +13,7 @@ import type {
   Settings,
   SettingsPage
 } from "@pwrsnap/shared";
-import { SETTINGS_PAGE_SUBS } from "@pwrsnap/shared";
+import { EVENT_CHANNELS, SETTINGS_PAGE_SUBS, type AppleFmStatus } from "@pwrsnap/shared";
 import { AiProvidersProvider } from "../AiProvidersContext";
 import { AIFeaturesPage } from "../pages/AIFeaturesPage";
 import { AIProvidersPage } from "../pages/AIProvidersPage";
@@ -84,13 +84,41 @@ let heldModelsProbe: Promise<unknown> | null = null;
 /** Answers for the `customModels:*` and `chatgptPlan:*` verbs, by verb name. */
 let customAnswers: Record<string, unknown> = {};
 
+/** What `appleFm:status` answers. The default says "not offered", so the
+ *  tests about agents and connections see exactly the providers they name;
+ *  the on-device model's own tests set it. */
+const APPLE_NOT_OFFERED: AppleFmStatus = {
+  state: "unsupported-platform", modelLabel: null, detail: null, macosVersion: null, checkedAt: 1
+};
+const READ_FAILED = {
+  ok: false,
+  error: { kind: "unknown", code: "bridge_down", message: "agent process unavailable" }
+};
+let appleFmAnswers: unknown[] = [];
+let onStatusRead: (() => void) | null = null;
+let fakePlatform = "darwin";
+const eventListeners = new Map<string, Set<(payload: unknown) => void>>();
+
+async function emitEvent(channel: string, payload: unknown): Promise<void> {
+  await act(async () => {
+    for (const handler of [...(eventListeners.get(channel) ?? [])]) handler(payload);
+  });
+  await flush();
+}
+
 function installFakeApi(): void {
   Object.defineProperty(window, "pwrsnapApi", {
     configurable: true,
     value: {
-      platform: "darwin",
+      platform: fakePlatform,
       dispatch: async (name: string, req: unknown) => {
         dispatchCalls.push({ name, req });
+        if (name === "appleFm:status") {
+          onStatusRead?.();
+          // Scripted answers in order; the last one repeats.
+          const next = appleFmAnswers.length > 1 ? appleFmAnswers.shift() : appleFmAnswers[0];
+          return next ?? { ok: true, value: APPLE_NOT_OFFERED };
+        }
         if (name === "acp:discover") return { ok: true, value: discoveryResponse };
         if (name.startsWith("customModels:") || name.startsWith("chatgptPlan:") || name === "app:openExternal") {
           return name in customAnswers
@@ -110,7 +138,14 @@ function installFakeApi(): void {
           error: { kind: "unknown", code: "test_unavailable", message: "unavailable in test" }
         };
       },
-      on: () => () => undefined,
+      on: (channel: string, handler: (payload: unknown) => void) => {
+        const set = eventListeners.get(channel) ?? new Set();
+        set.add(handler);
+        eventListeners.set(channel, set);
+        return () => {
+          set.delete(handler);
+        };
+      },
       startCaptureDrag: () => undefined
     }
   });
@@ -214,6 +249,10 @@ afterEach(async () => {
   discoveryResponse = DISCOVERY;
   heldModelsProbe = null;
   customAnswers = {};
+  appleFmAnswers = [];
+  onStatusRead = null;
+  fakePlatform = "darwin";
+  eventListeners.clear();
   secrets = SECRETS;
   refreshCodexMock.mockClear();
   window.location.hash = "";
@@ -1014,5 +1053,118 @@ describe("Sign in with ChatGPT", () => {
     await click(button(card("Using ChatGPT plan"), "Sign out"));
     expect(callsTo("chatgptPlan:logout")).toEqual([{}]);
     expect(card("Using ChatGPT plan").textContent).toContain("OpenAI didn't confirm the revocation");
+  });
+});
+// The on-device Apple model: what Settings shows when the status READ fails,
+// and how it follows a status that changed somewhere else.
+describe("Apple on-device model — failed reads and followed changes", () => {
+  const apple = (state: AppleFmStatus["state"], checkedAt: number): AppleFmStatus => ({
+    state, modelLabel: state === "ready" ? "AFM 3 Core" : null, detail: null, macosVersion: "27.2", checkedAt
+  });
+  const sidebarLabels = (): Array<string | null> =>
+    Array.from(container?.querySelectorAll("#pss-sb-sublist-ai .pss__sb-sublabel") ?? []).map((el) => el.textContent);
+  const statusReads = (): unknown[] => dispatchCalls.filter((c) => c.name === "appleFm:status").map((c) => c.req);
+
+  test("on macOS a failed read keeps the provider listed as Check failed, in the sidebar and the hub", async () => {
+    appleFmAnswers = [READ_FAILED];
+    await render(createElement(Sidebar, { active: "ai", sub: null }));
+    expect(sidebarLabels()).toContain("Apple Intelligence");
+    // Amber with a word: colour is never the only channel.
+    expect([dotTone(subRow("Apple Intelligence")), chip(subRow("Apple Intelligence"))]).toEqual(["warn", "check"]);
+
+    await rerender(createElement(AIProvidersPage, { sub: null }));
+    const row = Array.from(container?.querySelectorAll(".pss__prov-row") ?? []).find((el) =>
+      el.textContent?.includes("Apple Intelligence")
+    );
+    expect(row?.querySelector(".pss__badge")?.textContent).toBe("Check failed");
+  });
+
+  test.each(["win32", "linux"])("on %s a failed read leaves the provider absent everywhere", async (platform) => {
+    fakePlatform = platform;
+    appleFmAnswers = [READ_FAILED];
+    await render(createElement(Sidebar, { active: "ai", sub: null }));
+    expect(sidebarLabels()).not.toContain("Apple Intelligence");
+    expect(container?.textContent).not.toContain("On this Mac");
+
+    // A deep link to its screen lands on the hub, which does not list it.
+    await rerender(createElement(AIProvidersPage, { sub: "apple" }));
+    expect(container?.querySelector(".pss__main-title")?.textContent).toBe("AI Providers");
+    expect(container?.textContent).not.toContain("Apple Intelligence");
+    expect(container?.textContent).not.toContain("Built into macOS");
+  });
+
+  test("on macOS the Apple screen stays reachable after a failed read, with the error and Check again", async () => {
+    appleFmAnswers = [READ_FAILED, { ok: true, value: apple("ready", 50) }];
+    const page = await render(createElement(AIProvidersPage, { sub: "apple" }));
+    expect(page.querySelector(".pss__main-title")?.textContent).toBe("Apple Intelligence");
+    expect(page.querySelector(".pss__afm-status-title")?.textContent).toBe("PwrSnap couldn't check the on-device model");
+    expect(page.querySelector(".pss__afm-status-said")?.textContent).toContain("agent process unavailable");
+
+    await click(button(page, "Check again"));
+    expect(statusReads().at(-1)).toEqual({ force: true });
+    expect(page.querySelector(".pss__afm-status-title")?.textContent).toBe("The on-device model is ready");
+  });
+
+  test("on macOS the Apple screen is reachable while the first read is still in flight", async () => {
+    let answer!: (value: unknown) => void;
+    appleFmAnswers = [new Promise((resolve) => { answer = resolve; })];
+    const page = await render(createElement(AIProvidersPage, { sub: "apple" }));
+    expect(page.querySelector(".pss__main-title")?.textContent).toBe("Apple Intelligence");
+    expect(page.textContent).toContain("Asking macOS…");
+
+    await act(async () => {
+      answer({ ok: true, value: apple("ready", 5) });
+    });
+    await flush();
+    expect(page.querySelector(".pss__afm-status-title")?.textContent).toBe("The on-device model is ready");
+  });
+
+  test("a change made elsewhere is followed without a read; an invalidation asks once, never forced", async () => {
+    appleFmAnswers = [{ ok: true, value: apple("license-required", 10) }, { ok: true, value: apple("model-not-ready", 40) }];
+    await render(createElement(Sidebar, { active: "ai", sub: null }));
+    expect(chip(subRow("Apple Intelligence"))).toBe("terms");
+    expect(statusReads()).toEqual([{ force: false }]);
+
+    await emitEvent(EVENT_CHANNELS.appleFmStatusChanged, { status: apple("ready", 20) });
+    expect([dotTone(subRow("Apple Intelligence")), chip(subRow("Apple Intelligence"))]).toEqual(["ok", null]);
+    expect(statusReads()).toEqual([{ force: false }]);
+
+    // An older answer arriving late does not replace the newer one.
+    await emitEvent(EVENT_CHANNELS.appleFmStatusChanged, { status: apple("license-required", 15) });
+    expect(chip(subRow("Apple Intelligence"))).toBeNull();
+
+    await emitEvent(EVENT_CHANNELS.appleFmStatusChanged, { status: null });
+    expect(statusReads()).toEqual([{ force: false }, { force: false }]);
+    expect(chip(subRow("Apple Intelligence"))).toBe("wait");
+  });
+
+  test("a real answer replaces this window's own Check failed, whatever its timestamp", async () => {
+    appleFmAnswers = [READ_FAILED];
+    await render(createElement(Sidebar, { active: "ai", sub: null }));
+    expect(chip(subRow("Apple Intelligence"))).toBe("check");
+    // A probe that STARTED long before the read failed: older checkedAt.
+    await emitEvent(EVENT_CHANNELS.appleFmStatusChanged, { status: apple("ready", 1) });
+    expect([dotTone(subRow("Apple Intelligence")), chip(subRow("Apple Intelligence"))]).toEqual(["ok", null]);
+  });
+
+  test("it subscribes before its first read is issued", async () => {
+    let listenersAtRead = -1;
+    onStatusRead = () => {
+      if (listenersAtRead === -1) {
+        listenersAtRead = eventListeners.get(EVENT_CHANNELS.appleFmStatusChanged)?.size ?? 0;
+      }
+    };
+    appleFmAnswers = [{ ok: true, value: apple("ready", 10) }];
+    await render(createElement(Sidebar, { active: "ai", sub: null }));
+    expect(listenersAtRead).toBe(1);
+  });
+
+  test("a Settings window that never opened the AI pages neither reads nor follows", async () => {
+    appleFmAnswers = [{ ok: true, value: apple("ready", 10) }];
+    await render(createElement(Sidebar, { active: "general", sub: null }));
+    expect(statusReads()).toEqual([]);
+    expect(eventListeners.get(EVENT_CHANNELS.appleFmStatusChanged)?.size ?? 0).toBe(0);
+    await emitEvent(EVENT_CHANNELS.appleFmStatusChanged, { status: null });
+    expect(statusReads()).toEqual([]);
   });
 });

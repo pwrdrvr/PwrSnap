@@ -37,7 +37,14 @@ import type {
   AppleFmStatus,
   DesktopCodexDiscoverySnapshot
 } from "@pwrsnap/shared";
-import { dispatch } from "../../lib/pwrsnap";
+import {
+  EVENT_CHANNELS,
+  appleFmStatusAfterFailedRead,
+  newerAppleFmStatus,
+  parseAppleFmStatusChangedEvent
+} from "@pwrsnap/shared";
+import { dispatch, subscribe } from "../../lib/pwrsnap";
+import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import {
   appleFmInUse,
   describeAiProviders,
@@ -127,14 +134,62 @@ export function AiProvidersProvider({ children }: { children: ReactNode }): Reac
   // first read. A failed read keeps the previous answer rather than blanking
   // the row.
   const appleFmSeq = useRef<number>(0);
+  const appleFmReadFailed = useRef<boolean>(false);
   const refreshAppleFm = useCallback(async (force = false): Promise<void> => {
     const seq = ++appleFmSeq.current;
     setAppleFmLoading(true);
     const result = await dispatch("appleFm:status", { force });
     if (seq !== appleFmSeq.current) return;
-    if (result.ok) setAppleFm(result.value);
+    if (result.ok) {
+      appleFmReadFailed.current = false;
+      setAppleFm(result.value);
+    } else {
+      appleFmReadFailed.current = true;
+      // The REQUEST failed, not the model. On a Mac that is shown as "Check
+      // failed" with the error, so the provider stays listed and "Check
+      // again" stays reachable; off macOS the row stays absent.
+      const message = result.error.message;
+      setAppleFm((previous) =>
+        appleFmStatusAfterFailedRead({
+          platform: rendererShortcutPlatform(),
+          message,
+          previous,
+          now: Date.now()
+        })
+      );
+    }
     setAppleFmLoading(false);
   }, []);
+
+  // Follow main's status once this window has asked for it: a change made
+  // anywhere (a re-check in another window, a caption run that proved the
+  // answer wrong) arrives here without a read. Not subscribed before
+  // `request()`, so a Settings window on General still does nothing.
+  const [appleFmFollowed, setAppleFmFollowed] = useState<boolean>(false);
+  const appleFmFollowedRef = useRef<boolean>(false);
+  useEffect(() => {
+    if (!appleFmFollowed) return;
+    const unsubscribe = subscribe(EVENT_CHANNELS.appleFmStatusChanged, (payload) => {
+      const event = parseAppleFmStatusChangedEvent(payload);
+      if (event === null) return;
+      if (event.status === null) {
+        // Invalidated: what is shown is stale. Ask once, from main's cache
+        // path (never forced); main coalesces every window's read.
+        void refreshAppleFm(false);
+        return;
+      }
+      const next = event.status;
+      // A "Check failed" this window made up carries this window's clock,
+      // not a check's, so any real answer replaces it.
+      const overFailedRead = appleFmReadFailed.current;
+      appleFmReadFailed.current = false;
+      setAppleFm((current) => (overFailedRead ? next : newerAppleFmStatus(current, next)));
+    });
+    // Subscribed first, then the first read: a change announced while that
+    // read is in flight is not missed.
+    void refreshAppleFm(false);
+    return unsubscribe;
+  }, [appleFmFollowed, refreshAppleFm]);
 
   // Per agent, last-issued-wins like the reads above: the page's first-pass
   // probe and a Refresh overlap routinely. An older probe settling last must
@@ -168,7 +223,13 @@ export function AiProvidersProvider({ children }: { children: ReactNode }): Reac
     requestedRef.current = true;
     void refreshCodexSnapshot(false);
     void refreshAcpDiscovery(false);
-    void refreshAppleFm(false);
+    if (appleFmFollowedRef.current) {
+      void refreshAppleFm(false);
+    } else {
+      // The first read is issued by the follow effect, after it subscribes.
+      appleFmFollowedRef.current = true;
+      setAppleFmFollowed(true);
+    }
   }, [refreshCodexSnapshot, refreshAcpDiscovery, refreshAppleFm]);
 
   // Re-read when a setting that discovery depends on changes — Codex mode /

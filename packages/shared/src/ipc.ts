@@ -115,6 +115,16 @@ export const EVENT_CHANNELS = {
   recordingControllerArm: "events:recording-controller:arm",
   settingsChanged: "events:settings:changed",
   /**
+   * Main (the status owner) → every BrowserWindow, relayed across the
+   * process split: what macOS reports about Apple's on-device model changed.
+   * Payload: `AppleFmStatusChangedEvent`. `status: null` means the cached
+   * answer was invalidated and nothing has asked macOS again yet.
+   *
+   * State, not an intent: a late subscriber reads `appleFm:status`, so the
+   * channel is not latched. Nothing is sent on a timer.
+   */
+  appleFmStatusChanged: "events:apple-fm:status-changed",
+  /**
    * Main → one BrowserWindow: that window's maximize state changed.
    * Payload type: `WindowFrameState`.
    *

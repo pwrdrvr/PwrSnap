@@ -139,81 +139,93 @@ export const runAppleFm: FmRunner = createFmRunner(APPLE_FM_BINARY);
 /** The runner behind `runAppleFm`. `binary` is a parameter only so tests can
  *  stand a script in for the tool; production never passes anything else. */
 export function createFmRunner(binary: string): FmRunner {
- return (args, options) => {
-  assertAppleFmArgs(args);
-  return new Promise<FmRunResult>((resolve, reject) => {
-    if (options.signal?.aborted) {
-      reject(new DOMException("fm run cancelled", "AbortError"));
-      return;
-    }
-    const child = spawn(binary, [...args], {
-      ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
-      env: appleFmEnv(),
-      shell: false,
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true
-    });
-    const out: Buffer[] = [];
-    const errOut: Buffer[] = [];
-    let bytes = 0;
-    let failure: Error | null = null;
-    let settled = false;
-
-    const stop = (reason: Error): void => {
-      if (failure === null) failure = reason;
-      child.kill("SIGKILL");
-    };
-    const onAbort = (): void => stop(new DOMException("fm run cancelled", "AbortError"));
-    const timer = setTimeout(() => stop(new AppleFmTimeoutError(options.timeoutMs)), options.timeoutMs);
-    options.signal?.addEventListener("abort", onAbort, { once: true });
-
-    const collect = (sink: Buffer[]) => (chunk: Buffer): void => {
-      bytes += chunk.length;
-      if (bytes > APPLE_FM_MAX_OUTPUT_BYTES) {
-        stop(new AppleFmOutputLimitError());
+  return (args, options) => {
+    assertAppleFmArgs(args);
+    return new Promise<FmRunResult>((resolve, reject) => {
+      if (options.signal?.aborted) {
+        reject(new DOMException("fm run cancelled", "AbortError"));
         return;
       }
-      sink.push(chunk);
-    };
-    child.stdout.on("data", collect(out));
-    child.stderr.on("data", collect(errOut));
+      const child = spawn(binary, [...args], {
+        ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+        env: appleFmEnv(),
+        shell: false,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true
+      });
+      const out: Buffer[] = [];
+      const errOut: Buffer[] = [];
+      let bytes = 0;
+      let failure: Error | null = null;
+      let settled = false;
+      let exited = false;
 
-    const finish = (action: () => void): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      options.signal?.removeEventListener("abort", onAbort);
-      action();
-    };
-    child.once("error", (error) => finish(() => reject(failure ?? error)));
-    // A killed run settles when the process EXITS. Waiting for `close` would
-    // hang for as long as any descendant kept the pipes open, which is the
-    // one situation a kill exists to end.
-    child.once("exit", () => {
-      if (failure === null) return;
-      const reason = failure;
-      child.stdout.destroy();
-      child.stderr.destroy();
-      finish(() => reject(reason));
-    });
-    child.once("close", (code, signal) =>
-      finish(() => {
-        if (failure !== null) {
-          reject(failure);
+      const finish = (action: () => void): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        options.signal?.removeEventListener("abort", onAbort);
+        action();
+      };
+      // A stopped run settles as soon as the process is gone. Waiting for
+      // `close` would hang for as long as any descendant kept the pipes
+      // open, which is the one situation a stop exists to end.
+      const rejectStopped = (reason: Error): void => {
+        child.stdout.destroy();
+        child.stderr.destroy();
+        finish(() => reject(reason));
+      };
+      const stop = (reason: Error): void => {
+        if (failure === null) failure = reason;
+        // Already exited with its pipes still held open: there is nothing
+        // left to kill and no `exit` left to wait for.
+        if (exited) {
+          rejectStopped(failure);
           return;
         }
-        resolve({
-          code,
-          signal,
-          stdout: stripAnsi(Buffer.concat(out).toString("utf8")),
-          stderr: stripAnsi(Buffer.concat(errOut).toString("utf8"))
-        });
-      })
-    );
+        child.kill("SIGKILL");
+      };
+      const onAbort = (): void => stop(new DOMException("fm run cancelled", "AbortError"));
+      const timer = setTimeout(
+        () => stop(new AppleFmTimeoutError(options.timeoutMs)),
+        options.timeoutMs
+      );
+      options.signal?.addEventListener("abort", onAbort, { once: true });
 
-    // A closed pipe (the tool exited before reading) must not crash main.
-    child.stdin.on("error", () => undefined);
-    child.stdin.end(options.stdin ?? "");
-  });
- };
+      const collect = (sink: Buffer[]) => (chunk: Buffer): void => {
+        bytes += chunk.length;
+        if (bytes > APPLE_FM_MAX_OUTPUT_BYTES) {
+          stop(new AppleFmOutputLimitError());
+          return;
+        }
+        sink.push(chunk);
+      };
+      child.stdout.on("data", collect(out));
+      child.stderr.on("data", collect(errOut));
+
+      child.once("error", (error) => finish(() => reject(failure ?? error)));
+      child.once("exit", () => {
+        exited = true;
+        if (failure !== null) rejectStopped(failure);
+      });
+      child.once("close", (code, signal) =>
+        finish(() => {
+          if (failure !== null) {
+            reject(failure);
+            return;
+          }
+          resolve({
+            code,
+            signal,
+            stdout: stripAnsi(Buffer.concat(out).toString("utf8")),
+            stderr: stripAnsi(Buffer.concat(errOut).toString("utf8"))
+          });
+        })
+      );
+
+      // A closed pipe (the tool exited before reading) must not crash main.
+      child.stdin.on("error", () => undefined);
+      child.stdin.end(options.stdin ?? "");
+    });
+  };
 }

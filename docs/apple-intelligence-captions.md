@@ -5,8 +5,10 @@ description, tags and file name with the language model built into macOS. The
 capture is read on the Mac. It is not sent to a server, and there is no
 account, key or bill.
 
-It is off until you choose it. Nothing about it runs, and macOS is not asked
-anything, until you open its Settings screen or set captions to it.
+It is off until you choose it. No capture is sent to the model until captions
+are set to it. PwrSnap asks macOS whether the model can run when you open
+**AI Providers** or **AI Features** in Settings, and while captions are set to
+it; that check runs the tool's read-only status commands and no model.
 
 ## Turning it on
 

@@ -216,6 +216,21 @@ describe.skipIf(process.platform === "win32")("running the tool", () => {
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
   });
 
+  test("a deadline that passes after the tool exited, with its pipes still held, still settles", async () => {
+    // The tool is gone but a descendant keeps stdout open, so `close` never
+    // comes. The deadline (or an abort) must still end the run.
+    const run = createFmRunner(await fakeFm("sleep 30 &"));
+    await expect(run(["models"], { timeoutMs: 400 })).rejects.toBeInstanceOf(AppleFmTimeoutError);
+
+    const controller = new AbortController();
+    const pending = createFmRunner(await fakeFm("sleep 30 &"))(["models"], {
+      timeoutMs: 20_000,
+      signal: controller.signal
+    });
+    setTimeout(() => controller.abort(), 300);
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  });
+
   test("an already-aborted signal never spawns", async () => {
     const run = createFmRunner("/nonexistent/fm");
     const controller = new AbortController();

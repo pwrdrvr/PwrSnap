@@ -170,6 +170,23 @@ describe("failures fail closed", () => {
     expect(error.setupRelated).toBe(setupRelated);
   });
 
+  test("model output never chooses the failure class or reaches the message", async () => {
+    // stdout is where model output goes, and it is derived from an untrusted
+    // screenshot. Only the tool's own stderr may classify or be quoted.
+    const leaked = await failure({
+      respond: { code: 1, stdout: "fixture-screenshot-text about a guardrail\nNot agreed.", stderr: "" }
+    });
+    expect(leaked.code).toBe("failed");
+    expect(leaked.setupRelated).toBe(false);
+    expect(leaked.message).toBe("the on-device model reported an error.");
+    expect(leaked.message).not.toContain("fixture-screenshot-text");
+
+    const real = await failure({
+      respond: { code: 1, stdout: "fixture-screenshot-text", stderr: "Error: The model's safety guardrails were triggered." }
+    });
+    expect(real.code).toBe("guardrail");
+  });
+
   test("an answer that is not the schema is a failure, not a blank caption", async () => {
     expect((await failure({ respond: { stdout: "I can't help with that." } })).code).toBe("invalid-output");
     expect((await failure({ respond: { stdout: "" } })).code).toBe("invalid-output");

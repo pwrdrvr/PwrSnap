@@ -113,7 +113,8 @@ describe("agent prompt", () => {
       for (const command of backticked(prompt)) {
         // Not commands: the model's name, the tool's path, and the one
         // command the user is told to run themselves.
-        if (command === "sudo fm license" || command === "system" || command === "/usr/bin/fm") continue;
+        if (command === "sudo fm license" || command === APPLE_FM_LICENSE_COMMAND) continue;
+        if (command === "system" || command === "/usr/bin/fm") continue;
         expect(READ_ONLY_COMMANDS.some((allowed) => allowed.test(command))).toBe(true);
       }
     }
@@ -155,7 +156,14 @@ describe("agent prompt", () => {
     expect(prompt).toContain("without agreeing to anything on my behalf");
     expect(prompt).toContain("Do not run it for me");
     // The only privileged command named is the one the tool itself prints.
-    expect(backticked(prompt).filter((command) => command.startsWith("sudo"))).toEqual(["sudo fm license"]);
+    // The tool's own wording is quoted, and the form to actually run is the
+    // full-path one Settings shows: sudo searches PATH, and a `fm` earlier on
+    // it would run as root.
+    expect(backticked(prompt).filter((command) => command.startsWith("sudo"))).toEqual([
+      "sudo fm license",
+      APPLE_FM_LICENSE_COMMAND
+    ]);
+    expect(prompt).toContain(`\`${APPLE_FM_LICENSE_COMMAND}\`; use that form`);
   });
 
   test("only the terms prompt names a privileged command", () => {

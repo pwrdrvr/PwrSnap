@@ -438,7 +438,7 @@ Foundation Model, selected as `apple:system`. It is a caption backend only:
 `settings:write` refuses it for the chat surfaces, and it has no model choice,
 effort or usage accounting. Main reaches the model through `/usr/bin/fm`, the
 command-line tool macOS ships, because the framework's image-input API needs a
-macOS 27 SDK that the release runners do not have. Each run is one
+macOS 27 SDK that the required `macos-26` release runners do not have. Each run is one
 `fm respond` with an app-built argv: the on-device model named explicitly, the
 shared enrichment instructions and schema, the app-prepared bounded image as
 an absolute path, and the capture's metadata on stdin. No tool flag, model

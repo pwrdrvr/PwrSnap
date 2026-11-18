@@ -300,6 +300,25 @@ describe("AppleFmStatusService", () => {
     expect(probeFn).toHaveBeenCalledTimes(3);
   });
 
+  test("an invalidation outlives a probe that was already in flight", async () => {
+    // The in-flight probe saw the world before the failure that invalidated
+    // it. Its answer goes to whoever asked, but never back into the cache.
+    let release!: (status: AppleFmStatus) => void;
+    const probeFn = vi
+      .fn<() => Promise<AppleFmStatus>>()
+      .mockImplementationOnce(() => new Promise<AppleFmStatus>((resolve) => { release = resolve; }))
+      .mockResolvedValue(notReady);
+    const service = new AppleFmStatusService(probeFn);
+    const early = service.get();
+    service.invalidate();
+    release(ready);
+    expect(await early).toBe(ready);
+    expect(service.peek()).toBeNull();
+    // The next read asks macOS again instead of serving the disproved answer.
+    expect(await service.get()).toBe(notReady);
+    expect(probeFn).toHaveBeenCalledTimes(2);
+  });
+
   test("a rejected probe is not cached and does not wedge the next read", async () => {
     const probeFn = vi.fn<() => Promise<AppleFmStatus>>().mockRejectedValueOnce(new Error("boom")).mockResolvedValue(ready);
     const service = new AppleFmStatusService(probeFn);

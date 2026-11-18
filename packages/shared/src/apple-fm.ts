@@ -303,7 +303,7 @@ export function appleFmAgentPrompt(status: AppleFmStatus): string | null {
         "Please help me, without agreeing to anything on my behalf:",
         "1. Run `/usr/bin/fm license --status` and `/usr/bin/fm license --show`, and show me the output so I can read the terms myself.",
         `   Apple's acceptable use requirements for the model, which say what it may be used for, are at ${APPLE_FM_LINKS.acceptableUse.url}. Point me to them as well; the tool's own license output does not link to them.`,
-        "2. The tool says to run `sudo fm license` in Terminal. Tell me what that does (the agreement applies to every user on this Mac) and let me run it myself. Do not run it for me.",
+        `2. The tool says to run \`sudo fm license\` in Terminal. With the tool's full path that is \`${APPLE_FM_LICENSE_COMMAND}\`; use that form, because sudo searches my PATH. Tell me what it does (the agreement applies to every user on this Mac) and let me run it myself. Do not run it for me.`,
         "3. When I say I've done it, run `/usr/bin/fm license --status` and `/usr/bin/fm models`, and tell me whether `system` is available.",
         "",
         PROMPT_GUARD,

@@ -191,6 +191,9 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
         "The language model built into macOS. It reads each capture on this Mac and writes the title, description and tags. Nothing is sent to a server.";
       body = (
         <AppleIntelligenceCard
+          // "Copied" and a test result describe one detected state. Remount
+          // when it changes, so neither is shown over a different one.
+          key={appleFm?.state ?? "unknown"}
           status={appleFm}
           loading={appleFmLoading}
           inUse={appleFmInUse(settings)}

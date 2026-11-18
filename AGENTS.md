@@ -617,10 +617,13 @@ contract is therefore the command line.
   does not accept it, on purpose: a refusal by Apple's safety checks, missing
   terms or a model still downloading is something the operator should see
   (see "AI backends" above on not widening the trigger set).
-- **Nothing polls, and nothing probes for a user who did not choose it.** The
-  status is read when its Settings screen asks, or while captions are set to
-  it. "Check again" forces a re-read; a setup-related run failure invalidates
-  the cache.
+- **Nothing polls, and no model runs for a user who did not choose it.** The
+  status probe (three read-only commands, no model turn) runs when Settings
+  opens AI Providers or AI Features, or while captions are set to the
+  on-device model. The Library and the Float-Over ask only while it is
+  selected. "Check again" forces a re-read; a setup-related run failure
+  invalidates the cache, and an invalidation outlives a probe already in
+  flight.
 - **The agent prompt is shipped text that another agent will act on.** It may
   name only commands the tool documents itself plus read-only system ones,
   must tell the agent not to agree to Apple's terms, install, change settings
@@ -630,9 +633,11 @@ contract is therefore the command line.
 - **Unit tests never run the model.** `apple-fm-real.test.ts` does, on a
   synthetic image, and only under `PWRSNAP_APPLE_FM_REAL=1`.
 
-The framework route (a Swift helper on FoundationModels) cannot ship image
-input from the `macos-26` runners, and Apple's terms for the tool leave
-application use unsettled. Both, with the measurements:
+The framework route (a Swift helper on FoundationModels) cannot build image
+input on the `macos-26` runners this repo requires; GitHub's preview Xcode 27
+image could, and using it is a change to the runner rule in "Workflow". The
+framework is the documented API for apps, so that route would also settle the
+other open item: Apple's terms for the tool leave application use unsettled. Both, with the measurements:
 [docs/solutions/2026-11-17-apple-fm-cli-captions-feasibility.md](docs/solutions/2026-11-17-apple-fm-cli-captions-feasibility.md).
 
 ## Only the operator's re-run is exempt from the enrichment budget

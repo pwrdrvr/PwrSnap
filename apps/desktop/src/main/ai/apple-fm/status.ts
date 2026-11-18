@@ -176,6 +176,10 @@ export async function probeAppleFmStatus(deps: AppleFmProbeDeps): Promise<AppleF
 export class AppleFmStatusService {
   private cached: AppleFmStatus | null = null;
   private inflight: Promise<AppleFmStatus> | null = null;
+  /** Bumped by `invalidate()`. A probe that started before the bump saw the
+   *  world the invalidation just disproved, so its answer is returned to
+   *  whoever asked but never cached. */
+  private epoch = 0;
 
   constructor(private readonly probe: () => Promise<AppleFmStatus>) {}
 
@@ -185,18 +189,20 @@ export class AppleFmStatusService {
   }
 
   invalidate(): void {
+    this.epoch += 1;
     this.cached = null;
+    // The next read must ask macOS again, not join the stale probe.
+    this.inflight = null;
   }
 
   async get(force = false): Promise<AppleFmStatus> {
     if (!force && this.cached !== null) return this.cached;
     if (this.inflight !== null) return this.inflight;
-    const run = this.probe().then(
-      (status) => {
-        this.cached = status;
-        return status;
-      }
-    );
+    const epoch = this.epoch;
+    const run = this.probe().then((status) => {
+      if (epoch === this.epoch) this.cached = status;
+      return status;
+    });
     const tracked = run.finally(() => {
       if (this.inflight === tracked) this.inflight = null;
     });

@@ -78,20 +78,24 @@ export class AppleFmError extends Error {
 
 const SETTINGS_HINT = "Open Settings → AI Providers → Apple Intelligence.";
 
-/** Turn the tool's failure text into the sentence the user reads. The
- *  tool's own text is used only to choose the sentence, except for the
- *  bounded last-resort case. Exported for tests. */
+/** Turn the tool's own failure text into the sentence the user reads.
+ *
+ *  Pass the tool's STDERR, never its stdout: stdout is where model output
+ *  goes, and model output is derived from an untrusted screenshot. It must
+ *  not choose the failure class, and it must not reach the run's error or
+ *  the log. The tool's text only chooses the sentence, except for the
+ *  bounded last-resort detail. Exported for tests. */
 export function appleFmErrorFromOutput(text: string): AppleFmError {
-  if (/guardrails? (were|was) triggered|guardrail/i.test(text)) {
+  if (/guardrail/i.test(text)) {
     return new AppleFmError(
       "guardrail",
-"Apple's safety checks declined it. Regenerate, or pick another provider for captions."
+      "Apple's safety checks declined it. Regenerate, or pick another provider for captions."
     );
   }
   if (saysLicenseRequired(text)) {
     return new AppleFmError(
       "license-required",
-`Apple's terms for the on-device model haven't been agreed to on this Mac. ${SETTINGS_HINT}`
+      `Apple's terms for the on-device model haven't been agreed to on this Mac. ${SETTINGS_HINT}`
     );
   }
   if (
@@ -101,7 +105,7 @@ export function appleFmErrorFromOutput(text: string): AppleFmError {
   ) {
     return new AppleFmError(
       "not-ready",
-`the on-device model isn't available right now; macOS may still be downloading it. ${SETTINGS_HINT}`
+      `the on-device model isn't available right now; macOS may still be downloading it. ${SETTINGS_HINT}`
     );
   }
   const line = text
@@ -169,7 +173,10 @@ export class AppleFmEnrichmentBackend implements EnrichmentBackend {
   async enrichCapture(req: CaptureEnrichmentRequest): Promise<CaptureEnrichmentResponse> {
     req.abortSignal?.throwIfAborted();
     if (this.platform !== "darwin") {
-      throw new AppleFmError("not-ready", "the on-device model is part of macOS and isn't available on this computer.");
+      throw new AppleFmError(
+        "not-ready",
+        "the on-device model is part of macOS and isn't available on this computer."
+      );
     }
     const signal = req.abortSignal !== undefined ? { signal: req.abortSignal } : {};
 
@@ -188,12 +195,13 @@ export class AppleFmEnrichmentBackend implements EnrichmentBackend {
         ...signal
       })
     );
+    // `config get` runs no model, so both streams are the tool's own words.
     const providerText = `${provider.stdout}\n${provider.stderr}`;
     if (saysLicenseRequired(providerText)) throw appleFmErrorFromOutput(providerText);
     if (!isFmDefaultProviderUnset(provider)) {
       throw new AppleFmError(
         "provider-override",
-`the fm tool is set to use another model provider, so PwrSnap didn't run it. ${SETTINGS_HINT}`
+        `the fm tool is set to use another model provider, so PwrSnap didn't run it. ${SETTINGS_HINT}`
       );
     }
 
@@ -213,7 +221,8 @@ export class AppleFmEnrichmentBackend implements EnrichmentBackend {
       )
     );
     if (result.code !== 0) {
-      throw appleFmErrorFromOutput(`${result.stderr}\n${result.stdout}`);
+      // stderr only: stdout can hold model output (see appleFmErrorFromOutput).
+      throw appleFmErrorFromOutput(result.stderr);
     }
 
     let parsed: CaptureEnrichmentResponse["result"];
@@ -222,7 +231,7 @@ export class AppleFmEnrichmentBackend implements EnrichmentBackend {
     } catch {
       throw new AppleFmError(
         "invalid-output",
-"the on-device model returned a caption PwrSnap couldn't read. Regenerate to try again."
+        "the on-device model returned a caption PwrSnap couldn't read. Regenerate to try again."
       );
     }
     return {
@@ -245,19 +254,19 @@ export class AppleFmEnrichmentBackend implements EnrichmentBackend {
       if (error instanceof AppleFmTimeoutError) {
         throw new AppleFmError(
           "timeout",
-"the on-device model didn't answer in time, so the run was stopped. Regenerate to try again."
+          "the on-device model didn't answer in time, so the run was stopped. Regenerate to try again."
         );
       }
       if (error instanceof AppleFmOutputLimitError) {
         throw new AppleFmError(
           "invalid-output",
-  "the on-device model returned a caption PwrSnap couldn't read. Regenerate to try again."
+          "the on-device model returned a caption PwrSnap couldn't read. Regenerate to try again."
         );
       }
       if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") {
         throw new AppleFmError(
           "not-ready",
-`the on-device model needs macOS 27 or later; its command-line tool isn't on this Mac. ${SETTINGS_HINT}`
+          `the on-device model needs macOS 27 or later; its command-line tool isn't on this Mac. ${SETTINGS_HINT}`
         );
       }
       throw error;

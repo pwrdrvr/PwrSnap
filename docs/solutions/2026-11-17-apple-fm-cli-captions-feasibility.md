@@ -81,14 +81,23 @@ Things that bite:
 
 A Swift helper on the FoundationModels framework was the first idea: PwrSnap
 already ships Swift helpers, and the framework has a typed availability API.
-It cannot ship image input today. The image-attachment API is
-`@available(macOS 27.0, *)` in the SDK, and macOS CI and release jobs run on
-GitHub-hosted `macos-26` runners (AGENTS.md §"Workflow"), whose newest Xcode is
-26.6. A helper that references the API does not compile there.
+It cannot build image input on the runners this repo requires. The
+image-attachment API is `@available(macOS 27.0, *)` in the SDK, and macOS CI
+and release jobs run on GitHub-hosted `macos-26` runners (AGENTS.md
+§"Workflow"), whose newest Xcode is 26.6. A helper that references the API
+does not compile there.
 
-Revisit when the runners carry a macOS 27 SDK. The framework route would give
-typed availability and errors and would remove the dependence on the tool's
-sentences.
+That is a rule of this repo, not a limit of GitHub. As of 2026-11-18 GitHub
+lists a preview "Xcode 27" image (macOS 27.0.1, Xcode 27.1 and 27.2). A
+packaging job on it could build the helper; nobody has tried, and the helper
+itself was not prototyped. The SDK interface shows what it would use: image
+attachments from a file URL, and a `respond` call taking a prompt and a
+generation schema.
+
+The framework route would give typed availability and errors, would remove
+the dependence on the tool's sentences, and, being the documented API for
+apps, would settle the terms question below. Revisit it when the runner rule
+can change or `macos-26` carries a macOS 27 SDK.
 
 ## Apple's terms: an open question
 

@@ -112,7 +112,7 @@ export function registerAppleFmHandlers(
           signal: ctx.signal
         });
         if (result.code !== 0 || result.stdout.trim().length === 0) {
-          const failure = appleFmErrorFromOutput(`${result.stderr}\n${result.stdout}`);
+          const failure = appleFmErrorFromOutput(result.stderr);
           if (failure.setupRelated) status.invalidate();
           return err({
             kind: "settings",

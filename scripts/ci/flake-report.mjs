@@ -58,7 +58,7 @@ const isAttempt = (value) => Number.isInteger(value) && value >= 1;
 // uploaded it. A slice absent from every attempt is still missing.
 export function aggregateSlices({ slices, runId, attempt, sha, headSha, warnings = [] }) {
   const expected = expectedSlices();
-  const reportAttempt = Number(attempt ?? 1);
+  const reportAttempt = Number(attempt) || 1;
   const byKey = new Map();
   const superseded = [];
   const allowed = new Set(expected.map((slice) => slice.key));

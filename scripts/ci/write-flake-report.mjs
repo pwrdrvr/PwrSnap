@@ -58,8 +58,8 @@ if (process.argv[2] === "slice") {
   const lines = ["### Consolidated test retry report", "", `Initial failures: ${report.totals.initialFailures}; recovered: ${report.totals.recovered}; failed: ${report.totals.failed}; unknown: ${report.totals.unknown}.`,
     `Slices received: ${report.slices.length}/${report.expectedSlices}; missing: ${report.missingSlices.length}.`,
     `First reports unavailable or incomplete: ${incomplete}.`,
-    ...(report.reusedSlices.length ? [`Reused from earlier attempts (not re-run in attempt ${report.attempt}): ${report.reusedSlices.map(({ key, attempt }) => `${key} (attempt ${attempt})`).join(", ")}.`] : []),
-    ...(report.missingSlices.length ? [`Missing from every attempt: ${report.missingSlices.map(({ key }) => key).join(", ")}.`] : []),
+    ...(report.reusedSlices.length ? [`Reused from earlier attempts (no upload in attempt ${report.attempt}): ${report.reusedSlices.map(({ key, attempt }) => `${key} (attempt ${attempt})`).join(", ")}.`] : []),
+    ...(report.missingSlices.length ? [`Not found in any attempt's artifacts (never uploaded, or expired): ${report.missingSlices.map(({ key }) => key).join(", ")}.`] : []),
     ...report.warnings.map((warning) => `Warning: ${warning}`),
     ...((incomplete || report.missingSlices.length) ? ["Failure counts may be incomplete."] : []),
     `Download the ci-flake-report-${report.attempt} artifact for per-test and per-slice details.`];

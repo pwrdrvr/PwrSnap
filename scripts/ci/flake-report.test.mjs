@@ -162,6 +162,9 @@ test("a slice uploaded twice by one attempt, or by a future attempt, is refused"
   const slice = createSlice({ ...dimension, attempt: 2, first: null, retries: [] });
   assert.throws(() => aggregateSlices({ slices: [slice, slice], attempt: "2" }), /duplicate/i);
   assert.throws(() => aggregateSlices({ slices: [slice], attempt: "1" }), /invalid attempt/i);
+  // An unset or empty run attempt means attempt 1, not attempt 0.
+  const first = createSlice({ ...dimension, attempt: 1, first: null, retries: [] });
+  for (const attempt of [undefined, ""]) assert.equal(aggregateSlices({ slices: [first], attempt }).attempt, 1);
 });
 
 test("the CLI completes a partial re-run report from earlier attempts' artifacts", async () => {
@@ -201,14 +204,14 @@ test("the CLI completes a partial re-run report from earlier attempts' artifacts
     assert.equal(complete.report.missingSlices.length, 0);
     assert.deepEqual(complete.report.slices.map(({ key, attempt }) => [key, attempt]), expected.map((d) => [d.key, rerun(d) ? 2 : 1]));
     assert.match(complete.summary, /Slices received: 6\/6; missing: 0/);
-    assert.match(complete.summary, /Reused from earlier attempts \(not re-run in attempt 2\): unit-linux-lane-1-sample-1 \(attempt 1\), e2e-linux-lane-1-sample-1 \(attempt 1\)/);
+    assert.match(complete.summary, /Reused from earlier attempts \(no upload in attempt 2\): unit-linux-lane-1-sample-1 \(attempt 1\), e2e-linux-lane-1-sample-1 \(attempt 1\)/);
 
     // A slice no attempt uploaded still fails the job.
     rmSync(join(downloads, artifactName(expected[3], 1)), { recursive: true });
     const missing = aggregate();
     assert.equal(missing.status, 1);
     assert.deepEqual(missing.report.missingSlices.map(({ key }) => key), [expected[3].key]);
-    assert.match(missing.summary, /Missing from every attempt: e2e-linux-lane-1-sample-1\./);
+    assert.match(missing.summary, /Not found in any attempt's artifacts \(never uploaded, or expired\): e2e-linux-lane-1-sample-1\./);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

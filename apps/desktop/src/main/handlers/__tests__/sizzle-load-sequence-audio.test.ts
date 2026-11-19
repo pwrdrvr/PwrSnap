@@ -134,9 +134,7 @@ vi.mock("../../window", () => ({
 }));
 
 vi.mock("../../settings/desktop-secret-store", () => ({
-  DesktopSecretStore: class {
-    getValue = mocks.getValue;
-  },
+  getDesktopSecretStore: () => ({ getValue: mocks.getValue }),
   SecretUnavailableError: class SecretUnavailableError extends Error {
     constructor(message: string = "secret unavailable") {
       super(message);

@@ -10,15 +10,18 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 const safeStorageMock = vi.hoisted(() => {
   let available = true;
   return {
-    isEncryptionAvailable: vi.fn(() => available),
-    encryptString: vi.fn((s: string): Buffer => {
+    isAsyncEncryptionAvailable: vi.fn(async (): Promise<boolean> => available),
+    encryptStringAsync: vi.fn(async (s: string): Promise<Buffer> => {
       const b64 = Buffer.from(s, "utf8").toString("base64");
       return Buffer.from(`PWR-ENC|${b64}`, "utf8");
     }),
-    decryptString: vi.fn((b: Buffer): string => {
+    decryptStringAsync: vi.fn(async (b: Buffer): Promise<{ shouldReEncrypt: boolean; result: string }> => {
       const text = b.toString("utf8");
       if (!text.startsWith("PWR-ENC|")) throw new Error("not a PWR-ENC blob");
-      return Buffer.from(text.slice("PWR-ENC|".length), "base64").toString("utf8");
+      return {
+        shouldReEncrypt: false,
+        result: Buffer.from(text.slice("PWR-ENC|".length), "base64").toString("utf8")
+      };
     }),
     __setAvailable(value: boolean): void {
       available = value;

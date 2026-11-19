@@ -6,7 +6,7 @@
 //
 //   { "version": 2,
 //     "index": { "openaiApiKey": { "lastSetAt": "2026-..." } },
-//     "ciphertext": "<base64 of safeStorage.encryptString({name: value}) >" }
+//     "ciphertext": "<base64 of safeStorage.encryptStringAsync({name: value}) >" }
 //
 // Why the index is outside the ciphertext: on macOS, the FIRST safeStorage
 // call in a process fetches the app's key from the login keychain, and for a
@@ -29,10 +29,26 @@
 // v1 files (a bare `safeStorage` ciphertext buffer of the whole blob) are
 // still read, and are rewritten as v2 on first access so the decrypt-per-
 // status-read cost is paid at most once per install rather than forever.
+//
+// ASYNC safeStorage. Electron 45 deprecates `isEncryptionAvailable` /
+// `encryptString` / `decryptString` and Electron 46 removes them, so this
+// store uses the async trio for normal operations. On Linux, KWallet's
+// legacy entries use different names, so the migration can read `v11`
+// ciphertext once through the sync backend and rewrite it asynchronously. The
+// async methods reject before app `ready`; every caller of this store is
+// wired inside `app.whenReady()`. Two things differ from the sync methods:
+//
+// - `isAsyncEncryptionAvailable()` resolves true as soon as the encryptor has
+//   initialized, whether or not any key provider produced a usable key, so
+//   it is not the gate it looks like. A missing key surfaces as a rejected
+//   encrypt or decrypt, and on Linux as a fallback key (`writeBlob`).
+// - `decryptStringAsync` reports `shouldReEncrypt` when the payload was
+//   sealed with a key other than the one it now encrypts with
+//   (`queueReEncrypt`).
 
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
-import { safeStorage } from "electron";
+import { dirname, resolve } from "node:path";
+import { app, safeStorage } from "electron";
 import type { DesktopSettingsSecretName, SecretStatus } from "@pwrsnap/shared";
 import { getMainLogger } from "../log";
 
@@ -63,6 +79,9 @@ export const SECRETS_FILE_VERSION = 2;
 export type DesktopSecretStoreConfig = {
   filePath: string;
   logger?: Logger;
+  /** Defaults to `process.platform`; injectable so the Linux fallback-key
+   *  refusal is exercised on every CI host. */
+  platform?: NodeJS.Platform;
 };
 
 type StoredSecret = {
@@ -82,17 +101,26 @@ type FileState =
   /** A v1 file: the whole blob as one `safeStorage` ciphertext buffer. */
   | { kind: "legacy"; raw: Buffer };
 
+/** A decrypted payload, plus safeStorage's verdict on the key it was sealed
+ *  with. */
+type Payload = { blob: SecretsBlob; shouldReEncrypt: boolean };
+
 export class DesktopSecretStore {
   private readonly filePath: string;
   private readonly log: Logger;
+  private readonly platform: NodeJS.Platform;
   private writeQueue: Promise<unknown> = Promise.resolve();
   /** Set once a v1 -> v2 rewrite has been queued, so a burst of status reads
    *  on a legacy file queues one migration rather than one per read. */
   private migrationQueued = false;
+  /** Set once a re-encryption has been queued. Never reset: see
+   *  `queueReEncrypt`. */
+  private reEncryptQueued = false;
 
   constructor(config: DesktopSecretStoreConfig) {
     this.filePath = config.filePath;
     this.log = config.logger ?? getMainLogger("pwrsnap:secret-store");
+    this.platform = config.platform ?? process.platform;
   }
 
   async getStatus(name: DesktopSettingsSecretName): Promise<SecretStatus> {
@@ -116,12 +144,12 @@ export class DesktopSecretStore {
   }
 
   async replace(name: DesktopSettingsSecretName, value: string): Promise<SecretStatus> {
-    if (!secureStorageAvailable()) {
-      throw new SecretUnavailableError(
-        "safeStorage is unavailable — system keychain not ready"
-      );
-    }
     return this.serialize(async () => {
+      if (!(await secureStorageAvailable())) {
+        throw new SecretUnavailableError(
+          "safeStorage is unavailable — system keychain not ready"
+        );
+      }
       const state = await this.readFileState();
       // Only decrypt when there is a value we must preserve. Writing the
       // first secret, or overwriting the only one, needs no read of the
@@ -172,9 +200,13 @@ export class DesktopSecretStore {
   // plaintext must never leave the main process. This is the ONLY read that
   // decrypts, and therefore the only one that can reach the keychain.
   async getValue(name: DesktopSettingsSecretName): Promise<string | null> {
-    if (!secureStorageAvailable()) throw new SecretUnavailableError("Secure storage is unavailable or insecure — unlock the system credential store");
-    const blob = await this.blobFrom(await this.readFileState());
-    return blob[name]?.value ?? null;
+    if (!(await secureStorageAvailable())) throw new SecretUnavailableError("Secure storage is unavailable or insecure — unlock the system credential store");
+    const payload = await this.readPayload(await this.readFileState());
+    if (payload === null) {
+      throw new SecretUnavailableError("Credentials are unavailable. Unlock the system credential store.");
+    }
+    if (payload.shouldReEncrypt) this.queueReEncrypt();
+    return payload.blob[name]?.value ?? null;
   }
 
   // ---- internals ----
@@ -227,77 +259,69 @@ export class DesktopSecretStore {
     if (state.kind === "absent") return {};
     // Legacy: the names and timestamps are inside the ciphertext, so this one
     // read must decrypt. Rewriting as v2 is what stops it happening again.
-    const blob = this.decryptLegacy(state.raw);
-    this.queueMigration();
-    return indexOf(blob);
+    const payload = await this.readPayload(state);
+    return payload === null ? {} : indexOf(payload.blob);
   }
 
   /** Full read, decrypting the payload. */
   private async blobFrom(state: FileState): Promise<SecretsBlob> {
-    if (state.kind === "absent") return {};
-    if (state.kind === "legacy") {
-      const blob = this.decryptLegacy(state.raw);
-      this.queueMigration();
-      return blob;
+    const payload = await this.readPayload(state);
+    if (payload === null) {
+      throw new SecretUnavailableError(
+        "safeStorage could not decrypt the stored secrets — refusing to write, which would discard them"
+      );
     }
-    if (state.ciphertext === null) return {};
+    return payload.blob;
+  }
 
-    let plaintext: string;
-    try {
-      plaintext = safeStorage.decryptString(Buffer.from(state.ciphertext, "base64"));
-    } catch {
-      // A read of an undecryptable payload stays lenient: callers of
-      // `getValue` treat a missing secret as "not configured" and degrade.
-      // WRITES do not -- `assertPayloadRecovered` compares this result
-      // against the still-readable index and refuses, because re-encrypting
-      // what we could not read back would destroy it.
-      this.log.warn("secret-store: decrypt failed, returning empty", {
-        path: this.filePath,
-        message: "Secure credential operation failed"
-      });
-      return {};
+  /** `blobFrom`, plus whether safeStorage asked for the payload to be
+   *  re-encrypted. Only `getValue` acts on that; see `queueReEncrypt`. */
+  private async readPayload(state: FileState): Promise<Payload | null> {
+    if (state.kind === "absent") return { blob: {}, shouldReEncrypt: false };
+    if (state.kind === "legacy") {
+      // A v1 file is rewritten under the current key by its migration, so
+      // its `shouldReEncrypt` needs no handling of its own.
+      const payload = await this.decrypt(state.raw);
+      if (payload === null) return null;
+      this.queueMigration();
+      return { blob: payload.blob, shouldReEncrypt: false };
     }
+    if (state.ciphertext === null) return { blob: {}, shouldReEncrypt: false };
+
+    const payload = await this.decrypt(Buffer.from(state.ciphertext, "base64"));
+    if (payload === null) return null;
+
     // The payload carries values only; `lastSetAt` lives in the plaintext
     // index. Stitch it back so a rewrite (clearing one of several secrets)
     // preserves the surviving entries' timestamps instead of blanking them.
-    const blob = parseBlob(plaintext, this.log);
-    for (const [name, entry] of Object.entries(blob) as [
+    for (const [name, entry] of Object.entries(payload.blob) as [
       DesktopSettingsSecretName,
       StoredSecret
     ][]) {
       entry.lastSetAt = state.index[name]?.lastSetAt ?? entry.lastSetAt;
     }
-    return blob;
+    return payload;
   }
 
-  private decryptLegacy(raw: Buffer): SecretsBlob {
-    let plaintext: string;
+  private async decrypt(ciphertext: Buffer): Promise<Payload | null> {
     try {
-      plaintext = safeStorage.decryptString(raw);
+      const decrypted = await safeStorage.decryptStringAsync(ciphertext);
+      const blob = parseBlob(decrypted.result);
+      if (blob !== null) return { blob, shouldReEncrypt: decrypted.shouldReEncrypt };
     } catch {
-      this.log.warn("secret-store: decrypt failed, returning empty", {
-        path: this.filePath,
-        message: "Secure credential operation failed"
-      });
-      return {};
+      // A legacy KWallet key may still decrypt the payload.
     }
-    return parseBlob(plaintext, this.log);
+    const legacy = this.platform === "linux" ? decryptLegacyKWallet(ciphertext) : null;
+    if (legacy !== null) return { blob: legacy, shouldReEncrypt: true };
+    this.log.warn("secret-store: credential payload could not be read", {
+      path: this.filePath,
+      message: "Secure credential operation failed"
+    });
+    return null;
   }
 
   /** Refuse to rewrite the file when the plaintext index proves there are
-   *  entries the payload would not give back.
-   *
-   *  A decrypt failure makes `blobFrom` read as empty, and every write
-   *  re-encrypts only what it holds — so without this guard a write silently
-   *  destroys every secret it could not decrypt, and `clear()` reports
-   *  "removed" for an entry that is still on disk and still `configured` in
-   *  the very next status broadcast. Failing with `secret_unavailable` (which
-   *  the settings handler already surfaces) is recoverable: the user restores
-   *  keychain access and retries. Overwriting is not.
-   *
-   *  Envelope-only by design. A v1 file keeps its names inside the ciphertext,
-   *  so there is no way to tell "absent" from "undecryptable" there, and the
-   *  pre-envelope leniency is preserved for it. */
+   *  entries missing from an otherwise readable payload. */
   private assertPayloadRecovered(state: FileState, blob: SecretsBlob): void {
     if (state.kind !== "envelope") return;
     const missing = Object.keys(state.index).filter(
@@ -326,16 +350,23 @@ export class DesktopSecretStore {
       // Only an actual secret needs encryption. An empty store writes an
       // envelope with a null payload, so clearing the last secret -- and
       // every later status read -- stays off the keychain entirely.
-      if (!secureStorageAvailable()) {
+      if (!(await secureStorageAvailable())) {
         throw new SecretUnavailableError(
           "safeStorage is unavailable — refusing to write"
         );
       }
+      let sealed: Buffer;
       try {
-        ciphertext = safeStorage.encryptString(JSON.stringify(values)).toString("base64");
+        sealed = await safeStorage.encryptStringAsync(JSON.stringify(values));
       } catch {
         throw new SecretUnavailableError("Secure credential encryption failed — unlock the system credential store");
       }
+      if (sealedWithLinuxFallbackKey(sealed, this.platform)) {
+        throw new SecretUnavailableError(
+          "safeStorage has no keyring key on this system — refusing to write secrets under its built-in fallback key"
+        );
+      }
+      ciphertext = sealed.toString("base64");
     }
 
     const envelope = { version: SECRETS_FILE_VERSION, index, ciphertext };
@@ -364,12 +395,13 @@ export class DesktopSecretStore {
     void this.serialize(async () => {
       const state = await this.readFileState();
       if (state.kind !== "legacy") return;
-      const blob = this.decryptLegacy(state.raw);
-      if (Object.keys(blob).length === 0) {
+      const payload = await this.decrypt(state.raw);
+      if (payload === null || Object.keys(payload.blob).length === 0) {
         // Nothing recovered — rewriting would turn an undecryptable file into
         // an authoritative empty one. Leave it alone.
         return;
       }
+      const { blob } = payload;
       await this.writeBlob(blob);
       this.log.info("secret-store: migrated v1 secrets file to v2 envelope", {
         path: this.filePath,
@@ -378,6 +410,46 @@ export class DesktopSecretStore {
     }).catch(() => {
       this.migrationQueued = false;
       this.log.warn("secret-store: v1 -> v2 migration failed", {
+        path: this.filePath,
+        message: "Secure credential operation failed"
+      });
+    });
+  }
+
+  /** Rewrite the payload under safeStorage's current key, once, behind the
+   *  write queue. `decryptStringAsync` sets `shouldReEncrypt` when the
+   *  payload was sealed with a key provider other than the one it now
+   *  encrypts with: a rotated key, or a stronger provider that has come
+   *  online (on Linux, the Secret portal ahead of the keyring).
+   *
+   *  Only `getValue` needs this. `replace` and `clear` rewrite the payload
+   *  anyway, and a v1 file is rewritten by its migration. It runs from
+   *  `getValue` alone, so it adds no keychain access to any path that was not
+   *  already decrypting.
+   *
+   *  Re-reads inside the task, because a write may have landed first and
+   *  that write already used the current key. Never rewrites a payload it
+   *  could not decrypt. The flag is not reset on failure, unlike the
+   *  migration's: safeStorage settles its key providers once per process, so
+   *  a failed rewrite would fail the same way on every later `getValue`. The
+   *  next launch tries again. */
+  private queueReEncrypt(): void {
+    if (this.reEncryptQueued) return;
+    this.reEncryptQueued = true;
+    void this.serialize(async () => {
+      const state = await this.readFileState();
+      if (state.kind !== "envelope") return;
+      const payload = await this.readPayload(state);
+      if (payload === null || !payload.shouldReEncrypt) return;
+      const { blob } = payload;
+      this.assertPayloadRecovered(state, blob);
+      await this.writeBlob(blob);
+      this.log.info("secret-store: re-encrypted secrets under safeStorage's current key", {
+        path: this.filePath,
+        names: Object.keys(blob).length
+      });
+    }).catch(() => {
+      this.log.warn("secret-store: re-encryption failed, keeping the readable payload", {
         path: this.filePath,
         message: "Secure credential operation failed"
       });
@@ -393,6 +465,23 @@ export class DesktopSecretStore {
     this.writeQueue = next.catch(() => undefined);
     return next;
   }
+}
+
+const storesByPath = new Map<string, DesktopSecretStore>();
+
+/** Every caller uses the process's shared store for its configured file:
+ *  the write queue serializes only within an instance, and two
+ *  instances on one file would interleave their read-modify-write cycles
+ *  and share one `.tmp` path. `getValue()` can write too (`queueReEncrypt`),
+ *  so even a read-only caller needs the shared queue. The timeline render
+ *  handlers can use the developer data-root override. */
+export function getDesktopSecretStore(root = app.getPath("userData")): DesktopSecretStore {
+  const filePath = resolve(root, "pwrsnap-secrets.bin");
+  const store = storesByPath.get(filePath);
+  if (store !== undefined) return store;
+  const created = new DesktopSecretStore({ filePath });
+  storesByPath.set(filePath, created);
+  return created;
 }
 
 export class SecretUnavailableError extends Error {
@@ -445,17 +534,14 @@ function sanitizeIndex(value: unknown): SecretsIndex {
 
 /** Parse a decrypted payload. Accepts BOTH shapes: the v2 payload is
  *  `{ name: value }`, the v1 file decrypted to `{ name: { value, lastSetAt } }`. */
-function parseBlob(plaintext: string, log: Logger): SecretsBlob {
+function parseBlob(plaintext: string): SecretsBlob | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(plaintext);
   } catch {
-    log.warn("secret-store: parse failed, returning empty", {
-      message: "Secure credential operation failed"
-    });
-    return {};
+    return null;
   }
-  if (!isRecord(parsed)) return {};
+  if (!isRecord(parsed)) return null;
 
   const out: SecretsBlob = {};
   for (const [name, entry] of Object.entries(parsed)) {
@@ -492,7 +578,45 @@ function isNodeError(value: unknown): value is NodeJS.ErrnoException {
   return value instanceof Error && typeof (value as NodeJS.ErrnoException).code === "string";
 }
 
-/** Linux basic_text uses a hard-coded password and is not secure storage. */
-function secureStorageAvailable(): boolean {
-  return safeStorage.isEncryptionAvailable() && safeStorage.getSelectedStorageBackend?.() !== "basic_text";
+/** Linux basic_text uses a hard-coded password and is not secure storage.
+ *
+ *  The backend check goes first because it is a plain read of a setting,
+ *  while `isAsyncEncryptionAvailable()` initializes the async encryptor, and
+ *  on macOS that is the keychain read that can raise the password prompt.
+ *  Every caller is about to encrypt or decrypt anyway. That call is also a
+ *  weak signal (see the header): it resolves false before app `ready`, and
+ *  once the encryptor exists it says nothing about whether a key does. */
+async function secureStorageAvailable(): Promise<boolean> {
+  if (safeStorage.getSelectedStorageBackend?.() === "basic_text") return false;
+  return safeStorage.isAsyncEncryptionAvailable();
+}
+
+/** Electron's synchronous KWallet backend used the Chromium wallet entry.
+ *  The async backend uses an app-specific entry. Read only keyring ciphertext
+ *  with the legacy key so the caller can rewrite it using the async backend.
+ *  The runtime check also covers Electron versions that removed the method. */
+function decryptLegacyKWallet(ciphertext: Buffer): SecretsBlob | null {
+  if (ciphertext.subarray(0, 3).toString("latin1") !== "v11") return null;
+  const backend = safeStorage.getSelectedStorageBackend?.();
+  if (backend !== "kwallet" && backend !== "kwallet5" && backend !== "kwallet6") return null;
+  if (!("decryptString" in safeStorage) || typeof safeStorage.decryptString !== "function") return null;
+  try {
+    return parseBlob(safeStorage.decryptString(ciphertext));
+  } catch {
+    return null;
+  }
+}
+
+/** True when a Linux ciphertext was sealed with Chromium's built-in key.
+ *
+ *  The async encryptor ranks its key providers on Linux: the Secret portal
+ *  (`v12`), then the keyring (`v11`), then a fixed key compiled into Chromium
+ *  (`v10`) that is always available. When the keyring cannot produce a key it
+ *  encrypts with the fixed one, and nothing reports it. That is plaintext
+ *  by another name, which the sync `isEncryptionAvailable()` used to refuse.
+ *  The tag is the only signal left, and on Linux `v10` means only that key.
+ *  macOS and Windows tag their OS-backed keys `v10` as well, so the check is
+ *  Linux-only. */
+function sealedWithLinuxFallbackKey(ciphertext: Buffer, platform: NodeJS.Platform): boolean {
+  return platform === "linux" && ciphertext.subarray(0, 3).toString("latin1") === "v10";
 }

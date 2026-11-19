@@ -9,11 +9,13 @@ import {
 import { describe, expect, test, vi } from "vitest";
 
 const safeStorageMock = vi.hoisted(() => ({
-  isEncryptionAvailable: vi.fn(() => true),
-  encryptString: vi.fn((s: string): Buffer =>
+  isAsyncEncryptionAvailable: vi.fn(async () => true),
+  encryptStringAsync: vi.fn(async (s: string): Promise<Buffer> =>
     Buffer.from(`PWR-ENC|${Buffer.from(s, "utf8").toString("base64")}`, "utf8")),
-  decryptString: vi.fn((b: Buffer): string =>
-    Buffer.from(b.toString("utf8").slice("PWR-ENC|".length), "base64").toString("utf8"))
+  decryptStringAsync: vi.fn(async (b: Buffer) => ({
+    result: Buffer.from(b.toString("utf8").slice("PWR-ENC|".length), "base64").toString("utf8"),
+    shouldReEncrypt: false
+  }))
 }));
 
 vi.mock("electron", () => ({ safeStorage: safeStorageMock }));

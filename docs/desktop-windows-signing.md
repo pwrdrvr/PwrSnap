@@ -18,12 +18,20 @@ packages with `--require-signing`, verifies the installer and application
 Authenticode signatures, and uploads `windows-signed-installer-pr`. The release
 publication job is explicitly disabled for PR events.
 
+`ci:windows-updater-smoke` uses the same reviewed prepare/protected-sign
+boundary, but produces two marker-gated synthetic prereleases instead of a
+publishable installer. A separate hosted Windows job—with no environment,
+checkout, credentials, or dependency install—serves the newer package from
+`127.0.0.1`, installs the baseline, and exercises the real
+download/install/relaunch path. See
+[Packaged Windows updater smoke](windows/packaged-updater-smoke.md).
+
 The environment's normal deployment policy should remain limited to `v*` tags.
-To run the signed PR smoke check, temporarily allow the exact synthetic merge
-ref (`refs/pull/<number>/merge`), approve the protected job, then remove the
-branch rule after validation. GitHub evaluates environment deployment rules
-against that merge ref rather than the PR's head branch. Never approve a fork PR
-or an unreviewed head SHA: the staged packaging code runs with the
+To run either signed PR smoke check, temporarily allow the exact synthetic
+merge ref (`refs/pull/<number>/merge`), approve the protected job, then remove
+the branch rule after validation. GitHub evaluates environment deployment
+rules against that merge ref rather than the PR's head branch. Never approve a
+fork PR or an unreviewed head SHA: the staged packaging code runs with the
 service-principal credentials during the irreducible signing step.
 
 ## GitHub environment
@@ -67,22 +75,30 @@ The release workflow has two Windows jobs:
    has no signing environment or Azure credentials.
 2. `windows-sign` downloads and verifies that exact archive, downloads and
    verifies the pinned FFmpeg artifact, installs `TrustedSigning`, then runs
-   `package-win.mjs --sign-stage-only --release --require-signing`. It does not
-   check out source or run pnpm/npm lifecycle scripts.
+   `package-win.mjs --sign-stage-only --release --require-signing` for a real
+   release. For the updater gate it instead packages the isolated pair with
+   `package-win-update-smoke.mjs --sign-stage-only --require-signing`. It does
+   not check out source or run pnpm/npm lifecycle scripts.
+3. `windows-updater-smoke` downloads only the isolated signed-pair artifact on
+   a fresh Windows runner and launches PwrSnap there. Azure values are scoped
+   to the packaging step in `windows-sign`; this job declares no protected
+   environment and receives none of them.
 
 Windows packaging cannot sign only the final installer after the fact:
 electron-builder signs multiple application and NSIS payloads while it builds
 the installer. Packaging is therefore the irreducible operation inside the
 protected job.
 
-The job uploads a signed Windows artifact to the workflow. A separate
+The protected job uploads signed Windows artifacts to the workflow. A separate
 `publish-release-assets` job creates the GitHub Release only after the Linux
-build gate, signed/notarized macOS package, and signed Windows package all
-succeed.
+build gate, signed/notarized macOS package, signed Windows package, and
+credential-free packaged updater smoke all succeed.
 
-For PR events, the release workflow runs only the Windows prepare/sign path and
-stops at the uploaded artifact. The protected signing job performs no checkout
-and no package installation.
+For PR events, the release workflow runs only the requested Windows validation
+path and never the publication job. `ci:windows-signing` stops at the uploaded
+installer; `ci:windows-updater-smoke` continues only into the credential-free
+hosted updater job. The protected signing job performs no checkout and no
+package installation.
 
 ## Failure modes
 

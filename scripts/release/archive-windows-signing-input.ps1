@@ -18,6 +18,7 @@ if (Test-Path -LiteralPath $workspaceLinkRoot) {
 $paths = @(
   "apps/desktop/release-stage",
   "apps/desktop/scripts/package-win.mjs",
+  "apps/desktop/scripts/package-win-update-smoke.mjs",
   "apps/desktop/scripts/staged-pnpm-config.mjs",
   # Cuts the stable PwrSnap.Setup.exe alias after Authenticode verification,
   # and owns the SHA256SUMS format package-win.mjs writes.
@@ -26,6 +27,11 @@ $paths = @(
   "apps/desktop/scripts/better-sqlite3-prebuilds.mjs",
   "apps/desktop/scripts/packaged-html-rules.mjs",
   "apps/desktop/scripts/verify-asar-contents.mjs",
+  # The signed updater pair is exercised only after it leaves the protected
+  # environment. Carry the pure-Node runner with the prepared source so the
+  # signing job can place it in the credential-free smoke artifact without a
+  # checkout or a network install.
+  "scripts/e2e/run-windows-update-smoke.mjs",
   # The signing job has no checkout, so every check it runs must travel with the
   # stage it validates — including anything those checks import. This list is an
   # allowlist, so a missing transitive import is not a lint error here, it is an

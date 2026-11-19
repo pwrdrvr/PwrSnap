@@ -19,6 +19,7 @@ import {
   Menu,
   nativeImage,
   nativeTheme,
+  safeStorage,
   shell,
   webContents
 } from "electron";
@@ -78,6 +79,11 @@ import {
   applyWindowsChromiumStartupFeaturePolicy
 } from "./windows-chromium-startup-policy";
 import { applyDarwinKeychainStartupPolicy } from "./darwin-keychain-startup-policy";
+import {
+  applyRememberedLinuxPasswordStore,
+  relaunchForLinuxSecretStore
+} from "./linux-password-store";
+import { getDesktopSecretStore } from "./settings/desktop-secret-store";
 // (showFloatOverForCapture is no longer called from the bootstrap;
 // the capture-handlers `capture:interactive` now drives the entire
 // float-over lifecycle. Kept as an export from float-over.ts for the
@@ -1806,6 +1812,26 @@ export function bootstrapApp(): void {
     app.setPath("sessionData", join(app.getPath("userData"), "library-session"));
   }
 
+  // Linux: a desktop Chromium does not recognize gets the `basic_text`
+  // secret store, where DesktopSecretStore refuses to write. Append the real
+  // store a previous launch found on the session bus. Chromium reads
+  // --password-store during early init, so this has to happen here, before
+  // ready, and after the userData override above. See linux-password-store.ts.
+  const hasPasswordStoreSwitch = app.commandLine.hasSwitch("password-store");
+  const rememberedLinuxPasswordStore = applyRememberedLinuxPasswordStore({
+    platform: process.platform,
+    isE2E,
+    hasPasswordStoreSwitch,
+    env: process.env,
+    userDataDir: app.getPath("userData"),
+    appendSwitch: (store) => {
+      app.commandLine.appendSwitch("password-store", store);
+    }
+  });
+  if (rememberedLinuxPasswordStore !== undefined) {
+    log.info("linux secret store selected before ready", { store: rememberedLinuxPasswordStore });
+  }
+
   app.whenReady().then(async () => {
     installSystemShutdown();
     // Before any window loads. Electron's no-handler default GRANTS
@@ -1820,6 +1846,41 @@ export function bootstrapApp(): void {
     // and every navigation away from PwrSnap's own content, routing an
     // allowlisted https URL to the user's browser instead.
     installNavigationGuard();
+
+    // With renderer policies armed, startup can wait for secret storage.
+    // A process on `basic_text` can restart once with a discoverable secret
+    // service. Reads only the selected backend name, never the keyring.
+    if (
+      await relaunchForLinuxSecretStore({
+        platform: process.platform,
+        isE2E,
+        argv: process.argv,
+        hasPasswordStoreSwitch,
+        usesDevRenderer: !app.isPackaged && process.env.ELECTRON_RENDERER_URL !== undefined,
+        env: process.env,
+        userDataDir: app.getPath("userData"),
+        selectedStore: rememberedLinuxPasswordStore,
+        backend: process.platform === "linux" ? safeStorage.getSelectedStorageBackend() : null,
+        hasStoredCiphertext: () => getDesktopSecretStore().hasStoredCiphertext(),
+        relaunch: (args) => {
+          // Electron 44's native binding returns a success boolean, though
+          // the published declaration still says void.
+          const scheduled: unknown = app.relaunch({ args });
+          return scheduled === true;
+        },
+        exit: (code) => {
+          app.exit(code);
+        },
+        info: (message, fields) => {
+          log.info(message, fields);
+        },
+        warn: (message, fields) => {
+          log.warn(message, fields);
+        }
+      })
+    ) {
+      return;
+    }
 
     if (process.platform === "darwin" && (isE2E || role === "agent")) {
       // Agent role: menubar-only process — no Dock presence, ever.

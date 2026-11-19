@@ -117,6 +117,24 @@ Rules:
   dialog. It is deliberately NOT applied to `pnpm dev`: `app.setName` is
   unconditional, so dev shares `userData` — and `pwrsnap-secrets.bin` — with
   the installed app and must share its key.
+- **Linux picks its secret store from the session bus, once.** Chromium can
+  select `basic_text` on desktops it does not recognize.
+  [linux-password-store.ts](../../apps/desktop/src/main/linux-password-store.ts)
+  probes the session bus after ready, remembers the selected store in
+  `<userData>/linux-password-store`, and relaunches with `--password-store`.
+  Later launches append that switch before ready.
+  - Decide from `getSelectedStorageBackend()`. Availability checks can
+    fetch the keyring key and must stay off the startup path.
+  - Preserve an active secure backend, a remembered selection, and an
+    operator's `--password-store` or `PWRSNAP_LINUX_PASSWORD_STORE` override.
+    Skip automatic changes if the credential file has ciphertext or cannot
+    be read. A discovered backend can use a different key.
+  - The remembered selection is a plain startup file. Chromium needs it
+    before ready, and renderers cannot change it.
+  - Start both renderer policies before waiting for this decision. Under
+    `pnpm dev`, the launcher restarts Electron and Vite together after the
+    selection is saved. A failed native relaunch leaves startup running.
+  - E2E skips selection and relaunch.
 - **Validate at the bus boundary.** Per-verb validators in
   [apps/desktop/src/main/handlers/settings-validators.ts](../../apps/desktop/src/main/handlers/settings-validators.ts)
   reject unknown secret names, oversize values (>64KB), unknown

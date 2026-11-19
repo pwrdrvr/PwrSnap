@@ -24,8 +24,7 @@ it("dev repair oracle: the default repair entry point reuses the common verified
     writeFileSync(join(payload, "electron.d.ts"), "// disposable fixture types\n");
     const zip = join(root, "runtime.zip");
     if (process.platform === "win32") {
-      const quote = (value) => `'${value.replace(/'/g, "''")}'`;
-      execFileSync("powershell.exe", ["-NoProfile", "-Command", `Compress-Archive -Path ${quote(join(payload, "*"))} -DestinationPath ${quote(zip)}`]);
+      execFileSync("tar.exe", ["-caf", zip, "-C", payload, "."]);
     } else {
       execFileSync("zip", ["-qr", zip, "."], { cwd: payload });
     }

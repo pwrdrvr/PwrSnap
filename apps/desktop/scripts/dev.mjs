@@ -11,13 +11,16 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const desktopRoot = resolve(__dirname, "..");
 const WINDOWS_UTF8_CHILD_ARG = "--pwrsnap-windows-utf8-child";
+const LINUX_PASSWORD_STORE_RESTART_ENV = "PWRSNAP_LINUX_PASSWORD_STORE_DEV_RESTART_CODE";
+const LINUX_PASSWORD_STORE_RESTART_CODE = 75;
 
 export const ELECTRON_DEV_ENV_KEYS = [
   "ELECTRON_EXEC_PATH",
   "ELECTRON_RENDERER_URL",
   "ELECTRON_RUN_AS_NODE",
   "NODE_PATH",
-  "PNPM_SCRIPT_SRC_DIR"
+  "PNPM_SCRIPT_SRC_DIR",
+  LINUX_PASSWORD_STORE_RESTART_ENV
 ];
 
 export function sanitizeDevEnv(input = process.env) {
@@ -406,6 +409,21 @@ export function configureDevFfmpeg(env, provision = ensureWindowsDevFfmpeg, logg
   }
 }
 
+export async function runElectronViteDev(command, args, env, options = {}) {
+  const platform = options.platform ?? process.platform;
+  const runDev = options.run ?? runLongLived;
+  if (platform !== "linux") return runDev(command, args, env);
+
+  // electron-vite forwards its Electron child's exit status. Restart the
+  // whole pair once so the replacement renderer receives a live Vite URL.
+  const status = await runDev(command, args, {
+    ...env,
+    [LINUX_PASSWORD_STORE_RESTART_ENV]: String(LINUX_PASSWORD_STORE_RESTART_CODE)
+  });
+  if (status !== LINUX_PASSWORD_STORE_RESTART_CODE) return status;
+  return runDev(command, args, env);
+}
+
 export async function main(argv = process.argv.slice(2), inputEnv = process.env) {
   const nodeCheck = checkNodeVersion(process.version, readPinnedNodeVersion());
   if (!nodeCheck.ok) {
@@ -445,7 +463,7 @@ export async function main(argv = process.argv.slice(2), inputEnv = process.env)
     return 1;
   }
 
-  return runLongLived(node, [electronViteJs, "dev", ...argv], env);
+  return runElectronViteDev(node, [electronViteJs, "dev", ...argv], env);
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : "";

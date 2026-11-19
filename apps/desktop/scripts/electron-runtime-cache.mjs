@@ -145,8 +145,14 @@ export function extractZip(zipPath, targetDir) {
   const quotePowerShell = (value) => `'${value.replace(/'/g, "''")}'`;
   const attempts = process.platform === "win32"
     ? [
-        ["powershell.exe", ["-NoProfile", "-Command", `Expand-Archive -LiteralPath ${quotePowerShell(zipPath)} -DestinationPath ${quotePowerShell(targetDir)} -Force`]],
+        // Use the inbox ZIP extractor. On older Windows without tar, load the
+        // framework ZIP API directly to avoid modules from another PS edition.
         ["tar.exe", ["-xf", zipPath, "-C", targetDir]],
+        ["powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", [
+          "$ErrorActionPreference = 'Stop'",
+          "Add-Type -AssemblyName System.IO.Compression.FileSystem",
+          `[System.IO.Compression.ZipFile]::ExtractToDirectory(${quotePowerShell(zipPath)}, ${quotePowerShell(targetDir)})`,
+        ].join("; ")]],
       ]
     : [["unzip", ["-q", "-o", zipPath, "-d", targetDir]], ["bsdtar", ["-xf", zipPath, "-C", targetDir]]];
   const errors = [];

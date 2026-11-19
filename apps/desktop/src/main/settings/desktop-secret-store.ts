@@ -128,6 +128,12 @@ export class DesktopSecretStore {
     return toStatus(index[name]);
   }
 
+  /** Startup backend selection must preserve ciphertext without accessing a key. */
+  async hasStoredCiphertext(): Promise<boolean> {
+    const state = await this.readFileState();
+    return state.kind === "legacy" || (state.kind === "envelope" && state.ciphertext !== null);
+  }
+
   /** Every known name, plus each stored Direct API connection credential —
    *  the Settings sidebar reads "no key" / "sign in" off those. Local agent
    *  tokens are left out: nothing in a renderer reads them. Index only. */

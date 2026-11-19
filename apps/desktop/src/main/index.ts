@@ -83,6 +83,7 @@ import {
   applyRememberedLinuxPasswordStore,
   relaunchForLinuxSecretStore
 } from "./linux-password-store";
+import { getDesktopSecretStore } from "./settings/desktop-secret-store";
 // (showFloatOverForCapture is no longer called from the bootstrap;
 // the capture-handlers `capture:interactive` now drives the entire
 // float-over lifecycle. Kept as an export from float-over.ts for the
@@ -1836,7 +1837,7 @@ export function bootstrapApp(): void {
     // `basic_text` and the session bus has a real secret service, relaunch
     // onto it once. Reads only the selected backend name, never the keyring.
     if (
-      relaunchForLinuxSecretStore({
+      await relaunchForLinuxSecretStore({
         platform: process.platform,
         isE2E,
         argv: process.argv,
@@ -1844,6 +1845,7 @@ export function bootstrapApp(): void {
         userDataDir: app.getPath("userData"),
         selectedStore: rememberedLinuxPasswordStore,
         backend: process.platform === "linux" ? safeStorage.getSelectedStorageBackend() : null,
+        hasStoredCiphertext: () => getDesktopSecretStore().hasStoredCiphertext(),
         relaunch: (args) => {
           app.relaunch({ args });
         },

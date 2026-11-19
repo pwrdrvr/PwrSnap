@@ -187,15 +187,15 @@ describe("applyRememberedLinuxPasswordStore", () => {
   });
 });
 
-describe("relaunchForLinuxSecretStore", () => {
+describe("relaunchForLinuxSecretStore", async () => {
   /** Probes with `secretsProbe` unless the test supplies its own `exec`. */
-  function relaunchWith(overrides: Partial<RelaunchForLinuxSecretStoreInput>) {
+  async function relaunchWith(overrides: Partial<RelaunchForLinuxSecretStoreInput>) {
     const userDataDir = overrides.userDataDir ?? tempDir();
     const relaunch = vi.fn();
     const exit = vi.fn();
     const info = vi.fn();
     const warn = vi.fn();
-    const exited = relaunchForLinuxSecretStore({
+    const exited = await relaunchForLinuxSecretStore({
       platform: "linux",
       isE2E: false,
       argv: ["/usr/bin/pwrsnap", "--enable-logging", "/home/fixture/shot.pwrsnap"],
@@ -203,6 +203,7 @@ describe("relaunchForLinuxSecretStore", () => {
       userDataDir,
       selectedStore: undefined,
       backend: "basic_text",
+      hasStoredCiphertext: async () => false,
       ...(overrides.exec === undefined ? { probe: secretsProbe } : {}),
       relaunch,
       exit,
@@ -213,8 +214,8 @@ describe("relaunchForLinuxSecretStore", () => {
     return { exited, relaunch, exit, info, warn, userDataDir };
   }
 
-  test("on basic_text, remembers the bus's secret service and relaunches onto it once", () => {
-    const result = relaunchWith({});
+  test("on basic_text, remembers the bus's secret service and relaunches onto it once", async () => {
+    const result = await relaunchWith({});
 
     expect(result.exited).toBe(true);
     // The executable is dropped (Electron supplies it) and every other
@@ -229,36 +230,59 @@ describe("relaunchForLinuxSecretStore", () => {
     expect(existsSync(`${linuxPasswordStorePath(result.userDataDir)}.tmp`)).toBe(false);
   });
 
-  test("a running service wins over an activatable one", () => {
-    const result = relaunchWith({
+  test("a running service wins over an activatable one", async () => {
+    const result = await relaunchWith({
       probe: { status: "ok", owned: ["org.kde.kwalletd6"], activatable: ["org.freedesktop.secrets"] }
     });
 
     expect(result.relaunch).toHaveBeenCalledWith(expect.arrayContaining(["--password-store=kwallet6"]));
   });
 
-  test("an activatable service is used when nothing is running", () => {
-    const result = relaunchWith({
+  test("a profile with existing ciphertext keeps its backend choice when Chromium falls back to basic_text", async () => {
+    const userDataDir = tempDir();
+    const exec = vi.fn<CommandExec>(() => ({ status: 0, stdout: '"org.freedesktop.secrets"' }));
+    const result = await relaunchWith({
+      userDataDir,
+      exec,
+      hasStoredCiphertext: async () => true
+    });
+    expect(result.exited).toBe(false);
+    expect(exec).not.toHaveBeenCalled();
+    expect(result.relaunch).not.toHaveBeenCalled();
+    expect(existsSync(linuxPasswordStorePath(userDataDir))).toBe(false);
+  });
+
+  test("an unreadable credential file also prevents automatic selection", async () => {
+    const result = await relaunchWith({
+      hasStoredCiphertext: async () => { throw new Error("unreadable file"); }
+    });
+    expect(result.exited).toBe(false);
+    expect(result.relaunch).not.toHaveBeenCalled();
+    expect(existsSync(linuxPasswordStorePath(result.userDataDir))).toBe(false);
+  });
+
+  test("an activatable service is used when nothing is running", async () => {
+    const result = await relaunchWith({
       probe: { status: "ok", owned: ["org.freedesktop.DBus"], activatable: ["org.freedesktop.secrets"] }
     });
 
     expect(result.relaunch).toHaveBeenCalledWith(expect.arrayContaining(["--password-store=gnome-libsecret"]));
   });
 
-  test("creates userData when this is the first launch", () => {
+  test("creates userData when this is the first launch", async () => {
     const userDataDir = join(tempDir(), "fresh", "PwrSnap");
 
-    expect(relaunchWith({ userDataDir }).exited).toBe(true);
+    expect((await relaunchWith({ userDataDir })).exited).toBe(true);
     expect(readFileSync(linuxPasswordStorePath(userDataDir), "utf8")).toBe("gnome-libsecret\n");
   });
 
-  test("still relaunches when the choice cannot be remembered", () => {
+  test("still relaunches when the choice cannot be remembered", async () => {
     // A path whose parent is a file: mkdir fails. This launch still gets a
     // real store; the next one probes again.
     const blocker = join(tempDir(), "blocker");
     writeFileSync(blocker, "");
 
-    const result = relaunchWith({ userDataDir: join(blocker, "PwrSnap") });
+    const result = await relaunchWith({ userDataDir: join(blocker, "PwrSnap") });
 
     expect(result.exited).toBe(true);
     expect(result.warn).toHaveBeenCalledWith("linux secret store: could not remember the selection", expect.any(Object));
@@ -266,9 +290,9 @@ describe("relaunchForLinuxSecretStore", () => {
 
   test.each(["gnome_libsecret", "kwallet5", "kwallet6", null])(
     "leaves a %s backend alone, so existing ciphertext keeps its key",
-    (backend) => {
+    async (backend) => {
       const exec = vi.fn<CommandExec>();
-      const result = relaunchWith({ backend, exec });
+      const result = await relaunchWith({ backend, exec });
 
       expect(result.exited).toBe(false);
       expect(result.relaunch).not.toHaveBeenCalled();
@@ -277,14 +301,14 @@ describe("relaunchForLinuxSecretStore", () => {
     }
   );
 
-  test("never replaces a remembered store, even if that keyring is down right now", () => {
-    const result = relaunchWith({ selectedStore: "kwallet6" });
+  test("never replaces a remembered store, even if that keyring is down right now", async () => {
+    const result = await relaunchWith({ selectedStore: "kwallet6" });
 
     expect(result.exited).toBe(false);
     expect(result.relaunch).not.toHaveBeenCalled();
   });
 
-  test("never overrides the operator's argv or env choice, or runs under E2E or off Linux", () => {
+  test("never overrides the operator's argv or env choice, or runs under E2E or off Linux", async () => {
     for (const overrides of [
       { argv: ["/usr/bin/pwrsnap", "--password-store=basic"] },
       { env: { PWRSNAP_LINUX_PASSWORD_STORE: "basic" } },
@@ -292,14 +316,14 @@ describe("relaunchForLinuxSecretStore", () => {
       { isE2E: true },
       { platform: "darwin" as const }
     ]) {
-      const result = relaunchWith(overrides);
+      const result = await relaunchWith(overrides);
       expect(result.exited).toBe(false);
       expect(result.relaunch).not.toHaveBeenCalled();
     }
   });
 
-  test("says so when the override is not a store Chromium accepts", () => {
-    const result = relaunchWith({ env: { PWRSNAP_LINUX_PASSWORD_STORE: "gnome" } });
+  test("says so when the override is not a store Chromium accepts", async () => {
+    const result = await relaunchWith({ env: { PWRSNAP_LINUX_PASSWORD_STORE: "gnome" } });
 
     expect(result.warn).toHaveBeenCalledWith(
       "linux secret store: ignoring unrecognized override",
@@ -309,16 +333,16 @@ describe("relaunchForLinuxSecretStore", () => {
     expect(result.exited).toBe(true);
   });
 
-  test("`auto` behaves like no override", () => {
-    expect(relaunchWith({ env: { PWRSNAP_LINUX_PASSWORD_STORE: "auto" } }).exited).toBe(true);
+  test("`auto` behaves like no override", async () => {
+    expect((await relaunchWith({ env: { PWRSNAP_LINUX_PASSWORD_STORE: "auto" } })).exited).toBe(true);
   });
 
-  test("stays put, writing nothing, when the bus has no secret service or cannot be read", () => {
-    const none = relaunchWith({ probe: { status: "ok", owned: ["org.freedesktop.DBus"], activatable: [] } });
+  test("stays put, writing nothing, when the bus has no secret service or cannot be read", async () => {
+    const none = await relaunchWith({ probe: { status: "ok", owned: ["org.freedesktop.DBus"], activatable: [] } });
     expect(none.exited).toBe(false);
     expect(existsSync(linuxPasswordStorePath(none.userDataDir))).toBe(false);
 
-    const failed = relaunchWith({ probe: { status: "unavailable", reason: "no dbus client (busctl, dbus-send, gdbus)" } });
+    const failed = await relaunchWith({ probe: { status: "unavailable", reason: "no dbus client (busctl, dbus-send, gdbus)" } });
     expect(failed.exited).toBe(false);
     expect(failed.warn).toHaveBeenCalledWith(expect.stringContaining("probe failed"), {
       reason: "no dbus client (busctl, dbus-send, gdbus)"
@@ -326,8 +350,8 @@ describe("relaunchForLinuxSecretStore", () => {
     expect(existsSync(linuxPasswordStorePath(failed.userDataDir))).toBe(false);
   });
 
-  test("a remembered store is applied on the next launch, which then does not relaunch", () => {
-    const first = relaunchWith({});
+  test("a remembered store is applied on the next launch, which then does not relaunch", async () => {
+    const first = await relaunchWith({});
     const appendSwitch = vi.fn();
     const selectedStore = applyRememberedLinuxPasswordStore({
       platform: "linux",
@@ -339,7 +363,7 @@ describe("relaunchForLinuxSecretStore", () => {
     });
 
     expect(appendSwitch).toHaveBeenCalledWith("gnome-libsecret");
-    const second = relaunchWith({ userDataDir: first.userDataDir, selectedStore, backend: "gnome_libsecret" });
+    const second = await relaunchWith({ userDataDir: first.userDataDir, selectedStore, backend: "gnome_libsecret" });
     expect(second.exited).toBe(false);
   });
 });

@@ -292,6 +292,7 @@ export type RelaunchForLinuxSecretStoreInput = {
   selectedStore: LinuxSecretStore | undefined;
   /** `safeStorage.getSelectedStorageBackend()`, read after ready. */
   backend: string | null;
+  hasStoredCiphertext: () => Promise<boolean>;
   probe?: SecretServiceProbe;
   exec?: CommandExec;
   relaunch: (args: string[]) => void;
@@ -309,7 +310,7 @@ export type RelaunchForLinuxSecretStoreInput = {
  * or stopped KWallet is not a reason to move the user's secrets elsewhere.
  * Returns true when the process is exiting for the relaunch.
  */
-export function relaunchForLinuxSecretStore(input: RelaunchForLinuxSecretStoreInput): boolean {
+export async function relaunchForLinuxSecretStore(input: RelaunchForLinuxSecretStoreInput): Promise<boolean> {
   if (input.platform !== "linux" || input.isE2E) return false;
   if (argvSelectsPasswordStore(input.argv)) return false;
   if (input.selectedStore !== undefined) return false;
@@ -327,6 +328,18 @@ export function relaunchForLinuxSecretStore(input: RelaunchForLinuxSecretStoreIn
     });
   }
   if (input.backend !== "basic_text") return false;
+
+  // The user may have moved from a desktop where Chromium selected a secure
+  // backend. A discoverable service does not tell us which key sealed the file.
+  try {
+    if (await input.hasStoredCiphertext()) {
+      input.info("linux secret store: automatic selection skipped because credentials already exist", {});
+      return false;
+    }
+  } catch {
+    input.warn("linux secret store: automatic selection skipped because the credential file is unreadable", {});
+    return false;
+  }
 
   const probe = input.probe ?? probeSecretServices(input.exec, input.env);
   if (probe.status === "unavailable") {

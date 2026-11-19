@@ -338,6 +338,23 @@ describe("DesktopSecretStore keychain access", () => {
 });
 
 describe("DesktopSecretStore envelope format", () => {
+  test("backend selection detects stored ciphertext without touching safeStorage", async () => {
+    const path = join(workDir, "secrets.bin");
+    const store = makeStore();
+    await expect(store.hasStoredCiphertext()).resolves.toBe(false);
+
+    for (const [contents, configured] of [
+      [JSON.stringify({ version: 2, index: {}, ciphertext: null }), false],
+      [JSON.stringify({ version: 2, index: {}, ciphertext: "Y2lwaGVydGV4dA==" }), true],
+      ["v11-legacy-ciphertext", true],
+      [JSON.stringify({ version: 3, payload: "unrecognized-envelope" }), true]
+    ] as const) {
+      writeFileSync(path, contents);
+      await expect(store.hasStoredCiphertext()).resolves.toBe(configured);
+    }
+    expect(safeStorageCalls()).toBe(0);
+  });
+
   function readEnvelope(): { version: number; index: Record<string, { lastSetAt: string }>; ciphertext: string | null } {
     return JSON.parse(readFileSync(join(workDir, "secrets.bin"), "utf8"));
   }

@@ -127,7 +127,8 @@ Rules:
     fetch the keyring key and must stay off the startup path.
   - Preserve an active secure backend, a remembered selection, and an
     operator's `--password-store` or `PWRSNAP_LINUX_PASSWORD_STORE` override.
-    A different backend can leave existing credentials unreadable.
+    Skip automatic changes if the credential file has ciphertext or cannot
+    be read. A discovered backend can use a different key.
   - The remembered selection is a plain startup file. Chromium needs it
     before ready, and renderers cannot change it.
   - E2E skips selection and relaunch.

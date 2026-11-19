@@ -404,7 +404,7 @@ describe("DesktopSecretStore envelope format", () => {
     writeFileSync(join(workDir, "secrets.bin"), JSON.stringify(envelope));
 
     const all = await makeStore().getAllStatus();
-    expect(Object.keys(all)).toEqual(["openaiApiKey"]);
+    expect(Object.keys(all)).toEqual(["openaiApiKey", "chatgptPlanRegistration"]);
   });
 });
 

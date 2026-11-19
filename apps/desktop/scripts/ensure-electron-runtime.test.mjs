@@ -32,8 +32,7 @@ function fixture(version = "44.10.1", bytes = randomBytes(1024 * 1024)) {
   writeFileSync(join(payload, "electron.d.ts"), "// fixture types\n");
   const zip = join(root, "electron.zip");
   if (process.platform === "win32") {
-    const quote = (value) => `'${value.replace(/'/g, "''")}'`;
-    execFileSync("powershell.exe", ["-NoProfile", "-Command", `Compress-Archive -Path ${quote(join(payload, "*"))} -DestinationPath ${quote(zip)}`]);
+    execFileSync("tar.exe", ["-caf", zip, "-C", payload, "."]);
   } else {
     execFileSync("zip", ["-q", "-r", zip, "."], { cwd: payload });
   }
@@ -86,6 +85,32 @@ function installAt(setup, name) {
   install.runSync();
   return install.binary;
 }
+
+it("Windows extraction oracle: unpacks the ZIP even if the PowerShell archive command silently does nothing", async () => {
+  const setup = fixture("44.9.3", randomBytes(8192));
+  const dist = join(setup.root, "runtime with spaces");
+  mkdirSync(dist);
+  const script = `
+    import childProcess from "node:child_process";
+    import { syncBuiltinESMExports } from "node:module";
+    const execFileSync = childProcess.execFileSync;
+    const host = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    childProcess.execFileSync = (command, args, options) => {
+      if (command === "powershell.exe") return Buffer.alloc(0);
+      if (command === "tar.exe" && host !== "win32") {
+        return execFileSync("unzip", ["-q", args[1], "-d", args[3]], options);
+      }
+      return execFileSync(command, args, options);
+    };
+    syncBuiltinESMExports();
+    const { extractZip } = await import(${JSON.stringify(pathToFileURL(join(here, "electron-runtime-cache.mjs")).href)});
+    extractZip(${JSON.stringify(setup.zip)}, ${JSON.stringify(dist)});
+  `;
+  await execAsync(process.execPath, ["--input-type=module", "-e", script]);
+  expect(readFileSync(join(dist, "electron.exe"))).toEqual(setup.bytes);
+  expect(readFileSync(join(dist, "version"), "utf8")).toBe(setup.version);
+}, 60_000);
 
 it("runs the production entry point for the native host and reuses the same cache across project layouts", async () => {
   const setup = fixture("44.10.1", randomBytes(8192));
@@ -309,7 +334,7 @@ it("revalidates target changes, keeps installed runtimes usable offline, and rep
   expect(readFileSync(join(opts.electronDir, "electron.d.ts"), "utf8")).toBe("// fixture types\n");
 });
 
-// Three ZIP creations and three extractions launch PowerShell on Windows.
+// Allow time for three ZIP creations and three extractions on CI.
 it("separates versions and archive digests, rejecting unverified artifacts without damaging an install", async () => {
   const first = fixture("44.9.3", randomBytes(8192));
   const second = fixture("44.10.1", randomBytes(8192));

@@ -83,6 +83,10 @@ Rules:
   handler to `kind: "settings", code: "secret_unavailable"`. **Never fall
   back to plaintext.** A unit test checks that plaintext never appears in
   `pwrsnap-secrets.bin`.
+  The legacy KWallet reader is the only exception to the async API rule.
+  When async decryption cannot read Linux `v11` ciphertext on a KWallet
+  backend, the store can use Electron's legacy reader to migrate the old
+  wallet entry. All encryption uses the async API.
 - **`getValue()` is the ONLY read allowed to decrypt.** On macOS the first
   `safeStorage` call in a process is what can raise the login-keychain
   password dialog, so a status read that decrypts turns "user toggled a

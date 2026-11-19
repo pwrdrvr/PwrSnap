@@ -3,8 +3,8 @@
 // system keychain to be initialized), so the test stubs the async trio --
 // isAsyncEncryptionAvailable / encryptStringAsync / decryptStringAsync --
 // with a reversible, but distinctive, wrapping that makes the
-// encrypted-at-rest assertion meaningful. The stub has no synchronous
-// methods: Electron 46 removes them, so a call to one fails here first.
+// encrypted-at-rest assertion meaningful. The legacy KWallet tests opt into
+// a synchronous decrypt fixture for migration.
 //
 // The wrapping is "PWR-ENC|<key>|" before base64, so the test's grep for
 // the plaintext substring fails (the plaintext shows up b64-encoded after
@@ -23,9 +23,10 @@
 // property that matters, and counting mock calls is how we pin it.
 
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
+import fc from "fast-check";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const safeStorageMock = vi.hoisted(() => {
@@ -42,6 +43,9 @@ const safeStorageMock = vi.hoisted(() => {
     // Linux-only in Electron. Present on every host here so `basic_text` can
     // be tested; the store calls it optionally.
     getSelectedStorageBackend: vi.fn((): string => "gnome_libsecret"),
+    decryptString: vi.fn((_ciphertext: Buffer): string => {
+      throw new Error("legacy KWallet is unavailable");
+    }),
     encryptStringAsync: vi.fn(async (s: string): Promise<Buffer> => {
       if (!ready) throw new Error(notReady);
       return seal(s);
@@ -95,6 +99,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  safeStorageMock.getSelectedStorageBackend.mockReset();
+  safeStorageMock.decryptString.mockReset();
   vi.clearAllMocks();
 });
 
@@ -105,13 +111,13 @@ function makeStore(platform?: NodeJS.Platform): DesktopSecretStore {
   });
 }
 
-/** Calls to every safeStorage method the store uses. Each one can initialize
- *  the async encryptor, which on macOS is the keychain read that prompts. */
+/** Calls to safeStorage methods that can access a key. */
 function safeStorageCalls(): number {
   return (
     safeStorageMock.isAsyncEncryptionAvailable.mock.calls.length +
     safeStorageMock.encryptStringAsync.mock.calls.length +
-    safeStorageMock.decryptStringAsync.mock.calls.length
+    safeStorageMock.decryptStringAsync.mock.calls.length +
+    safeStorageMock.decryptString.mock.calls.length
   );
 }
 
@@ -124,6 +130,39 @@ async function settleQueue(store: DesktopSecretStore): Promise<void> {
 }
 
 describe("DesktopSecretStore", () => {
+  test("the disk state follows invocation order when a pending replacement is followed by a clear", async () => {
+    await fc.assert(fc.asyncProperty(
+      fc.boolean(),
+      fc.string({ minLength: 1 }),
+      async (alreadyStored, value) => {
+        const dir = await mkdtemp(join(workDir, "write-order-"));
+        const filePath = join(dir, "secrets.bin");
+        const store = new DesktopSecretStore({ filePath });
+        try {
+          if (alreadyStored) await store.replace("openaiApiKey", "original");
+          let finishAvailability!: (available: boolean) => void;
+          const availability = new Promise<boolean>((resolve) => {
+            finishAvailability = resolve;
+          });
+          safeStorageMock.isAsyncEncryptionAvailable.mockReturnValueOnce(availability);
+
+          const replace = store.replace("openaiApiKey", value);
+          const clear = store.clear("openaiApiKey");
+          finishAvailability(true);
+          await Promise.all([replace, clear]);
+
+          expect(JSON.parse(await readFile(filePath, "utf8"))).toEqual({
+            version: 2,
+            index: {},
+            ciphertext: null
+          });
+        } finally {
+          await rm(dir, { recursive: true });
+        }
+      }
+    ));
+  });
+
   test("replace + getStatus reports configured: true with a recent timestamp", async () => {
     const store = makeStore();
     const status = await store.replace("openaiApiKey", "abc-123");
@@ -404,9 +443,8 @@ describe("DesktopSecretStore v1 migration", () => {
     // Settle the write queue deterministically rather than guessing with a
     // timer: the migration task awaits an fs read, so a single macrotask turn
     // can finish before it has even looked at the file, and the assertion
-    // below would then pass whether or not the guard exists. `clear` runs
-    // through the same FIFO queue, and on a legacy file it writes nothing.
-    await store.clear("openaiApiKey");
+    // below would then pass whether or not the guard exists.
+    await expect(store.clear("openaiApiKey")).rejects.toBeInstanceOf(SecretUnavailableError);
 
     expect(readFileSync(join(workDir, "secrets.bin")).toString("utf8")).toBe(
       "v10-not-our-ciphertext"
@@ -457,11 +495,7 @@ describe("DesktopSecretStore envelope consistency", () => {
   });
 });
 
-// A write re-encrypts only the entries it holds, and a failed decrypt makes
-// the read look empty — so without an explicit guard a write silently
-// discards every secret it could not read back. The plaintext index is what
-// makes that detectable, so these are the cases the envelope must not make
-// worse than the single-ciphertext layout it replaced.
+// Writes that need existing credentials must leave unreadable data intact.
 describe("DesktopSecretStore undecryptable payload", () => {
   async function storeWithTwoSecrets(): Promise<DesktopSecretStore> {
     const store = makeStore();
@@ -469,6 +503,19 @@ describe("DesktopSecretStore undecryptable payload", () => {
     await store.replace("localAgentToken:client-a", "token-a");
     return store;
   }
+
+  test("credential reads report an unavailable keychain while status stays index-only", async () => {
+    const store = makeStore("darwin");
+    const written = await store.replace("openaiApiKey", "test-key");
+    const before = await readFile(join(workDir, "secrets.bin"));
+    safeStorageMock.__setFailDecrypt(true);
+    vi.clearAllMocks();
+
+    await expect(store.getStatus("openaiApiKey")).resolves.toEqual(written);
+    expect(safeStorageCalls()).toBe(0);
+    await expect(store.getValue("openaiApiKey")).rejects.toBeInstanceOf(SecretUnavailableError);
+    expect(await readFile(join(workDir, "secrets.bin"))).toEqual(before);
+  });
 
   test("replace refuses rather than destroying the secrets it cannot read", async () => {
     const store = await storeWithTwoSecrets();
@@ -522,16 +569,83 @@ describe("DesktopSecretStore undecryptable payload", () => {
     safeStorageMock.__setFailDecrypt(false);
     expect(await store.getValue("openaiApiKey")).toBe("second");
   });
+});
 
-  test("a v1 file keeps the older lenient behavior — it has no index to check", async () => {
-    // The names live inside a v1 ciphertext, so "absent" and "undecryptable"
-    // are indistinguishable there and the guard cannot apply.
-    writeFileSync(join(workDir, "secrets.bin"), Buffer.from("v10-not-our-ciphertext"));
-    const store = makeStore();
+describe("DesktopSecretStore legacy KWallet migration", () => {
+  const lastSetAt = "2026-05-06T17:16:00.000Z";
+  const names = ["openaiApiKey", "localAgentToken:client-a"] as const;
+  const values = { openaiApiKey: "api-key", "localAgentToken:client-a": "token" };
+  const index = { openaiApiKey: { lastSetAt }, "localAgentToken:client-a": { lastSetAt } };
 
-    await expect(store.clear("openaiApiKey")).resolves.toMatchObject({
-      configured: false
+  test.each([
+    { version: 1, asyncResult: "rejects" },
+    { version: 2, asyncResult: "rejects" },
+    { version: 2, asyncResult: "invalid JSON" }
+  ])("migrates sync v$version ciphertext when async decrypt returns $asyncResult", async ({ version, asyncResult }) => {
+    const path = join(workDir, "secrets.bin");
+    const oldPayload = version === 1
+      ? { openaiApiKey: { value: values.openaiApiKey, lastSetAt },
+          "localAgentToken:client-a": { value: values["localAgentToken:client-a"], lastSetAt } }
+      : values;
+    const oldCiphertext = Buffer.from("v11-legacy-kwallet-fixture");
+    writeFileSync(path, version === 1 ? oldCiphertext : JSON.stringify({
+      version: 2, index, ciphertext: oldCiphertext.toString("base64")
+    }));
+    const store = makeStore("linux");
+    safeStorageMock.getSelectedStorageBackend.mockReturnValue("kwallet5");
+    safeStorageMock.decryptString.mockImplementation((ciphertext) => {
+      expect(ciphertext).toEqual(oldCiphertext);
+      return JSON.stringify(oldPayload);
     });
+    if (asyncResult === "invalid JSON") {
+      safeStorageMock.decryptStringAsync
+        .mockResolvedValueOnce({ result: "garbage", shouldReEncrypt: false })
+        .mockResolvedValueOnce({ result: "garbage", shouldReEncrypt: false });
+    }
+
+    if (version === 2) {
+      expect((await store.getStatus("openaiApiKey")).configured).toBe(true);
+      expect(safeStorageCalls()).toBe(0);
+    }
+    await expect(store.getValue("openaiApiKey")).resolves.toBe(values.openaiApiKey);
+    await settleQueue(store);
+
+    const migrated = JSON.parse(await readFile(path, "utf8"));
+    expect(migrated).toMatchObject({ version: 2, index });
+    expect(Buffer.from(migrated.ciphertext, "base64")).toEqual(
+      safeStorageMock.__seal(JSON.stringify(values))
+    );
+    safeStorageMock.decryptString.mockClear();
+    for (const name of names) {
+      await expect(makeStore("linux").getValue(name)).resolves.toBe(values[name]);
+    }
+    expect(safeStorageMock.decryptString).not.toHaveBeenCalled();
+  });
+
+  test("preserves the existing bytes if the legacy KWallet can no longer decrypt", async () => {
+    const path = join(workDir, "secrets.bin");
+    const oldCiphertext = Buffer.from("v11-unreadable-legacy-kwallet-fixture");
+    writeFileSync(path, oldCiphertext);
+    const store = makeStore("linux");
+    safeStorageMock.getSelectedStorageBackend.mockReturnValue("kwallet6");
+    await expect(store.replace("openaiApiKey", "replacement")).rejects.toBeInstanceOf(SecretUnavailableError);
+    expect(await readFile(path)).toEqual(oldCiphertext);
+  });
+
+  test.each([
+    { platform: "linux", backend: "gnome_libsecret", prefix: "v11" },
+    { platform: "linux", backend: "kwallet5", prefix: "v10" },
+    { platform: "linux", backend: "kwallet5", prefix: "v12" },
+    { platform: "darwin", backend: "kwallet5", prefix: "v11" }
+  ] as const)("skips the synchronous reader for $platform $backend $prefix", async ({ platform, backend, prefix }) => {
+    const path = join(workDir, "secrets.bin");
+    const ciphertext = Buffer.from(`${prefix}-unreadable-fixture`);
+    writeFileSync(path, ciphertext);
+    safeStorageMock.getSelectedStorageBackend.mockReturnValue(backend);
+
+    await expect(makeStore(platform).getValue("openaiApiKey")).rejects.toBeInstanceOf(SecretUnavailableError);
+    expect(safeStorageMock.decryptString).not.toHaveBeenCalled();
+    expect(await readFile(path)).toEqual(ciphertext);
   });
 });
 

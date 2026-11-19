@@ -10,10 +10,35 @@ import {
   ELECTRON_DEV_ENV_KEYS,
   ensureElectronInstalled,
   electronInstallState,
+  runElectronViteDev,
   runLongLived,
   sanitizeDevEnv,
   windowsUtf8DevBridge
 } from "./dev.mjs";
+
+describe("Linux dev keyring restart", () => {
+  it("restarts the supervised pair once with the same arguments and consumes the restart signal", async () => {
+    const run = vi.fn().mockResolvedValue(75);
+    const args = ["electron-vite.js", "dev", "--", "capture.pwrsnap"];
+    const env = { PATH: "/usr/bin" };
+    await expect(runElectronViteDev("node", args, env, { platform: "linux", run })).resolves.toBe(75);
+    expect(run.mock.calls).toEqual([
+      ["node", args, { ...env, PWRSNAP_LINUX_PASSWORD_STORE_DEV_RESTART_CODE: "75" }],
+      ["node", args, env]
+    ]);
+  });
+
+  it.each([
+    ["linux", 0],
+    ["linux", 1],
+    ["darwin", 75],
+    ["win32", 75]
+  ])("runs once on %s with exit status %d", async (platform, status) => {
+    const run = vi.fn().mockResolvedValue(status);
+    await expect(runElectronViteDev("node", [], {}, { platform, run })).resolves.toBe(status);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+});
 
 const tempDirs = [];
 
@@ -167,6 +192,7 @@ describe("dev launch environment", () => {
       ELECTRON_EXEC_PATH: "/other/repo/Electron",
       ELECTRON_RENDERER_URL: "http://localhost:5173",
       NODE_PATH: "/other/repo/node_modules",
+      PWRSNAP_LINUX_PASSWORD_STORE_DEV_RESTART_CODE: "75",
       PATH: "/usr/bin",
       PWRSNAP_DATA_ROOT: "/tmp/pwrsnap"
     };
@@ -176,7 +202,9 @@ describe("dev launch environment", () => {
     for (const key of ELECTRON_DEV_ENV_KEYS) {
       expect(env).not.toHaveProperty(key);
     }
-    expect(removed).toEqual(["ELECTRON_EXEC_PATH", "ELECTRON_RENDERER_URL", "NODE_PATH"]);
+    expect(removed).toEqual([
+      "ELECTRON_EXEC_PATH", "ELECTRON_RENDERER_URL", "NODE_PATH", "PWRSNAP_LINUX_PASSWORD_STORE_DEV_RESTART_CODE"
+    ]);
     expect(env.PATH).toBe("/usr/bin");
     expect(env.PWRSNAP_DATA_ROOT).toBe("/tmp/pwrsnap");
   });

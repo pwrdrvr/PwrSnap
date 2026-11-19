@@ -124,7 +124,7 @@ describe("applyRememberedLinuxPasswordStore", () => {
     const store = applyRememberedLinuxPasswordStore({
       platform: "linux",
       isE2E: false,
-      argv: ["/usr/bin/pwrsnap"],
+      hasPasswordStoreSwitch: false,
       env: {},
       userDataDir: tempDir(),
       appendSwitch,
@@ -132,6 +132,16 @@ describe("applyRememberedLinuxPasswordStore", () => {
     });
     return { store, appendSwitch };
   }
+
+  test("preserves a single-dash password-store override recognized by Chromium", () => {
+    const userDataDir = tempDir();
+    remember(userDataDir, "gnome-libsecret");
+    const result = applyWith({
+      userDataDir,
+      hasPasswordStoreSwitch: true
+    });
+    expect(result.appendSwitch).not.toHaveBeenCalled();
+  });
 
   test("appends the store a previous launch remembered", () => {
     const userDataDir = tempDir();
@@ -173,8 +183,7 @@ describe("applyRememberedLinuxPasswordStore", () => {
     remember(userDataDir, "gnome-libsecret");
 
     for (const overrides of [
-      { argv: ["/usr/bin/pwrsnap", "--password-store=kwallet6"] },
-      { argv: ["/usr/bin/pwrsnap", "--password-store", "kwallet6"] },
+      { hasPasswordStoreSwitch: true },
       { env: { PWRSNAP_LINUX_PASSWORD_STORE: "basic" } },
       { isE2E: true },
       { platform: "darwin" as const },
@@ -187,11 +196,11 @@ describe("applyRememberedLinuxPasswordStore", () => {
   });
 });
 
-describe("relaunchForLinuxSecretStore", async () => {
+describe("relaunchForLinuxSecretStore", () => {
   /** Probes with `secretsProbe` unless the test supplies its own `exec`. */
   async function relaunchWith(overrides: Partial<RelaunchForLinuxSecretStoreInput>) {
     const userDataDir = overrides.userDataDir ?? tempDir();
-    const relaunch = vi.fn();
+    const relaunch = vi.fn(() => true);
     const exit = vi.fn();
     const info = vi.fn();
     const warn = vi.fn();
@@ -199,6 +208,8 @@ describe("relaunchForLinuxSecretStore", async () => {
       platform: "linux",
       isE2E: false,
       argv: ["/usr/bin/pwrsnap", "--enable-logging", "/home/fixture/shot.pwrsnap"],
+      hasPasswordStoreSwitch: false,
+      usesDevRenderer: false,
       env: {},
       userDataDir,
       selectedStore: undefined,
@@ -228,6 +239,54 @@ describe("relaunchForLinuxSecretStore", async () => {
     expect(result.exit).toHaveBeenCalledWith(0);
     expect(readFileSync(linuxPasswordStorePath(result.userDataDir), "utf8")).toBe("gnome-libsecret\n");
     expect(existsSync(`${linuxPasswordStorePath(result.userDataDir)}.tmp`)).toBe(false);
+  });
+
+  test("a rejected native relaunch leaves the initial process running and does not pin the store", async () => {
+    const result = await relaunchWith({ relaunch: () => false });
+    expect(result.exited).toBe(false);
+    expect(result.warn).toHaveBeenCalled();
+    expect(result.exit).not.toHaveBeenCalled();
+    expect(existsSync(linuxPasswordStorePath(result.userDataDir))).toBe(false);
+  });
+
+  test("under pnpm dev, persists the selection and asks the supervisor to restart Vite", async () => {
+    const result = await relaunchWith({
+      usesDevRenderer: true,
+      env: { PWRSNAP_LINUX_PASSWORD_STORE_DEV_RESTART_CODE: "75" }
+    });
+    expect(result.exited).toBe(true);
+    expect(result.relaunch).not.toHaveBeenCalled();
+    expect(result.exit).toHaveBeenCalledWith(75);
+    expect(readFileSync(linuxPasswordStorePath(result.userDataDir), "utf8")).toBe("gnome-libsecret\n");
+  });
+
+  test("Vite launches without restart supervision keep their current server and skip discovery", async () => {
+    const exec = vi.fn<CommandExec>();
+    const result = await relaunchWith({ usesDevRenderer: true, exec });
+    expect(result.exited).toBe(false);
+    expect(exec).not.toHaveBeenCalled();
+    expect(result.relaunch).not.toHaveBeenCalled();
+    expect(result.exit).not.toHaveBeenCalled();
+  });
+
+  test("the dev renderer keeps running if the selection cannot be saved", async () => {
+    const blocker = join(tempDir(), "blocker");
+    writeFileSync(blocker, "");
+    const result = await relaunchWith({
+      usesDevRenderer: true,
+      userDataDir: join(blocker, "PwrSnap"),
+      env: { PWRSNAP_LINUX_PASSWORD_STORE_DEV_RESTART_CODE: "75" }
+    });
+    expect(result.exited).toBe(false);
+    expect(result.relaunch).not.toHaveBeenCalled();
+    expect(result.exit).not.toHaveBeenCalled();
+  });
+
+  test("the relaunch preserves switch-like positional arguments after the separator", async () => {
+    const result = await relaunchWith({ argv: ["/usr/bin/pwrsnap", "--", "--password-store=example.pwrsnap"] });
+    expect(result.relaunch).toHaveBeenCalledWith([
+      "--password-store=gnome-libsecret", "--", "--password-store=example.pwrsnap"
+    ]);
   });
 
   test("a running service wins over an activatable one", async () => {
@@ -310,7 +369,7 @@ describe("relaunchForLinuxSecretStore", async () => {
 
   test("never overrides the operator's argv or env choice, or runs under E2E or off Linux", async () => {
     for (const overrides of [
-      { argv: ["/usr/bin/pwrsnap", "--password-store=basic"] },
+      { hasPasswordStoreSwitch: true },
       { env: { PWRSNAP_LINUX_PASSWORD_STORE: "basic" } },
       { env: { PWRSNAP_LINUX_PASSWORD_STORE: "kwallet6" } },
       { isE2E: true },
@@ -356,7 +415,7 @@ describe("relaunchForLinuxSecretStore", async () => {
     const selectedStore = applyRememberedLinuxPasswordStore({
       platform: "linux",
       isE2E: false,
-      argv: ["/usr/bin/pwrsnap"],
+      hasPasswordStoreSwitch: false,
       env: {},
       userDataDir: first.userDataDir,
       appendSwitch
@@ -384,15 +443,28 @@ describe("linux password store wiring", () => {
     expect(applyIndex).toBeGreaterThan(userDataOverrideIndex);
   });
 
-  test("the relaunch runs right after the shutdown listener, before anything is created", () => {
+  test("both selection stages use Chromium's original password-store switch decision", () => {
+    const applyIndex = mainSource.indexOf("applyRememberedLinuxPasswordStore({");
+    const originalSwitchIndex = mainSource.indexOf('app.commandLine.hasSwitch("password-store")');
+    expect(originalSwitchIndex).toBeGreaterThan(-1);
+    expect(applyIndex).toBeGreaterThan(originalSwitchIndex);
+    expect(mainSource.match(/(?:applyRememberedLinuxPasswordStore|relaunchForLinuxSecretStore)\(\{[^}]*?hasPasswordStoreSwitch,/g))
+      .toHaveLength(2);
+  });
+
+  test("startup installs both renderer guards before awaiting Linux store selection", () => {
     // `installSystemShutdown()` stays first (system-shutdown.test.ts pins it).
     const shutdownIndex = mainSource.indexOf("installSystemShutdown();", readyIndex);
     const relaunchIndex = mainSource.indexOf("relaunchForLinuxSecretStore({");
-    const nextInstallIndex = mainSource.indexOf("installMediaPermissionPolicy();", readyIndex);
+    const permissionsIndex = mainSource.indexOf("installMediaPermissionPolicy();", readyIndex);
+    const navigationIndex = mainSource.indexOf("installNavigationGuard();", readyIndex);
 
     expect(shutdownIndex).toBeGreaterThan(readyIndex);
-    expect(relaunchIndex).toBeGreaterThan(shutdownIndex);
-    expect(nextInstallIndex).toBeGreaterThan(relaunchIndex);
+    expect(permissionsIndex).toBeGreaterThan(shutdownIndex);
+    expect(navigationIndex).toBeGreaterThan(shutdownIndex);
+    expect(relaunchIndex).toBeGreaterThan(permissionsIndex);
+    expect(relaunchIndex).toBeGreaterThan(navigationIndex);
+    expect(mainSource.slice(readyIndex, navigationIndex)).not.toMatch(/\bawait\b/);
   });
 
   test("both calls pass the real E2E flag", () => {

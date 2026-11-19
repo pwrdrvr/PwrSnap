@@ -1817,10 +1817,11 @@ export function bootstrapApp(): void {
   // store a previous launch found on the session bus. Chromium reads
   // --password-store during early init, so this has to happen here, before
   // ready, and after the userData override above. See linux-password-store.ts.
+  const hasPasswordStoreSwitch = app.commandLine.hasSwitch("password-store");
   const rememberedLinuxPasswordStore = applyRememberedLinuxPasswordStore({
     platform: process.platform,
     isE2E,
-    argv: process.argv,
+    hasPasswordStoreSwitch,
     env: process.env,
     userDataDir: app.getPath("userData"),
     appendSwitch: (store) => {
@@ -1833,21 +1834,39 @@ export function bootstrapApp(): void {
 
   app.whenReady().then(async () => {
     installSystemShutdown();
-    // Before anything is created: when this process came up on
-    // `basic_text` and the session bus has a real secret service, relaunch
-    // onto it once. Reads only the selected backend name, never the keyring.
+    // Before any window loads. Electron's no-handler default GRANTS
+    // every permission a renderer asks for; this denies by default and
+    // allows only `media` (the selector's level meter + camera preview)
+    // and sanitized clipboard writes, and only from a PwrSnap-loaded
+    // page. See media-permissions.ts for why both hooks are installed.
+    installMediaPermissionPolicy();
+    // Same seam, same reason: `web-contents-created` is not replayed, so
+    // this has to be armed before the first window exists. Denies every
+    // `window.open` (what a middle-click or cmd-click on a link becomes)
+    // and every navigation away from PwrSnap's own content, routing an
+    // allowlisted https URL to the user's browser instead.
+    installNavigationGuard();
+
+    // With renderer policies armed, startup can wait for secret storage.
+    // A process on `basic_text` can restart once with a discoverable secret
+    // service. Reads only the selected backend name, never the keyring.
     if (
       await relaunchForLinuxSecretStore({
         platform: process.platform,
         isE2E,
         argv: process.argv,
+        hasPasswordStoreSwitch,
+        usesDevRenderer: !app.isPackaged && process.env.ELECTRON_RENDERER_URL !== undefined,
         env: process.env,
         userDataDir: app.getPath("userData"),
         selectedStore: rememberedLinuxPasswordStore,
         backend: process.platform === "linux" ? safeStorage.getSelectedStorageBackend() : null,
         hasStoredCiphertext: () => getDesktopSecretStore().hasStoredCiphertext(),
         relaunch: (args) => {
-          app.relaunch({ args });
+          // Electron 44's native binding returns a success boolean, though
+          // the published declaration still says void.
+          const scheduled: unknown = app.relaunch({ args });
+          return scheduled === true;
         },
         exit: (code) => {
           app.exit(code);
@@ -1862,18 +1881,6 @@ export function bootstrapApp(): void {
     ) {
       return;
     }
-    // Before any window loads. Electron's no-handler default GRANTS
-    // every permission a renderer asks for; this denies by default and
-    // allows only `media` (the selector's level meter + camera preview)
-    // and sanitized clipboard writes, and only from a PwrSnap-loaded
-    // page. See media-permissions.ts for why both hooks are installed.
-    installMediaPermissionPolicy();
-    // Same seam, same reason: `web-contents-created` is not replayed, so
-    // this has to be armed before the first window exists. Denies every
-    // `window.open` (what a middle-click or cmd-click on a link becomes)
-    // and every navigation away from PwrSnap's own content, routing an
-    // allowlisted https URL to the user's browser instead.
-    installNavigationGuard();
 
     if (process.platform === "darwin" && (isE2E || role === "agent")) {
       // Agent role: menubar-only process — no Dock presence, ever.

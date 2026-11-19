@@ -131,6 +131,9 @@ Rules:
     be read. A discovered backend can use a different key.
   - The remembered selection is a plain startup file. Chromium needs it
     before ready, and renderers cannot change it.
+  - Start both renderer policies before waiting for this decision. Under
+    `pnpm dev`, the launcher restarts Electron and Vite together after the
+    selection is saved. A failed native relaunch leaves startup running.
   - E2E skips selection and relaunch.
 - **Validate at the bus boundary.** Per-verb validators in
   [apps/desktop/src/main/handlers/settings-validators.ts](../../apps/desktop/src/main/handlers/settings-validators.ts)

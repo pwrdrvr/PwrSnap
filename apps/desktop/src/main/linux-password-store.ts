@@ -41,6 +41,7 @@ export const LINUX_PASSWORD_STORE_FILE = "linux-password-store";
 
 const PASSWORD_STORE_SWITCH = "--password-store";
 const BUS_TIMEOUT_MS = 1_000;
+const DEV_RESTART_CODE_ENV = "PWRSNAP_LINUX_PASSWORD_STORE_DEV_RESTART_CODE";
 
 /** Chromium's `--password-store` spellings. Note `gnome` is NOT one of them:
  *  PwrAgent measured it selecting `basic_text` on Electron 41. */
@@ -142,10 +143,6 @@ function isLinuxSecretStore(value: string): value is LinuxSecretStore {
   return LINUX_SECRET_STORES.some((store) => store === value);
 }
 
-function argvSelectsPasswordStore(argv: readonly string[]): boolean {
-  return argv.some((arg) => arg === PASSWORD_STORE_SWITCH || arg.startsWith(`${PASSWORD_STORE_SWITCH}=`));
-}
-
 function forcedStore(env: NodeJS.ProcessEnv): LinuxSecretStore | "basic" | "auto" | undefined {
   const raw = env[LINUX_PASSWORD_STORE_ENV]?.trim();
   if (raw === undefined || raw === "") return undefined;
@@ -186,19 +183,11 @@ function storeFromProbe(probe: SecretServiceProbe): LinuxSecretStore | undefined
   return storeForNames(probe.owned) ?? storeForNames(probe.activatable);
 }
 
-/** argv without the executable, with any `--password-store` replaced. */
+/** Preserve positional arguments after Chromium's switch terminator. */
 function argsWithPasswordStore(argv: readonly string[], store: LinuxSecretStore): string[] {
-  const args: string[] = [];
-  for (let index = 1; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (arg === PASSWORD_STORE_SWITCH) {
-      index += 1;
-      continue;
-    }
-    if (arg === undefined || arg.startsWith(`${PASSWORD_STORE_SWITCH}=`)) continue;
-    args.push(arg);
-  }
-  args.push(`${PASSWORD_STORE_SWITCH}=${store}`);
+  const args = argv.slice(1);
+  const terminator = args.indexOf("--");
+  args.splice(terminator === -1 ? args.length : terminator, 0, `${PASSWORD_STORE_SWITCH}=${store}`);
   return args;
 }
 
@@ -256,7 +245,8 @@ export function probeSecretServices(exec: CommandExec = defaultExec, env: NodeJS
 export type ApplyRememberedLinuxPasswordStoreInput = {
   platform: NodeJS.Platform;
   isE2E: boolean;
-  argv: readonly string[];
+  /** Captured from Chromium before PwrSnap appends its own switch. */
+  hasPasswordStoreSwitch: boolean;
   env: NodeJS.ProcessEnv;
   userDataDir: string;
   appendSwitch: (store: LinuxSecretStore) => void;
@@ -271,7 +261,7 @@ export type ApplyRememberedLinuxPasswordStoreInput = {
  */
 export function applyRememberedLinuxPasswordStore(input: ApplyRememberedLinuxPasswordStoreInput): LinuxSecretStore | undefined {
   if (input.platform !== "linux" || input.isE2E) return undefined;
-  if (argvSelectsPasswordStore(input.argv)) return undefined;
+  if (input.hasPasswordStoreSwitch) return undefined;
 
   const forced = forcedStore(input.env);
   if (forced === "basic") return undefined;
@@ -285,6 +275,8 @@ export type RelaunchForLinuxSecretStoreInput = {
   platform: NodeJS.Platform;
   isE2E: boolean;
   argv: readonly string[];
+  hasPasswordStoreSwitch: boolean;
+  usesDevRenderer: boolean;
   env: NodeJS.ProcessEnv;
   userDataDir: string;
   /** What `applyRememberedLinuxPasswordStore` appended, if anything.
@@ -295,7 +287,7 @@ export type RelaunchForLinuxSecretStoreInput = {
   hasStoredCiphertext: () => Promise<boolean>;
   probe?: SecretServiceProbe;
   exec?: CommandExec;
-  relaunch: (args: string[]) => void;
+  relaunch: (args: string[]) => boolean;
   exit: (code: number) => void;
   info: (message: string, fields: Record<string, unknown>) => void;
   warn: (message: string, fields: Record<string, unknown>) => void;
@@ -312,7 +304,7 @@ export type RelaunchForLinuxSecretStoreInput = {
  */
 export async function relaunchForLinuxSecretStore(input: RelaunchForLinuxSecretStoreInput): Promise<boolean> {
   if (input.platform !== "linux" || input.isE2E) return false;
-  if (argvSelectsPasswordStore(input.argv)) return false;
+  if (input.hasPasswordStoreSwitch) return false;
   if (input.selectedStore !== undefined) return false;
 
   const forced = forcedStore(input.env);
@@ -328,6 +320,13 @@ export async function relaunchForLinuxSecretStore(input: RelaunchForLinuxSecretS
     });
   }
   if (input.backend !== "basic_text") return false;
+
+  // electron-vite stops its server when its Electron child exits. Only the
+  // PwrSnap dev launcher can request a restart of the supervised pair.
+  const devRestartCode = input.usesDevRenderer ? Number(input.env[DEV_RESTART_CODE_ENV]) : 0;
+  if (input.usesDevRenderer && (!Number.isInteger(devRestartCode) || devRestartCode < 64 || devRestartCode > 78)) {
+    return false;
+  }
 
   // The user may have moved from a desktop where Chromium selected a secure
   // backend. A discoverable service does not tell us which key sealed the file.
@@ -353,18 +352,24 @@ export async function relaunchForLinuxSecretStore(input: RelaunchForLinuxSecretS
     return false;
   }
 
+  // Electron's native helper waits for this process to exit. If scheduling
+  // fails, leave the current launch and the next launch's selection alone.
+  if (!input.usesDevRenderer && !input.relaunch(argsWithPasswordStore(input.argv, store))) {
+    input.warn("linux secret store: Electron could not schedule the relaunch; continuing startup", { store });
+    return false;
+  }
+
   try {
     writeStoreFile(input.userDataDir, store);
   } catch (error) {
-    // Relaunch anyway: this launch still gets a real store. The next one
-    // probes again.
     input.warn("linux secret store: could not remember the selection", {
       message: error instanceof Error ? error.message : String(error)
     });
+    // Native relaunch carries the switch. Vite needs the saved selection.
+    if (input.usesDevRenderer) return false;
   }
 
-  input.info("linux secret store: relaunching onto the session bus's secret service", { store });
-  input.relaunch(argsWithPasswordStore(input.argv, store));
-  input.exit(0);
+  input.info("linux secret store: restarting onto the session bus's secret service", { store });
+  input.exit(devRestartCode);
   return true;
 }

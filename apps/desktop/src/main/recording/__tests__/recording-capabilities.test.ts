@@ -23,6 +23,7 @@ describe("recording backend capabilities", () => {
         liveDisconnectDetection: false,
         midRecordingToggles: false
       },
+      outputs: { burst: true },
       controllerExcludedFromCapture: true
     });
   });
@@ -40,6 +41,7 @@ describe("recording backend capabilities", () => {
         liveDisconnectDetection: false,
         midRecordingToggles: false
       },
+      outputs: { burst: false },
       controllerExcludedFromCapture: false
     });
   });

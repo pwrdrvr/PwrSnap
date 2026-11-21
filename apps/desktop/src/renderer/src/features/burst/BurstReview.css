@@ -33,9 +33,12 @@
   object-fit: contain;
 }
 /* The thumbnail sits under the full still and shows while it decodes, so
-   stepping through the strip never flashes an empty stage. */
-.ps-burst__stage-under {
-  filter: blur(0.5px);
+   stepping through the strip never flashes an empty stage. No `filter` (or
+   anything else that makes a stacking context) on the underlay: that paints
+   it ABOVE a non-positioned sibling, whatever the DOM order — the full still
+   is positioned so it always wins. */
+.ps-burst__stage-img {
+  position: relative;
 }
 .ps-burst__chip {
   position: absolute;
@@ -103,9 +106,10 @@
   overflow-x: auto;
   overflow-y: hidden;
   padding: 10px 20px 12px;
+  /* scrollIntoView on the focused still keeps it clear of the padding. */
+  scroll-padding-inline: 20px;
   border-top: 1px solid var(--border-subtle);
   background: var(--bg-sidebar);
-  scrollbar-width: thin;
 }
 .ps-burst__cell {
   display: flex;

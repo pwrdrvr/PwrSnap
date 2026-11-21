@@ -213,6 +213,15 @@ const SURFACES = [
     container: ".ps-doc",
     bar: ".ps-doc__titlebar",
     railInset: false
+  },
+  // Burst Review renders the same `.ps-doc` shell
+  // (`<div className="ps-doc ps-burst">`), so the `.ps-doc` assertions cover it.
+  {
+    factory: "showBurstReviewWindow",
+    file: "styles/documents.css",
+    container: ".ps-doc",
+    bar: ".ps-doc__titlebar",
+    railInset: false
   }
 ] as const;
 

@@ -8,15 +8,16 @@
 // a temp directory main owns, and they exist nowhere else.
 //
 // Keys (whole-window; nothing here is an overlay):
-//   ← / →        previous / next still (⇧ extends the choice)
+//   ← / →        previous / next still (Shift extends the choice)
 //   Home / End   first / last still
 //   Space        choose / unchoose the still on the stage
 //   A            choose all / none
-//   ⌘↵ (Ctrl+↵)  keep the chosen stills
+//   Cmd/Ctrl+Enter  keep the chosen stills
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
-import { BURST_FPS, type BurstFrame, type BurstSessionView } from "@pwrsnap/shared";
+import { acceleratorToDisplayKeys, BURST_FPS, type BurstFrame, type BurstSessionView } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
+import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
 import { paintsOwnCaptionButtons, rendererPlatform } from "../../lib/window-chrome";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { WindowControls } from "../shared/WindowControls";
@@ -232,6 +233,10 @@ export function BurstReview({ burstId = readBurstId() }: { readonly burstId?: st
   const focusedChosen = focused !== null && selection.includes(focused.index);
   const focusedKept = focused !== null && kept.has(focused.index);
   const spanMs = frames.length > 1 ? frames.at(-1)!.offsetMs - frames[0]!.offsetMs : 0;
+  // Platform words for the modifier keys (⌘ on macOS, Ctrl elsewhere).
+  const platform = rendererShortcutPlatform();
+  const keepKeys = acceleratorToDisplayKeys("CommandOrControl+Enter", platform).join("");
+  const shiftKey = acceleratorToDisplayKeys("Shift", platform)[0] ?? "Shift";
 
   return (
     <div className="ps-doc ps-burst" data-testid="burst-review">
@@ -416,7 +421,7 @@ export function BurstReview({ burstId = readBurstId() }: { readonly burstId?: st
               data-testid="burst-keep"
               disabled={busy !== null || selection.length === 0}
               data-tip="Keep the chosen stills as snaps and delete the rest"
-              data-tip-keys="⌘↵"
+              data-tip-keys={keepKeys}
               onClick={() => void keep()}
             >
               {busy === "keep"
@@ -431,8 +436,8 @@ export function BurstReview({ burstId = readBurstId() }: { readonly burstId?: st
           )}
           <p className="ps-burst__keys" aria-hidden="true">
             <kbd>←</kbd>
-            <kbd>→</kbd> step · <kbd>Space</kbd> keep · <kbd>⇧</kbd> range · <kbd>A</kbd> all · <kbd>⌘↵</kbd> keep
-            chosen
+            <kbd>→</kbd> step · <kbd>Space</kbd> keep · <kbd>{shiftKey}</kbd> range · <kbd>A</kbd> all ·{" "}
+            <kbd>{keepKeys}</kbd> keep chosen
           </p>
         </main>
       )}

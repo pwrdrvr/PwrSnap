@@ -959,8 +959,9 @@ export function registerRecordingHandlers(): void {
       );
     }
     try {
-      const { captureId } = await getService().stop();
-      return ok({ captureId });
+      const { captureId, burstId } = await getService().stop();
+      // A burst makes no capture at Stop; it names the review it opened.
+      return ok(burstId === undefined ? { captureId } : { captureId, burstId });
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       log.error("recording:stop failed", { message });

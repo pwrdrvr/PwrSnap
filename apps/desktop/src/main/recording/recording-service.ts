@@ -27,8 +27,7 @@ import {
   type RecordingOutput,
   type RecordingSubject
 } from "@pwrsnap/shared";
-import { BURST_TEMP_PREFIX, openBurstSession } from "../burst/burst-session";
-import { openBurstReviewWindow } from "../burst/burst-review-window";
+import { BURST_TEMP_PREFIX, discardBurst, openBurstSession } from "../burst/burst-session";
 import { getMainLogger } from "../log";
 import { globalRectToDisplayLocal } from "../capture/rect-overlap";
 import { setFloatOverState } from "../float-over";
@@ -488,12 +487,13 @@ abstract class AttemptRecorderService implements RecordingService {
     attempt: RecordingAttempt,
     stopped: RecorderStoppedEvent
   ): Promise<{ captureId: string; burstId: string }> {
+    let burstId: string;
     try {
       const rootDir = attempt.tempDir;
       if (rootDir === null) throw new Error("burst directory is gone");
       const subject = attempt.options.subject;
       const sourceWindowTitle = await (attempt.sourceWindowTitlePromise ?? Promise.resolve(null));
-      const burstId = openBurstSession({
+      burstId = openBurstSession({
         rootDir,
         framesDir: join(rootDir, "frames"),
         frames: Array.isArray(stopped.burst?.frames) ? stopped.burst.frames : [],
@@ -512,8 +512,6 @@ abstract class AttemptRecorderService implements RecordingService {
       this.retryWindowIdentity = null;
       this.attempt = null;
       setRecordingState({ phase: "idle" });
-      openBurstReviewWindow(burstId);
-      return { captureId: "", burstId };
     } catch (cause) {
       log.warn("burst hand-off failed; stills preserved for recovery", {
         tempDir: attempt.tempDir,
@@ -522,6 +520,24 @@ abstract class AttemptRecorderService implements RecordingService {
       await this.fail(attempt, "processing_failed", cause, { preserveTempDir: true, canRetry: false });
       throw cause;
     }
+    // The take is over and the session owns the stills; from here a
+    // failure is the session's, not the attempt's. Loaded lazily: the
+    // review window pulls in the whole window layer, which nothing else in
+    // the recording service needs.
+    try {
+      const { openBurstReviewWindow } = await import("../burst/burst-review-window");
+      openBurstReviewWindow(burstId);
+    } catch (cause) {
+      // No window means no way to choose: don't leave stills nobody can
+      // reach sitting in temp until quit.
+      log.warn("burst review window failed to open; discarding", {
+        burstId,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      await discardBurst(burstId);
+      throw cause;
+    }
+    return { captureId: "", burstId };
   }
 
   async restart(): Promise<{ sessionId: string }> {

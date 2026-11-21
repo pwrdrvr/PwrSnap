@@ -6134,5 +6134,5 @@
   pointer-events: none;
 }
 .psl__video-frame-status[data-phase="failed"] {
-  border-color: color-mix(in srgb, var(--danger, #ff5d5d) 60%, transparent);
+  border-color: var(--danger-border);
 }

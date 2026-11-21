@@ -2429,7 +2429,7 @@ describe("RecordingService burst on darwin", () => {
     const startCmd = JSON.parse(child.stdin.write.mock.calls[0]![0].trim()) as Record<string, unknown>;
     expect(startCmd).toMatchObject({
       mode: "burst",
-      burstDir: "/tmp/pwrsnap-burst-fake/frames",
+      burstDir: join("/tmp/pwrsnap-burst-fake", "frames"),
       burstFps: 10,
       burstMaxFrames: 300,
       pixelScale: 2
@@ -2445,7 +2445,7 @@ describe("RecordingService burst on darwin", () => {
     expect(mocks.openBurstSession).toHaveBeenCalledWith(
       expect.objectContaining({
         rootDir: "/tmp/pwrsnap-burst-fake",
-        framesDir: "/tmp/pwrsnap-burst-fake/frames",
+        framesDir: join("/tmp/pwrsnap-burst-fake", "frames"),
         frames: stoppedBurst.burst.frames,
         droppedFrames: 1,
         devicePixelRatio: 2

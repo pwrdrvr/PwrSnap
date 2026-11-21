@@ -63,8 +63,7 @@ import {
 import { getRecordingState, isRecordingActive } from "../recording/recording-state";
 import {
   CapturesLocationFallbackError,
-  ensureCapturesDirReady,
-  runWithCapturesDirFallback
+  ensureCapturesDirReady
 } from "../capture/capture-storage-gate";
 import {
   acquireSnapshotRaster,
@@ -98,9 +97,8 @@ import { broadcastCapturesChanged } from "../events";
 import { releaseFloatOverDock, setFloatOverState } from "../float-over";
 import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
 import { findMainLibraryWindow, scheduleDockReclaim } from "../window";
-import { maybeEnqueueCaptureEnrichment } from "./codex-handlers";
 import { getCaptureById } from "../persistence/captures-repo";
-import { persistCaptureFromTempV2 } from "../persistence/bundle-store";
+import { persistStillCapture } from "../capture/persist-still-capture";
 import { ingestSyntheticCapture } from "../capture/synthetic-ingest";
 import {
   resolveCursorLayerForRect,
@@ -1837,60 +1835,7 @@ async function persistAndBroadcast(
     sourceWindowTitle?: string | null | undefined;
   } = {}
 ): Promise<Result<CaptureRecord, PwrSnapError>> {
-  // Prepare the immutable capture before taking the captures-root guard;
-  // persistence enters that guard only for naming and durable publication.
-  //
-  // devicePixelRatio threads through so the clipboard-paste flow can pass
-  // the scale it inferred from the pasted image's DPI metadata (pHYs /
-  // TIFF resolution; 144 DPI → 2× Retina), falling back to 1 when the
-  // source carried no density rather than defaulting to 2.
-  let record: CaptureRecord;
-  try {
-    ({ record } = await persistCaptureFromTempV2(
-      {
-        tempPath,
-        sourceApp:
-          sourceApp === null
-            ? null
-            : { bundleId: sourceApp.bundleId, appName: sourceApp.appName },
-        sourceWindowTitle: options.sourceWindowTitle ?? null,
-        devicePixelRatio: options.devicePixelRatio,
-        cursorLayer: options.cursorLayer
-      },
-      runWithCapturesDirFallback
-    ));
-  } catch (cause) {
-    const fallbackError =
-      cause instanceof CapturesLocationFallbackError ? cause.pwrSnapError : null;
-    // Filesystem failures commonly embed absolute source/destination paths.
-    // Keep disk logs on stable codes; callers that can safely surface a
-    // domain-specific fallback error still receive it below.
-    log.error("capture persist failed", {
-      code: fallbackError?.code ?? "persist_failed"
-    });
-    return err(
-      fallbackError ?? {
-        kind: "capture",
-        code: "persist_failed",
-        message: cause instanceof Error ? cause.message : String(cause),
-        cause
-      }
-    );
-  }
-
-  log.info("capture persisted", {
-    captureId: record.id,
-    bundleFormatVersion: record.bundle_format_version,
-    sourceAppBundleId: record.source_app_bundle_id,
-    sourceAppName: record.source_app_name
-  });
-  broadcastCapturesChanged([record.id]);
-  // PR #30's Codex enrichment fires once per new capture. Every
-  // capture flowing through persistCaptureFromTempV2 is brand new —
-  // dedup was removed (migration 0021) so there's no "this is the
-  // same row again" branch to skip.
-  maybeEnqueueCaptureEnrichment(record.id);
-  return ok(record);
+  return persistStillCapture(tempPath, sourceApp, options);
 }
 
 /**

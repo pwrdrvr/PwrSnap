@@ -27,6 +27,24 @@ export function buildPastedImageDisplayName(args: {
   return `${PASTEBOARD_IMAGE_PREFIX}-${stem}-${args.preset}.png`;
 }
 
+/** `0m02.700s` — a playhead time that sorts and reads in a filename. */
+export function frameTimeFilenameLabel(timeSec: number): string {
+  const ms = Math.max(0, Math.round(timeSec * 1000));
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = (ms % 60_000) / 1000;
+  return `${minutes}m${seconds.toFixed(3).padStart(6, "0")}s`;
+}
+
+/** Pasteboard name for a video frame copied as a still. */
+export function buildVideoFrameDisplayName(args: {
+  record: Pick<CaptureRecord, "id" | "source_app_name">;
+  enrichment: Pick<CaptureEnrichment, "acceptedFilenameStem" | "suggestedFilenameStem"> | null;
+  timeSec: number;
+}): string {
+  const stem = exportFilenameStem(args.record, args.enrichment);
+  return `${PASTEBOARD_IMAGE_PREFIX}-${stem}-frame-${frameTimeFilenameLabel(args.timeSec)}.png`;
+}
+
 export function exportFilenameStem(
   record: Pick<CaptureRecord, "id" | "source_app_name">,
   enrichment: Pick<CaptureEnrichment, "acceptedFilenameStem" | "suggestedFilenameStem"> | null

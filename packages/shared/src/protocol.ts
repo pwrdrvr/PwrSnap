@@ -265,6 +265,14 @@ export type VideoEditRequest = {
   reset?: boolean | undefined;
 };
 
+/** What a frame-still verb extracted: the source-resolution size and the
+ *  millisecond it was keyed by. */
+export type VideoFrameStillResult = {
+  widthPx: number;
+  heightPx: number;
+  timeSec: number;
+};
+
 /** The edit as a caller should reason about it. */
 export type VideoEditState = {
   captureId: string;
@@ -5725,6 +5733,25 @@ export type Commands = {
   "clipboard:copyVideoPath": {
     req: VideoExportCoordinates;
     res: { path: string };
+  };
+  /**
+   * Copy the frame a player shows at `timeSec` (source seconds) as a PNG at
+   * the recording's full resolution — the latest frame at or before that
+   * instant, which is what the stage was showing at the playhead. Backs the
+   * video stage's "Copy Frame" and the export rail's FRAME row.
+   */
+  "clipboard:copyVideoFrame": {
+    req: { captureId: string; timeSec: number };
+    res: VideoFrameStillResult;
+  };
+  /**
+   * Save the frame at `timeSec` as a new still capture in the Library (an
+   * ordinary snap: its own id and bundle, enriched like any capture). Its
+   * capture time is the moment that frame was on screen.
+   */
+  "video:saveFrameAsSnap": {
+    req: { captureId: string; timeSec: number };
+    res: VideoFrameStillResult & { snapId: string };
   };
 
   // ---- codex (Phase 4+) — declared here so Phase 4 lands without protocol bumps ----

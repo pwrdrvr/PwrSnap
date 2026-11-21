@@ -105,10 +105,12 @@ export function BurstReview({ burstId = readBurstId() }: { readonly burstId?: st
 
   const focusPos = frames.findIndex((f) => f.index === focusIndex);
   const focused = focusPos >= 0 ? frames[focusPos]! : null;
+  // One Set per choice: the strip asks "is this still chosen?" per thumb.
+  const chosenSet = useMemo(() => new Set(selection), [selection]);
   const firstChosenOffset = useMemo(() => {
-    const first = frames.find((f) => selection.includes(f.index));
+    const first = frames.find((f) => chosenSet.has(f.index));
     return first?.offsetMs ?? null;
-  }, [frames, selection]);
+  }, [frames, chosenSet]);
 
   useEffect(() => {
     if (focusIndex === null) return;
@@ -230,7 +232,7 @@ export function BurstReview({ burstId = readBurstId() }: { readonly burstId?: st
   };
 
   const keepable = frames.filter((f) => !kept.has(f.index)).length;
-  const focusedChosen = focused !== null && selection.includes(focused.index);
+  const focusedChosen = focused !== null && chosenSet.has(focused.index);
   const focusedKept = focused !== null && kept.has(focused.index);
   const spanMs = frames.length > 1 ? frames.at(-1)!.offsetMs - frames[0]!.offsetMs : 0;
   // Platform words for the modifier keys (⌘ on macOS, Ctrl elsewhere).
@@ -319,7 +321,7 @@ export function BurstReview({ burstId = readBurstId() }: { readonly burstId?: st
             data-testid="burst-strip"
           >
             {frames.map((frame, pos) => {
-              const chosen = selection.includes(frame.index);
+              const chosen = chosenSet.has(frame.index);
               const isKept = kept.has(frame.index);
               const gap = gaps.get(frame.index);
               return (

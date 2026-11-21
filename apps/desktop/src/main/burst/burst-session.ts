@@ -387,6 +387,19 @@ async function closeSession(s: BurstSession): Promise<void> {
   notify(s.id, "closed");
 }
 
+/** Quit-time close of one review window: delete its stills now. */
+export function discardBurstSync(burstId: string): void {
+  const s = sessions.get(burstId);
+  if (s === undefined) return;
+  sessions.delete(burstId);
+  try {
+    rmSync(s.rootDir, { recursive: true, force: true });
+  } catch {
+    // The boot temp sweep is the backstop.
+  }
+  notify(burstId, "closed");
+}
+
 /** App quit: delete every open burst's stills now (temp dirs only). */
 export function discardAllBurstsSync(): void {
   for (const s of sessions.values()) {

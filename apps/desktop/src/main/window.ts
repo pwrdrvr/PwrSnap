@@ -1552,11 +1552,15 @@ export function showBurstReviewWindow(
   window.on("close", (event) => {
     if (closeApproved || !guard.needsConfirm()) return;
     event.preventDefault();
-    void guard.confirm(window).then((ok) => {
-      if (!ok || window.isDestroyed()) return;
-      closeApproved = true;
-      window.close();
-    });
+    void guard
+      .confirm(window)
+      // A confirm that cannot be asked must not trap the window open.
+      .catch(() => true)
+      .then((ok) => {
+        if (!ok || window.isDestroyed()) return;
+        closeApproved = true;
+        window.close();
+      });
   });
   window.on("closed", () => {
     if (burstReviewWindows.get(burstId) === window) burstReviewWindows.delete(burstId);

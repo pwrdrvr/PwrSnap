@@ -38,6 +38,18 @@ describe("video frame actions", () => {
     expect(dispatchMock).toHaveBeenLastCalledWith("video:saveFrameAsSnap", { captureId: "cap", timeSec: 5 });
   });
 
+  test("an explicit time (the menu's frozen head) wins over the live head", async () => {
+    let live = 2.7;
+    registerVideoFramePosition("cap", () => live, 0);
+    dispatchMock.mockResolvedValue({ ok: true, value: { widthPx: 10, heightPx: 10, timeSec: 2.7 } });
+    // The menu opened at 2.7 and named it; playback moved on before the click.
+    live = 3.9;
+    await runVideoFrameAction("cap", "copy", 2.7);
+    expect(dispatchMock).toHaveBeenLastCalledWith("clipboard:copyVideoFrame", { captureId: "cap", timeSec: 2.7 });
+    await runVideoFrameAction("cap", "copyTime", 2.7);
+    expect(dispatchMock).toHaveBeenLastCalledWith("clipboard:copyText", { text: "0:02.700" });
+  });
+
   test("with no stage and no time, nothing is dispatched", async () => {
     await runVideoFrameAction("cap", "copy");
     expect(dispatchMock).not.toHaveBeenCalled();

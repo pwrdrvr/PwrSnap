@@ -99,11 +99,15 @@ export function formatFrameTime(sec: number): string {
   return `${minutes}:${seconds.toFixed(3).padStart(6, "0")}`;
 }
 
-/** The head to act on: live when a stage shows this capture, else `fallback`. */
-function actionTime(captureId: string, fallback?: number): number | null {
-  const entry = positions.get(captureId);
-  if (entry !== undefined) return entry.read();
-  return fallback ?? null;
+/**
+ * The head to act on. An explicit time wins: the right-click menu freezes
+ * the head it opened on and names it in its rows, so acting on a head the
+ * playing video has since moved past would copy a frame the menu never
+ * named. Without one (the rail's buttons), the stage's live head.
+ */
+function actionTime(captureId: string, atSec?: number): number | null {
+  if (atSec !== undefined) return atSec;
+  return positions.get(captureId)?.read() ?? null;
 }
 
 export async function runVideoFrameAction(

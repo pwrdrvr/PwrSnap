@@ -260,8 +260,8 @@
   color: var(--text-secondary);
 }
 .ps-burst__btn--ghost[aria-pressed="true"] {
-  box-shadow: inset 0 0 0 1px #ff6b5c;
-  color: #ff8b7f;
+  box-shadow: inset 0 0 0 1px var(--danger-border);
+  color: var(--danger-text);
 }
 .ps-burst__btn--primary {
   background: var(--accent);
@@ -270,7 +270,7 @@
 .ps-burst__error {
   margin: 0;
   padding: 8px 20px;
-  background: color-mix(in srgb, #ff6b5c 14%, var(--bg-sidebar));
+  background: var(--danger-soft);
   color: var(--text-primary);
   font: 500 12px/1.4 var(--font-sans);
 }

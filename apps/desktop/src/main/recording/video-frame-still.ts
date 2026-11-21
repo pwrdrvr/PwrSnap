@@ -24,7 +24,6 @@
 // those lanes so a purge never races the publish.
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
 import { mkdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import sharp from "sharp";
@@ -129,13 +128,7 @@ async function extractFrameStill(
   dir: string,
   finalPath: string
 ): Promise<string> {
-  if (existsSync(finalPath)) {
-    try {
-      if ((await stat(finalPath)).size > 0) return finalPath;
-    } catch {
-      // Fall through and extract again.
-    }
-  }
+  if (await hasBytes(finalPath)) return finalPath;
   if (record.legacy_src_path === null) {
     throw new Error(`video-frame-still: capture ${record.id} has no source path`);
   }

@@ -1347,15 +1347,13 @@ export function registerRecordingHandlers(): void {
       if (!persisted.ok) return persisted;
       log.info("video frame saved as snap", { captureId: record.id, snapId: persisted.value.id, timeSec: still.timeSec });
       return ok({ widthPx: still.widthPx, heightPx: still.heightPx, timeSec: still.timeSec, snapId: persisted.value.id });
-    } catch (cause) {
-      log.error("video:saveFrameAsSnap failed", {
-        captureId: record.id,
-        message: cause instanceof Error ? cause.message : String(cause)
-      });
+    } catch {
+      // ffmpeg's stderr carries absolute source paths: stable codes only.
+      log.error("video:saveFrameAsSnap failed", { captureId: record.id, code: "frame_extract_failed" });
       return err({
         kind: "render",
         code: "frame_extract_failed",
-        message: cause instanceof Error ? cause.message : String(cause)
+        message: "The frame could not be extracted from this recording."
       });
     } finally {
       if (tempDir !== null) await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);

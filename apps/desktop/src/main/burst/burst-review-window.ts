@@ -10,9 +10,11 @@
 import { app, dialog } from "electron";
 import { closeBurstReviewWindow, showBurstReviewWindow } from "../window";
 import { getMainLogger } from "../log";
+import { onSizzleQuitCancelled } from "../sizzle/sizzle-close-barrier";
 import {
   discardAllBurstsSync,
   discardBurst,
+  discardBurstSync,
   getBurstSessionView,
   onBurstSessionChange
 } from "./burst-session";
@@ -28,6 +30,11 @@ function wire(): void {
   wired = true;
   app.on("before-quit", () => {
     quitting = true;
+  });
+  // A quit can be called off (Sizzle's unsaved-changes Cancel). Left set,
+  // the flag would skip the confirm on every later close.
+  onSizzleQuitCancelled(() => {
+    quitting = false;
   });
   app.on("will-quit", () => discardAllBurstsSync());
   onBurstSessionChange((burstId, state) => {
@@ -60,8 +67,10 @@ export function openBurstReviewWindow(burstId: string): void {
     },
     // However the window went (confirmed close, quit, crash), its stills go.
     onClosed: () => {
+      // Only THIS burst: other review windows decide for their own stills
+      // (and will-quit sweeps whatever is left when the quit goes through).
       if (quitting) {
-        discardAllBurstsSync();
+        discardBurstSync(burstId);
         return;
       }
       void discardBurst(burstId).catch((cause: unknown) => {

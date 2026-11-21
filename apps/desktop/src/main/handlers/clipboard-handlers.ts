@@ -262,10 +262,6 @@ export function registerClipboardHandlers(): void {
     }
     try {
       const still = await ensureVideoFrameStill(record, req.timeSec);
-      const image = nativeImage.createFromPath(still.path);
-      if (image.isEmpty()) {
-        return err({ kind: "render", code: "decode_failed", message: "the extracted frame did not decode" });
-      }
       const namedPasteboardWritten = await writeNamedImageToPasteboard({
         pngPath: still.path,
         displayName: buildVideoFrameDisplayName({
@@ -276,7 +272,15 @@ export function registerClipboardHandlers(): void {
         captureId: record.id,
         preset: `frame-${Math.round(still.timeSec * 1000)}ms`
       });
-      if (!namedPasteboardWritten) await writeClipboardImage(image);
+      if (!namedPasteboardWritten) {
+        // Decoded only for this fallback: a full-resolution PNG decode is a
+        // synchronous main-thread stall the named-file path never needs.
+        const image = nativeImage.createFromPath(still.path);
+        if (image.isEmpty()) {
+          return err({ kind: "render", code: "decode_failed", message: "The extracted frame did not decode." });
+        }
+        await writeClipboardImage(image);
+      }
       notifyClipboardChanged();
       log.info("copied video frame to clipboard", {
         captureId: record.id,
@@ -286,15 +290,14 @@ export function registerClipboardHandlers(): void {
         namedPasteboardWritten
       });
       return ok({ widthPx: still.widthPx, heightPx: still.heightPx, timeSec: still.timeSec });
-    } catch (cause) {
-      log.error("video frame copy failed", {
-        captureId: record.id,
-        message: cause instanceof Error ? cause.message : String(cause)
-      });
+    } catch {
+      // ffmpeg's stderr carries absolute source paths: keep them out of the
+      // disk log and the renderer, like every other persist/extract path.
+      log.error("video frame copy failed", { captureId: record.id, code: "frame_extract_failed" });
       return err({
         kind: "render",
         code: "frame_extract_failed",
-        message: cause instanceof Error ? cause.message : String(cause)
+        message: "The frame could not be extracted from this recording."
       });
     }
   });

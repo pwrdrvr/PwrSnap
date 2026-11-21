@@ -390,6 +390,11 @@ export type RecordingState =
        * .liveAudioLevels`.
        */
       capabilities: RecordingCapabilities;
+      /** "burst" while a burst take runs (lossless stills, not a video).
+       *  Absent for an ordinary recording. */
+      output?: RecordingOutput | undefined;
+      /** Burst only: stills currently held in the ring. */
+      burstFrames?: number | undefined;
     }
   | { phase: "stopping"; sessionId: string }
   | { phase: "processing"; sessionId: string }
@@ -540,10 +545,57 @@ export type RecordingBackendCapabilities = {
     liveDisconnectDetection: boolean;
     midRecordingToggles: boolean;
   };
+  /** What a take can produce besides a video. Burst needs a backend that
+   *  writes stills at full resolution; a backend without it never offers
+   *  Burst in the selector. */
+  outputs: { burst: boolean };
   /** macOS content protection excludes the HUD from captured pixels. The
    * Windows gdigrab backend cannot exclude a window, so its HUD must be kept
    * outside region recordings and may appear in full-display recordings. */
   controllerExcludedFromCapture: boolean;
+};
+
+/**
+ * What a take produces. `video` is the ordinary recording. `burst` is a
+ * ring of lossless full-resolution stills (≤ `BURST_FPS` a second, only
+ * frames where the screen changed, the newest `BURST_MAX_FRAMES`), handed
+ * to the Burst Review window on Stop so the user keeps the ones they want.
+ */
+export type RecordingOutput = "video" | "burst";
+
+export const BURST_FPS = 10;
+export const BURST_MAX_FRAMES = 300;
+
+/** One still of a stopped burst, as the review window sees it. */
+export type BurstFrame = {
+  /** Capture-order index (stable; gaps mean the ring evicted frames). */
+  index: number;
+  /** When the frame was on screen (ISO-8601, ms precision). */
+  capturedAt: string;
+  /** Milliseconds after the first still the ring still holds. */
+  offsetMs: number;
+  widthPx: number;
+  heightPx: number;
+  /** `pwrsnap-screen://b/<burstId>/<index>` — served from the burst's own
+   *  temp directory while the session is open. */
+  url: string;
+  /** The same still scaled down for the filmstrip (JPEG, ≤ 360 px). A
+   *  strip of 300 full-size stills would decode gigabytes. */
+  thumbUrl: string;
+};
+
+export type BurstSessionView = {
+  burstId: string;
+  frames: BurstFrame[];
+  /** Frames the recorder wrote but the ring no longer holds (older than
+   *  the window it keeps). */
+  evictedFrames: number;
+  /** Frames dropped because the encoder fell behind. */
+  droppedFrames: number;
+  /** Indexes already kept as snaps (a partial keep can be retried). */
+  keptIndexes: number[];
+  sourceAppName: string | null;
+  devicePixelRatio: number;
 };
 
 /**
@@ -2863,7 +2915,7 @@ export function isQuickCaptureAction(value: unknown): value is QuickCaptureActio
  * policy is resolved in main from the persisted setting and never
  * trusts this echo (see `resolveQuickCaptureAction`).
  */
-export type SelectorTerminalAction = "snap" | "record";
+export type SelectorTerminalAction = "snap" | "record" | "burst";
 
 /**
  * How an interactive capture ended.
@@ -5521,6 +5573,8 @@ export type Commands = {
        *  from `settings.recording.videoCaptureCursor` (and the selector
        *  toggle override) before dispatching. */
       captureCursor?: boolean | undefined;
+      /** `burst` takes stills instead of a video (no audio, no camera). */
+      output?: RecordingOutput | undefined;
     };
     res: { sessionId: string };
   };
@@ -5530,7 +5584,28 @@ export type Commands = {
    * Routes the float-over to LOADED via the existing
    * `events:float-over:state` channel.
    */
-  "recording:stop": { req: Record<string, never>; res: { captureId: string } };
+  "recording:stop": {
+    req: Record<string, never>;
+    /** `captureId` for a video; `burstId` (and an empty `captureId`) for a
+     *  burst, whose stills wait in the review window. */
+    res: { captureId: string; burstId?: string | undefined };
+  };
+  /** The stills of a stopped burst, for the Burst Review window. */
+  "burst:get": { req: { burstId: string }; res: BurstSessionView };
+  /**
+   * Keep the chosen stills as ordinary snaps and delete the rest. Each kept
+   * snap is captured at its frame's time, tagged `burst`, and — with
+   * `stampTime` — starts with a removable text label giving that time and
+   * its offset from the first kept frame. Ends the session once every
+   * chosen frame is kept; a failure part way leaves the session open with
+   * `keptIndexes` saying what already landed.
+   */
+  "burst:keep": {
+    req: { burstId: string; frameIndexes: number[]; stampTime: boolean };
+    res: { captureIds: string[] };
+  };
+  /** Delete every still and end the session. Idempotent. */
+  "burst:discard": { req: { burstId: string }; res: void };
   /**
    * Cancel the active recording. Tears down temp files, broadcasts
    * `phase: "idle"`, and does NOT persist a Library row. Used by the

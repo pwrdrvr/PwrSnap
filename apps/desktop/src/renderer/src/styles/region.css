@@ -500,7 +500,8 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
   pointer-events: auto;
   cursor: default;
 }
-.region-hud[data-mode="record"] {
+.region-hud[data-mode="record"],
+.region-hud[data-mode="burst"] {
   border-color: color-mix(in srgb, var(--accent) 36%, transparent);
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--text-primary) 6%, transparent),
@@ -562,6 +563,22 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
   border-radius: 14px;
   background: color-mix(in srgb, var(--text-primary) 14%, transparent);
 }
+/* With Burst offered the rocker grows a middle third: Snap · Burst · Rec. */
+.region-hud--shutter .region-hud__mode[data-burst="true"] {
+  grid-template-columns: 1fr 1fr 1fr;
+  width: 106px;
+}
+.region-hud--shutter .region-hud__mode[data-burst="true"][data-mode="record"]::before {
+  transform: translateX(68px);
+}
+.region-hud--shutter .region-hud__mode[data-mode="burst"]::before {
+  transform: translateX(34px);
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+}
+.region-hud--shutter .region-hud__mode[data-mode="burst"] .region-hud__mode-btn[aria-pressed="true"] {
+  color: var(--accent-bright);
+}
 .region-hud--shutter .region-hud__mode[data-mode="record"]::before {
   transform: translateX(34px);
   background: color-mix(in srgb, var(--accent) 24%, transparent);
@@ -609,6 +626,17 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
   height: 36px;
   background: radial-gradient(circle at 35% 30%, #ffc27a 0%, var(--accent) 50%, #d8650f 100%);
   box-shadow: 0 0 22px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+/* Burst: the snap shutter in the accent ring — a run of stills. */
+.region-hud[data-mode="burst"] .region-hud__shutter {
+  box-shadow: inset 0 0 0 3px var(--accent);
+}
+.region-hud[data-mode="burst"] .region-hud__shutter > i {
+  width: 34px;
+  height: 34px;
+  box-shadow:
+    0 0 0 3px #000,
+    0 0 0 5px color-mix(in srgb, var(--accent) 70%, transparent);
 }
 .region-hud__shutter:disabled {
   opacity: 0.4;
@@ -687,6 +715,11 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
   background: currentColor;
 }
 .region-hud--clapperboard .region-hud__mode-btn--rec[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+  color: var(--accent-bright);
+}
+.region-hud--clapperboard .region-hud__mode-btn--burst[aria-pressed="true"] {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   box-shadow: inset 0 0 0 1px var(--accent-border);
   color: var(--accent-bright);

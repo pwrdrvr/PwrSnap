@@ -1,4 +1,5 @@
 import { AppDocumentWindow } from "./features/documents/AppDocumentWindow";
+import { BurstReview } from "./features/burst/BurstReview";
 import { Library } from "./features/library/Library";
 import { LocalAgentConsentWindow } from "./features/local-agents/LocalAgentConsentWindow";
 import { AppNoticeToast } from "./features/shared/AppNoticeToast";
@@ -40,7 +41,8 @@ type Stage =
   | "local-agent-consent"
   | "recording-controller"
   | "recording-frame"
-  | "permission-guide";
+  | "permission-guide"
+  | "burst-review";
 
 function readStage(): Stage {
   const hash = window.location.hash.replace(/^#/, "");
@@ -57,7 +59,8 @@ function readStage(): Stage {
     v === "local-agent-consent" ||
     v === "recording-controller" ||
     v === "recording-frame" ||
-    v === "permission-guide"
+    v === "permission-guide" ||
+    v === "burst-review"
   ) {
     return v;
   }
@@ -106,6 +109,7 @@ const TITLE_BY_STAGE: Record<Stage, string> = {
   "recording-controller": "PwrSnap Recording",
   "recording-frame": "PwrSnap Recording Frame",
   "permission-guide": "PwrSnap Permission Guide",
+  "burst-review": "PwrSnap Burst Review",
   document: `PwrSnap ${APP_DOCUMENT_TITLES[DOCUMENT_KIND ?? "changelog"]}`
 };
 document.title = TITLE_BY_STAGE[STAGE] ?? "PwrSnap";
@@ -165,6 +169,9 @@ export function App() {
     }
     if (STAGE === "permission-guide") {
       return <PermissionGuide />;
+    }
+    if (STAGE === "burst-review") {
+      return <BurstReview />;
     }
     if (STAGE === "local-agent-consent") {
       return <LocalAgentConsentWindow />;

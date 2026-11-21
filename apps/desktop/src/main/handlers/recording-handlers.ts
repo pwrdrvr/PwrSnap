@@ -305,9 +305,13 @@ export function validateRecordingStartRequest(
       "subject",
       "capabilities",
       "countdownSeconds",
-      "captureCursor"
+      "captureCursor",
+      "output"
     ])
   ) {
+    return invalid();
+  }
+  if (value.output !== undefined && value.output !== "video" && value.output !== "burst") {
     return invalid();
   }
 
@@ -384,6 +388,20 @@ export function validateRecordingStartRequest(
   if (
     value.captureCursor !== undefined &&
     typeof value.captureCursor !== "boolean"
+  ) {
+    return invalid();
+  }
+  // A burst is stills of one rectangle: no sound, no camera, and never a
+  // whole-display subject (the recorder sizes its stills from the rect).
+  // A burst request carrying any of those meant something else; refuse it
+  // rather than quietly drop half of it.
+  if (
+    value.output === "burst" &&
+    (subject.kind === "display" ||
+      capabilities.systemAudio !== false ||
+      capabilities.microphone !== false ||
+      capabilities.camera !== undefined ||
+      capabilities.microphoneDevice !== undefined)
   ) {
     return invalid();
   }
@@ -883,6 +901,11 @@ export function registerRecordingHandlers(): void {
     // interactive callers surface the rejection with recovery
     // instructions. The selector's source chips make this rare: they
     // show the grant state, and offer it, before the user commits.
+    if (request.output === "burst" && !recordingBackendCapabilities().outputs.burst) {
+      return err(
+        recordingError("burst_unsupported", "Burst capture is not available on this platform yet.")
+      );
+    }
     const blocked = await guardRecordingAttempt(request.capabilities);
     if (blocked) return blocked;
     try {
@@ -890,7 +913,8 @@ export function registerRecordingHandlers(): void {
         subject: request.subject,
         capabilities: request.capabilities,
         captureCursor: request.captureCursor,
-        countdownSeconds: request.countdownSeconds ?? 3
+        countdownSeconds: request.countdownSeconds ?? (request.output === "burst" ? 0 : 3),
+        ...(request.output === "burst" ? { output: "burst" as const } : {})
       });
       return ok({ sessionId: session.sessionId });
     } catch (cause) {

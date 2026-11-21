@@ -73,6 +73,9 @@ const PREFIX_OWNERS: ReadonlyArray<readonly [string, CommandOwner]> = [
   // auto-update (the always-resident process).
   ["capture:", "agent"],
   ["recording:", "agent"],
+  // Burst Review: the stills live in the recorder owner's temp dir, and
+  // its window is opened by that process on Stop.
+  ["burst:", "agent"],
   // video:* (export/presetMetrics/prepareDrag/setDefaultRange) lives
   // in recording-handlers with the recorder that produced the file —
   // the library grid forwards its video chips' work to the agent.

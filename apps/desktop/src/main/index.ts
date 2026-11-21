@@ -134,6 +134,7 @@ import {
   registerLibraryWindowHandlers
 } from "./handlers/library-handlers";
 import { registerRecordingHandlers } from "./handlers/recording-handlers";
+import { registerBurstHandlers } from "./handlers/burst-handlers";
 import { registerDerivedCacheCleanupOwner } from "./handlers/derived-cache-handlers";
 import {
   disposeRecordingController,
@@ -2153,6 +2154,7 @@ export function bootstrapApp(): void {
       registerClipboardHandlers();
       registerFloatOverHandlers();
       registerRecordingHandlers();
+      registerBurstHandlers();
       registerSizzleTimelineRenderHandlers();
       // Renderer-dispatchable entry into the interactive video-record
       // flow (selector → recording:start), used by the tray's Record

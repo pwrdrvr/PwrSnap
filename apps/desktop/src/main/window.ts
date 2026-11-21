@@ -244,6 +244,8 @@ const APP_DOCUMENT_WINDOW_WIDTH = 920;
 const APP_DOCUMENT_WINDOW_HEIGHT = 760;
 const LOGS_WINDOW_WIDTH = 1040;
 const LOGS_WINDOW_HEIGHT = 760;
+const BURST_REVIEW_WINDOW_WIDTH = 1280;
+const BURST_REVIEW_WINDOW_HEIGHT = 820;
 const LIBRARY_WINDOW_STATE_FILENAME = "library-window-state.json";
 const LIBRARY_WINDOW_STATE_DEBOUNCE_MS = 250;
 
@@ -278,6 +280,8 @@ let libraryWindow: BrowserWindow | null = null;
 let settingsWindow: BrowserWindow | null = null;
 let sizzleWindow: BrowserWindow | null = null;
 let logsWindow: BrowserWindow | null = null;
+/** One Burst Review window per open burst, keyed by burst id. */
+const burstReviewWindows = new Map<string, BrowserWindow>();
 const appDocumentWindows = new Map<AppDocumentKind, BrowserWindow>();
 
 type RendererStage =
@@ -285,6 +289,7 @@ type RendererStage =
   | "float-over"
   | "settings"
   | "logs"
+  | "burst-review"
   | "document"
   | "sizzle"
   | "recording-controller"
@@ -1369,6 +1374,7 @@ export function listOpenAppWindows(): OpenAppWindow[] {
     [settingsWindow, "Settings"],
     [sizzleWindow, "Sizzle Reels"],
     [logsWindow, "Logs"],
+    ...[...burstReviewWindows.values()].map((w): [BrowserWindow, string] => [w, "Burst Review"]),
     ...APP_DOCUMENT_KINDS.map(
       (kind): [BrowserWindow | undefined, string] => [
         appDocumentWindows.get(kind),
@@ -1397,6 +1403,7 @@ function isAppDestinationWindow(window: BrowserWindow): boolean {
     return true;
   }
   for (const doc of appDocumentWindows.values()) if (doc === window) return true;
+  for (const review of burstReviewWindows.values()) if (review === window) return true;
   return false;
 }
 
@@ -1492,6 +1499,80 @@ export function showAppDocumentWindow(
   });
 
   return window;
+}
+
+/**
+ * Open (or focus) the Burst Review window for one stopped burst. Lives in
+ * the process that owns the recorder and the burst's stills (the agent in
+ * split mode). `onClose` decides whether the window may close: it returns
+ * a promise of `true` to let it go, `false` to keep it open.
+ */
+export function showBurstReviewWindow(
+  burstId: string,
+  guard: {
+    /** Synchronous: must this close be confirmed? (Never while quitting —
+     *  a prevented close aborts the app's quit.) */
+    needsConfirm: () => boolean;
+    /** Ask; resolves true to let the window close. */
+    confirm: (window: BrowserWindow) => Promise<boolean>;
+    /** The window is gone, however it went. */
+    onClosed: () => void;
+  }
+): BrowserWindow {
+  const existing = burstReviewWindows.get(burstId);
+  if (existing !== undefined && !existing.isDestroyed()) {
+    if (existing.isMinimized()) existing.restore();
+    if (!existing.isVisible()) existing.show();
+    existing.focus();
+    return existing;
+  }
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const width = Math.min(BURST_REVIEW_WINDOW_WIDTH, display.workArea.width - 80);
+  const height = Math.min(BURST_REVIEW_WINDOW_HEIGHT, display.workArea.height - 80);
+  const position = centeredWindowBoundsOnDisplay(width, height, display);
+  const window = new BrowserWindow({
+    ...linuxSquareCorners(),
+    x: position.x,
+    y: position.y,
+    width,
+    height,
+    minWidth: 720,
+    minHeight: 520,
+    show: false,
+    title: "PwrSnap Burst Review",
+    ...platformWindowChrome("hidden"),
+    backgroundColor: getStartupBackgroundColor(),
+    webPreferences: themedWebPreferences()
+  });
+  burstReviewWindows.set(burstId, window);
+  loadRenderer(window, rendererTarget("burst-review", `burst=${encodeURIComponent(burstId)}`));
+  showWindowWhenReady(window, { label: "burst-review" });
+
+  let closeApproved = false;
+  window.on("close", (event) => {
+    if (closeApproved || !guard.needsConfirm()) return;
+    event.preventDefault();
+    void guard.confirm(window).then((ok) => {
+      if (!ok || window.isDestroyed()) return;
+      closeApproved = true;
+      window.close();
+    });
+  });
+  window.on("closed", () => {
+    if (burstReviewWindows.get(burstId) === window) burstReviewWindows.delete(burstId);
+    guard.onClosed();
+  });
+  window.webContents.on("render-process-gone", (_event, details) => {
+    log.warn("burst review renderer crashed", { id: window.id, reason: details.reason });
+  });
+  return window;
+}
+
+/** Close a burst's review window without asking (the session ended). */
+export function closeBurstReviewWindow(burstId: string): void {
+  const window = burstReviewWindows.get(burstId);
+  burstReviewWindows.delete(burstId);
+  if (window !== undefined && !window.isDestroyed()) window.destroy();
 }
 
 /** Open or focus the library process's singleton live Logs window. */

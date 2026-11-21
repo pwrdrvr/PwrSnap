@@ -40,6 +40,7 @@ type ModePayload = {
   };
   quickCaptureAction?: "ask" | "snap" | "record";
   hudStyle?: "shutter" | "clapperboard";
+  burstOffered?: boolean;
   invocationId?: string;
   generation?: number;
 };
@@ -3016,6 +3017,125 @@ describe("U7 — recording source chips", () => {
   });
 });
 
+
+describe("U8 — Burst", () => {
+  // Burst is the chooser's third mode: a run of stills, no sound. It rides
+  // Record's rules (offered only where the chooser is, one rectangle only)
+  // and adds one of its own: it is offered only where main says the
+  // backend can take one. It must never open the microphone.
+  const getUserMedia = vi.fn();
+
+  beforeEach(() => {
+    getUserMedia.mockReset();
+    getUserMedia.mockResolvedValue({ getTracks: () => [], getAudioTracks: () => [] });
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia, enumerateDevices: vi.fn(async () => []) }
+    });
+  });
+
+  afterEach(() => {
+    Reflect.deleteProperty(navigator, "mediaDevices");
+  });
+
+  function burstModeButton(): HTMLElement | null {
+    const el = container?.querySelector('[data-testid="region-hud-mode-burst"]');
+    return el instanceof HTMLElement ? el : null;
+  }
+
+  test("not offered: no Burst button, B unbound, and no B in the legend", async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "ask" });
+    await drawRect();
+    expect(burstModeButton()).toBeNull();
+    await keyDown("b");
+    expect(hudButton("region-hud-capture").dataset.action).toBe("snap");
+    expect(container?.querySelector('[data-testid="region-hint-burst"]')).toBeNull();
+    const payload = await commitAndRead();
+    expect(payload).not.toHaveProperty("action");
+  });
+
+  test("the snap-only policy offers no Burst even where the backend could", async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "snap", burstOffered: true });
+    await drawRect();
+    expect(burstModeButton()).toBeNull();
+    await keyDown("b");
+    const payload = await commitAndRead();
+    expect(payload).not.toHaveProperty("action");
+  });
+
+  test("B chooses Burst without committing; ↵ bursts with the cursor and no sources", async () => {
+    await mountScene({
+      mode: "auto",
+      quickCaptureAction: "ask",
+      burstOffered: true,
+      sources: { microphone: true, systemAudio: true }
+    });
+    await drawRect();
+    const modes = [...(container?.querySelectorAll(".region-hud__mode-btn") ?? [])].map(
+      (b) => (b as HTMLElement).dataset.testid
+    );
+    expect(modes).toEqual(["region-hud-mode-snap", "region-hud-mode-burst", "region-hud-mode-record"]);
+    await keyDown("b");
+    expect(submitRegion).not.toHaveBeenCalled();
+    expect(burstModeButton()?.getAttribute("aria-pressed")).toBe("true");
+    expect(hudButton("region-hud-capture").dataset.action).toBe("burst");
+    expect(hudButton("region-hud-capture").getAttribute("aria-label")).toContain("burst");
+    // The cursor chip is there; sound is not.
+    expect(container?.querySelector('[data-testid="region-hud-cursor"]')).not.toBeNull();
+    expect(container?.querySelector('[data-testid="region-hud-mic"]')).toBeNull();
+    expect(container?.querySelector('[data-testid="region-hud-system-audio"]')).toBeNull();
+    await keyDown("m");
+    await keyDown("c");
+    const payload = await commitAndRead();
+    expect(payload.action).toBe("burst");
+    expect(payload.captureCursor).toBe(false);
+    expect(payload).not.toHaveProperty("sources");
+    expect(payload.rect).toEqual({ x: 100, y: 100, w: 200, h: 200 });
+    // Burst never earned the microphone.
+    expect(getUserMedia).not.toHaveBeenCalled();
+  });
+
+  test("S goes back to Snap, R on to Record", async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "ask", burstOffered: true });
+    await drawRect();
+    await keyDown("b");
+    await keyDown("s");
+    expect(hudButton("region-hud-capture").dataset.action).toBe("snap");
+    await keyDown("b");
+    await keyDown("r");
+    expect(hudButton("region-hud-capture").dataset.action).toBe("record");
+    await keyDown("b");
+    expect(hudButton("region-hud-capture").dataset.action).toBe("burst");
+  });
+
+  test("two picks refuse Burst, like Record: ↵ snaps the pick set", async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "ask", burstOffered: true });
+    await clickWindow(WIN);
+    await clickWindow(WIN_B, { metaKey: true });
+    expect(document.body.dataset.pickCount).toBe("2");
+    expect(burstModeButton()?.getAttribute("aria-disabled")).toBe("true");
+    await keyDown("b");
+    await clickEl(burstModeButton() as HTMLElement);
+    expect(hudButton("region-hud-capture").dataset.action).toBe("snap");
+    const payload = await commitAndRead();
+    expect(payload).not.toHaveProperty("action");
+  });
+
+  test("a Burst chosen in one show does not carry into the next", async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "ask", burstOffered: true });
+    await drawRect();
+    await keyDown("b");
+    await keyDown("Enter");
+    expect(submitRegion.mock.calls[0]?.[0].action).toBe("burst");
+    submitRegion.mockClear();
+    // Next show on the same pre-warmed window, from a backend with no burst.
+    await emitMode({ mode: "auto", quickCaptureAction: "ask", burstOffered: false });
+    await drawRect();
+    expect(burstModeButton()).toBeNull();
+    const payload = await commitAndRead();
+    expect(payload).not.toHaveProperty("action");
+  });
+});
 
 describe("selector result invocation identity", () => {
   test("echoes the per-show frozen URL on cancel and resets it before a reused selector commits", async () => {

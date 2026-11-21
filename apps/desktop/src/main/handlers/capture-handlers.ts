@@ -455,12 +455,14 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     // records their screen when they had asked it not to.
     const quickCaptureAction = settings?.recording.quickCaptureAction ?? "snap";
     const recordingSources = recordingBackendCapabilities().sources;
+    const burstOffered = recordingBackendCapabilities().outputs.burst;
     const selection = await pickRegion({
       mode: selectorMode,
       keepPwrSnapChrome,
       protectWindowIds,
       latencyTrace: trace,
       cameraOffered: recordingSources.webcam,
+      burstOffered,
       quickCaptureAction,
       ...(settings !== null ? { hudStyle: settings.recording.selectorHud } : {}),
       // Seed the selector's `C` toggle from the persisted default. Only
@@ -554,8 +556,10 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       getRecordingState().phase === "failed" ? "awaiting_retry_or_dismiss" : null;
     const recorderUnavailable =
       recorderBusy ?? (isRecordingActive() ? "already_recording" : null);
-    const wantsRecord =
-      resolveQuickCaptureAction(quickCaptureAction, selection.action) === "record";
+    const resolvedAction = resolveQuickCaptureAction(quickCaptureAction, selection.action, burstOffered);
+    // A burst is a recorder take too (stills instead of a video), so it
+    // shares the recorder's availability check and the same handoff.
+    const wantsRecord = resolvedAction === "record" || resolvedAction === "burst";
     if (wantsRecord && recorderUnavailable !== null) {
       log.warn("capture:interactive falling back to a still — recorder unavailable", {
         mode,
@@ -577,7 +581,8 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       // here so it never becomes an unhandled rejection.
       void startRecordingFromSelection(
         selection,
-        settings?.recording ?? FALLBACK_RECORDING_DEFAULTS
+        settings?.recording ?? FALLBACK_RECORDING_DEFAULTS,
+        resolvedAction === "burst" ? "burst" : "video"
       ).catch((cause) => {
         log.warn("interactive record handoff failed", {
           message: cause instanceof Error ? cause.message : String(cause)

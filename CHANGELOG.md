@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.3.6 - 2026-11-21
+
+- Credential Storage - Improved how PwrSnap reads and saves API keys and other
+  credentials so keychain operations can run without blocking the app.
+- Linux Credential Storage - Fixed secure credential storage on desktops where
+  Chromium misses the system keyring. PwrSnap can now detect and use an
+  available system keyring on those desktops.
+
 ## v1.3.5 - 2026-11-18
 
 Apple Foundation Models are now an option for AI enrichment on Macs with Apple

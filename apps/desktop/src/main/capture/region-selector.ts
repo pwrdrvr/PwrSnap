@@ -1,4 +1,4 @@
-import { RecordingCameraSchema, RecordingMicrophoneSchema } from "@pwrsnap/shared";
+import { isSelectorTerminalAction, RecordingCameraSchema, RecordingMicrophoneSchema } from "@pwrsnap/shared";
 // Pre-warmed per-display region-selector windows. Cold BrowserWindow
 // creation is 150–400ms; the ⌘⇧P → first-paint budget is 120ms. So
 // we create one window per display at boot (`show: false`), rebuild
@@ -30,7 +30,8 @@ import type {
   QuickCaptureAction,
   RecordingCapabilities,
   RecordingDeviceDefaults,
-  SelectorHudStyle
+  SelectorHudStyle,
+  SelectorTerminalAction
 } from "@pwrsnap/shared";
 import { linuxSquareCorners } from "../linux-window-corners";
 import { getMainLogger } from "../log";
@@ -381,7 +382,7 @@ type SelectorOutcome =
        *  always explicit about both sources. */
       sources?: RecordingCapabilities;
       /** The terminal action the user chose at commit (issue #75).
-       *  Present ONLY for `"record"`; a snap commit omits it and every
+       *  Present ONLY for `"record"` and `"burst"`; a snap commit omits it and every
        *  reader treats a missing value as `"snap"`, so a pre-chooser
        *  call site's payload is unchanged.
        *
@@ -389,7 +390,7 @@ type SelectorOutcome =
        *  affordance the user reached for. `resolveQuickCaptureAction`
        *  re-derives the actual action against the persisted policy, so a
        *  `"record"` main never offered cannot take effect. */
-      action?: "snap" | "record" | "burst";
+      action?: SelectorTerminalAction;
       /** Multi-window pick. One entry per picked window's EXTENT, in
        *  the same GLOBAL logical-px space as `rect` (the display offset
        *  is applied to both together, below).
@@ -2362,7 +2363,7 @@ function isSelectorPayload(value: unknown): value is {
   fullWindow?: boolean;
   captureCursor?: boolean;
   sources?: RecordingCapabilities;
-  action?: "snap" | "record" | "burst";
+  action?: SelectorTerminalAction;
   extents?: { x: number; y: number; w: number; h: number }[];
   outputMode?: "windows" | "rectangle";
 } {
@@ -2407,7 +2408,7 @@ function isSelectorPayload(value: unknown): value is {
       return false;
     }
   }
-  if (v.action !== undefined && v.action !== "snap" && v.action !== "record") {
+  if (v.action !== undefined && !isSelectorTerminalAction(v.action)) {
     return false;
   }
   if (v.extents !== undefined) {

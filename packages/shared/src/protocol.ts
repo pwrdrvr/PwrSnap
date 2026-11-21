@@ -2915,7 +2915,17 @@ export function isQuickCaptureAction(value: unknown): value is QuickCaptureActio
  * policy is resolved in main from the persisted setting and never
  * trusts this echo (see `resolveQuickCaptureAction`).
  */
-export type SelectorTerminalAction = "snap" | "record" | "burst";
+export const SELECTOR_TERMINAL_ACTIONS = ["snap", "record", "burst"] as const;
+export type SelectorTerminalAction = (typeof SELECTOR_TERMINAL_ACTIONS)[number];
+
+/** Main's check on a selector commit's `action`, from the same list the
+ *  renderer's chooser commits — a second hand-kept list is how Burst once
+ *  reached main and was read as a cancel. */
+export function isSelectorTerminalAction(value: unknown): value is SelectorTerminalAction {
+  return (
+    typeof value === "string" && (SELECTOR_TERMINAL_ACTIONS as readonly string[]).includes(value)
+  );
+}
 
 /**
  * How an interactive capture ended.

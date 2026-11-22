@@ -1,8 +1,9 @@
 # Codex still sizing experiment
 
-This study compares the 1,024 px PwrSnap WebP derivative with a display-point
-candidate and larger controls. The experiment lives in the test project.
-PwrSnap ships the same 1,024 px default and format routing.
+This study compares the 1,024 px PwrSnap WebP derivative with display-point
+sizing and larger controls. A follow-up tests the proposed Balanced policy
+at a 2,400 px ceiling. The experiment lives in the test project. The shipping
+default is 1,024 px.
 
 ## Reproduce the batch
 
@@ -29,8 +30,11 @@ node apps/desktop/src/main/ai/__tests__/still-sizing/report.mjs /path/to/results
 Use a currently signed-in Codex file profile with Luna access. The harness
 uses a temporary copy of the auth file, a fresh configuration, scratch SQLite,
 generated PNGs and a dedicated enrichment jail. The output path must be new.
-The live run is opt-in and issues up to 22 sequential real model turns, or one
-with `PWRSNAP_SIZING_SMOKE=1`. `PWRSNAP_SIZING_CODEX` selects the binary if needed.
+The initial live batch issues up to 22 sequential turns. Set
+`PWRSNAP_SIZING_BATCH=balanced` in the same command, with a new results path,
+for the eight-turn 2,400 px batch. Use `PWRSNAP_SIZING_SMOKE=1` for only the
+first turn of the selected batch. `PWRSNAP_SIZING_CODEX` selects the binary if
+needed.
 The harness closes the app server and removes its private scratch, credentials
 and raw trace in teardown. It writes only the measured fields and synthetic
 captions to the results file.
@@ -51,8 +55,8 @@ Codex's rollout trace captures the model-visible Responses request. Every
 measured generation trace contained a WebSocket `response.create` payload with
 one inline image and no explicit image `detail`. The harness decodes that
 image, reads its dimensions and compares its digest with the prepared
-derivative. All 22 upstream images were byte-identical, including the 2,880 px
-arm. Each fixture had the same hash of emitted instruction and input text
+derivative. All 30 upstream images were byte-identical, including the 2,880 px
+control and the 2,400 px Balanced arms. Each fixture had the same hash of emitted instruction and input text
 across all arms after normalizing the local image path. This records
 client-side delivery. It does not expose the provider's internal raster.
 [Codex inference trace](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/client.rs#L2267-L2337)
@@ -76,23 +80,25 @@ client-side delivery. It does not expose the provider's internal raster.
   minimum of 1 px. Even 2× fixtures halve exactly when they fit. The
   1,351 × 1,801 crop produces 675 × 900. Trusted fractional DPR is supported.
   Missing or invalid DPR uses a divisor of 1 under the same bounds.
-- Limit to **1,400,000 pixels**, a **2,048 px long edge** and **1,000,000
-  encoded bytes**. Never upscale. If the point-size raster exceeds the
-  area or edge limit, search for the largest fitting integer long edge
-  using the rounded raster dimensions. An additional integer divisor
-  would downsample a 2,416 × 2,416 2× source to about 805² instead of
-  1,183². Encode from the source in one resize pass. The existing encoder
-  rejects byte overruns and cleans scratch. A shipping follow-up should
-  validate the encoded dimensions too and define how to handle rare byte
-  overruns using real captures.
-- Keep **Balanced** at today's 1,024 px. If a larger study justifies a
-  separately reviewable **Higher detail** setting, use the bounded policy
-  and retain at least the Balanced dimensions for small 2× crops. Use
-  a bounded raster-only mode where density provenance is unavailable.
-  Leave pixel, edge and byte caps internal. Full resolution and the
-  near-point arm are controls. The study does not establish a shipping
-  opt-in, and changes to version routing or Apple's offline JPEG would
-  need separate evidence.
+- The initial display-point arm used 1,400,000 pixels and a 2,048 px edge.
+  The proposed **Balanced** limits are **3,840,000 pixels**, a **2,400 px
+  long edge**, and **1,000,000 encoded bytes**. The area bound admits a
+  2,400 × 1,600 desktop and also limits squarer captures. At 2×, a
+  4,480 × 2,520 iMac panel would send 2,240 × 1,260. A 5,120 × 2,880
+  Studio Display would send 2,400 × 1,350 after applying the edge cap.
+  [iMac display specs](https://www.apple.com/imac/compare/?modelList=iMac-24_4%2CiMac-24_2%2CMac-mini-M2) ·
+  [Studio Display specs](https://support.apple.com/en-ca/111890)
+- If the display-point raster exceeds the area or edge limit, choose
+  the largest fitting integer long edge using the rounded raster
+  dimensions. Encode from the original raster in one proportional resize.
+  The existing encoder rejects byte overruns and cleans scratch. A
+  production follow-up should verify final encoded dimensions and choose
+  how to handle the byte ceiling on photo-heavy captures.
+- Keep the pixel, edge and byte caps internal. A future Higher detail
+  mode would need evidence of incremental benefit beyond Balanced.
+  With untrusted density, apply the caps directly to the source raster.
+  The experiments cover WebP stills on one Codex version. Older-version
+  transport and the offline Apple JPEG path remain outside this change.
 
 Source audit in [capture handlers](../../../handlers/capture-handlers.ts),
 [bundle persistence](../../../persistence/bundle-store.ts),
@@ -180,3 +186,30 @@ console was approximately $0.000081 for points or $0.000557 for full.
 | release/full | 2880×1866 / 101438 | 2880×1866 / 101438 | 6372 | 12709 [12708–12709] | 2176 [0–4352] | 157 [155–159] | 1.154 [0.959–1.348] | 133.6 [132.3–135.0] | 5.18 [5.10–5.27] | 4.28 [4.26–4.29] | 5.33 [5.24–5.41] | 2/2 | 4/8 |
 
 Total equivalent standard API cost for 22 turns: $0.01567.
+
+
+## Balanced at 2,400 px
+
+[balanced-results.jsonl](balanced-results.jsonl) records two repeats per
+fixture and arm, using the same model, effort and trace method as the initial
+batch. Balanced preserved the native 1× inventory fixture (2,400 × 1,600).
+It reduced the 5,120 × 2,880 2× routing fixture to 2,400 × 1,350. The source
+and prompt were fixed within each fixture. All eight images arrived with
+the same bytes the harness prepared.
+
+Balanced surfaced the decisive state in three of four descriptions
+(versus zero of four at baseline). Exact status recall was two of four
+because one description paraphrased the stocktake lock. Exact secondary
+facts rose from zero to seven of 16. One routing title called an unverified
+manifest a mismatch, while its description correctly said unverified.
+The matched input-token increase was approximately 3,657 on the 1× panel
+and 3,179 on the 5K panel. Wall times overlapped at two repeats per arm.
+
+| Fixture / arm | Prepared px / B | Upstream px / B | Patches × 1.2 | Input | Cached | Output | Est. USD × 1,000 | Prep ms | Model s | Upstream s | Wall s | Exact status | Exact facts |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| inventory/baseline | 1024×683 / 20768 | 1024×683 / 20768 | 845 | 7181 [7180–7181] | 2176 [0–4352] | 238 [224–251] | 0.641 [0.452–0.830] | 40.2 [39.7–40.7] | 6.48 [6.25–6.71] | 5.26 [4.88–5.63] | 6.53 [6.30–6.76] | 0/2 | 0/8 |
+| routing/baseline | 1024×576 / 16498 | 1024×576 / 16498 | 692 | 7028 [7027–7028] | 0 [0–0] | 234 [224–243] | 0.820 [0.815–0.824] | 70.5 [63.4–77.6] | 5.90 [5.78–6.03] | 4.96 [4.77–5.15] | 6.00 [5.89–6.11] | 0/2 | 0/8 |
+| inventory/balanced | 2400×1600 / 85064 | 2400×1600 / 85064 | 4500 | 10837 [10837–10837] | 0 [0–0] | 158 [154–161] | 1.162 [1.161–1.164] | 111.7 [102.9–120.5] | 5.63 [5.49–5.77] | 4.53 [4.23–4.84] | 5.76 [5.63–5.90] | 0/2 | 3/8 |
+| routing/balanced | 2400×1350 / 73852 | 2400×1350 / 73852 | 3870 | 10207 [10206–10208] | 0 [0–0] | 163 [160–166] | 1.102 [1.101–1.104] | 142.2 [141.9–142.5] | 5.97 [5.85–6.09] | 4.65 [4.59–4.71] | 6.12 [6.00–6.23] | 2/2 | 4/8 |
+
+Total equivalent standard API cost for 8 turns: $0.00745.

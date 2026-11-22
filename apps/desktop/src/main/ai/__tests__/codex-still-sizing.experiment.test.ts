@@ -14,8 +14,10 @@ import { AiEnrichmentBudget } from "../enrichment-budget";
 import { CaptureEnrichmentClient, type CaptureEnrichmentResponse } from "../capture-enrichment-client";
 import { closeCodexAgentPool } from "../codex-agent-pool";
 import * as media from "../enrichment-image";
-import { type Arm, type Fixture, fixtures, renderFixture } from "./still-sizing/fixtures";
-import { DISPLAY_POINT_LIMITS, displayPointEdge } from "./still-sizing/policy";
+import { type Arm, type Fixture, balancedFixtures, initialFixtures, renderFixture } from "./still-sizing/fixtures";
+import {
+  BALANCED_DISPLAY_POINT_LIMITS, INITIAL_DISPLAY_POINT_LIMITS, displayPointEdge
+} from "./still-sizing/policy";
 import { readTransport, sha256 } from "./still-sizing/trace";
 
 const electron = vi.hoisted(() => ({ root: "" }));
@@ -34,7 +36,8 @@ function armEdge(fixture: Fixture, arm: Arm): number | undefined {
   const { width_px: width, height_px: height, device_pixel_ratio: dpr } = stored;
   switch (arm) {
     case "baseline": return undefined;
-    case "points": return displayPointEdge(width, height, dpr);
+    case "points": return displayPointEdge(width, height, dpr, INITIAL_DISPLAY_POINT_LIMITS);
+    case "balanced": return displayPointEdge(width, height, dpr, BALANCED_DISPLAY_POINT_LIMITS);
     case "near-points": return 1434; // Same patch grid, ~0.8% fewer pixels than 1440 × 933.
     case "large": return 1920;
     case "full": return Math.max(width, height);
@@ -45,6 +48,10 @@ test.skipIf(!live)("Codex live still sizing measurement", async () => {
   const auth = process.env.PWRSNAP_SIZING_AUTH_FILE;
   const output = process.env.PWRSNAP_SIZING_RESULTS;
   const command = process.env.PWRSNAP_SIZING_CODEX ?? "codex";
+  const batch = process.env.PWRSNAP_SIZING_BATCH ?? "initial";
+  if (batch !== "initial" && batch !== "balanced") throw new Error("Expected initial or balanced batch");
+  const fixtures: readonly Fixture[] = batch === "balanced" ? balancedFixtures : initialFixtures;
+  const limits = batch === "balanced" ? BALANCED_DISPLAY_POINT_LIMITS : INITIAL_DISPLAY_POINT_LIMITS;
   if (!auth || !output || !isAbsolute(auth) || !isAbsolute(output)) {
     throw new Error("Set absolute PWRSNAP_SIZING_AUTH_FILE and PWRSNAP_SIZING_RESULTS paths");
   }
@@ -114,7 +121,7 @@ test.skipIf(!live)("Codex live still sizing measurement", async () => {
         const image = await prepare(path, {
           ...options,
           tempRoot: root,
-          ...(maxEdgePx === undefined ? {} : { maxEdgePx, maxBytes: DISPLAY_POINT_LIMITS.maxBytes })
+          ...(maxEdgePx === undefined ? {} : { maxEdgePx, maxBytes: limits.maxBytes })
         });
         const ms = performance.now() - start;
         prepared = { path: image.path, hash: sha256(await readFile(image.path)), ms };
@@ -146,8 +153,8 @@ test.skipIf(!live)("Codex live still sizing measurement", async () => {
         expect([derivative.sourceWidthPx, derivative.sourceHeightPx]).toEqual([
           fixture.source.width, fixture.source.height
         ]);
-        if (arm === "points") {
-          expect(derivative.sentWidthPx! * derivative.sentHeightPx!).toBeLessThanOrEqual(DISPLAY_POINT_LIMITS.maxPixels);
+        if (arm === "points" || arm === "balanced") {
+          expect(derivative.sentWidthPx! * derivative.sentHeightPx!).toBeLessThanOrEqual(limits.maxPixels);
         }
         const transport = await readTransport(traceRoot, caption.threadId);
         expect(transport.model).toBe(MODEL);

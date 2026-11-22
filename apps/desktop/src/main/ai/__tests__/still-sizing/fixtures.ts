@@ -1,6 +1,6 @@
 import sharp from "sharp";
 
-export const fixtures = [
+export const initialFixtures = [
   {
     id: "release",
     panel: "Release Console",
@@ -42,6 +42,36 @@ export const fixtures = [
   }
 ] as const;
 
+export const balancedFixtures = [
+  {
+    id: "inventory",
+    panel: "Inventory Console",
+    surface: "Warehouse reconciliation",
+    source: { width: 2400, height: 1600, dpr: 1 },
+    pointSize: { width: 2400, height: 1600 },
+    offset: [0, 0],
+    status: "STOCKTAKE LOCKED",
+    facts: ["COUNT VARIANCE OPEN", "aisle P4-A2", "ticket IV-603", "14 cartons unverified"],
+    section: "Stocktake exception · current selection",
+    light: false,
+    arms: ["baseline", "balanced"]
+  },
+  {
+    id: "routing",
+    panel: "Routing Console",
+    surface: "Dispatch and lane verification",
+    source: { width: 5120, height: 2880, dpr: 2 },
+    pointSize: { width: 2560, height: 1440 },
+    offset: [0, 0],
+    status: "DISPATCH HELD",
+    facts: ["MANIFEST UNVERIFIED", "route R2-K8", "load L-517", "3 items unmatched"],
+    section: "Dispatch exception · current selection",
+    light: true,
+    arms: ["baseline", "balanced"]
+  }
+] as const;
+
+export const fixtures = [...initialFixtures, ...balancedFixtures] as const;
 export type Fixture = (typeof fixtures)[number];
 export type Arm = Fixture["arms"][number];
 
@@ -58,9 +88,11 @@ export async function renderFixture(fixture: Fixture, path: string): Promise<voi
   const alertY = pointsHigh - 201;
   const rows = Array.from({ length: Math.floor((alertY - 137) / 22) }, (_, i) => {
     const y = 141 + i * 22;
+    const time = i + 10;
+    const check = `${17 + Math.floor(time / 60)}:${String(time % 60).padStart(2, "0")}`;
     return `<rect x="28" y="${y - 12}" width="${contentWidth}" height="21" fill="${i % 2 ? panel : fill}"/>
       <text x="42" y="${y}">job-${400 + i} · batch ${String(i + 1).padStart(2, "0")}</text>
-      <text x="${Math.round(pointsWide * 0.44)}" y="${y}">2026-05-12 17:${String(i + 10).padStart(2, "0")}:00</text>
+      <text x="${Math.round(pointsWide * 0.44)}" y="${y}">2026-05-12 ${check}:00</text>
       <text x="${pointsWide - 155}" y="${y}">${i % 3 ? "VERIFIED" : "STAGED"}</text>`;
   }).join("");
   // Rasterize at native density. For the region fixture extract at actual

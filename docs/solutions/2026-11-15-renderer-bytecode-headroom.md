@@ -93,7 +93,7 @@ are preserved. A regression case verifies that a parent render preserves the
 focused search input and mounted subscriptions. The controller and render
 functions remain separate after production compression.
 
-## Guard coverage and boundaries
+## Original guard coverage and boundaries
 
 - Every application `.ts`, `.tsx`, `.js`, `.jsx` and `.mjs` under renderer
   `src` is discovered, excluding declarations, tests and fixture directories.
@@ -132,3 +132,32 @@ needed for this behavior-preserving render extraction.
 The PwrAgent reference was PR #3756 at
 `30e49f153a5016f253e27e99bca9af95010a2b95`; its state and head were checked
 before adapting it. No overlapping open PwrSnap bytecode PR was found.
+
+## Linked renderer coverage (#817)
+
+`pnpm check:renderer-bytecode` also builds both production renderer HTML
+entries in memory with hidden source maps. The audit covers emitted entry,
+lazy and worker chunks. It preserves the per-module Node checks and applies
+the same 26,624-byte budget to linked functions on Node and the stock Electron
+distribution pinned for packaging. Electron runs the compiler in Node mode.
+The shipped PwrSnap executable has `runAsNode` disabled.
+
+The compiler joins V8's Ignition instruction sizes to UTF-16 source offsets
+by code address. It checks the event count against V8's interpreter events
+and checks for execution events from its input. Both compilers construct
+scripts and ES modules without linking or evaluating them. A disposable log
+omits source text. The console lists the largest measurements and a bounded
+number of failures. `--report <path>` records all measurements.
+
+The audit maps each function's own instruction positions to original files.
+This keeps an enclosing dependency function from inheriting a nested
+callback's entire mapped body. The discovered renderer sources define the
+application budget. Functions sourced solely outside that set and generated
+chunk initializers are exempt. For a worker emitted as an IIFE, the audit
+matches the outer wrapper's syntax span and still checks its inner functions.
+An oversized function with mixed or missing attribution fails the audit with
+its generated location for inspection.
+
+Linux and Windows CI run this check through their existing `pnpm lint`
+steps. The byte counts are compiler correctness measurements. The Sparkplug
+timings above apply to the original macOS Vitest experiment.

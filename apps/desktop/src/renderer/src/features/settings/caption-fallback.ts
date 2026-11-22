@@ -5,14 +5,15 @@
 // only when the Mac is offline, so the control there leaves Codex out, says
 // "offline", and turning it on starts from a model that runs on this Mac.
 
+import { enrichmentProviderBackend } from "@pwrsnap/shared";
+
 /** One entry of the fallback's provider picker. */
 export type CaptionFallbackOption = { value: string; label: string; disabled?: boolean };
 
 /** Whether a provider selector runs on Codex: "" / "codex", or an ACP agent
  *  that is not enabled (main runs that on Codex too). */
 export function runsOnCodex(provider: string | undefined, enabledAgentIds: readonly string[]): boolean {
-  if (provider === undefined || provider === "" || provider === "codex") return true;
-  return provider.startsWith("acp:") && !enabledAgentIds.includes(provider.slice("acp:".length));
+  return enrichmentProviderBackend(provider, enabledAgentIds) === "codex";
 }
 
 /** The fallback a switch turned on stores. Behind Codex: the first pickable

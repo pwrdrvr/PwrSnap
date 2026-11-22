@@ -20,7 +20,7 @@
 // cannot start (a local setup error), and a removed or changed custom-model
 // setting (removal fails closed).
 
-import type { AiSurfaceDefault, Settings } from "@pwrsnap/shared";
+import { enrichmentProviderBackend, type AiSurfaceDefault, type Settings } from "@pwrsnap/shared";
 import { CodexTurnFailedError, isCodexNetworkUnavailable } from "./codex-turn-error";
 import { DirectApiError } from "./direct-api/transport";
 
@@ -48,14 +48,9 @@ export function isEnrichmentBackendUnavailable(error: unknown): boolean {
   return false;
 }
 
-/** The backend a provider selector runs on: "" and "codex" are Codex, and so
- *  is an `acp:<id>` whose agent is not enabled — the run resolver sends that to
- *  Codex too, so the two must agree. */
+/** The backend a provider selector runs on (shared with Settings). */
 function providerKey(settings: Settings, provider: string | undefined): string {
-  if (provider === undefined || provider === "") return "codex";
-  if (provider.startsWith("acp:") &&
-      !settings.ai.acp.enabledAgentIds.includes(provider.slice("acp:".length))) return "codex";
-  return provider;
+  return enrichmentProviderBackend(provider, settings.ai.acp.enabledAgentIds);
 }
 
 /** The fallback to arm for a run, or null. Null when the fallback is off or

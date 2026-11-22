@@ -267,7 +267,10 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
       .filter((o) => o.value !== enrichmentPrimary);
     const onValue = captionFallbackOnValue({ primaryOnCodex, options, onDevice: isOnDevice });
     const on = enrichmentFallback !== null;
-    const primary = enrichmentBackendLabel(settings.ai.defaults.enrichment, settings.ai);
+    // A disabled ACP agent's captions run on Codex: name what runs.
+    const primary = primaryOnCodex
+      ? { providerLabel: "Codex", modelLabel: undefined }
+      : enrichmentBackendLabel(settings.ai.defaults.enrichment, settings.ai);
     const fallbackLabel = enrichmentBackendLabel(value, settings.ai).providerLabel;
     const codexModelName = (id: string | undefined): string | undefined => {
       const list = codexModels?.models ?? [];
@@ -281,15 +284,16 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
       : primary.modelLabel;
     // What would keep this fallback from captioning: not ready, or (behind
     // Codex) a model that needs the network too, or Codex itself.
-    const appleUnready = isAppleFmProvider(fallbackProvider) && appleFm !== null && !isAppleFmReady(appleFm);
+    // Why Apple's model can't caption right now, or null when it can.
+    const appleNotReady = appleFm !== null && !isAppleFmReady(appleFm) ? appleFmStateCopy(appleFm).reason : null;
     let warning: string | null = null;
-    if (on && appleUnready && appleFm !== null) {
-      warning = `${APPLE_FM_DISPLAY_NAME} isn't ready on this Mac (${appleFmStateCopy(appleFm).reason}). ` +
+    if (on && isAppleFmProvider(fallbackProvider) && appleNotReady !== null) {
+      warning = `${APPLE_FM_DISPLAY_NAME} isn't ready on this Mac (${appleNotReady}). ` +
         `Until it is, captions that need the fallback fail as they would without one. AI Providers has the step to fix it.`;
     } else if (on && primaryOnCodex && runsOnCodex(fallbackProvider, enabledAgentIds)) {
       warning = "Codex can't stand in for itself. Pick a model on this Mac.";
     } else if (on && primaryOnCodex && !isOnDevice(fallbackProvider)) {
-      warning = `${fallbackLabel} isn't on this Mac, so it can't caption while this Mac is offline. ` +
+      warning = `${fallbackLabel} needs a network too, so it can't caption while this Mac is offline. ` +
         `Pick ${APPLE_FM_DISPLAY_NAME} or a Direct API model on this Mac for offline captions.`;
     }
     return (
@@ -299,8 +303,8 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
         offline={primaryOnCodex}
         on={on}
         canTurnOn={onValue !== null}
-        appleUnavailable={appleFm !== null && isAppleFmOffered(appleFm)
-          ? `${APPLE_FM_DISPLAY_NAME} isn't ready on this Mac (${appleFmStateCopy(appleFm).reason})`
+        appleUnavailable={appleNotReady !== null && isAppleFmOffered(appleFm)
+          ? `${APPLE_FM_DISPLAY_NAME} isn't ready on this Mac (${appleNotReady})`
           : `${APPLE_FM_DISPLAY_NAME} isn't available on this computer`}
         // A local primary with a fallback that isn't: say where images go.
         leavesThisMac={isLocalProvider(enrichmentPrimary) && !isLocalProvider(fallbackProvider)}
@@ -794,6 +798,7 @@ export function AiSurfaceDefaultControl({
   // default model and proved the effort unsupported. An empty list may mean a
   // transient `codex:models` failure and must never mutate persisted settings.
   const staleCodexReasoning =
+    offerCodex &&
     !isAcpProvider &&
     !modelsLoading &&
     liveCodexReasoningEfforts.length > 0 &&

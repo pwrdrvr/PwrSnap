@@ -391,6 +391,16 @@ describe("AIFeaturesPage — caption fallback", () => {
     expect(patchMock).not.toHaveBeenCalled();
   });
 
+  test("a disabled ACP agent's primary is named as Codex, which is what runs", async () => {
+    appleFmStatus = { state: "ready" };
+    await renderPage("2026-10-01T00:00:00.000Z", {
+      defaults: { libraryChat: {}, sizzleChat: {}, enrichment: { provider: "acp:qwen" } },
+      enrichmentFallback: { provider: "apple:system" }
+    } as unknown as Partial<Settings["ai"]>);
+    expect(container?.textContent).toContain("If Codex is offline, use");
+    expect(container?.querySelector('[aria-label="Caption order"]')?.textContent).toContain("1 Codex");
+  });
+
   test("a stale Codex fallback behind Codex is flagged, not shown as Codex", async () => {
     appleFmStatus = { state: "ready" };
     await renderPage("2026-10-01T00:00:00.000Z", { ...lunaPrimary, enrichmentFallback: {} });
@@ -411,7 +421,7 @@ describe("AIFeaturesPage — caption fallback", () => {
       enrichmentFallback: { provider: `custom:${MODEL_ID}` }
     } as unknown as Partial<Settings["ai"]>);
     expect(container?.querySelector(".pss__role-fallback-note--warn")?.textContent)
-      .toContain("vision-large isn't on this Mac, so it can't caption while this Mac is offline");
+      .toContain("vision-large needs a network too, so it can't caption while this Mac is offline");
   });
 
   test("is off by default under a Direct API primary, and turns on from {}", async () => {

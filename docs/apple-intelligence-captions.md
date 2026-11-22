@@ -5,10 +5,10 @@ description, tags and file name with the language model built into macOS. The
 capture is read on the Mac. It is not sent to a server, and there is no
 account, key or bill.
 
-It is off until you choose it. No capture is sent to the model until captions
-are set to it. PwrSnap asks macOS whether the model can run when you open
-**AI Providers** or **AI Features** in Settings, and while captions are set to
-it; that check runs the tool's read-only status commands and no model.
+Choose Apple Intelligence as the caption model or as a fallback in AI
+Features. PwrSnap asks macOS whether the model can run when you open
+**AI Providers** or **AI Features** in Settings, and while it is selected.
+The check reads model availability without generating a response.
 
 ## Turning it on
 
@@ -24,35 +24,19 @@ answer. It uses no capture.
 
 ## What each state means
 
-PwrSnap reads the state from macOS through `/usr/bin/fm`, the Foundation Models
-command-line tool that ships with macOS 27. The tool being present does not
-mean the model can run: it also ships on Macs that cannot run it.
+PwrSnap reads the state from the macOS Foundation Models framework.
 
 | Settings shows | What macOS reported | What to do |
 |---|---|---|
 | **Ready** | The system model is available. | Nothing. |
-| **Agree to terms** | Apple's Legal Notice & Terms for the tool have not been agreed to on this Mac. | An administrator agrees once per Mac, in Terminal. The screen shows the command with **Copy** and **Open Terminal**. PwrSnap never agrees for you. |
 | **Not ready** | The model is not available yet. | Wait. macOS downloads and prepares the model by itself. |
 | **Off in macOS** | Apple Intelligence is not enabled. | Check the language, region and any device management on this Mac. |
 | **Not supported** | This device does not support Apple Intelligence. | Check Apple's requirements; some can be changed, the chip cannot. |
-| **Needs macOS 27** | The tool is not on this Mac. | Update macOS, if this Mac can run macOS 27. |
-| **Check fm config** | The tool is configured with a default model provider. | PwrSnap will not run a capture through the tool while one is set. |
-| **Unavailable** | A reason this version of PwrSnap does not recognise. | Read macOS's own sentence, shown on the screen. |
-| **Check failed** | The tool did not answer, or not readably. | Choose **Check again**. |
+| **Needs macOS 27** | This Mac runs an earlier version. | Update macOS, if this Mac can run macOS 27. |
+| **Unavailable** | macOS reported an unrecognized availability state. | Check Apple Intelligence in System Settings. |
+| **Check failed** | PwrSnap couldn't read availability. | Choose **Check again**. |
 
-Under every state that is not Ready, the screen shows macOS's own sentence and
-a **prompt for your agent**. Paste it into the coding agent you already use:
-it can look at this Mac, which PwrSnap cannot, and walk you through the step
-that is missing. Each prompt tells the agent to check before it advises, not to
-install anything, not to change settings for you, not to bypass a macOS
-protection, and never to agree to Apple's terms on your behalf.
-
-For **Agree to terms**, the status block also has a **Run in Terminal** step:
-`sudo /usr/bin/fm license`, a **Copy** button and an **Open Terminal** button.
-That is the command macOS names (`sudo fm license`) with the tool's full path,
-because `sudo` on macOS searches your `PATH`. **Open Terminal** only launches
-Terminal. PwrSnap types nothing into it and runs nothing: you paste the command,
-read Apple's terms there, and agree or not. Then choose **Check again**.
+Settings offers a **prompt for your agent** to help check an unavailable model.
 
 **Check again** re-reads the state. Nothing polls. A caption that fails for a
 setup reason also makes the next read ask macOS again. A change is sent to every
@@ -66,48 +50,50 @@ Apple's own pages, linked from the screen:
 
 - [Apple Intelligence requirements](https://support.apple.com/en-us/121115)
 - [Why a model can be unavailable](https://developer.apple.com/documentation/foundationmodels/detecting-available-apple-foundation-models)
-- [Apple's Foundation Models and the fm tool](https://developer.apple.com/foundation-models-framework/)
+- [Apple's Foundation Models](https://developer.apple.com/foundation-models-framework/)
 - [Apple's acceptable use requirements for the model](https://developer.apple.com/support/terms/acceptable-use-requirements-for-the-foundation-models-framework/)
-  (in the **Run in Terminal** step)
 
 On Windows and Linux the provider does not appear anywhere.
 
-## What it does and does not do
+## How captions are generated
 
-- **It reads images.** PwrSnap sends the same bounded copy of the capture it
-  prepares for every provider (longest edge 1024 px), or the sampled frames of
-  a recording.
+- PwrSnap prepares a bounded image with a longest edge of 1024 px, or three
+  sampled frames for a recording. For still images, Apple's Vision framework
+  reads screen text on the Mac. The model sees the image, capture metadata,
+  and a short amount of that text together. PwrSnap saves the generated caption
+  fields and discards the OCR evidence used by the model.
 - **Captions only.** It is not offered for Library chat or Sizzle Reel chat.
 - **A small model.** Descriptions are shorter than a cloud model's, and it can
   misread small text. In testing it read `pnpm` in a terminal as `npm`.
 - **It can decline a capture.** Apple's safety checks sometimes stop a request.
   That capture's caption fails and says so.
-- **A failure stays a failure.** A declined capture, missing terms or a model
-  that is still downloading never sends the capture to another provider. The
-  caption fallback in AI Features does not act on any of them.
+- **A failure stays a failure.** A declined capture or a model that is still
+  downloading does not trigger a fallback to another provider.
 - **It can be the offline fallback.** Behind a Codex primary, AI Features can
-  name it as the caption fallback. It then captions only the captures Codex
-  could not send because this Mac had no network; every other Codex failure
-  still fails.
+  name it as the caption fallback for connection failures where Codex
+  receives no HTTP response.
 - **One capture at a time**, in the order they were taken.
-- **No usage or cost is recorded.** The tool reports no token counts.
+- **No usage or cost is recorded.** The request runs entirely on this Mac.
 
 ## Apple's terms
 
-The tool's terms, which you agree to with Apple, restrict programmatic access
-to Apple's models "except as expressly permitted". Apple documents the tool
-for scripts and automation. PwrSnap runs the tool on your Mac, at your choice,
-with a fixed command line. Read Apple's terms (`fm license --show`) and decide
-whether that use suits you before turning this on.
-
-What the model may be used for is set out separately, in Apple's
-[acceptable use requirements for the Foundation Models framework](https://developer.apple.com/support/terms/acceptable-use-requirements-for-the-foundation-models-framework/).
-The license the tool shows links only to Apple's general license index, so
-the Run in Terminal step links this page directly.
+Apple publishes [acceptable use requirements for the Foundation Models framework](https://developer.apple.com/support/terms/acceptable-use-requirements-for-the-foundation-models-framework/).
 
 ## For contributors
 
-The transport rules and the invariants that keep this path inside the
-enrichment safety contract are in [AGENTS.md](../AGENTS.md) §"Apple's on-device
-model runs through a fixed fm command line". The measurements behind it are in
+The transport rules are in [the Apple caption helper guidance](agents/ai-backends.md#apples-on-device-caption-helper).
+Development checkouts without the helper can use the guarded `/usr/bin/fm`
+route. In that mode, **Agree to terms** and **Check fm config** apply to the
+CLI. PwrSnap only opens an empty Terminal when asked. An administrator can
+review and agree to the CLI terms separately.
+
+To test the bundled path on an Apple Silicon Mac with macOS 27 and a ready
+model, build the helper and run the opt-in synthetic caption test.
+
+```sh
+node apps/desktop/scripts/build-apple-caption.mjs
+PWRSNAP_APPLE_FM_NATIVE_REAL=1 pnpm exec vitest run apps/desktop/src/main/ai/apple-fm/__tests__/apple-fm-real.test.ts
+```
+
+The original CLI measurements are in
 [docs/solutions/2026-11-17-apple-fm-cli-captions-feasibility.md](solutions/2026-11-17-apple-fm-cli-captions-feasibility.md).

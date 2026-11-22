@@ -33,10 +33,53 @@ jobs:
     secrets:
       DISTRIBUTION_READ_TOKEN: ${{ secrets.DISTRIBUTION_READ_TOKEN }}
 
+  release-source:
+    name: Resolve the release source
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      has-apple-caption: ${{ steps.source.outputs.has-apple-caption }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.sha }}
+          persist-credentials: false
+          sparse-checkout: apps/desktop/native/apple-caption
+      - name: Read the release commit and helper availability
+        id: source
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          if [ -f apps/desktop/native/apple-caption/main.swift ]; then
+            echo "has-apple-caption=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has-apple-caption=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  apple-caption:
+    needs: release-source
+    if: needs.release-source.outputs.has-apple-caption == 'true'
+    uses: ./.github/workflows/build-apple-caption.yml
+    with:
+      ref: ${{ needs.release-source.outputs.commit }}
+
   prepare:
     name: Test and prepare signing input
-    if: ${{ github.event_name != 'pull_request' }}
-    needs: distribution-audit
+    # A manual retry can name a tag from before the helper existed.
+    if: >-
+      ${{
+        !cancelled() &&
+        needs.distribution-audit.result == 'success' &&
+        needs.release-source.result == 'success' &&
+        (
+          (needs.release-source.outputs.has-apple-caption == 'true' && needs.apple-caption.result == 'success') ||
+          (needs.release-source.outputs.has-apple-caption == 'false' && needs.apple-caption.result == 'skipped')
+        )
+      }}
+    needs: [distribution-audit, release-source, apple-caption]
     runs-on: macos-26
     timeout-minutes: 75
     permissions:
@@ -44,11 +87,13 @@ jobs:
       id-token: none
     outputs:
       signing-input-sha256: ${{ steps.archive.outputs.sha256 }}
+    env:
+      PWRSNAP_PREBUILT_APPLE_CAPTION: ${{ needs.release-source.outputs.has-apple-caption == 'true' && '1' || '0' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ needs.release-source.outputs.commit }}
           persist-credentials: false
 
       - name: Install Node.js and dependencies
@@ -76,6 +121,13 @@ jobs:
       - name: Select Xcode for macOS 26 packaging
         id: xcode
         uses: ./.github/actions/select-xcode-for-actool
+
+      - name: Stage Apple captions helper
+        if: needs.release-source.outputs.has-apple-caption == 'true'
+        uses: ./.github/actions/stage-apple-caption
+        with:
+          sha256: ${{ needs.apple-caption.outputs.sha256 }}
+          commit: ${{ needs.apple-caption.outputs.commit }}
 
       - name: Build native helpers for unit tests
         run: pnpm build:native

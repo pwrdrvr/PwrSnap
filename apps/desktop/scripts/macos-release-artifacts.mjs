@@ -15,6 +15,7 @@ export const NATIVE_RESOURCES = {
   "window-list": "PwrSnapWindowList",
   recorder: "PwrSnapRecorder",
   "pasteboard-writer": "PwrSnapPasteboardWriter",
+  "apple-caption": "PwrSnapAppleCaption",
   "pwrsnap-thumbnail-cli": "PwrSnapThumbnailCli"
 };
 export const EXTENSIONS = ["PwrSnapThumbnailExtension", "PwrSnapPreviewExtension"];

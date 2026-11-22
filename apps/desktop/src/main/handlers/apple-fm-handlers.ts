@@ -24,9 +24,10 @@ import { bus } from "../command-bus";
 import { broadcastRendererEventToLocalWindows } from "../events";
 import { getMainLogger } from "../log";
 import { relayRendererEventToPeer } from "../process-split/event-relay";
-import { appleFmErrorFromOutput, appleFmScratchDir } from "../ai/apple-fm/enrichment";
+import { appleFmErrorFromOutput, appleFmNativeError, appleFmScratchDir } from "../ai/apple-fm/enrichment";
 import { AppleFmTimeoutError, runAppleFm, type FmRunner } from "../ai/apple-fm/fm-cli";
 import { getAppleFmStatusService } from "../ai/apple-fm/service";
+import { resolveNativeCaptionRunner } from "../ai/apple-fm/native";
 import type { AppleFmStatusService } from "../ai/apple-fm/status";
 import { mkdir } from "node:fs/promises";
 
@@ -126,14 +127,18 @@ export function registerAppleFmHandlers(
       const startedAt = performance.now();
       try {
         await mkdir(cwd, { recursive: true });
-        const result = await run(["respond", "--no-stream", "--greedy", "--model", APPLE_FM_MODEL_ID], {
-          stdin: APPLE_FM_TEST_PROMPT,
+        const nativeRun = deps.run === undefined ? await resolveNativeCaptionRunner() : null;
+        const commands = nativeRun === null
+          ? ["respond", "--no-stream", "--greedy", "--model", APPLE_FM_MODEL_ID]
+          : ["test"];
+        const result = await (nativeRun ?? run)(commands, {
+          ...(nativeRun === null ? { stdin: APPLE_FM_TEST_PROMPT } : {}),
           timeoutMs: APPLE_FM_TEST_TIMEOUT_MS,
           cwd,
           signal: ctx.signal
         });
         if (result.code !== 0 || result.stdout.trim().length === 0) {
-          const failure = appleFmErrorFromOutput(result.stderr);
+          const failure = nativeRun === null ? appleFmErrorFromOutput(result.stderr) : appleFmNativeError(result.stderr);
           if (failure.setupRelated) status.invalidate();
           return err({
             kind: "settings",

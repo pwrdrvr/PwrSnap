@@ -41,6 +41,8 @@ env:
     apps/desktop/scripts/ensure-electron-runtime.mjs
     apps/desktop/scripts/electron-runtime-cache.mjs
     apps/desktop/scripts/build-native.mjs
+    apps/desktop/scripts/build-apple-caption.mjs
+    apps/desktop/native/apple-caption/main.swift
     apps/desktop/native/pasteboard-writer/main.swift
     apps/desktop/native/preview-extension/Info.plist
     apps/desktop/native/preview-extension/preview-provider.swift

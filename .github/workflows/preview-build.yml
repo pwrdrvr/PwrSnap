@@ -13,6 +13,14 @@ permissions:
   actions: read
 
 jobs:
+  apple-caption:
+    if: >-
+      (github.event.action == 'labeled' && github.event.label.name == 'build-preview') ||
+      (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'build-preview'))
+    uses: ./.github/workflows/build-apple-caption.yml
+    with:
+      ref: ${{ github.sha }}
+
   preview:
     name: Build preview DMG
     # Run when the just-applied label is build-preview (labeled event), OR when
@@ -22,10 +30,15 @@ jobs:
       (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'build-preview'))
     # Icon Composer needs macOS 26 host frameworks as well as actool 26+.
     runs-on: macos-26
+    needs: apple-caption
     timeout-minutes: 30
+    env:
+      PWRSNAP_PREBUILT_APPLE_CAPTION: "1"
     steps:
-      - name: Checkout PR branch
+      - name: Checkout preview revision
         uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
 
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1
@@ -52,6 +65,12 @@ jobs:
             pkg.version = '${{ steps.version.outputs.version }}';
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
+
+      - name: Stage Apple captions helper
+        uses: ./.github/actions/stage-apple-caption
+        with:
+          sha256: ${{ needs.apple-caption.outputs.sha256 }}
+          commit: ${{ needs.apple-caption.outputs.commit }}
 
       # release.mjs deliberately removes FFmpeg from a newly prepared stage so
       # a stale workspace binary can never slip into a package. Prepare first,

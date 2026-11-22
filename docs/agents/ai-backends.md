@@ -11,9 +11,8 @@ AGENTS.md or one of the other files in `docs/agents/`.
 ## AI backends: installed agents and custom direct APIs
 
 Built-in Codex/ACP paths remain agent clients. On macOS 27, captions can also
-run on Apple's on-device model through a fixed `fm` command line (see
-"Apple's on-device model runs through a fixed fm command line" below); it is
-selected as `apple:system`, for captions only. User-configured direct API
+run on Apple's on-device model through PwrSnap's bundled helper. It is selected
+as `apple:system`, for captions only. User-configured direct API
 connections additionally call OpenAI Responses, OpenAI-compatible Chat
 Completions, or Anthropic Messages from main, without an agent or proxy. This is
 the explicit exception to the former agent-only rule. See `docs/architecture.md`
@@ -276,13 +275,34 @@ pointing into `~/Documents/PwrSnap`. The doc and the test agreed with each
 other and both disagreed with what shipped. When you pin a security
 property, pin the production wiring, not the default.
 
-## Apple's on-device model runs through a fixed fm command line
+## Apple's on-device caption helper
 
-**Captions on Apple's on-device model go through `/usr/bin/fm` with an argv
-PwrSnap builds, and through nothing else. The model gets no tool, no second
-destination and no state that outlives the run; PwrSnap never agrees to
-Apple's terms or changes fm's configuration; and a failure never moves the
-capture to another provider.** Owners:
+Packaged apps only use the signed
+[`PwrSnapAppleCaption` helper](../../apps/desktop/native/apple-caption/main.swift)
+at a fixed path. It takes exactly one command (`status`, `test`, or
+`caption`) and creates a fresh `SystemLanguageModel.default` session with
+an empty tool list. There is no provider override, cloud model, or transcript.
+The signed app treats a missing helper as unavailable.
+
+The `caption` request sends bounded app-prepared image paths and capture
+metadata together over stdin. Vision reads still-image text before the model
+turn as bounded, untrusted evidence. The helper publishes only caption fields
+and fixed error codes. Keep raw OCR, filesystem paths and model errors out of
+the library's persisted result, diagnostics and process arguments. Do not
+expose Vision as a tool that the model can call.
+
+The transport owners are
+[`native.ts`](../../apps/desktop/src/main/ai/apple-fm/native.ts) and
+[`enrichment.ts`](../../apps/desktop/src/main/ai/apple-fm/enrichment.ts).
+The real Mac image probe is opt-in. Caption and readiness paths never
+agree to a license, change system settings, or select a different backend
+after an `AppleFmError`.
+
+### Legacy development CLI
+
+When a development checkout has no compiled helper, it can use `/usr/bin/fm`
+with an argv PwrSnap builds. Its model gets no tool, no second destination and
+no state that outlives the run. Owners:
 [fm-cli.ts](../../apps/desktop/src/main/ai/apple-fm/fm-cli.ts) (the spawn site and
 its argv rules), [status.ts](../../apps/desktop/src/main/ai/apple-fm/status.ts) (what
 macOS reports) and

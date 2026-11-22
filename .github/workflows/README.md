@@ -30,9 +30,11 @@ checkouts use the same workflow commit and repository layout. Keep
 `packageImportMethod: auto` portable; never share a live `node_modules` tree
 between jobs or checkouts.
 
-All macOS jobs use standard GitHub-hosted `macos-26` Apple Silicon runners,
-with a fresh VM per job. macOS E2E, previews and opt-in compiler benchmarks run
-for fork PRs too; the Desktop E2E gate requires macOS on every code-impacting
+macOS jobs use standard GitHub-hosted `macos-26` Apple Silicon runners,
+with a fresh VM per job. The isolated Apple caption helper compile uses
+`xcode-27` with stable Xcode 27.2. Preview and release preparation verify its
+commit, SHA-256 and Mach-O slices before packaging. macOS E2E, previews and
+opt-in compiler benchmarks run for fork PRs too. The Desktop E2E gate requires macOS on every code-impacting
 PR. Their configure-nodejs steps and release preparation use default
 Actions-backed pnpm-store and Electron-download caching, frozen-install on
 every run, and do not use completed-tree mode or a persistent local store.

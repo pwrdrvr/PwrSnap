@@ -4,10 +4,15 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
+import fc from "fast-check";
 import { APPLE_FM_PROVIDER } from "@pwrsnap/shared";
 import type { CaptureEnrichmentRequest } from "../../capture-enrichment-client";
 import { isEnrichmentBackendUnavailable } from "../../enrichment-fallback";
-import { CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS, CAPTURE_ENRICHMENT_SCHEMA } from "../../enrichment-schema";
+import {
+  buildCaptureEnrichmentPrompt,
+  CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS,
+  CAPTURE_ENRICHMENT_SCHEMA
+} from "../../enrichment-schema";
 import { AppleFmEnrichmentBackend, AppleFmError, appleFmErrorFromOutput } from "../enrichment";
 import {
   AppleFmOutputLimitError,
@@ -134,6 +139,63 @@ describe("a successful run", () => {
     const { backend } = await harness({ respond: { stdout: "```json\n" + JSON.stringify(CAPTION) + "\n```\n" } });
     expect((await backend.enrichCapture(request())).result.title).toBe(CAPTION.title);
   });
+});
+
+test("the native image turn receives all capture metadata and media in the same stdin request", async () => {
+  const scratchDir = await mkdtemp(join(tmpdir(), "pwrsnap-apple-caption-"));
+  cleanup.push(() => rm(scratchDir, { recursive: true, force: true }));
+  await fc.assert(fc.asyncProperty(
+    fc.string({ maxLength: 80 }),
+    fc.array(fc.string({ maxLength: 40 }), { maxLength: 10 }),
+    fc.boolean(),
+    async (appName, tags, still) => {
+      const base = request();
+      const metadata = {
+        ...base.metadata,
+        sourceAppName: appName,
+        existingUserTags: tags,
+        captureKind: still ? ("image" as const) : ("video" as const)
+      };
+      const imagePaths = still ? base.imagePaths : ["/scratch/first.jpg", "/scratch/last.jpg"];
+      const calls: Call[] = [];
+      const backend = new AppleFmEnrichmentBackend({
+        platform: "darwin",
+        scratchDir,
+        run: async (args, options) => {
+          calls.push({ args: [...args], options });
+          return args[0] === "config"
+            ? { code: 0, signal: null, stdout: "(none)\n", stderr: "" }
+            : { code: 0, signal: null, stdout: JSON.stringify(CAPTION), stderr: "" };
+        },
+        nativeRun: async (args, options) => {
+          calls.push({ args: [...args], options });
+          return { code: 0, signal: null, stdout: JSON.stringify(CAPTION), stderr: "" };
+        }
+      });
+      const result = await backend.enrichCapture({ imagePaths, metadata });
+      expect(calls.map((call) => call.args)).toEqual([["caption"]]);
+      expect(JSON.parse(calls[0]!.options.stdin ?? "")).toEqual({
+        metadata: buildCaptureEnrichmentPrompt(metadata), imagePaths, recognizeText: still
+      });
+      expect(result.result.title).toBe(CAPTION.title);
+    }
+  ), { numRuns: 30 });
+});
+
+test("native helper errors do not leak process output or run the development CLI", async () => {
+  const scratchDir = await mkdtemp(join(tmpdir(), "pwrsnap-apple-caption-"));
+  cleanup.push(() => rm(scratchDir, { recursive: true, force: true }));
+  const backend = new AppleFmEnrichmentBackend({
+    platform: "darwin",
+    scratchDir,
+    run: async () => { throw new Error("Unexpected CLI invocation"); },
+    nativeRun: async () => ({
+      code: 1, signal: null, stdout: "private screen text", stderr: "private screen text"
+    })
+  });
+  const error = await backend.enrichCapture(request()).catch((value: unknown) => value);
+  expect(error).toMatchObject({ code: "failed", message: "the on-device model could not finish the caption." });
+  expect(isEnrichmentBackendUnavailable(error)).toBe(false);
 });
 
 describe("failures fail closed", () => {

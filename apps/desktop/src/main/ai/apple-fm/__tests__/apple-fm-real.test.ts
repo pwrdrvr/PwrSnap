@@ -11,14 +11,57 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import sharp from "sharp";
 import { afterAll, describe, expect, test } from "vitest";
 import { isEnrichmentResultEmpty } from "../../enrichment-schema";
 import { prepareEnrichmentImage } from "../../enrichment-image";
 import { AppleFmEnrichmentBackend } from "../enrichment";
 import { defaultAppleFmProbeDeps, probeAppleFmStatus } from "../status";
+import { createNativeCaptionRunner, probeNativeCaptionStatus } from "../native";
 
 const enabled = process.env.PWRSNAP_APPLE_FM_REAL === "1" && process.platform === "darwin";
+const nativeEnabled = process.env.PWRSNAP_APPLE_FM_NATIVE_REAL === "1" &&
+  process.platform === "darwin" && process.arch === "arm64";
+
+test.skipIf(!nativeEnabled)("the bundled Apple helper captions a synthetic screen on-device", async () => {
+  const binary = fileURLToPath(new URL("../../../../../build/native/apple-caption", import.meta.url));
+  const run = createNativeCaptionRunner(binary);
+  expect(await probeNativeCaptionStatus(run, null)).toMatchObject({
+    state: "ready", transport: "native"
+  });
+  const dir = await mkdtemp(join(tmpdir(), "pwrsnap-apple-caption-real-"));
+  try {
+    const source = join(dir, "synthetic.png");
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700">
+      <rect width="100%" height="100%" fill="#ffffff"/>
+      <rect width="1200" height="105" fill="#183150"/>
+      <text x="40" y="74" font-size="48" fill="#fff">Freight invoice</text>
+      <text x="40" y="240" font-size="56" fill="#182a42">Payment pending approval</text>
+      <text x="40" y="330" font-size="32" fill="#182a42">Scheduled payment for Harbor Freight Services</text>
+    </svg>`;
+    await sharp(Buffer.from(svg)).png().toFile(source);
+    const prepared = await prepareEnrichmentImage(source, { tempRoot: dir });
+    const response = await new AppleFmEnrichmentBackend({ scratchDir: dir, nativeRun: run })
+      .enrichCapture({
+        imagePaths: [prepared.path],
+        metadata: {
+          sourceAppName: "Fixture Ledger",
+          sourceAppBundleId: "example.fixture.ledger",
+          captureKind: "image",
+          widthPx: 1200,
+          heightPx: 700,
+          capturedAt: "2026-11-22T10:00:00.000Z"
+        }
+      });
+    expect(response.userAgent).toMatch(/\(native\)$/);
+    expect(`${response.result.title} ${response.result.description}`).toMatch(/invoice|payment/i);
+    expect(response.result.ocrText).toBe("");
+    expect(response.result.textAnchors).toBeUndefined();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 180_000);
 
 describe.skipIf(!enabled)("Apple on-device model, for real", () => {
   const dirs: string[] = [];

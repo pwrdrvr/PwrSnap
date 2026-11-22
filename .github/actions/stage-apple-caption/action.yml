@@ -1,0 +1,39 @@
+name: Stage the Apple caption helper
+description: Verify and restore the universal helper compiled from the same revision
+inputs:
+  sha256:
+    required: true
+    description: SHA-256 reported by the helper compile job
+  commit:
+    required: true
+    description: Source commit checked out by the helper compile job
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: apple-caption-native
+        path: apps/desktop/build/native
+    - name: Verify the helper
+      shell: bash
+      env:
+        EXPECTED_SHA: ${{ inputs.sha256 }}
+        EXPECTED_COMMIT: ${{ inputs.commit }}
+      run: |
+        set -euo pipefail
+        helper=apps/desktop/build/native/apple-caption
+        if [ "$(git rev-parse HEAD)" != "$EXPECTED_COMMIT" ]; then
+          echo "::error::Apple caption helper was compiled from a different commit" >&2
+          exit 1
+        fi
+        actual="$(shasum -a 256 "$helper" | awk '{print $1}')"
+        if [ "$actual" != "$EXPECTED_SHA" ]; then
+          echo "::error::Apple caption helper SHA-256 mismatch" >&2
+          exit 1
+        fi
+        chmod 755 "$helper"
+        case "$(lipo -archs "$helper")" in
+          "arm64 x86_64"|"x86_64 arm64") ;;
+          *) echo "::error::Apple caption helper must contain both macOS architectures" >&2; exit 1 ;;
+        esac
+        codesign --verify --strict "$helper"

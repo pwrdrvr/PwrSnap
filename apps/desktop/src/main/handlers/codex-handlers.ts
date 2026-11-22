@@ -1,4 +1,5 @@
 import { DirectEnrichmentBackend } from "../ai/direct-api/enrichment";
+import { resolveNativeCaptionRunner } from "../ai/apple-fm/native";
 import {
   APPLE_FM_ENRICHMENT_TIMEOUT_MS,
   APPLE_FM_QUEUE_CONCURRENCY,
@@ -480,7 +481,7 @@ type EnrichmentBackendPlan = {
   /** "codex", "acp:<id>", "custom:<uuid>" or "apple:system": logs and the
    *  run record. */
   provider: string;
-  /** Set when the backend is Apple's on-device model (`/usr/bin/fm`). */
+  /** Set when the backend is Apple's on-device model. */
   appleFm?: true;
   /** The model id sent to the backend; "" → the ACP agent's own default. */
   selectedModel: string;
@@ -1466,7 +1467,8 @@ async function runCaptureEnrichment(params: {
       const acpAgentId = plan.acpAgentId;
       abortController.signal.throwIfAborted();
       if (plan.appleFm) {
-        client = new AppleFmEnrichmentBackend();
+        const nativeRun = await resolveNativeCaptionRunner();
+        client = new AppleFmEnrichmentBackend(nativeRun === null ? {} : { nativeRun });
       } else if (plan.selectedProvider?.startsWith("custom:")) {
         const service = getCustomModelService();
         const selected = await service.selected(plan.selectedProvider, plan.selectedModel);

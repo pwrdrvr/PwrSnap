@@ -1,4 +1,4 @@
-import { access, mkdir, readdir, rm, stat } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
@@ -54,7 +54,7 @@ describe("prepareEnrichmentImage", () => {
       tempRoot
     });
 
-    const metadata = await sharp(prepared.path).metadata();
+    const metadata = await sharp(await readFile(prepared.path)).metadata();
     expect(metadata.format).toBe("jpeg");
     expect(metadata.width).toBe(512);
     expect(metadata.height).toBe(256);
@@ -102,17 +102,21 @@ describe("prepareEnrichmentImage", () => {
   });
 
   it("encodes an opaque, metadata-free WebP that fits the cap at every tested orientation", async () => {
+    const sourceNames: string[] = [];
     await fc.assert(fc.asyncProperty(
       fc.integer({ min: 64, max: 1800 }),
       fc.integer({ min: 64, max: 1800 }),
       fc.constantFrom(1, 6, 8),
       async (width, height, orientation) => {
-        const sourcePath = join(tempRoot, "oriented.jpg");
+        const sourceName = `oriented-${sourceNames.length}.png`;
+        sourceNames.push(sourceName);
+        const sourcePath = join(tempRoot, sourceName);
         await sharp({ create: { width, height, channels: 3, background: "#102436" } })
-          .jpeg().withMetadata({ orientation }).toFile(sourcePath);
+          .png().withMetadata({ orientation }).toFile(sourcePath);
         const prepared = await prepareEnrichmentImage(sourcePath, { format: "webp", tempRoot });
         try {
-          const encoded = await sharp(prepared.path).metadata();
+          const bytes = await readFile(prepared.path);
+          const encoded = await sharp(bytes).metadata();
           const longest = Math.max(width, height);
           expect(encoded).toMatchObject({ format: "webp", hasAlpha: false });
           expect(encoded.exif).toBeUndefined();
@@ -123,14 +127,14 @@ describe("prepareEnrichmentImage", () => {
           const orientedHeight = orientation === 1 ? height : width;
           expect(Math.abs(encoded.width - Math.round(orientedWidth * scale))).toBeLessThanOrEqual(1);
           expect(Math.abs(encoded.height - Math.round(orientedHeight * scale))).toBeLessThanOrEqual(1);
-          expect(prepared.byteSize).toBe((await stat(prepared.path)).size);
+          expect(prepared).toMatchObject({ width: encoded.width, height: encoded.height, byteSize: bytes.length });
           expect(prepared.byteSize).toBeLessThanOrEqual(1_000_000);
         } finally {
           await prepared.cleanup();
         }
       }
     ), { numRuns: 24 });
-    expect(await readdir(tempRoot)).toEqual(["oriented.jpg"]);
+    expect((await readdir(tempRoot)).sort()).toEqual(sourceNames.sort());
   });
 
   it.each(["jpeg", "webp"] as const)("cleans up if %s exceeds the byte cap", async (format) => {

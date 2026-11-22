@@ -567,7 +567,7 @@ describe("Codex handlers", () => {
       const imagePath = args[0] === "caption"
         ? (JSON.parse(options.stdin ?? "") as { imagePaths: string[] }).imagePaths[0]!
         : args[args.indexOf("--image") + 1]!;
-      expect(await sharp(imagePath).metadata()).toMatchObject({ format: "jpeg" });
+      expect(await sharp(await readFile(imagePath)).metadata()).toMatchObject({ format: "jpeg" });
       if (scenario === "guardrail") {
         return { code: 1, signal: null, stdout: "", stderr: "Error: The model's safety guardrails were triggered.\n" };
       }
@@ -860,7 +860,7 @@ describe("Codex handlers", () => {
           imagePaths: [expect.any(String)],
           recognizeText: true
         });
-        expect(await sharp(input.imagePaths[0]!).metadata()).toMatchObject({ format: "jpeg" });
+        expect(await sharp(await readFile(input.imagePaths[0]!)).metadata()).toMatchObject({ format: "jpeg" });
         paths.push(...input.imagePaths);
         respond += 1;
         return { code: 0, signal: null, stderr: "", stdout: appleCaption };
@@ -918,7 +918,7 @@ describe("Codex handlers", () => {
           const codex = {
             stillImageFormat: "webp" as const,
             enrichCapture: vi.fn(async ({ imagePaths }: CaptureEnrichmentRequest) => {
-              expect(await sharp(imagePaths[0]!).metadata()).toMatchObject({ format: "webp" });
+              expect(await sharp(await readFile(imagePaths[0]!)).metadata()).toMatchObject({ format: "webp" });
               await purgeCacheForCapture(captureId);
               await expect(readFile(cachedSource)).rejects.toMatchObject({ code: "ENOENT" });
               throw offline("httpConnectionFailed");
@@ -1903,7 +1903,7 @@ describe("Codex handlers", () => {
     if (!started.ok) return;
     await waitFor(() => client.started);
     const path = client.imagePath!;
-    expect(await sharp(path).metadata()).toMatchObject({ format: "webp" });
+    expect(await sharp(await readFile(path)).metadata()).toMatchObject({ format: "webp" });
 
     const cancelled = await bus.dispatch(
       "codex:cancel",

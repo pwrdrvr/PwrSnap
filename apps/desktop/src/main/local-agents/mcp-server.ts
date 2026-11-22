@@ -1,6 +1,12 @@
 import { app } from "electron";
 import { randomUUID } from "node:crypto";
-import { McpServer, ResourceTemplate, type ServerContext } from "@modelcontextprotocol/server";
+import {
+  McpServer,
+  ProtocolError,
+  ProtocolErrorCode,
+  ResourceTemplate,
+  type ServerContext
+} from "@modelcontextprotocol/server";
 import { serveStdio, type StdioServerHandle } from "@modelcontextprotocol/server/stdio";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
@@ -40,7 +46,12 @@ import {
   toCaptureSearchRequest
 } from "./local-agent-search";
 import { LocalAgentUsageService } from "./local-agent-usage";
-import { LocalAgentMcpResourceRegistry, type LocalAgentMcpResource } from "./mcp-resource-registry";
+import {
+  LocalAgentMcpResourceError,
+  LocalAgentMcpResourceRegistry,
+  MCP_MAX_RESOURCE_BLOB_BYTES,
+  type LocalAgentMcpResource
+} from "./mcp-resource-registry";
 import { LocalAgentSignedUrlService } from "./signed-url";
 import { LocalAgentToolService } from "./local-agent-tool-service";
 import { LocalAgentAuditService } from "./local-agent-audit";
@@ -542,7 +553,8 @@ export class LocalAgentMcpServer {
         {
           title: `PwrSnap ${name}`,
           description:
-            "Capability-protected local PwrSnap media. Read only a canonical URI returned by a completed PwrSnap media tool; do not construct URIs from this template. The concrete resource read revalidates the client grant before returning bytes.",
+            "Capability-protected local PwrSnap media. Read only a canonical URI returned by a completed PwrSnap media tool; do not construct URIs from this template. The concrete resource read revalidates the client grant before returning bytes. " +
+            `A read returns the whole file in one message, so media over ${MCP_MAX_RESOURCE_BLOB_BYTES} bytes is refused with error data code resource_too_large; media tools report byteSize and mcpReadable first.`,
           mimeType
         },
         async (uri, _variables) => {
@@ -580,7 +592,7 @@ export class LocalAgentMcpServer {
             if (resource !== undefined) {
               await this.auditResourceRead(resource, auth.clientId, "failure");
             }
-            throw cause;
+            throw resourceReadError(cause, uri.toString(), resource);
           }
         }
       );
@@ -907,4 +919,28 @@ function shouldKeepUsageReservation(
     return false;
   }
   return true;
+}
+
+const DEFAULT_OVERSIZE_ADVICE = "Review it in PwrSnap instead.";
+
+/** A refused oversize read is a typed, in-band JSON-RPC error the agent can
+ *  act on, never a partial or split blob. It names the size, the limit and
+ *  what to do instead; it never names a filesystem path. */
+function resourceReadError(
+  cause: unknown,
+  uri: string,
+  resource: LocalAgentMcpResource | undefined
+): unknown {
+  if (!(cause instanceof LocalAgentMcpResourceError) || cause.code !== "too_large") return cause;
+  return new ProtocolError(
+    ProtocolErrorCode.InvalidParams,
+    `${cause.message} ${resource?.oversizeAdvice ?? DEFAULT_OVERSIZE_ADVICE}`,
+    {
+      code: "resource_too_large",
+      uri,
+      ...(resource === undefined ? {} : { mimeType: resource.mimeType }),
+      byteSize: cause.byteSize,
+      maxByteSize: MCP_MAX_RESOURCE_BLOB_BYTES
+    }
+  );
 }

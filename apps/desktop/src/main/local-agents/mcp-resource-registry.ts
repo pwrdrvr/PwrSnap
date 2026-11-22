@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import type {
   LocalAgentAuditAction,
   LocalAgentCapability
@@ -12,6 +12,8 @@ export type LocalAgentMcpResource = {
   requiredCapabilities: readonly LocalAgentCapability[];
   captureId?: string;
   ownerClientId?: string;
+  /** What to do instead when the file is too large to read over MCP. */
+  oversizeAdvice?: string;
   audit?: {
     action: LocalAgentAuditAction;
     capability: LocalAgentCapability;
@@ -25,10 +27,50 @@ export type LocalAgentResourceReadContext = {
   capabilities: readonly LocalAgentCapability[];
 };
 
+/** The smallest per-message cap among the MCP clients PwrSnap serves: the
+ *  official SDK's stdio `ReadBuffer` refuses a line over 10 MiB and, in at
+ *  least one host, takes the whole app down with it. */
+export const MCP_CLIENT_MESSAGE_LIMIT_BYTES = 10 * 1024 * 1024;
+
+/** The largest file `resources/read` returns. One read is one JSON-RPC message
+ *  holding the base64 blob (4/3 of the bytes), so 6 MiB encodes to 8 MiB and
+ *  leaves 2 MiB of the client's limit for the envelope. MCP has no ranged or
+ *  chunked resource read, so anything larger is refused, never split. */
+export const MCP_MAX_RESOURCE_BLOB_BYTES = 6 * 1024 * 1024;
+
+/** How a tool result tells an agent whether its media can be read over MCP,
+ *  before it tries. */
+export type McpMediaSize = {
+  byteSize: number;
+  mcpReadable: boolean;
+  maxMcpReadBytes: number;
+};
+
+export function mcpMediaSize(byteSize: number): McpMediaSize {
+  return {
+    byteSize,
+    mcpReadable: byteSize <= MCP_MAX_RESOURCE_BLOB_BYTES,
+    maxMcpReadBytes: MCP_MAX_RESOURCE_BLOB_BYTES
+  };
+}
+
+export function mcpTooLargeMessage(byteSize: number): string {
+  return (
+    `This media is ${formatMiB(byteSize)} (${byteSize} bytes); MCP resources/read ` +
+    `returns at most ${formatMiB(MCP_MAX_RESOURCE_BLOB_BYTES)} ` +
+    `(${MCP_MAX_RESOURCE_BLOB_BYTES} bytes) in one message, and MCP has no ranged read.`
+  );
+}
+
+function formatMiB(bytes: number): string {
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
 export class LocalAgentMcpResourceError extends Error {
   constructor(
-    public readonly code: "not_found" | "forbidden",
-    message: string
+    public readonly code: "not_found" | "forbidden" | "too_large",
+    message: string,
+    public readonly byteSize?: number
   ) {
     super(message);
     this.name = "LocalAgentMcpResourceError";
@@ -52,7 +94,7 @@ export class LocalAgentMcpResourceRegistry {
     context: LocalAgentResourceReadContext
   ): Promise<{ resource: LocalAgentMcpResource; bytes: Buffer }> {
     const resolved = await this.resolve(uri, context);
-    return { resource: resolved.resource, bytes: await readFile(resolved.path) };
+    return { resource: resolved.resource, bytes: await readBounded(resolved.path) };
   }
 
   async resolve(
@@ -82,4 +124,25 @@ export class LocalAgentMcpResourceRegistry {
   clear(): void {
     this.resources.clear();
   }
+}
+
+/** Reads a whole file only when it fits in one MCP message. The size is taken
+ *  from the open handle before any bytes are read, so an oversized render is
+ *  refused without loading it, and checked again after the read in case the
+ *  file grew in between. */
+async function readBounded(path: string): Promise<Buffer> {
+  const handle = await open(path, "r");
+  try {
+    const { size } = await handle.stat();
+    if (size > MCP_MAX_RESOURCE_BLOB_BYTES) throw tooLarge(size);
+    const bytes = await handle.readFile();
+    if (bytes.length > MCP_MAX_RESOURCE_BLOB_BYTES) throw tooLarge(bytes.length);
+    return bytes;
+  } finally {
+    await handle.close();
+  }
+}
+
+function tooLarge(byteSize: number): LocalAgentMcpResourceError {
+  return new LocalAgentMcpResourceError("too_large", mcpTooLargeMessage(byteSize), byteSize);
 }

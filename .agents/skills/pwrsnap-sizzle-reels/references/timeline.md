@@ -43,7 +43,9 @@ projects without a `timeline`.
    Completed renders return protected MCP media plus scene-cache counts and
    narration fit/QA reports. Pass the typed resource link to the client's
    media handler. Full output is visible under the OS videos folder's
-   `PwrSnap` directory and playable in the Library/Sizzle viewer.
+   `PwrSnap` directory and playable in the Library/Sizzle viewer; the full
+   render's `savedTo.fileName` names the file there. Check `mcpReadable`
+   before reading any media; see "Media size over MCP" below.
 10. `pwrsnap_sizzle_audio_qa` transcribes the final mixed track, compares it
    with the render's saved script when available, and measures loudness/peak.
    This explicitly requested step may spend a transcription request; identical
@@ -262,7 +264,33 @@ needs to be supplied by an agent.
 | Review frames/contact sheets; audition/render previews | `sizzle_inspect_frames`, `sizzle_render_preview`; protected media links |
 | Full movie, user-visible output, final mixed-audio transcript/loudness | `sizzle_render_full`, `sizzle_audio_qa` |
 
-Tool names above omit the common `pwrsnap_` prefix. Recording an external app
+Tool names above omit the common `pwrsnap_` prefix.
+
+## Media size over MCP
+
+One `resources/read` returns the whole file as base64 in a single JSON-RPC
+message, and MCP has no ranged or chunked read. The official SDK's stdio
+client refuses a message over 10 MiB, so PwrSnap serves at most 6 MiB
+(6,291,456 bytes) per read and never splits or truncates a file. A 1080p
+30 fps reel of about 30 s is 10–14 MB: over the limit.
+
+Every media result (`render_full`, `render_preview`, `inspect_frames`,
+`prepare_narration`, capture resources and exports) reports `byteSize`,
+`mcpReadable` and `maxMcpReadBytes`:
+
+- `mcpReadable: true` — the typed resource link is attached; read it.
+- `mcpReadable: false` — no link and no `resourceUri` are returned. Do not
+  try to read it. `mcpReadRefusal` gives the size and what to do instead.
+  For a full render: tell the user the file name in `savedTo` (it is in the
+  PwrSnap folder of their videos folder and plays in PwrSnap's Sizzle
+  viewer), and review it yourself with `sizzle_render_preview` (640 px wide)
+  and `sizzle_inspect_frames`.
+
+If a file grows past the limit after the tool returned, the read fails with
+an in-band error whose `data.code` is `resource_too_large`, with `byteSize`
+and `maxByteSize`. Treat it the same way; the connection stays usable. A
+preview of a very long timeline can also exceed the limit: inspect frames
+instead. Neither result nor error ever names an absolute filesystem path. Recording an external app
 and transferring its footage remain capture/VM tasks. The original local
 script's cache-file copy for narration is replaced by `sizzle_prepare_narration`.
 

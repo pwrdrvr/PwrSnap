@@ -82,7 +82,7 @@ LGPL-3.0-or-later
 
 MIT
 ~~~
-- @hono/node-server@2.1.3 | https://github.com/honojs/node-server
+- @hono/node-server@2.1.11 | https://github.com/honojs/node-server
 - @img/colour@1.1.0 | https://github.com/lovell/colour
 - @modelcontextprotocol/sdk@1.32.0 | https://github.com/modelcontextprotocol/typescript-sdk
 - @pwrdrvr/agent-acp@0.16.1 | https://github.com/pwrdrvr/agent-kit
@@ -144,7 +144,7 @@ MIT
 - gopd@1.2.0 | https://github.com/ljharb/gopd
 - has-symbols@1.1.0 | https://github.com/inspect-js/has-symbols
 - hasown@2.0.4 | https://github.com/inspect-js/hasOwn
-- hono@4.13.12 | https://github.com/honojs/hono
+- hono@4.13.18 | https://github.com/honojs/hono
 - http-errors@2.0.1 | jshttp/http-errors
 - iconv-lite@0.7.3 | https://github.com/pillarjs/iconv-lite
 - indent-string@4.0.0 | sindresorhus/indent-string
@@ -637,13 +637,13 @@ DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 
-@hono/node-server@2.1.3 (MIT)
------------------------------
+@hono/node-server@2.1.11 (MIT)
+------------------------------
 
 Applies to:
-- @hono/node-server@2.1.3 (MIT)
+- @hono/node-server@2.1.11 (MIT)
 
-Representative file: @hono/node-server@2.1.3/LICENSE
+Representative file: @hono/node-server@2.1.11/LICENSE
 
 MIT License
 
@@ -3550,13 +3550,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-hono@4.13.12 (MIT)
+hono@4.13.18 (MIT)
 ------------------
 
 Applies to:
-- hono@4.13.12 (MIT)
+- hono@4.13.18 (MIT)
 
-Representative file: hono@4.13.12/LICENSE
+Representative file: hono@4.13.18/LICENSE
 
 MIT License
 

@@ -30,6 +30,7 @@ import {
   acceleratorsAreEquivalent,
   defaultHotkeysForPlatform,
   shortcutPlatformFromString,
+  migrateHotCpuCaptureRules,
   type Settings
 } from "@pwrsnap/shared";
 import {
@@ -766,6 +767,62 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect((await read("dock-junk.json", { editToolbarDock: "sideways" })).editToolbarDock).toBe(
       "float"
     );
+  });
+
+  test("keeps a legacy fractional Slow burn threshold through unrelated writes until rules are saved", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(filePath, JSON.stringify({ schemaVersion: 1, general: {
+      hotCpuProfilingTriggerMode: "slowburn", hotCpuProfilingSlowburnThresholdPercent: 15.5
+    } }));
+    const svc = makeService();
+    expect((await svc.read()).general.hotCpuProfilingSlowburnThresholdPercent).toBe(15.5);
+    await svc.write({ general: { developerMode: true } });
+    const disk = () => JSON.parse(readFileSync(filePath, "utf8")).general;
+    expect(disk().hotCpuProfilingSlowburnThresholdPercent).toBe(15.5);
+    expect(disk().hotCpuProfilingRules).toBeUndefined();
+    await svc.write({ general: { hotCpuProfilingRules: migrateHotCpuCaptureRules("slowburn", 15.5) } });
+    expect(disk().hotCpuProfilingSlowburnThresholdPercent).toBe(16);
+    expect(disk().hotCpuProfilingRules.slowburn.thresholdPercent).toBe(16);
+  });
+
+  test.each(["spike", "sustained", "slowburn"] as const)("migrates legacy %s once and writes the downgrade mirror", async (mode) => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(filePath, JSON.stringify({ schemaVersion: 1, general: {
+      hotCpuProfilingTriggerMode: mode, hotCpuProfilingSlowburnThresholdPercent: 27
+    } }));
+    const svc = makeService();
+    const general = (await svc.read()).general;
+    expect(general.hotCpuProfilingRules).toBeUndefined();
+    const migrated = migrateHotCpuCaptureRules(
+      general.hotCpuProfilingTriggerMode, general.hotCpuProfilingSlowburnThresholdPercent
+    );
+    expect(migrated).toMatchObject({
+      high: { enabled: mode !== "slowburn", mode: mode === "spike" ? "spike" : "sustained" },
+      spike: { thresholdPercent: 50, durationMs: 2000 },
+      sustained: { thresholdPercent: 50, durationMs: 4000 },
+      slowburn: { enabled: mode === "slowburn", thresholdPercent: 27, durationMs: 4000 }
+    });
+    const next = { ...migrated,
+      high: { enabled: false, mode: "spike" as const },
+      slowburn: { enabled: true, thresholdPercent: 260, durationMs: 30000 as const }
+    };
+    await svc.write({ general: { hotCpuProfilingRules: next, hotCpuProfilingCaptureChromiumTrace: true } });
+    const disk = JSON.parse(readFileSync(filePath, "utf8"));
+    expect(disk.general).toMatchObject({
+      hotCpuProfilingTriggerMode: "slowburn", hotCpuProfilingSlowburnThresholdPercent: 260,
+      hotCpuProfilingRules: next, hotCpuProfilingCaptureChromiumTrace: true
+    });
+    disk.general.hotCpuProfilingTriggerMode = "sustained";
+    disk.general.hotCpuProfilingSlowburnThresholdPercent = 5;
+    writeFileSync(filePath, JSON.stringify(disk));
+    expect((await makeService().read()).general).toMatchObject({
+      hotCpuProfilingRules: next, hotCpuProfilingTriggerMode: "slowburn", hotCpuProfilingSlowburnThresholdPercent: 260
+    });
+    disk.general.hotCpuProfilingRules.slowburn.enabled = false;
+    writeFileSync(filePath, JSON.stringify(disk));
+    expect((await makeService().read()).general.hotCpuProfilingRules?.high).toEqual({
+      enabled: true, mode: "sustained"
+    });
   });
 
   test("v1 shape missing `general.launchAtLogin` gets the opt-in default (false) filled in", async () => {

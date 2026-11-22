@@ -41,8 +41,8 @@ import {
   EDIT_TOOLBAR_DOCKS,
   GRID_ZOOM_MAX,
   GRID_ZOOM_MIN,
+  hotCpuCaptureRulesSchema,
   isHotCpuProfileStartDelayMs,
-  isHotCpuProfileTriggerMode,
   isAbsoluteExecutablePath,
   LIBRARY_SIDEBAR_TABS,
   MAX_HIGHLIGHT_OPACITY,
@@ -372,6 +372,22 @@ export function validateSettingsWrite(
         )
       };
     }
+    if (general.hotCpuProfilingRules !== undefined &&
+        !hotCpuCaptureRulesSchema.safeParse(general.hotCpuProfilingRules).success) {
+      return {
+        ok: false,
+        error: validationError("invalid_general_hotCpuProfilingRules",
+          "Capture rules require a valid threshold and duration for each rule and at least one enabled rule.")
+      };
+    }
+    if (general.hotCpuProfilingCaptureChromiumTrace !== undefined &&
+        !isBoolean(general.hotCpuProfilingCaptureChromiumTrace)) {
+      return {
+        ok: false,
+        error: validationError("invalid_general_hotCpuProfilingCaptureChromiumTrace",
+          "Chromium trace must be a boolean.")
+      };
+    }
     if (
       !isUndefined(general.hotCpuProfilingEnabled) &&
       !isBoolean(general.hotCpuProfilingEnabled)
@@ -400,34 +416,14 @@ export function validateSettingsWrite(
       };
     }
     if (
-      !isUndefined(general.hotCpuProfilingTriggerMode) &&
-      !(
-        typeof general.hotCpuProfilingTriggerMode === "string" &&
-        isHotCpuProfileTriggerMode(general.hotCpuProfilingTriggerMode)
-      )
+      !isUndefined(general.hotCpuProfilingTriggerMode) ||
+      !isUndefined(general.hotCpuProfilingSlowburnThresholdPercent)
     ) {
       return {
         ok: false,
         error: validationError(
-          "invalid_general_hotCpuProfilingTriggerMode",
-          "settings:write: general.hotCpuProfilingTriggerMode must be \"spike\", \"sustained\", or \"slowburn\""
-        )
-      };
-    }
-    if (
-      !isUndefined(general.hotCpuProfilingSlowburnThresholdPercent) &&
-      !(
-        typeof general.hotCpuProfilingSlowburnThresholdPercent === "number" &&
-        Number.isFinite(general.hotCpuProfilingSlowburnThresholdPercent) &&
-        general.hotCpuProfilingSlowburnThresholdPercent >= 1 &&
-        general.hotCpuProfilingSlowburnThresholdPercent <= 100
-      )
-    ) {
-      return {
-        ok: false,
-        error: validationError(
-          "invalid_general_hotCpuProfilingSlowburnThresholdPercent",
-          "settings:write: general.hotCpuProfilingSlowburnThresholdPercent must be a number from 1 to 100"
+          "read_only_hot_cpu_mirror",
+          "Legacy CPU capture mode and threshold are read-only. Write general.hotCpuProfilingRules to change the rules."
         )
       };
     }

@@ -960,7 +960,6 @@ async function wireHotkeyRegistrations(): Promise<void> {
     // Theme may have changed — re-color the Windows title-bar overlay so the
     // caption strip tracks the active theme (no-op off win32).
     refreshWindowsTitleBarOverlay();
-    syncHotCpuProfilersFromSettings("settings-changed");
   });
   // System appearance flip (theme = "system" following the OS) — same re-color.
   nativeTheme.on("updated", refreshWindowsTitleBarOverlay);
@@ -2128,6 +2127,11 @@ export function bootstrapApp(): void {
           ? { hotkeyRegistrationManager }
           : {})
       });
+      // CPU capture follows settings even when this instance skips global
+      // hotkeys. In split mode the Library receives its own relayed update.
+      onSettingsChanged((settings) => {
+        syncHotCpuProfilersFromSettings("settings-changed", settings);
+      });
       const { service: settingsService } = getDesktopSettingsServices();
       registerHotkeyRecorderSuspensionHandlers(
         hotkeyRecorderSuspension,
@@ -2314,7 +2318,7 @@ export function bootstrapApp(): void {
         if (settings.general.developerMode !== lastKnownDeveloperMode) {
           installApplicationMenu(settings.general.developerMode);
         }
-        syncHotCpuProfilersFromSettings("settings-changed");
+        syncHotCpuProfilersFromSettings("settings-changed", settings);
       });
       onRelayedRendererEvent(
         SETTINGS_DISCOVERY_PUBLICATION_CHANNEL,

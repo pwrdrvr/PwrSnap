@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import fc from "fast-check";
 import { afterEach, describe, expect, test } from "vitest";
 import type { HotCpuProfileConfig } from "../hot-cpu-profile-config";
 import { createHotCpuProfileSession } from "../hot-cpu-profile-session";
@@ -79,6 +80,28 @@ describe("createHotCpuProfileSession", () => {
     ) as { target?: string };
 
     expect(manifest.target).toBe("main");
+  });
+
+  test("concurrent CPU, heap and trace registrations publish one valid manifest", async () => {
+    const session = await createSession("renderer");
+    const path = join(session.directoryPath, "session.json");
+    const seen = new Set<string>();
+    await fc.assert(fc.asyncProperty(fc.array(fc.integer({ min: 1, max: 12 }), { minLength: 1, maxLength: 12 }),
+      async (indexes) => {
+        const names = indexes.flatMap((index) => [
+          `renderer-hot-${index}.trace.json`, `renderer-hot-${index}.heapsnapshot`, `renderer-hot-${index}.cpuprofile`
+        ]);
+        const registrations = names.map((name) => {
+          seen.add(name);
+          return session.registerArtifact(name);
+        });
+        const duringWrite: { artifacts: string[] } = JSON.parse(await readFile(path, "utf8"));
+        expect(duringWrite.artifacts.every((name) => seen.has(name))).toBe(true);
+        await Promise.all(registrations);
+        const afterWrite: { artifacts: string[] } = JSON.parse(await readFile(path, "utf8"));
+        expect([...afterWrite.artifacts].sort()).toEqual([...seen].sort());
+      }
+    ), { numRuns: 10 });
   });
 
   test("appends samples with a per-process breakdown as NDJSON", async () => {

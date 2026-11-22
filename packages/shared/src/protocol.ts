@@ -1,3 +1,4 @@
+import type { HotCpuCaptureRules, HotCpuEnvironmentOverrides, HotCpuRuleMatch } from "./hot-cpu-capture-rules";
 import type { AvatarStyle, CameraTrackMetadata, PresenterSpan, RecordingCamera } from "./camera";
 import type { RecordingDevicePreference, RecordingMicrophone } from "./recording-devices";
 import type { CustomConnection, CustomConnectionInput, CustomModel, CustomModelDiscovery, CustomModelInput } from "./custom-models";
@@ -1347,6 +1348,7 @@ export type HotCpuProfileCapturedEvent = {
   sessionDirectory: string;
   sessionDirectoryName: string;
   target: HotCpuProfileTarget;
+  matchedRules?: HotCpuRuleMatch[];
   triggerConsecutiveSamples: number;
   triggerCpuPercent: number;
   triggerMode: HotCpuProfileTriggerMode;
@@ -1366,19 +1368,28 @@ export function formatHotCpuProfileTriggerMode(
     case "sustained":
       return "Sustained";
     case "slowburn":
-      return "Slowburn";
+      return "Slow burn";
   }
 }
 
 export function formatHotCpuProfileTriggerSummary(
   event: Pick<
     HotCpuProfileCapturedEvent,
+    | "matchedRules"
     | "triggerConsecutiveSamples"
     | "triggerCpuPercent"
     | "triggerMode"
     | "triggerThresholdPercent"
   >
 ): string {
+  if (event.matchedRules?.length) {
+    return event.matchedRules.map((match) => {
+      const samples = match.sampleCount === 1 ? `one ${match.cadenceMs / 1000} s sample`
+        : `${match.sampleCount} × ${match.cadenceMs / 1000} s consecutive samples`;
+      const measurement = match.measurement === "cumulative" ? "" : ", includes Electron interval estimate";
+      return `${formatHotCpuProfileTriggerMode(match.id)} (≥${formatPercent(match.thresholdPercent)}% over ${match.durationMs / 1000} s nominal, ${samples} · trigger sample ${formatPercent(match.triggerCpuPercent)}%${measurement})`;
+    }).join(" and ");
+  }
   const sampleLabel =
     event.triggerConsecutiveSamples === 1
       ? "1 sample"
@@ -1412,6 +1423,9 @@ export function buildHotCpuProfileHandoffMessage(
     `CPU profile: ${event.profilePath}`,
     ...heapSnapshotLines,
     "Sidecars: session.json, samples.ndjson, events.ndjson",
+    ...(event.target === "renderer" && event.matchedRules?.length
+      ? ["A filtered Chromium trace, when available, appears beside the CPU profile as .trace.json."]
+      : []),
     "samples.ndjson includes a per-process CPU breakdown (browser/gpu/renderer/utility), so check it for heat in processes that cannot be JS-profiled (e.g. GPU).",
     "Open the .cpuprofile in Chrome DevTools Performance, or inspect the session directory for samples, events, and optional heap snapshots."
   ].join("\n");
@@ -2953,6 +2967,8 @@ export type InteractiveCaptureOutcome =
   | { kind: "recording" };
 
 export type Settings = {
+  /** Runtime details for Settings. Never written to the settings file. */
+  hotCpuProfilingEnvironment?: HotCpuEnvironmentOverrides;
   /** Bumped when the on-disk shape changes. Readers below the current
    *  version go through the legacy-shape catalog in the service before
    *  being normalized. */
@@ -3084,9 +3100,12 @@ export type Settings = {
     /** Delay before hot CPU monitoring starts after the user arms it,
      *  giving them time to set up the scenario they want to capture. */
     hotCpuProfilingStartDelayMs: HotCpuProfileStartDelayMs;
-    /** Trigger shape for starting the CPU profile. */
+    /** Capture rules in current settings. Absent until saved on legacy installations. */
+    hotCpuProfilingRules?: HotCpuCaptureRules;
+    hotCpuProfilingCaptureChromiumTrace?: boolean;
+    /** Read-only downgrade mirror of the enabled high mode, or Slow burn alone. */
     hotCpuProfilingTriggerMode: HotCpuProfileTriggerMode;
-    /** Lower threshold used when trigger mode is `slowburn`. */
+    /** Read-only downgrade mirror of the Slow burn threshold. */
     hotCpuProfilingSlowburnThresholdPercent: number;
     /** Capture bounded renderer heap snapshots around the next hot CPU
      *  profile, then auto-disable after the limit is reached. */

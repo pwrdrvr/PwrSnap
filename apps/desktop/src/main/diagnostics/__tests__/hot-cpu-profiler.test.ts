@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import fc from "fast-check";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ProcessMetric } from "electron";
 import type { HotCpuProfileCapturedEvent, HotCpuProfileTarget } from "@pwrsnap/shared";
@@ -148,7 +149,7 @@ function hotMetricsFeed(targetPid: number): () => ProcessMetric[] {
 let directoryPath: string | null = null;
 
 beforeEach(async () => {
-  vi.useFakeTimers();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
   directoryPath = await mkdtemp(join(tmpdir(), "pwrsnap-hot-cpu-profiler-test-"));
 });
 
@@ -174,7 +175,7 @@ async function runToProfileWritten(target: HotCpuProfileTarget): Promise<{
   const { target: hotCpuTarget, commands } = fakeTarget(4242);
   const captured: HotCpuProfileCapturedEvent[] = [];
   const profiler = new HotCpuProfiler({
-    config: enabledConfig(),
+    config: enabledConfig({ maxProfiles: 1 }),
     getAppMetrics: hotMetricsFeed(4242),
     logger: silentLogger,
     onProfileWritten: (event) => {
@@ -185,8 +186,7 @@ async function runToProfileWritten(target: HotCpuProfileTarget): Promise<{
   });
 
   await profiler.start();
-  // Samples every 10ms; the 3rd sample is the 2nd consecutive hot one
-  // (the 1st has no cumulative delta yet), which starts a 30ms profile.
+  // Samples every 10ms, followed by a 30ms post-trigger recording.
   for (let i = 0; i < 12 && captured.length === 0; i += 1) {
     await vi.advanceTimersByTimeAsync(10);
   }
@@ -202,11 +202,40 @@ async function runToProfileWritten(target: HotCpuProfileTarget): Promise<{
 }
 
 describe("HotCpuProfiler", () => {
+  test.each(["main", "renderer"] as const)("arms the %s recorder before sampling and never forks its sample loop", async (target) => {
+    await fc.assert(fc.asyncProperty(
+      fc.integer({ min: 5, max: 30 }), fc.integer({ min: 2, max: 12 }),
+      async (intervalMs, expectedSamples) => {
+        const { session, artifacts } = fakeSession(directoryPath!, target);
+        const { target: hotCpuTarget, commands } = fakeTarget(4242);
+        const getAppMetrics = vi.fn(() => []);
+        const profiler = new HotCpuProfiler({
+          config: enabledConfig({ startDelayMs: 50, intervalMs }), session, target: hotCpuTarget,
+          getAppMetrics, logger: silentLogger
+        });
+        try {
+          await profiler.start();
+          await vi.advanceTimersByTimeAsync(49);
+          expect(getAppMetrics).not.toHaveBeenCalled();
+          expect(commands).toEqual(["Profiler.enable", "Profiler.start"]);
+          await vi.advanceTimersByTimeAsync(1 + (expectedSamples - 1) * intervalMs);
+          expect(getAppMetrics).toHaveBeenCalledTimes(expectedSamples);
+          expect(vi.getTimerCount()).toBe(1);
+        } finally {
+          await profiler.stop();
+        }
+        expect(artifacts).toEqual([]);
+        expect(vi.getTimerCount()).toBe(0);
+      }
+    ), { numRuns: 20 });
+  });
+
   test("quit flush saves a real inspector profile and session manifest before resuming", async () => {
     vi.useRealTimers();
     const config = enabledConfig({
       outputRoot: directoryPath!,
       triggerMode: "spike",
+      startDelayMs: 250,
       profileDurationMs: 30_000
     });
     const created = await createHotCpuProfileSession({
@@ -231,6 +260,13 @@ describe("HotCpuProfiler", () => {
     const shutdown = createDiagnosticsShutdown({ stop: () => profiler.stop("app-quit"), resumeQuit, warn });
     try {
       await profiler.start();
+      function burnBeforeFirstCpuSample() {
+        const until = performance.now() + 100;
+        while (performance.now() < until) {
+          // The inspector must retain this frame after the function returns.
+        }
+      }
+      burnBeforeFirstCpuSample();
       await vi.waitFor(() => expect(started).toBe(true));
       shutdown.beforeQuit({ preventDefault: vi.fn() });
       await shutdown.flush();
@@ -239,7 +275,9 @@ describe("HotCpuProfiler", () => {
       await vi.waitFor(() => expect(resumeQuit).toHaveBeenCalledOnce());
       expect(warn).not.toHaveBeenCalled();
       const profile = JSON.parse(await readFile(session.createProfilePath(1), "utf8"));
-      expect(profile.nodes.length).toBeGreaterThan(0);
+      expect(profile.nodes).toEqual(expect.arrayContaining([
+        expect.objectContaining({ callFrame: expect.objectContaining({ functionName: "burnBeforeFirstCpuSample" }) })
+      ]));
       expect(profile.endTime).toBeGreaterThan(profile.startTime);
       const manifest = JSON.parse(await readFile(join(session.directoryPath, "session.json"), "utf8"));
       expect(manifest.artifacts).toContain("main-hot-0001.cpuprofile");
@@ -249,7 +287,7 @@ describe("HotCpuProfiler", () => {
     }
   });
 
-  test.each(["main", "renderer"] as const)("quit joins an in-flight %s profiler start and writes its artifact", async (target) => {
+  test.each(["main", "renderer"] as const)("quit joins an in-flight %s recorder start and discards its unclaimed history", async (target) => {
     const { session, artifacts, events } = fakeSession(directoryPath!, target);
     const { target: hotCpuTarget, commands } = fakeTarget(4242);
     let finishStart!: () => void;
@@ -267,7 +305,7 @@ describe("HotCpuProfiler", () => {
       session,
       target: hotCpuTarget
     });
-    await profiler.start();
+    const start = profiler.start();
     await vi.advanceTimersByTimeAsync(20);
     expect(commands).toContain("Profiler.start");
     const stopped = vi.fn();
@@ -278,13 +316,149 @@ describe("HotCpuProfiler", () => {
     expect(stopped).not.toHaveBeenCalled();
     expect(hotCpuTarget.debugger.isAttached()).toBe(true);
     finishStart();
-    await stop;
-    expect(commands).toEqual(["Profiler.enable", "Profiler.start", "Profiler.stop"]);
-    expect(JSON.parse(await readFile(session.createProfilePath(1), "utf8"))).toEqual(PROFILE_FIXTURE);
-    expect(artifacts).toContain(`${target}-hot-0001.cpuprofile`);
+    await Promise.all([start, stop]);
+    expect(commands).toEqual(["Profiler.enable", "Profiler.start"]);
+    expect(artifacts).toEqual([]);
     expect(events.at(-1)?.type).toBe("monitor-stopped");
     expect(hotCpuTarget.debugger.isAttached()).toBe(false);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("caps rolling history during a long start delay and releases the target after its final profile", async () => {
+    const { session, artifacts } = fakeSession(directoryPath!, "renderer");
+    const { target, commands } = fakeTarget(4242);
+    const send = target.debugger.sendCommand;
+    let rotations = 0;
+    target.debugger.sendCommand = async (method) => {
+      const result = await send(method);
+      if (method !== "Profiler.stop") return result;
+      const number = ++rotations;
+      const startTime = (number - 1) * 30_000_000;
+      return { profile: {
+        nodes: [
+          { id: 1, callFrame: { functionName: "(root)" }, children: [2] },
+          { id: 2, callFrame: { functionName: `segment${number}` } }
+        ],
+        startTime, endTime: startTime + 29_900_000, samples: [2], timeDeltas: [1]
+      } };
+    };
+    const getAppMetrics = vi.fn(hotMetricsFeed(4242));
+    const profiler = new HotCpuProfiler({
+      config: enabledConfig({ startDelayMs: 61_000, triggerMode: "spike", maxProfiles: 1 }),
+      getAppMetrics, logger: silentLogger, session, target
+    });
+    try {
+      await profiler.start();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(getAppMetrics).not.toHaveBeenCalled();
+      expect(rotations).toBe(2);
+      await vi.advanceTimersByTimeAsync(1_030);
+      await vi.waitFor(() => expect(profiler.hasPendingWork).toBe(false));
+      const profile = JSON.parse(await readFile(session.createProfilePath(1), "utf8"));
+      const names = profile.nodes.map((node: { callFrame: { functionName: string } }) => node.callFrame.functionName);
+      expect(names).toEqual(["(root)", "segment2", "segment3", "(unrecorded)"]);
+      expect(artifacts).toEqual(["renderer-hot-0001.cpuprofile"]);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(getAppMetrics).toHaveBeenCalledTimes(2);
+      expect(commands.filter((command) => command === "Profiler.start")).toHaveLength(3);
+      expect(target.debugger.isAttached()).toBe(false);
+    } finally {
+      await profiler.stop();
+    }
+  });
+
+  test("a Spike requires an observed interval after baseline and a gap cannot satisfy it", async () => {
+    const { session, events } = fakeSession(directoryPath!, "renderer");
+    const { target } = fakeTarget(4242);
+    let now = 0;
+    let cumulative = 0;
+    const profiler = new HotCpuProfiler({
+      config: enabledConfig({ triggerMode: "spike", intervalMs: 1000, profileDurationMs: 60_000 }),
+      monotonicNow: () => now, session, target, logger: silentLogger,
+      getAppMetrics() {
+        return [{ pid: 4242, type: "Tab",
+          cpu: { percentCPUUsage: 95, cumulativeCPUUsage: cumulative, idleWakeupsPerSecond: 0 },
+          memory: { workingSetSize: 0, peakWorkingSetSize: 0 }
+        }] as ProcessMetric[];
+      }
+    });
+    const captures = () => events.filter((event) => event.type === "profile-started");
+    try {
+      await profiler.start();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(captures()).toEqual([]);
+      now = 2000;
+      cumulative = 2;
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(captures()).toEqual([]);
+      now = 3000;
+      cumulative = 2.8;
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(captures()).toHaveLength(1);
+    } finally {
+      await profiler.stop();
+    }
+  });
+
+  test.each([5_000, 10_000])("live rule changes preserve the original %d ms arming deadline", async (startDelayMs) => {
+    const { session, events } = fakeSession(directoryPath!, "renderer");
+    const { target } = fakeTarget(4242);
+    const getAppMetrics = vi.fn(hotMetricsFeed(4242));
+    const initial = enabledConfig({ startDelayMs, intervalMs: 2000 });
+    const profiler = new HotCpuProfiler({ config: initial, getAppMetrics, session, target, logger: silentLogger });
+    try {
+      await profiler.start();
+      await vi.advanceTimersByTimeAsync(startDelayMs - 2000);
+      profiler.updateRules({ ...initial, triggerMode: "spike", intervalMs: 1000 });
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(getAppMetrics).not.toHaveBeenCalled();
+      expect(events.some((event) => event.type === "profile-started")).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(getAppMetrics).toHaveBeenCalledOnce();
+    } finally {
+      await profiler.stop();
+    }
+  });
+
+  test("diagnostic events retain the ordered, timestamped effective rule changes for an armed session", async () => {
+    const { target } = fakeTarget(4242);
+    const initial = enabledConfig({ startDelayMs: 10_000, intervalMs: 2000, outputRoot: directoryPath! });
+    const created = await createHotCpuProfileSession({
+      config: initial, target: "renderer",
+      versions: { appVersion: "test", electronVersion: "test", chromeVersion: "test", nodeVersion: "test" }
+    });
+    if (!created.ok) throw new Error(created.message);
+    const { session } = created;
+    const profiler = new HotCpuProfiler({
+      config: initial, getAppMetrics: () => [], session, target, logger: silentLogger
+    });
+    const rules = [
+      { id: "spike" as const, thresholdPercent: 75, durationMs: 1000, sampleCount: 1 },
+      { id: "slowburn" as const, thresholdPercent: 18, durationMs: 4000, sampleCount: 4 }
+    ];
+    const changed = { ...initial, intervalMs: 1000, rules };
+    await profiler.start();
+    await vi.advanceTimersByTimeAsync(80);
+    const changedAt = new Date().toISOString();
+    profiler.updateRules(changed);
+    profiler.updateRules(changed);
+    await vi.advanceTimersByTimeAsync(80);
+    const restoredAt = new Date().toISOString();
+    profiler.updateRules(initial);
+    await profiler.stop();
+    const events: HotCpuProfileEvent[] = (await readFile(session.eventsPath, "utf8")).trim().split("\n")
+      .map((line) => JSON.parse(line));
+    expect(events.map(({ type }) => type)).toEqual([
+      "monitor-started", "monitor-config-changed", "monitor-config-changed", "monitor-stopped"
+    ]);
+    expect(events[1]).toEqual({
+      type: "monitor-config-changed", capturedAt: changedAt, detail: { intervalMs: 1000, rules }
+    });
+    expect(events[2]).toEqual({
+      type: "monitor-config-changed", capturedAt: restoredAt, detail: {
+        intervalMs: 2000, rules: [{ id: "sustained", thresholdPercent: 50, durationMs: 4000, sampleCount: 2 }]
+      }
+    });
   });
 
   test("profiles the target after consecutive hot samples and reports its target", async () => {
@@ -369,7 +543,7 @@ describe("HotCpuProfiler", () => {
     await vi.advanceTimersByTimeAsync(100);
     await profiler.stop("test-finished");
 
-    expect(commands).toEqual([]);
+    expect(commands).toEqual(["Profiler.enable", "Profiler.start"]);
     expect(samples.length).toBeGreaterThan(0);
   });
 });

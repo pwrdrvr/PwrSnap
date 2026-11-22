@@ -16,6 +16,7 @@
 import {
   displaysTouched,
   homeDisplayFor,
+  rectContainsPoint,
   type DisplayGeometry,
   type LogicalRect
 } from "./multi-display-selection";
@@ -45,12 +46,6 @@ export type CaptureSetItem = {
   cursor: boolean;
 };
 
-function containsPoint(rect: LogicalRect, p: { x: number; y: number }): boolean {
-  // Inclusive edges — the same test the single-capture path uses to
-  // decide whether the pointer sits in a kept extent.
-  return p.x >= rect.x && p.x <= rect.x + rect.w && p.y >= rect.y && p.y <= rect.y + rect.h;
-}
-
 /**
  * Plan a set: one item per pick that some captured display shows.
  *
@@ -78,7 +73,7 @@ export function planCaptureSet(args: {
     const touched = displaysTouched([r], usable);
     if (touched.length === 0) return;
     const home = homeDisplayFor(r, usable, args.preferDisplayId) ?? touched[0]!;
-    const cursor = !cursorTaken && args.cursor !== null && containsPoint(r, args.cursor);
+    const cursor = !cursorTaken && args.cursor !== null && rectContainsPoint(r, args.cursor);
     if (cursor) cursorTaken = true;
     items.push({
       pickIndex,

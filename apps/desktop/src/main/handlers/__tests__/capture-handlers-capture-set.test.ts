@@ -28,7 +28,12 @@ const mocks = vi.hoisted(() => ({
   acquireSnapshotRaster: vi.fn(),
   /** Every crop the fake sharp wrote: which snapshot, which box. */
   crops: [] as { snapshot: string; box: unknown; path: string }[],
-  tempDirs: 0
+  /** Every PNG the fake sharp wrote from a blank canvas (the
+   *  cross-display composite): its size and how many pieces. */
+  composites: [] as { width: number; height: number; pieces: number; path: string }[],
+  tempDirs: 0,
+  cursorSample: null as null | { posX: number; posY: number },
+  resolveCursorLayerForRect: vi.fn()
 }));
 
 vi.mock("electron", () => ({
@@ -56,24 +61,50 @@ vi.mock("electron", () => ({
 }));
 
 vi.mock("sharp", () => ({
-  default: (input: Buffer) => {
-    const state: { box?: unknown } = {};
+  default: (input: Buffer | { create: { width: number; height: number } }) => {
+    const state: { box?: { width: number; height: number }; resize?: { width: number; height: number }; pieces: number } = {
+      pieces: 0
+    };
     const chain = {
-      extract(box: unknown) {
+      extract(box: { width: number; height: number }) {
         state.box = box;
+        mocks.crops.push({ snapshot: String(input), box, path: "" });
+        return chain;
+      },
+      resize(width: number, height: number) {
+        state.resize = { width, height };
+        return chain;
+      },
+      ensureAlpha() {
+        return chain;
+      },
+      raw() {
         return chain;
       },
       png() {
         return chain;
       },
+      composite(list: unknown[]) {
+        state.pieces = list.length;
+        return chain;
+      },
+      async toBuffer() {
+        const size = state.resize ?? state.box!;
+        return { data: Buffer.alloc(0), info: { width: size.width, height: size.height } };
+      },
       async toFile(path: string) {
-        mocks.crops.push({ snapshot: input.toString(), box: state.box, path });
+        if (Buffer.isBuffer(input)) {
+          mocks.crops[mocks.crops.length - 1]!.path = path;
+        } else {
+          mocks.composites.push({ ...input.create, pieces: state.pieces, path });
+        }
         return {};
       }
     };
     return chain;
   }
 }));
+
 
 vi.mock("node:fs/promises", () => ({
   copyFile: async () => undefined,
@@ -133,8 +164,24 @@ vi.mock("../../capture/window-list", () => ({
 }));
 
 vi.mock("../../capture/cursor-sample", () => ({
-  resolveCursorLayerForRect: async () => undefined,
+  resolveCursorLayerForRect: mocks.resolveCursorLayerForRect,
   sampleCursor: async () => null
+}));
+
+vi.mock("../../capture/cursor-capture-settings", () => ({
+  startCursorSampleIfEnabled: () =>
+    mocks.cursorSample === null
+      ? null
+      : Promise.resolve({
+          pngBytes: Buffer.alloc(0),
+          pixelWidth: 32,
+          pixelHeight: 32,
+          pointWidth: 16,
+          pointHeight: 16,
+          hotspotX: 0,
+          hotspotY: 0,
+          ...mocks.cursorSample
+        })
 }));
 
 vi.mock("../../clipboard-image-buffer", () => ({
@@ -307,6 +354,9 @@ function dispatchQuickCapture() {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.crops.length = 0;
+  mocks.composites.length = 0;
+  mocks.cursorSample = null;
+  mocks.resolveCursorLayerForRect.mockResolvedValue({ placed: true });
   mocks.isSelectorInvocationCurrent.mockReturnValue(true);
   mocks.findMainLibraryWindow.mockReturnValue(null);
   mocks.guardScreenCapture.mockResolvedValue(null);
@@ -421,14 +471,83 @@ describe("capture:interactive — Separate (capture set)", () => {
     expect(result.value.set?.map((r) => r.id)).toEqual(["cap_set_1"]);
   });
 
-  test("Windows mode over the same picks never fans out into a set", async () => {
+  test("a window straddling the seam is one item, composed from both snapshots at the sharper scale", async () => {
+    // 1200..1800: 240 pt on the 2× laptop, 360 pt on the 1× external.
+    mocks.pickRegion.mockResolvedValue({
+      ...setSelection,
+      extents: [
+        { x: 1200, y: 100, w: 600, h: 400 },
+        { x: 100, y: 120, w: 600, h: 400 }
+      ],
+      extentWindowIds: [null, 42]
+    });
+
+    const result = await dispatchQuickCapture();
+
+    expect(result.ok).toBe(true);
+    // Pick #1 is drawn from both displays onto one 2× canvas of its own
+    // size; pick #2 is a plain laptop crop.
+    expect(mocks.composites).toEqual([
+      expect.objectContaining({ width: 1200, height: 800, pieces: 2 })
+    ]);
+    const calls = mocks.persistCaptureFromTempV2.mock.calls.map((c) => c[0]);
+    expect(calls.map((c) => c.devicePixelRatio)).toEqual([2, 2]);
+    expect(calls[0]?.tempPath).toBe(mocks.composites[0]!.path);
+  });
+
+  test("only the first pick holding the pointer gets the cursor, placed against its clamped origin", async () => {
+    // The editor window hangs 50 pt off the laptop's left edge, so its
+    // crop (and canvas origin) starts at x = 0, not x = -50.
+    mocks.cursorSample = { posX: 200, posY: 200 };
+    mocks.pickRegion.mockResolvedValue({
+      ...setSelection,
+      extents: [
+        { x: 1440, y: 0, w: 1920, h: 1080 },
+        { x: -50, y: 120, w: 650, h: 400 },
+        { x: 150, y: 150, w: 200, h: 200 }
+      ],
+      extentWindowIds: [null, 42, 99]
+    });
+
+    const result = await dispatchQuickCapture();
+
+    expect(result.ok).toBe(true);
+    expect(mocks.resolveCursorLayerForRect).toHaveBeenCalledTimes(1);
+    expect(mocks.resolveCursorLayerForRect.mock.calls[0]?.[1]).toEqual({
+      x: 0,
+      y: 120,
+      w: 600,
+      h: 400
+    });
+    expect(mocks.resolveCursorLayerForRect.mock.calls[0]?.[2]).toBe(2);
+    const layers = mocks.persistCaptureFromTempV2.mock.calls.map((c) => c[0]?.cursorLayer);
+    expect(layers).toEqual([undefined, { placed: true }, undefined]);
+  });
+
+  test("when pick #1 fails to save, nothing else is written and the toast never loads", async () => {
+    mocks.persistCaptureFromTempV2.mockRejectedValue(new Error("Documents access denied"));
+
+    const result = await dispatchQuickCapture();
+
+    expect(result.ok).toBe(false);
+    expect(mocks.persistCaptureFromTempV2).toHaveBeenCalledTimes(1);
+    expect(mocks.setFloatOverState).toHaveBeenCalledWith({ kind: "cancel" });
+    expect(
+      mocks.setFloatOverState.mock.calls.some((c) => c[0]?.kind === "show-loaded")
+    ).toBe(false);
+  });
+
+  test("Windows mode over the same picks is still one union image", async () => {
     // Same picks, default shape: the one-image union path, untouched.
-    // (This fake sharp cannot compose the union, so that crop fails —
-    // what matters is that no per-pick crop or save happened.)
     mocks.pickRegion.mockResolvedValue({ ...setSelection, outputMode: "windows" });
     const result = await dispatchQuickCapture();
-    expect(result.ok).toBe(false);
-    expect(mocks.crops).toEqual([]);
-    expect(mocks.persistCaptureFromTempV2).not.toHaveBeenCalled();
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.value.kind !== "snap") throw new Error("expected a snap");
+    expect(result.value.set).toBeUndefined();
+    expect(mocks.persistCaptureFromTempV2).toHaveBeenCalledTimes(1);
+    // The 3260×1080 pt union box at the laptop's 2×: one canvas.
+    expect(mocks.composites).toEqual([
+      expect.objectContaining({ width: 6520, height: 2160 })
+    ]);
   });
 });

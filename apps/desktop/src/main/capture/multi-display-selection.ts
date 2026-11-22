@@ -85,6 +85,12 @@ export function intersectRects(a: LogicalRect, b: LogicalRect): LogicalRect | nu
   return { x: left, y: top, w: right - left, h: bottom - top };
 }
 
+/** Whether `p` lies in `r`, edges included. The one rule every cursor
+ *  placement decision uses: a pointer exactly on a kept edge is kept. */
+export function rectContainsPoint(r: LogicalRect, p: { x: number; y: number }): boolean {
+  return p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
+}
+
 export function unionRects(rects: readonly LogicalRect[]): LogicalRect | null {
   if (rects.length === 0) return null;
   let left = Infinity;

@@ -61,7 +61,10 @@ import {
 import { displayScaleFactorForId } from "../capture/display-density";
 import { planExtentMask } from "../capture/extent-mask";
 import {
+  displayRect,
+  intersectRects,
   planMultiDisplayComposite,
+  rectContainsPoint,
   type CompositeSource
 } from "../capture/multi-display-selection";
 import { captureSetPicks, planCaptureSet, type CaptureSetItem } from "../capture/capture-set";
@@ -781,12 +784,8 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
         const cursorInKeptPixels =
           !maskToExtents ||
           cursorPoint === null ||
-          pickedExtents.some(
-            (e) =>
-              cursorPoint.posX >= e.x &&
-              cursorPoint.posX <= e.x + e.w &&
-              cursorPoint.posY >= e.y &&
-              cursorPoint.posY <= e.y + e.h
+          pickedExtents.some((e) =>
+            rectContainsPoint(e, { x: cursorPoint.posX, y: cursorPoint.posY })
           );
         if (cursorInKeptPixels) {
           cursorLayer = await resolveCursorLayerForRect(
@@ -810,16 +809,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
           // so the CANVAS origin is the clamped origin — placing
           // against the raw rect would offset the sprite by the
           // overhang.
-          const bx = display.bounds.x;
-          const by = display.bounds.y;
-          const clampedX = Math.max(selection.rect.x, bx);
-          const clampedY = Math.max(selection.rect.y, by);
-          const clampedW =
-            Math.min(selection.rect.x + selection.rect.w, bx + display.bounds.width) -
-            clampedX;
-          const clampedH =
-            Math.min(selection.rect.y + selection.rect.h, by + display.bounds.height) -
-            clampedY;
+          const clamped = intersectRects(selection.rect, displayRect(display));
           // In WINDOWS output mode the gaps between picked windows are
           // written as alpha-0, so a pointer resting on the desktop
           // between two windows would be composited into empty
@@ -829,17 +819,13 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
           const cursorInKeptPixels =
             !maskToExtents ||
             cursorPoint === null ||
-            pickedExtents.some(
-              (e) =>
-                cursorPoint.posX >= e.x &&
-                cursorPoint.posX <= e.x + e.w &&
-                cursorPoint.posY >= e.y &&
-                cursorPoint.posY <= e.y + e.h
+            pickedExtents.some((e) =>
+              rectContainsPoint(e, { x: cursorPoint.posX, y: cursorPoint.posY })
             );
-          if (cursorInKeptPixels) {
+          if (cursorInKeptPixels && clamped !== null) {
             cursorLayer = await resolveCursorLayerForRect(
               cursorSamplePromise,
-              { x: clampedX, y: clampedY, w: clampedW, h: clampedH },
+              clamped,
               display.scaleFactor
             );
           }
@@ -1595,33 +1581,24 @@ function sharpForSnapshotRaster(source: SnapshotRasterLease["source"]) {
     : sharp(source.filePath);
 }
 
-/** A rect clamped to a display's bounds — the canvas origin a
- *  single-snapshot crop of `rect` actually starts at. */
-function clampRectToDisplay(
-  rect: Rect,
-  bounds: { x: number; y: number; width: number; height: number }
-): Rect {
-  const x = Math.max(rect.x, bounds.x);
-  const y = Math.max(rect.y, bounds.y);
-  return {
-    x,
-    y,
-    w: Math.min(rect.x + rect.w, bounds.x + bounds.width) - x,
-    h: Math.min(rect.y + rect.h, bounds.y + bounds.height) - y
-  };
-}
+/** How many set items are cropped at once. Each crop of a PNG-backed
+ *  snapshot decodes the whole display, and a set may hold up to
+ *  MAX_SELECTOR_EXTENTS picks, so this bounds peak memory while still
+ *  overlapping the work. */
+const CAPTURE_SET_CROP_CONCURRENCY = 3;
 
 /**
  * Save a multi-pick selection as a SET: one capture per pick, in pick
  * order. Geometry is `planCaptureSet` (capture/capture-set.ts); this is
  * the I/O.
  *
- * Every item is cropped before anything is saved, so a crop failure
- * saves nothing — the Library never gets half a set. Pick #1 is saved
- * first and the float-over opens on it at once (copy → paste stays as
- * fast as a single capture); the rest land in the toast's recent-snaps
- * rail as they persist. A later item that fails to save is logged and
- * skipped: the items before it are real captures and stay.
+ * Every item is cropped (a few at a time, from the frozen snapshots)
+ * before anything is saved, so a crop failure saves nothing — the
+ * Library never gets half a set. Pick #1 is then saved first and the
+ * float-over opens on it before the rest are written (copy → paste does
+ * not wait on them); the rest land in the toast's recent-snaps rail as
+ * they persist. A later item that fails to save is logged and skipped:
+ * the items before it are real captures and stay.
  */
 async function captureSelectionAsSet(args: {
   selection: Extract<SelectorResult, { ok: true }>;
@@ -1645,51 +1622,56 @@ async function captureSelectionAsSet(args: {
   const liveWindowsPromise = items.some((item) => item.windowId !== null) ? listWindows() : null;
 
   type Cropped = { item: CaptureSetItem; tempPath: string; scaleFactor: number };
-  const cropped: Cropped[] = [];
+  type CropOutcome =
+    | { ok: true; cropped: Cropped }
+    | { ok: false; reason: string; message: string };
+  const cropItem = async (item: CaptureSetItem): Promise<CropOutcome> => {
+    const homeSnapshotId = snapshotIdByDisplay.get(item.displayId)!;
+    if (item.extraDisplayIds.length === 0) {
+      // On one display: the exact crop a lone pick of this rect takes,
+      // recorded at the density a lone pick records.
+      const result = await cropScreenSnapshot(homeSnapshotId, item.rect, item.displayId);
+      if (!result.ok) return result;
+      const scaleFactor = displayScaleFactorForId(displays, item.displayId);
+      return { ok: true, cropped: { item, tempPath: result.tempPath, scaleFactor } };
+    }
+    // A window straddling a seam: its own rect is the box.
+    const result = await cropAcrossDisplaySnapshots(
+      [item.displayId, ...item.extraDisplayIds].map((displayId) => ({
+        displayId,
+        screenSnapshotId: snapshotIdByDisplay.get(displayId)!
+      })),
+      item.rect,
+      undefined
+    );
+    if (!result.ok) return result;
+    return {
+      ok: true,
+      cropped: { item, tempPath: result.tempPath, scaleFactor: result.scaleFactor }
+    };
+  };
+  // Bounded fan-out over frozen snapshots; results keep pick order.
+  const outcomes: CropOutcome[] = new Array(items.length);
+  let nextItem = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(CAPTURE_SET_CROP_CONCURRENCY, items.length) }, async () => {
+      while (nextItem < items.length) {
+        const index = nextItem;
+        nextItem += 1;
+        outcomes[index] = await cropItem(items[index]!);
+      }
+    })
+  );
+  args.releaseSnapshots();
+
+  const cropped = outcomes.flatMap((o) => (o.ok ? [o.cropped] : []));
   const discard = async (rest: readonly Cropped[]): Promise<void> => {
     for (const c of rest) await unlink(c.tempPath).catch(() => undefined);
   };
-  let failure: { reason: string; message: string } | null =
+  const failure: { reason: string; message: string } | null =
     items.length === 0
       ? { reason: "validation", message: "no pick overlaps a captured display" }
-      : null;
-  for (const item of items) {
-    if (failure !== null) break;
-    const homeSnapshotId = snapshotIdByDisplay.get(item.displayId)!;
-    if (item.extraDisplayIds.length === 0) {
-      // On one display: the exact crop a lone pick of this rect takes.
-      const display = displays.find((d) => d.id === item.displayId);
-      const result = await cropScreenSnapshot(homeSnapshotId, item.rect, item.displayId);
-      if (!result.ok || display === undefined) {
-        failure = result.ok
-          ? { reason: "validation", message: `unknown display id: ${item.displayId}` }
-          : result;
-        if (result.ok) await unlink(result.tempPath).catch(() => undefined);
-        break;
-      }
-      cropped.push({ item, tempPath: result.tempPath, scaleFactor: display.scaleFactor });
-    } else {
-      // A window straddling a seam: its own rect is the box.
-      const result = await cropAcrossDisplaySnapshots(
-        [
-          { displayId: item.displayId, screenSnapshotId: homeSnapshotId },
-          ...item.extraDisplayIds.map((displayId) => ({
-            displayId,
-            screenSnapshotId: snapshotIdByDisplay.get(displayId)!
-          }))
-        ],
-        item.rect,
-        undefined
-      );
-      if (!result.ok) {
-        failure = result;
-        break;
-      }
-      cropped.push({ item, tempPath: result.tempPath, scaleFactor: result.scaleFactor });
-    }
-  }
-  args.releaseSnapshots();
-
+      : (outcomes.find((o): o is Extract<CropOutcome, { ok: false }> => !o.ok) ?? null);
   if (failure !== null) {
     log.warn("capture set crop failed — nothing saved", {
       items: items.length,
@@ -1711,12 +1693,16 @@ async function captureSelectionAsSet(args: {
     const { item, tempPath, scaleFactor } = cropped[i]!;
     let cursorLayer: CursorLayerPlacement | undefined;
     if (item.cursor) {
+      // A one-display crop starts at the rect clamped to its display; a
+      // cross-display canvas starts at the rect's own origin.
       const display = displays.find((d) => d.id === item.displayId);
       const origin =
         item.extraDisplayIds.length === 0 && display !== undefined
-          ? clampRectToDisplay(item.rect, display.bounds)
+          ? intersectRects(item.rect, displayRect(display))
           : item.rect;
-      cursorLayer = await resolveCursorLayerForRect(cursorSamplePromise, origin, scaleFactor);
+      if (origin !== null) {
+        cursorLayer = await resolveCursorLayerForRect(cursorSamplePromise, origin, scaleFactor);
+      }
     }
     const snappedWindowId = item.windowId ?? undefined;
     const persisted = await persistAndBroadcast(

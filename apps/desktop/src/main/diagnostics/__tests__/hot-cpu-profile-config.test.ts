@@ -1,3 +1,4 @@
+import { migrateHotCpuCaptureRules } from "@pwrsnap/shared";
 import { describe, expect, test } from "vitest";
 import { hotCpuChromiumTraceEnabled, resolveHotCpuProfileConfig } from "../hot-cpu-profile-config";
 
@@ -47,4 +48,44 @@ test("Chromium capture requires its own explicit opt-in", () => {
   expect(hotCpuChromiumTraceEnabled(baseEnv)).toBe(false);
   expect(hotCpuChromiumTraceEnabled({ PWRSNAP_HOT_CPU_PROFILING_CHROMIUM_TRACE: "off" })).toBe(false);
   expect(hotCpuChromiumTraceEnabled({ PWRSNAP_HOT_CPU_PROFILING_CHROMIUM_TRACE: " true " })).toBe(true);
+});
+
+test("scripted legacy mode keeps its window, count and per-target threshold precedence", () => {
+  const env = {
+    ...baseEnv,
+    PWRSNAP_HOT_CPU_PROFILING_TRIGGER_MODE: "slowburn",
+    PWRSNAP_HOT_CPU_PROFILING_INTERVAL_MS: "3000",
+    PWRSNAP_HOT_CPU_PROFILING_CONSECUTIVE_SAMPLES: "3",
+    PWRSNAP_HOT_CPU_PROFILING_SLOWBURN_THRESHOLD_PERCENT: "33",
+    PWRSNAP_HOT_CPU_PROFILING_MAIN_SLOWBURN_THRESHOLD_PERCENT: "22"
+  };
+  for (const [target, thresholdPercent] of [["main", 22], ["renderer", 33]] as const) {
+    expect(resolveHotCpuProfileConfig({ env, target })).toMatchObject({
+      enabled: true, intervalMs: 3000, triggerMode: "slowburn",
+      rules: [{ id: "slowburn", thresholdPercent, durationMs: 9000, sampleCount: 3 }]
+    });
+  }
+});
+
+test("canonical rules round 3s cadence up to sufficient samples while a legacy script keeps its count", () => {
+  const env = { ...baseEnv, PWRSNAP_HOT_CPU_PROFILING_INTERVAL_MS: "3000" };
+  const rules = migrateHotCpuCaptureRules("spike");
+  rules.spike.durationMs = 1000;
+  rules.slowburn.enabled = true;
+  expect(resolveHotCpuProfileConfig({ env, captureRules: rules })).toMatchObject({
+    intervalMs: 3000, rules: [
+      { id: "spike", durationMs: 3000, sampleCount: 1 },
+      { id: "slowburn", durationMs: 4000, sampleCount: 2 }
+    ]
+  });
+  expect(resolveHotCpuProfileConfig({ env, triggerMode: "sustained" })).toMatchObject({
+    intervalMs: 3000, rules: [{ id: "sustained", durationMs: 6000, sampleCount: 2 }]
+  });
+  expect(resolveHotCpuProfileConfig({
+    env: { ...env, PWRSNAP_HOT_CPU_PROFILING_CONSECUTIVE_SAMPLES: "3" }, captureRules: rules
+  })).toMatchObject({
+    rules: [{ id: "spike", durationMs: 3000, sampleCount: 1 }, { id: "slowburn", durationMs: 9000, sampleCount: 3 }]
+  });
+  expect(rules.spike.durationMs).toBe(1000);
+  expect(rules.slowburn.durationMs).toBe(4000);
 });

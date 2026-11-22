@@ -64,7 +64,7 @@ let hotCpuShuttingDown = false;
 const chromiumTrace = new ChromiumTrace(() => contentTracing, (message) => hotCpuLog.warn(message), {
   workerModule: join(import.meta.dirname, "chromium-trace-worker.js")
 });
-let chromiumTraceAllowed = true;
+let chromiumTraceAllowed = false;
 const traceEligibleProfilers = new Set<HotCpuProfiler>();
 const tracePublications = new Set<Promise<void>>();
 
@@ -470,13 +470,18 @@ async function readHotCpuSettings(): Promise<Settings> {
   return getDesktopSettingsStore().read();
 }
 
+function syncChromiumTracePreference(settings: Settings): void {
+  const general = settings.general;
+  const preference = hotCpuChromiumTraceEnabled(process.env, general.hotCpuProfilingCaptureChromiumTrace);
+  chromiumTraceAllowed = preference && (
+    general.hotCpuProfilingEnabled || general.hotCpuProfilingCaptureHeapSnapshot || resolveHotCpuProfileConfig().enabled
+  );
+  void updateChromiumTrace();
+  if (!preference) chromiumTrace.cancelCapture();
+}
+
 export function syncHotCpuProfilersFromSettings(reason: string, settings?: Settings): void {
-  if (settings && hotCpuChromiumTraceEnabled()) {
-    chromiumTraceAllowed = settings.general.hotCpuProfilingEnabled ||
-      settings.general.hotCpuProfilingCaptureHeapSnapshot || resolveHotCpuProfileConfig().enabled;
-    void updateChromiumTrace();
-    if (!chromiumTraceAllowed) chromiumTrace.cancelCapture();
-  }
+  if (settings) syncChromiumTracePreference(settings);
   for (const sync of hotCpuProfilerSyncHandlers.values()) {
     sync(reason);
   }
@@ -518,11 +523,6 @@ export async function stopHotCpuProfilers(): Promise<void> {
 function hotCpuConfigKey(hotCpuConfig: EnabledHotCpuConfig): string {
   return JSON.stringify({
     startDelayMs: hotCpuConfig.startDelayMs,
-    triggerMode: hotCpuConfig.triggerMode,
-    intervalMs: hotCpuConfig.intervalMs,
-    thresholdPercent: hotCpuConfig.thresholdPercent,
-    slowburnThresholdPercent: hotCpuConfig.slowburnThresholdPercent,
-    consecutiveSamples: hotCpuConfig.consecutiveSamples,
     profileDurationMs: hotCpuConfig.profileDurationMs,
     cooldownMs: hotCpuConfig.cooldownMs,
     maxProfiles: hotCpuConfig.maxProfiles,
@@ -565,7 +565,7 @@ async function createHotCpuProfilerForTarget(options: {
     sessionDirectory: created.session.directoryPath
   });
 
-  const captureTrace = options.target === "renderer" && hotCpuChromiumTraceEnabled();
+  const captureTrace = options.target === "renderer";
   const profiler = new HotCpuProfiler({
     config: options.config,
     getAppMetrics: () => app.getAppMetrics(),
@@ -575,8 +575,9 @@ async function createHotCpuProfilerForTarget(options: {
         else traceEligibleProfilers.delete(profiler);
         return updateChromiumTrace();
       },
-      onProfileTriggered: (profilePath, triggerMonotonicMs, capturedAt) =>
-        captureChromiumTrace(created.session, profilePath, triggerMonotonicMs, capturedAt, options.config.profileDurationMs)
+      onProfileTriggered: (profilePath, triggerMonotonicMs, capturedAt) => chromiumTraceAllowed
+        ? captureChromiumTrace(created.session, profilePath, triggerMonotonicMs, capturedAt, options.config.profileDurationMs)
+        : undefined
     } : {}),
     onHeapSnapshotLimitReached: async () => {
       await bus.dispatch(
@@ -645,9 +646,11 @@ function createHotCpuProfilerSlot(options: {
 
       const settings = await readHotCpuSettings();
       if (hotCpuShuttingDown) return;
+      syncChromiumTracePreference(settings);
       const captureHeapSnapshot = settings.general.hotCpuProfilingCaptureHeapSnapshot;
       const hotCpuConfig = resolveHotCpuProfileConfig({
         captureHeapSnapshot,
+        ...(settings.general.hotCpuProfilingRules ? { captureRules: settings.general.hotCpuProfilingRules } : {}),
         enabled: settings.general.hotCpuProfilingEnabled || captureHeapSnapshot,
         heapSnapshotLimit: settings.general.hotCpuProfilingHeapSnapshotLimit,
         outputRoot: diagnosticsOutputRoot(),
@@ -666,7 +669,10 @@ function createHotCpuProfilerSlot(options: {
 
       const nextConfigKey = hotCpuConfigKey(hotCpuConfig);
       if (profilerPromise !== null) {
-        if (configKey === nextConfigKey) return;
+        if (configKey === nextConfigKey) {
+          startedProfiler?.updateRules(hotCpuConfig);
+          return;
+        }
         await stop(reason);
       }
 

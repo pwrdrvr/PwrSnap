@@ -1,14 +1,18 @@
 import { resolve } from "node:path";
-import type { HotCpuProfileTarget, HotCpuProfileTriggerMode } from "@pwrsnap/shared";
+import type {
+  HotCpuCaptureRules, HotCpuEffectiveRule, HotCpuEnvironmentOverrides,
+  HotCpuProfileTarget, HotCpuProfileTriggerMode, Settings
+} from "@pwrsnap/shared";
 import {
   HOT_CPU_PROFILE_SLOWBURN_THRESHOLD_DEFAULT_PERCENT,
   HOT_CPU_PROFILE_START_DELAY_DEFAULT_MS,
   HOT_CPU_PROFILE_TRIGGER_MODE_DEFAULT,
+  hotCpuRulesCadenceMs,
+  migrateHotCpuCaptureRules,
   isHotCpuProfileTriggerMode
 } from "@pwrsnap/shared";
 
 const DEFAULT_INTERVAL_MS = 2_000;
-const DEFAULT_THRESHOLD_PERCENT = 50;
 const DEFAULT_CONSECUTIVE_SAMPLES = 2;
 const DEFAULT_PROFILE_DURATION_MS = 15_000;
 const DEFAULT_COOLDOWN_MS = 60_000;
@@ -26,6 +30,7 @@ export type HotCpuProfileConfig =
       startDelayMs: number;
       triggerMode: HotCpuProfileTriggerMode;
       intervalMs: number;
+      rules?: HotCpuEffectiveRule[];
       thresholdPercent: number;
       slowburnThresholdPercent: number;
       consecutiveSamples: number;
@@ -41,8 +46,9 @@ function isEnabled(value: string | undefined): boolean {
   return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 }
 
-export function hotCpuChromiumTraceEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return isEnabled(env.PWRSNAP_HOT_CPU_PROFILING_CHROMIUM_TRACE);
+export function hotCpuChromiumTraceEnabled(env: NodeJS.ProcessEnv = process.env, preference = false): boolean {
+  const override = env.PWRSNAP_HOT_CPU_PROFILING_CHROMIUM_TRACE;
+  return override === undefined ? preference : isEnabled(override);
 }
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
@@ -71,13 +77,82 @@ function clampPercent(value: number): number {
   return Math.min(Math.max(value, 1), 100);
 }
 
-function parseTriggerMode(
-  value: string | undefined,
-  fallback: HotCpuProfileTriggerMode
-): HotCpuProfileTriggerMode {
-  if (!value) return fallback;
-  const normalized = value.trim().toLowerCase();
-  return isHotCpuProfileTriggerMode(normalized) ? normalized : fallback;
+const PREFIX = "PWRSNAP_HOT_CPU_PROFILING_";
+
+type RuleOptions = {
+  captureRules?: HotCpuCaptureRules;
+  triggerMode?: HotCpuProfileTriggerMode;
+  slowburnThresholdPercent?: number;
+};
+
+function resolveRules(options: RuleOptions, env: NodeJS.ProcessEnv, target?: HotCpuProfileTarget) {
+  const stored = options.captureRules ?? migrateHotCpuCaptureRules(
+    options.triggerMode ?? HOT_CPU_PROFILE_TRIGGER_MODE_DEFAULT,
+    options.slowburnThresholdPercent ?? HOT_CPU_PROFILE_SLOWBURN_THRESHOLD_DEFAULT_PERCENT
+  );
+  const keys: string[] = [];
+  const modeEnv = env.PWRSNAP_HOT_CPU_PROFILING_TRIGGER_MODE?.trim().toLowerCase();
+  const forcedMode = modeEnv && isHotCpuProfileTriggerMode(modeEnv) ? modeEnv : undefined;
+  if (forcedMode) keys.push(PREFIX + "TRIGGER_MODE");
+  const migrateThreshold = stored.slowburn.thresholdPercent;
+  const rules = forcedMode ? migrateHotCpuCaptureRules(forcedMode, migrateThreshold) : stored;
+  const nominalCadence = forcedMode ? DEFAULT_INTERVAL_MS : hotCpuRulesCadenceMs(rules);
+  const integerOverride = (suffix: string) => {
+    const key = PREFIX + suffix;
+    const value = parsePositiveInteger(env[key], 0);
+    if (value > 0) keys.push(key);
+    return value;
+  };
+  const intervalOverride = integerOverride("INTERVAL_MS");
+  const intervalMs = intervalOverride || nominalCadence;
+  const legacyTiming = Boolean(forcedMode || (!options.captureRules && intervalOverride));
+  const countOverride = integerOverride("CONSECUTIVE_SAMPLES");
+  function threshold(suffix: string, fallback: number, slowburn = false): number {
+    const mainKey = PREFIX + "MAIN_" + suffix;
+    const key = target === "main" && env[mainKey] !== undefined ? mainKey : PREFIX + suffix;
+    const value = parsePositiveNumber(env[key], 0);
+    if (value <= 0) return fallback;
+    keys.push(key);
+    // Preserve the historical Slow burn environment range.
+    return slowburn ? clampPercent(value) : value;
+  }
+  const highThreshold = threshold("THRESHOLD_PERCENT", rules[rules.high.mode].thresholdPercent);
+  const slowburnThreshold = threshold("SLOWBURN_THRESHOLD_PERCENT", rules.slowburn.thresholdPercent, true);
+  const active: HotCpuEffectiveRule[] = [];
+  function add(id: HotCpuProfileTriggerMode, thresholdPercent: number) {
+    const sampleCount = id === "spike" ? 1 : countOverride ||
+      (legacyTiming ? DEFAULT_CONSECUTIVE_SAMPLES : Math.max(2, Math.ceil(rules[id].durationMs / intervalMs)));
+    const durationMs = id === "spike" || countOverride || legacyTiming
+      ? sampleCount * intervalMs : rules[id].durationMs;
+    active.push({ id, thresholdPercent, sampleCount, durationMs });
+  }
+  if (rules.high.enabled) add(rules.high.mode, highThreshold);
+  if (rules.slowburn.enabled) add("slowburn", slowburnThreshold);
+  return { intervalMs, keys, active, forcedMode, highThreshold, slowburnThreshold, countOverride };
+}
+
+export function hotCpuSettingsWithEnvironment(settings: Settings, env: NodeJS.ProcessEnv = process.env): Settings {
+  const general = settings.general;
+  const options: RuleOptions = {
+    ...(general.hotCpuProfilingRules ? { captureRules: general.hotCpuProfilingRules } : {}),
+    triggerMode: general.hotCpuProfilingTriggerMode,
+    slowburnThresholdPercent: general.hotCpuProfilingSlowburnThresholdPercent
+  };
+  const main = resolveRules(options, env, "main");
+  const renderer = resolveRules(options, env, "renderer");
+  const keys = [...new Set([...main.keys, ...renderer.keys])];
+  const overrides: HotCpuEnvironmentOverrides = {};
+  if (keys.length) {
+    overrides.rules = {
+      keys, cadenceMs: main.intervalMs, main: main.active, renderer: renderer.active,
+      ...(main.forcedMode ? { forcedMode: main.forcedMode } : {})
+    };
+  }
+  if (isEnabled(env.PWRSNAP_HOT_CPU_PROFILING)) overrides.armed = true;
+  if (env.PWRSNAP_HOT_CPU_PROFILING_CHROMIUM_TRACE !== undefined) {
+    overrides.chromiumTrace = hotCpuChromiumTraceEnabled(env);
+  }
+  return Object.keys(overrides).length ? { ...settings, hotCpuProfilingEnvironment: overrides } : settings;
 }
 
 /** One config shape serves every monitored target (renderer + main);
@@ -87,31 +162,23 @@ function parseTriggerMode(
  *  `PWRSNAP_HOT_CPU_PROFILING_MAIN_SLOWBURN_THRESHOLD_PERCENT` env vars
  *  override the shared trigger thresholds for the main process only —
  *  everything else stays shared on purpose. */
-export function resolveHotCpuProfileConfig(options?: {
+export function resolveHotCpuProfileConfig(options?: RuleOptions & {
   captureHeapSnapshot?: boolean;
   enabled?: boolean;
   env?: NodeJS.ProcessEnv;
   heapSnapshotLimit?: number;
   outputRoot?: string;
   repoRoot?: string;
-  slowburnThresholdPercent?: number;
   startDelayMs?: number;
   target?: HotCpuProfileTarget;
-  triggerMode?: HotCpuProfileTriggerMode;
 }): HotCpuProfileConfig {
   const env = options?.env ?? process.env;
   if (!options?.enabled && !isEnabled(env.PWRSNAP_HOT_CPU_PROFILING)) {
     return { enabled: false };
   }
 
-  const isMainTarget = options?.target === "main";
-  const thresholdPercentEnv =
-    (isMainTarget ? env.PWRSNAP_HOT_CPU_PROFILING_MAIN_THRESHOLD_PERCENT : undefined) ??
-    env.PWRSNAP_HOT_CPU_PROFILING_THRESHOLD_PERCENT;
-  const slowburnThresholdPercentEnv =
-    (isMainTarget
-      ? env.PWRSNAP_HOT_CPU_PROFILING_MAIN_SLOWBURN_THRESHOLD_PERCENT
-      : undefined) ?? env.PWRSNAP_HOT_CPU_PROFILING_SLOWBURN_THRESHOLD_PERCENT;
+  const effective = resolveRules(options ?? {}, env, options?.target);
+  const primary = effective.active[0]!;
 
   const repoRoot = resolve(env.PWRSNAP_HOT_CPU_PROFILING_ROOT ?? options?.repoRoot ?? process.cwd());
   const outputRoot =
@@ -125,25 +192,12 @@ export function resolveHotCpuProfileConfig(options?: {
       env.PWRSNAP_HOT_CPU_PROFILING_START_DELAY_MS,
       options?.startDelayMs ?? HOT_CPU_PROFILE_START_DELAY_DEFAULT_MS
     ),
-    triggerMode: parseTriggerMode(
-      env.PWRSNAP_HOT_CPU_PROFILING_TRIGGER_MODE,
-      options?.triggerMode ?? HOT_CPU_PROFILE_TRIGGER_MODE_DEFAULT
-    ),
-    intervalMs: parsePositiveInteger(
-      env.PWRSNAP_HOT_CPU_PROFILING_INTERVAL_MS,
-      DEFAULT_INTERVAL_MS
-    ),
-    thresholdPercent: parsePositiveNumber(thresholdPercentEnv, DEFAULT_THRESHOLD_PERCENT),
-    slowburnThresholdPercent: clampPercent(
-      parsePositiveNumber(
-        slowburnThresholdPercentEnv,
-        options?.slowburnThresholdPercent ?? HOT_CPU_PROFILE_SLOWBURN_THRESHOLD_DEFAULT_PERCENT
-      )
-    ),
-    consecutiveSamples: parsePositiveInteger(
-      env.PWRSNAP_HOT_CPU_PROFILING_CONSECUTIVE_SAMPLES,
-      DEFAULT_CONSECUTIVE_SAMPLES
-    ),
+    triggerMode: primary.id,
+    intervalMs: effective.intervalMs,
+    rules: effective.active,
+    thresholdPercent: effective.highThreshold,
+    slowburnThresholdPercent: effective.slowburnThreshold,
+    consecutiveSamples: primary.id === "spike" ? effective.countOverride || DEFAULT_CONSECUTIVE_SAMPLES : primary.sampleCount,
     profileDurationMs: parsePositiveInteger(
       env.PWRSNAP_HOT_CPU_PROFILING_DURATION_MS,
       DEFAULT_PROFILE_DURATION_MS

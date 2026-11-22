@@ -359,9 +359,42 @@ describe("HotCpuProfiler", () => {
       expect(names).toEqual(["(root)", "segment2", "segment3", "(unrecorded)"]);
       expect(artifacts).toEqual(["renderer-hot-0001.cpuprofile"]);
       await vi.advanceTimersByTimeAsync(60_000);
-      expect(getAppMetrics).toHaveBeenCalledOnce();
+      expect(getAppMetrics).toHaveBeenCalledTimes(2);
       expect(commands.filter((command) => command === "Profiler.start")).toHaveLength(3);
       expect(target.debugger.isAttached()).toBe(false);
+    } finally {
+      await profiler.stop();
+    }
+  });
+
+  test("a Spike requires an observed interval after baseline and a gap cannot satisfy it", async () => {
+    const { session, events } = fakeSession(directoryPath!, "renderer");
+    const { target } = fakeTarget(4242);
+    let now = 0;
+    let cumulative = 0;
+    const profiler = new HotCpuProfiler({
+      config: enabledConfig({ triggerMode: "spike", intervalMs: 1000, profileDurationMs: 60_000 }),
+      monotonicNow: () => now, session, target, logger: silentLogger,
+      getAppMetrics() {
+        return [{ pid: 4242, type: "Tab",
+          cpu: { percentCPUUsage: 95, cumulativeCPUUsage: cumulative, idleWakeupsPerSecond: 0 },
+          memory: { workingSetSize: 0, peakWorkingSetSize: 0 }
+        }] as ProcessMetric[];
+      }
+    });
+    const captures = () => events.filter((event) => event.type === "profile-started");
+    try {
+      await profiler.start();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(captures()).toEqual([]);
+      now = 2000;
+      cumulative = 2;
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(captures()).toEqual([]);
+      now = 3000;
+      cumulative = 2.8;
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(captures()).toHaveLength(1);
     } finally {
       await profiler.stop();
     }

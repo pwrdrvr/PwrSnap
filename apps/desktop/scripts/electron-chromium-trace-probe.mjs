@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, contentTracing } from "electron";
@@ -14,6 +14,73 @@ import { build } from "vite";
 const scratch = await mkdtemp(join(tmpdir(), "pwrsnap-chromium-probe-"));
 app.setPath("userData", scratch);
 if (process.platform === "darwin") app.setActivationPolicy("accessory");
+
+async function checkCombinedCapture({ HotCpuProfiler, createHotCpuProfileSession }, window, trace, privateMarker) {
+  const config = {
+    enabled: true, outputRoot: scratch, repoRoot: scratch, startDelayMs: 0, intervalMs: 2000,
+    triggerMode: "sustained", thresholdPercent: 50, slowburnThresholdPercent: 15, consecutiveSamples: 2,
+    rules: [
+      { id: "sustained", thresholdPercent: 50, durationMs: 4000, sampleCount: 2 },
+      { id: "slowburn", thresholdPercent: 15, durationMs: 4000, sampleCount: 2 }
+    ],
+    profileDurationMs: 500, cooldownMs: 60_000, maxProfiles: 1, captureHeapSnapshot: false, heapSnapshotLimit: 2
+  };
+  const created = await createHotCpuProfileSession({
+    config, target: "renderer",
+    versions: { appVersion: app.getVersion(), electronVersion: process.versions.electron,
+      chromeVersion: process.versions.chrome, nodeVersion: process.versions.node }
+  });
+  assert(created.ok, "create private diagnostics session");
+  const { session } = created;
+  const notice = Promise.withResolvers();
+  const pid = window.webContents.getOSProcessId();
+  const started = performance.now();
+  let capture;
+  let tracePath;
+  const profiler = new HotCpuProfiler({
+    config, session, target: window.webContents, logger: { info() {}, warn() {}, error: console.error },
+    getAppMetrics: () => [{
+      pid, cpu: { cumulativeCPUUsage: (performance.now() - started) * 0.0009, percentCPUUsage: 0 },
+      memory: {}
+    }],
+    onEligibilityChanged: () => trace.setArmed(profiler.canCaptureAnotherProfile()),
+    onProfileTriggered(profilePath, triggerAt) {
+      tracePath = profilePath.replace(/\.cpuprofile$/u, ".trace.json");
+      const cpuWritten = Promise.withResolvers();
+      capture = trace.capture(tracePath, triggerAt, cpuWritten.promise, config.profileDurationMs);
+      return cpuWritten.resolve;
+    },
+    onProfileWritten: notice.resolve
+  });
+  try {
+    await profiler.start();
+    await window.webContents.executeJavaScript(`
+      (function burnBeforeCombinedCpuTrigger() {
+        performance.mark(${JSON.stringify(privateMarker)});
+        const until = performance.now() + 200;
+        while (performance.now() < until) {
+          document.body.style.width = (50 + performance.now() % 100) + 'px';
+          document.body.getBoundingClientRect();
+        }
+      })()
+    `);
+    const event = await notice.promise;
+    assert.deepEqual(event.matchedRules.map(({ id }) => id), ["sustained", "slowburn"]);
+    const profile = JSON.parse(await readFile(event.profilePath, "utf8"));
+    assert(profile.nodes.some(({ callFrame }) => callFrame.functionName === "burnBeforeCombinedCpuTrigger"),
+      "actual V8 profile must contain pre-trigger work");
+    assert.equal((await capture)?.status, "written");
+    await session.registerArtifact(basename(tracePath));
+    const manifest = JSON.parse(await readFile(join(session.directoryPath, "session.json"), "utf8"));
+    assert.deepEqual(manifest.artifacts, ["renderer-hot-0001.cpuprofile", "renderer-hot-0001.trace.json"]);
+    const filtered = await readFile(tracePath, "utf8");
+    assert(!filtered.includes(privateMarker));
+    assert(JSON.parse(filtered).traceEvents.some(({ name }) => name === "Layout"));
+    console.log("Combined rules: one CPU notice, V8 pre-trigger work, and a readable redacted trace in the same session");
+  } finally {
+    await profiler.stop();
+  }
+}
 
 async function run() {
   const watchdog = setTimeout(() => {
@@ -33,14 +100,32 @@ async function run() {
     await build({
       configFile: false,
       logLevel: "warn",
+      plugins: [{
+        name: "probe-logger",
+        enforce: "pre",
+        resolveId(id, importer) {
+          if (id === "../log" && importer?.endsWith("hot-cpu-profiler.ts")) return "\0probe-logger";
+        },
+        load(id) {
+          if (id === "\0probe-logger") return "export function getMainLogger() { return console; }";
+        }
+      }],
       build: {
-        ssr: join(import.meta.dirname, "../src/main/diagnostics/chromium-trace.ts"),
+        ssr: true,
         outDir: scratch,
         emptyOutDir: false,
-        rollupOptions: { output: { entryFileNames: "controller.mjs" } }
+        rollupOptions: {
+          input: Object.fromEntries(["chromium-trace", "hot-cpu-profiler", "hot-cpu-profile-session"].map((name) =>
+            [name, join(import.meta.dirname, `../src/main/diagnostics/${name}.ts`)]
+          )),
+          output: { entryFileNames: "[name].mjs" }
+        }
       }
     });
-    const { ChromiumTrace } = await import(pathToFileURL(join(scratch, "controller.mjs")).href);
+    const load = (name) => import(pathToFileURL(join(scratch, `${name}.mjs`)).href);
+    const [{ ChromiumTrace }, cpuProfiler, cpuSession] = await Promise.all([
+      load("chromium-trace"), load("hot-cpu-profiler"), load("hot-cpu-profile-session")
+    ]);
     await new Promise((resolve, reject) => {
       server.once("error", reject);
       server.listen(0, "127.0.0.1", resolve);
@@ -124,6 +209,7 @@ async function run() {
     assert(safeRendererEvents.some(({ name }) => name === "ResourceSendRequest"), "redacted network timing must survive");
     if (process.platform !== "win32") assert.equal((await stat(artifact)).mode & 0o777, 0o600);
     console.log(`Electron ${process.versions.electron} on ${process.platform}: rolling eviction, trigger freeze, renderer timing and redaction verified (${captured.rawBytes} raw bytes)`);
+    await checkCombinedCapture({ ...cpuProfiler, ...cpuSession }, window, trace, privateMarker);
   } catch (error) {
     console.error(error);
     process.exitCode = 1;

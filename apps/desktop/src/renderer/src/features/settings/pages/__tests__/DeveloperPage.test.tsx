@@ -192,14 +192,28 @@ describe("DeveloperPage", () => {
     });
   });
 
-  test("trigger mode selection patches only the trigger mode", async () => {
+  test("the final rule stays on and Slow burn can be enabled independently", async () => {
     await renderDeveloper();
-    await act(async () => {
-      buttonByText("Slowburn").click();
-    });
-    expect(patchMock).toHaveBeenCalledWith({
-      general: { hotCpuProfilingTriggerMode: "slowburn" }
-    });
+    const high = container!.querySelector<HTMLInputElement>('input[aria-disabled="true"]')!;
+    await act(async () => high.click());
+    expect(high.checked).toBe(true);
+    expect(patchMock).not.toHaveBeenCalled();
+    expect(container!.textContent).toContain("At least one rule stays on.");
+    const slowburn = [...container!.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
+      .find((input) => input.parentElement?.textContent === "Slow burn")!;
+    await act(async () => slowburn.click());
+    expect(patchMock).toHaveBeenCalledWith({ general: { hotCpuProfilingRules: expect.objectContaining({
+      high: { enabled: true, mode: "sustained" },
+      slowburn: { enabled: true, thresholdPercent: 15, durationMs: 4000 }
+    }) } });
+  });
+
+  test("Chromium trace defaults off and writes only its toggle", async () => {
+    await renderDeveloper();
+    const toggle = container!.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Chromium trace"]')!;
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    await act(async () => toggle.click());
+    expect(patchMock).toHaveBeenCalledWith({ general: { hotCpuProfilingCaptureChromiumTrace: true } });
   });
 
   test("diagnostics folder control dispatches the reveal command", async () => {

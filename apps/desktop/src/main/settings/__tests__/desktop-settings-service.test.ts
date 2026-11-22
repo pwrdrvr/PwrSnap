@@ -30,6 +30,7 @@ import {
   acceleratorsAreEquivalent,
   defaultHotkeysForPlatform,
   shortcutPlatformFromString,
+  migrateHotCpuCaptureRules,
   type Settings
 } from "@pwrsnap/shared";
 import {
@@ -766,6 +767,46 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect((await read("dock-junk.json", { editToolbarDock: "sideways" })).editToolbarDock).toBe(
       "float"
     );
+  });
+
+  test.each(["spike", "sustained", "slowburn"] as const)("migrates legacy %s once and writes the downgrade mirror", async (mode) => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(filePath, JSON.stringify({ schemaVersion: 1, general: {
+      hotCpuProfilingTriggerMode: mode, hotCpuProfilingSlowburnThresholdPercent: 27
+    } }));
+    const svc = makeService();
+    const general = (await svc.read()).general;
+    expect(general.hotCpuProfilingRules).toBeUndefined();
+    const migrated = migrateHotCpuCaptureRules(
+      general.hotCpuProfilingTriggerMode, general.hotCpuProfilingSlowburnThresholdPercent
+    );
+    expect(migrated).toMatchObject({
+      high: { enabled: mode !== "slowburn", mode: mode === "spike" ? "spike" : "sustained" },
+      spike: { thresholdPercent: 50, durationMs: 2000 },
+      sustained: { thresholdPercent: 50, durationMs: 4000 },
+      slowburn: { enabled: mode === "slowburn", thresholdPercent: 27, durationMs: 4000 }
+    });
+    const next = { ...migrated,
+      high: { enabled: false, mode: "spike" as const },
+      slowburn: { enabled: true, thresholdPercent: 260, durationMs: 30000 as const }
+    };
+    await svc.write({ general: { hotCpuProfilingRules: next, hotCpuProfilingCaptureChromiumTrace: true } });
+    const disk = JSON.parse(readFileSync(filePath, "utf8"));
+    expect(disk.general).toMatchObject({
+      hotCpuProfilingTriggerMode: "slowburn", hotCpuProfilingSlowburnThresholdPercent: 260,
+      hotCpuProfilingRules: next, hotCpuProfilingCaptureChromiumTrace: true
+    });
+    disk.general.hotCpuProfilingTriggerMode = "sustained";
+    disk.general.hotCpuProfilingSlowburnThresholdPercent = 5;
+    writeFileSync(filePath, JSON.stringify(disk));
+    expect((await makeService().read()).general).toMatchObject({
+      hotCpuProfilingRules: next, hotCpuProfilingTriggerMode: "slowburn", hotCpuProfilingSlowburnThresholdPercent: 260
+    });
+    disk.general.hotCpuProfilingRules.slowburn.enabled = false;
+    writeFileSync(filePath, JSON.stringify(disk));
+    expect((await makeService().read()).general.hotCpuProfilingRules?.high).toEqual({
+      enabled: true, mode: "sustained"
+    });
   });
 
   test("v1 shape missing `general.launchAtLogin` gets the opt-in default (false) filled in", async () => {

@@ -14,6 +14,7 @@ export type HotCpuProfileSample = {
    *  ~43% during the 2026-08-20 incident) — kept only for comparison;
    *  `cpuPercent` (cumulative-delta) is the reading that matters. */
   electronCpuPercent?: number;
+  measurement?: "baseline" | "cumulative" | "electron";
   cumulativeCpuDeltaSeconds?: number;
   cumulativeCpuSeconds?: number;
   wallDeltaSeconds?: number;
@@ -62,6 +63,7 @@ type HotCpuProfileSessionManifest = {
     startDelayMs: number;
     triggerMode: string;
     intervalMs: number;
+    rules?: NonNullable<Extract<HotCpuProfileConfig, { enabled: true }>["rules"]>;
     thresholdPercent: number;
     slowburnThresholdPercent: number;
     consecutiveSamples: number;
@@ -133,6 +135,7 @@ export async function createHotCpuProfileSession(options: {
       startDelayMs: options.config.startDelayMs,
       triggerMode: options.config.triggerMode,
       intervalMs: options.config.intervalMs,
+      ...(options.config.rules ? { rules: options.config.rules } : {}),
       thresholdPercent: options.config.thresholdPercent,
       slowburnThresholdPercent: options.config.slowburnThresholdPercent,
       consecutiveSamples: options.config.consecutiveSamples,

@@ -41,6 +41,7 @@ import {
   EDIT_TOOLBAR_DOCKS,
   GRID_ZOOM_MAX,
   GRID_ZOOM_MIN,
+  hotCpuCaptureRulesSchema,
   isHotCpuProfileStartDelayMs,
   isHotCpuProfileTriggerMode,
   isAbsoluteExecutablePath,
@@ -370,6 +371,22 @@ export function validateSettingsWrite(
           "invalid_general_developerMode",
           "settings:write: general.developerMode must be a boolean"
         )
+      };
+    }
+    if (general.hotCpuProfilingRules !== undefined &&
+        !hotCpuCaptureRulesSchema.safeParse(general.hotCpuProfilingRules).success) {
+      return {
+        ok: false,
+        error: validationError("invalid_general_hotCpuProfilingRules",
+          "Capture rules require a valid threshold and duration for each rule and at least one enabled rule.")
+      };
+    }
+    if (general.hotCpuProfilingCaptureChromiumTrace !== undefined &&
+        !isBoolean(general.hotCpuProfilingCaptureChromiumTrace)) {
+      return {
+        ok: false,
+        error: validationError("invalid_general_hotCpuProfilingCaptureChromiumTrace",
+          "Chromium trace must be a boolean.")
       };
     }
     if (

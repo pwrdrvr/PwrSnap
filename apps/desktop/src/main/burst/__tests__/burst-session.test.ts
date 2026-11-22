@@ -485,4 +485,34 @@ describe("the pointer beside the stills", () => {
     // Still 1's hotspot (900 pt) is off its 400 pt-wide still: no layer.
     expect(layers).toEqual([`arrow sprite@${(100 - 4) * 2},${(50 - 2) * 2} 32x48`, null]);
   });
+
+  test("a sprite that cannot be read costs its layer, never the still", async () => {
+    const { rootDir, framesDir, reported } = makeBurstDir(2);
+    const pointerDir = join(rootDir, "pointer");
+    mkdirSync(pointerDir);
+    const spritePath = join(pointerDir, "pointer-0.png");
+    writeFileSync(spritePath, "arrow sprite");
+    const burstId = openBurstSession({
+      rootDir,
+      framesDir,
+      frames: reported.map((f) => ({ ...f, pointer: { x: 100, y: 50, sprite: 0 } })),
+      evictedFrames: 0,
+      droppedFrames: 0,
+      sourceApp: null,
+      sourceWindowTitle: null,
+      devicePixelRatio: 2,
+      pointerDir,
+      pointerSprites: [{ id: 0, path: spritePath, pointWidth: 16, pointHeight: 24, hotspotX: 4, hotspotY: 2 }]
+    });
+    unlinkSync(spritePath);
+    const layers: boolean[] = [];
+    const persist: PersistStill = async (tempPath, _app, options) => {
+      unlinkSync(tempPath);
+      layers.push(options.cursorLayer !== undefined);
+      return { ok: true, value: { id: `cap-${layers.length}` } as CaptureRecord };
+    };
+    const result = await keepBurstFrames(burstId, [0, 1], false, persist);
+    expect(result).toEqual({ ok: true, value: { captureIds: ["cap-1", "cap-2"] } });
+    expect(layers).toEqual([false, false]);
+  });
 });

@@ -462,6 +462,23 @@ export async function keepBurstFrames(
   }
   const work = (async (): Promise<Result<{ captureIds: string[] }, PwrSnapError>> => {
     const firstKept = chosen[0]!.utcMs;
+    // One read per distinct sprite. The pointer is an optional layer: a
+    // sprite that cannot be read costs that layer, never the still.
+    const spriteBytes = new Map<number, Promise<Buffer | null>>();
+    const readSprite = (sprite: PointerSpriteFile): Promise<Buffer | null> => {
+      let pending = spriteBytes.get(sprite.id);
+      if (pending === undefined) {
+        pending = readFile(sprite.path).catch((cause: unknown) => {
+          log.warn("burst pointer sprite unreadable; keeping without it", {
+            burstId,
+            code: (cause as { code?: unknown }).code ?? "unknown"
+          });
+          return null;
+        });
+        spriteBytes.set(sprite.id, pending);
+      }
+      return pending;
+    };
     const captureIds: string[] = [];
     for (const frame of chosen) {
       if (s.kept.has(frame.index)) continue;
@@ -474,10 +491,11 @@ export async function keepBurstFrames(
       try {
         await copyFile(frame.path, staged);
         const placed = withPointer ? framePointerPlacement(frame, s.sprites, s.devicePixelRatio) : null;
-        const cursorLayer: CursorLayerPlacement | undefined = placed === null
+        const pngBytes = placed === null ? null : await readSprite(placed.sprite);
+        const cursorLayer: CursorLayerPlacement | undefined = placed === null || pngBytes === null
           ? undefined
           : {
-              pngBytes: await readFile(placed.sprite.path),
+              pngBytes,
               xPx: placed.xPx,
               yPx: placed.yPx,
               drawWidthPx: placed.drawWidthPx,

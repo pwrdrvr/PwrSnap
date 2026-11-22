@@ -178,6 +178,20 @@ func pointerTravelsBesideTheStills(dir: URL) {
     let files = ((try? FileManager.default.contentsOfDirectory(atPath: sprites.path)) ?? []).sorted()
     expect(files == ["pointer-0.png", "pointer-1.png", "pointer-2.png"], "each sprite written once: \(files)")
     expect((try? Data(contentsOf: sprites.appendingPathComponent("pointer-1.png"))) == beam, "sprite bytes as given")
+
+    // An animated cursor is a new image every tick: the registry stops at
+    // its limit, and sprites it already has keep their ids.
+    let capped = dir.appendingPathComponent("capped")
+    try? FileManager.default.createDirectory(at: capped, withIntermediateDirectories: true)
+    let small = PointerSpriteRegistry(dir: capped, limit: 3)
+    let spinner = (0..<10).map { n in
+        small.register(png: Data([UInt8(n)]), pixelWidth: 2, pixelHeight: 2, pointWidth: 1, pointHeight: 1, hotspotX: 0, hotspotY: 0)
+    }
+    expect(spinner == [0, 1, 2, nil, nil, nil, nil, nil, nil, nil], "no ids past the limit: \(spinner)")
+    expect(small.register(png: Data([1]), pixelWidth: 2, pixelHeight: 2, pointWidth: 1, pointHeight: 1, hotspotX: 0, hotspotY: 0) == 1,
+           "a sprite seen before the limit keeps its id")
+    let cappedFiles = (try? FileManager.default.contentsOfDirectory(atPath: capped.path)) ?? []
+    expect(cappedFiles.count == 3, "no files past the limit: \(cappedFiles.sorted())")
 }
 
 func pixel(of path: String) -> (r: Int, g: Int, b: Int, w: Int, h: Int)? {

@@ -40,8 +40,14 @@ struct PointerSprite: Equatable {
 }
 
 /// The distinct sprites a burst has seen, each written to `dir` once as
-/// `pointer-<id>.png`. Not thread-safe: the tracker serializes access.
+/// `pointer-<id>.png`, at most `limit` of them: an animated cursor (the
+/// spinning wait cursor) is a new image every tick, and a long take must not
+/// turn that into thousands of files. Past the limit a new sprite gets no id
+/// (its stills carry no pointer); sprites already seen keep theirs. Not
+/// thread-safe: the tracker serializes access.
 final class PointerSpriteRegistry {
+    static let defaultLimit = 64
+
     private struct Key: Hashable {
         let png: Data
         let pointWidth: Double
@@ -51,10 +57,14 @@ final class PointerSpriteRegistry {
     }
 
     private let dir: URL
+    private let limit: Int
     private var ids: [Key: Int] = [:]
     private(set) var sprites: [PointerSprite] = []
 
-    init(dir: URL) { self.dir = dir }
+    init(dir: URL, limit: Int = PointerSpriteRegistry.defaultLimit) {
+        self.dir = dir
+        self.limit = max(0, limit)
+    }
 
     /// The id for this sprite, writing it the first time it is seen. Nil
     /// when the file cannot be written (that still then has no sprite).
@@ -64,6 +74,7 @@ final class PointerSpriteRegistry {
     ) -> Int? {
         let key = Key(png: png, pointWidth: pointWidth, pointHeight: pointHeight, hotspotX: hotspotX, hotspotY: hotspotY)
         if let id = ids[key] { return id }
+        guard sprites.count < limit else { return nil }
         let id = sprites.count
         let url = dir.appendingPathComponent("pointer-\(id).png")
         do {
@@ -87,6 +98,9 @@ final class PointerTracker {
     private let lock = NSLock()
     private var currentSprite: Int?
     private var timer: DispatchSourceTimer?
+    /// The last tick's raw cursor image (main queue only): an unchanged
+    /// cursor — almost every tick — skips the PNG encode and the lookup.
+    private var lastRaw: (pixels: Data, hotspot: NSPoint, size: NSSize)?
 
     init(dir: URL, origin: CGPoint) {
         self.origin = origin
@@ -137,8 +151,16 @@ final class PointerTracker {
         // usually 1× and would look blurry drawn over a Retina still.
         guard let rep = image.representations.compactMap({ $0 as? NSBitmapImageRep })
                 .max(by: { $0.pixelsWide < $1.pixelsWide })
-                ?? image.tiffRepresentation.flatMap({ NSBitmapImageRep(data: $0) }),
-              let png = rep.representation(using: .png, properties: [:]) else { return }
+                ?? image.tiffRepresentation.flatMap({ NSBitmapImageRep(data: $0) }) else { return }
+        var raw: Data?
+        if !rep.isPlanar, let bytes = rep.bitmapData {
+            raw = Data(bytes: bytes, count: rep.bytesPerRow * rep.pixelsHigh)
+            if let last = lastRaw, last.pixels == raw, last.hotspot == cursor.hotSpot, last.size == image.size {
+                return
+            }
+        }
+        guard let png = rep.representation(using: .png, properties: [:]) else { return }
+        lastRaw = raw.map { ($0, cursor.hotSpot, image.size) }
         lock.lock()
         defer { lock.unlock() }
         currentSprite = registry.register(

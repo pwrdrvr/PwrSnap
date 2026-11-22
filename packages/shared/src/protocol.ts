@@ -3374,6 +3374,8 @@ export type HotkeyRegistrationFailureCode =
 export type HotkeyRegistrationFailure = {
   code: HotkeyRegistrationFailureCode;
   message: string;
+  conflictsWith?: HotkeySettingKey;
+  threw?: boolean;
 };
 
 /** Runtime ownership of one persisted hotkey. Settings remain authoritative:

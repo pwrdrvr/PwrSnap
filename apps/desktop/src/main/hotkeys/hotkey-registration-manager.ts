@@ -3,6 +3,7 @@ import {
   acceleratorToDisplayText,
   acceleratorsAreEquivalent,
   canonicalAcceleratorForPlatform,
+  physicalAcceleratorIdentity,
   type HotkeyRegistrationFailure,
   type HotkeyRegistrationStatusSnapshot,
   type Settings,
@@ -24,6 +25,7 @@ export function isHotkeyKind(value: unknown): value is HotkeyKind {
 
 export type GlobalShortcutRegistrar = {
   register(accelerator: string, callback: () => void): boolean;
+  isRegistered(accelerator: string): boolean;
   unregister(accelerator: string): void;
 };
 
@@ -161,7 +163,8 @@ export class HotkeyRegistrationManager implements HotkeyRegistrationCoordinator 
       }
       if (accelerator === "") continue;
 
-      const existing = claimed.get(accelerator);
+      const identity = physicalAcceleratorIdentity(accelerator, this.platform)!;
+      const existing = claimed.get(identity);
       if (existing !== undefined) {
         this.logger.warn("hotkey registration skipped duplicate persisted binding", {
           kind,
@@ -171,16 +174,18 @@ export class HotkeyRegistrationManager implements HotkeyRegistrationCoordinator 
         this.failures.set(kind, this.duplicateStatus(kind, existing));
         continue;
       }
-      claimed.set(accelerator, kind);
+      claimed.set(identity, kind);
 
       try {
-        if (!this.registrar.register(accelerator, this.callback(kind))) {
-          this.logger.warn("failed to register persisted hotkey (likely reserved or in use)", {
+        const failure = this.tryRegister(kind, accelerator);
+        if (failure !== null) {
+          this.logger.warn("failed to register persisted hotkey", {
             kind,
             accelerator,
-            platform: this.platform
+            platform: this.platform,
+            code: failure.code
           });
-          this.failures.set(kind, this.unavailableStatus(kind, accelerator));
+          this.failures.set(kind, failure);
           continue;
         }
         this.active.set(kind, accelerator);
@@ -197,9 +202,8 @@ export class HotkeyRegistrationManager implements HotkeyRegistrationCoordinator 
     nextHotkeys: Settings["hotkeys"]
   ): HotkeyRegistrationTransaction {
     // Persisted configuration and successful OS ownership are deliberately
-    // separate. A syntactically valid chord may have failed during the
-    // best-effort boot pass because another app owned it. An unrelated edit
-    // must neither retry that unchanged chord nor mark it active on commit.
+    // separate. An unrelated edit must leave an unchanged boot failure
+    // inactive until the user retries or replaces that binding.
     // Handler registration precedes the asynchronous boot settings read. If
     // an unusually fast settings edit wins that race, establish the same
     // best-effort baseline here before staging only the actual edit.
@@ -229,15 +233,22 @@ export class HotkeyRegistrationManager implements HotkeyRegistrationCoordinator 
     }
     const before = new Map(this.active);
     const failuresBefore = new Map(this.failures);
-    const currentOwner = new Map<string, HotkeyKind>();
-    for (const [kind, accelerator] of before) currentOwner.set(accelerator, kind);
+    type Binding = { kind: HotkeyKind; accelerator: string };
+    const currentOwner = new Map<string, Binding>();
+    for (const [kind, accelerator] of before) {
+      currentOwner.set(physicalAcceleratorIdentity(accelerator, this.platform)!, {
+        kind,
+        accelerator
+      });
+    }
 
     // New accelerators that PwrSnap does not already own can be staged while
     // every prior binding stays live. This is the common one-row edit path.
     const staged = new Set<string>();
     // A swap/transfer needs a brief unregister/register handoff because
     // Electron cannot replace a callback for an owned accelerator in place.
-    const releasedForTransfer = new Set<string>();
+    const transfers = new Map<HotkeyKind, Binding>();
+    const releasedForTransfer = new Map<string, HotkeyKind>();
 
     const undoPreparedState = (): Map<HotkeyKind, string> => {
       const restoredActive = new Map(before);
@@ -245,14 +256,12 @@ export class HotkeyRegistrationManager implements HotkeyRegistrationCoordinator 
       for (const accelerator of [...staged].reverse()) {
         this.safeUnregister(accelerator, "rollback staged hotkey");
       }
-      for (const accelerator of releasedForTransfer) {
-        const owner = currentOwner.get(accelerator);
-        if (owner === undefined) continue;
+      for (const [accelerator, owner] of releasedForTransfer) {
         try {
-          const restored = this.registrar.register(accelerator, this.callback(owner));
-          if (!restored) {
+          const failure = this.tryRegister(owner, accelerator);
+          if (failure !== null) {
             restoredActive.delete(owner);
-            restoredFailures.set(owner, this.unavailableStatus(owner, accelerator));
+            restoredFailures.set(owner, failure);
             this.logger.error("failed to restore prior hotkey during rollback", {
               kind: owner,
               accelerator,
@@ -280,8 +289,12 @@ export class HotkeyRegistrationManager implements HotkeyRegistrationCoordinator 
     try {
       for (const kind of changed) {
         const next = desired.get(kind) ?? "";
-        const previous = before.get(kind) ?? "";
-        if (next === "" || next === previous || currentOwner.has(next)) continue;
+        if (next === "") continue;
+        const owner = currentOwner.get(physicalAcceleratorIdentity(next, this.platform)!);
+        if (owner !== undefined) {
+          if (owner.kind !== kind) transfers.set(kind, owner);
+          continue;
+        }
         this.registerOrThrow(kind, next);
         staged.add(next);
       }
@@ -289,18 +302,14 @@ export class HotkeyRegistrationManager implements HotkeyRegistrationCoordinator 
       // Support atomic multi-row swaps (A=X,B=Y -> A=Y,B=X). Candidate
       // duplicates were rejected above, so every transferred accelerator has
       // exactly one destination callback.
-      for (const kind of changed) {
-        const next = desired.get(kind) ?? "";
-        const owner = currentOwner.get(next);
-        if (next === "" || owner === undefined || owner === kind) continue;
-        if (!releasedForTransfer.has(next)) {
-          this.registrar.unregister(next);
-          releasedForTransfer.add(next);
-        }
+      // Match by physical chord and release the spelling actually registered.
+      // The proposed binding may use an alias such as Ctrl+Alt for AltGr.
+      for (const owner of transfers.values()) {
+        this.registrar.unregister(owner.accelerator);
+        releasedForTransfer.set(owner.accelerator, owner.kind);
       }
-      for (const kind of changed) {
-        const next = desired.get(kind) ?? "";
-        if (!releasedForTransfer.has(next)) continue;
+      for (const kind of transfers.keys()) {
+        const next = desired.get(kind)!;
         this.registerOrThrow(kind, next);
         staged.add(next);
       }
@@ -375,9 +384,10 @@ export class HotkeyRegistrationManager implements HotkeyRegistrationCoordinator 
       const restored = new Map(before);
       for (const [kind, accelerator] of released) {
         try {
-          if (!this.registrar.register(accelerator, this.callback(kind))) {
+          const failure = this.tryRegister(kind, accelerator);
+          if (failure !== null) {
             restored.delete(kind);
-            this.failures.set(kind, this.unavailableStatus(kind, accelerator));
+            this.failures.set(kind, failure);
           }
         } catch (restoreCause) {
           restored.delete(kind);
@@ -421,15 +431,17 @@ export class HotkeyRegistrationManager implements HotkeyRegistrationCoordinator 
         this.failures.delete(kind);
         continue;
       }
-      const existing = claimed.get(accelerator);
+      const identity = physicalAcceleratorIdentity(accelerator, this.platform)!;
+      const existing = claimed.get(identity);
       if (existing !== undefined) {
         this.failures.set(kind, this.duplicateStatus(kind, existing));
         continue;
       }
-      claimed.set(accelerator, kind);
+      claimed.set(identity, kind);
       try {
-        if (!this.registrar.register(accelerator, this.callback(kind))) {
-          this.failures.set(kind, this.unavailableStatus(kind, accelerator));
+        const failure = this.tryRegister(kind, accelerator);
+        if (failure !== null) {
+          this.failures.set(kind, failure);
           continue;
         }
         this.active.set(kind, accelerator);
@@ -500,8 +512,9 @@ export class HotkeyRegistrationManager implements HotkeyRegistrationCoordinator 
     }
 
     try {
-      if (!this.registrar.register(accelerator, this.callback(kind))) {
-        this.failures.set(kind, this.unavailableStatus(kind, accelerator));
+      const failure = this.tryRegister(kind, accelerator);
+      if (failure !== null) {
+        this.failures.set(kind, failure);
         return this.statusSnapshot();
       }
     } catch (cause) {
@@ -523,15 +536,15 @@ export class HotkeyRegistrationManager implements HotkeyRegistrationCoordinator 
   ): HotkeyRegistrationTransaction {
     // Probe only changed candidates. The recorder already captured and
     // released the candidate key before settings:write starts, so a temporary
-    // no-op native registration can prove availability without dispatching a
-    // capture callback. Commit and rollback both release every probe; lease
-    // end alone rebuilds durable native ownership from committed settings.
+    // no-op native registration can check for an immediate refusal without
+    // dispatching a capture callback. Commit and rollback release every probe.
+    // Lease end rebuilds native ownership from committed settings.
     const staged: string[] = [];
     try {
       for (const kind of changed) {
         const accelerator = desired.get(kind) ?? "";
         if (accelerator === "") continue;
-        this.probeOrThrow(kind, accelerator);
+        this.registerOrThrow(kind, accelerator, () => undefined);
         staged.push(accelerator);
       }
     } catch (cause) {
@@ -591,16 +604,18 @@ export class HotkeyRegistrationManager implements HotkeyRegistrationCoordinator 
         continue;
       }
       if (accelerator !== "") {
-        const owners = ownersByAccelerator.get(accelerator) ?? [];
+        const identity = physicalAcceleratorIdentity(accelerator, this.platform)!;
+        const owners = ownersByAccelerator.get(identity) ?? [];
         owners.push(kind);
-        ownersByAccelerator.set(accelerator, owners);
+        ownersByAccelerator.set(identity, owners);
       }
       normalized.set(kind, accelerator);
     }
-    for (const [accelerator, owners] of ownersByAccelerator) {
+    for (const owners of ownersByAccelerator.values()) {
       if (owners.length < 2 || !owners.some((kind) => changed.has(kind))) continue;
       const kind = owners.find((owner) => changed.has(owner)) ?? owners.at(-1)!;
       const existing = owners.find((owner) => owner !== kind)!;
+      const accelerator = normalized.get(kind)!;
       throw new HotkeyRegistrationError({
         code: "hotkey_duplicate",
         hotkeyKind: kind,
@@ -630,33 +645,50 @@ export class HotkeyRegistrationManager implements HotkeyRegistrationCoordinator 
     return result.normalized;
   }
 
-  private registerOrThrow(kind: HotkeyKind, accelerator: string): void {
+  private registerOrThrow(
+    kind: HotkeyKind,
+    accelerator: string,
+    callback = this.callback(kind)
+  ): void {
+    let failure: HotkeyRegistrationFailure | null;
     try {
-      if (this.registrar.register(accelerator, this.callback(kind))) return;
+      failure = this.tryRegister(kind, accelerator, callback);
     } catch (cause) {
-      throw this.unavailable(kind, accelerator, cause);
+      throw this.registrationWriteError(
+        kind,
+        accelerator,
+        this.registrationErrorStatus(kind, accelerator),
+        cause
+      );
     }
-    throw this.unavailable(kind, accelerator);
+    if (failure !== null) throw this.registrationWriteError(kind, accelerator, failure);
   }
 
-  private probeOrThrow(kind: HotkeyKind, accelerator: string): void {
-    try {
-      if (this.registrar.register(accelerator, () => undefined)) return;
-    } catch (cause) {
-      throw this.unavailable(kind, accelerator, cause);
+  private tryRegister(
+    kind: HotkeyKind,
+    accelerator: string,
+    callback = this.callback(kind)
+  ): HotkeyRegistrationFailure | null {
+    // Electron's Wayland path can replace a process-local callback. Check
+    // before registering so managed shortcuts leave transient owners alone.
+    // This API only checks this process. A false result cannot identify an
+    // external owner or explain why registration later failed.
+    if (this.registrar.isRegistered(accelerator)) {
+      return {
+        code: "duplicate",
+        message: `PwrSnap is already using ${this.display(accelerator)}. Choose another combination.`
+      };
     }
-    throw this.unavailable(kind, accelerator);
+    return this.registrar.register(accelerator, callback)
+      ? null
+      : this.unavailableStatus(kind, accelerator);
   }
 
   private firstConfiguredOwner(accelerator: string): HotkeyKind | undefined {
     for (const candidate of HOTKEY_KINDS) {
       const persisted = this.configured.get(candidate) ?? "";
       if (persisted === "") continue;
-      try {
-        if (this.normalize(candidate, persisted) === accelerator) return candidate;
-      } catch {
-        // Unsupported persisted values cannot own a native accelerator.
-      }
+      if (acceleratorsAreEquivalent(persisted, accelerator, this.platform)) return candidate;
     }
     return undefined;
   }
@@ -668,9 +700,8 @@ export class HotkeyRegistrationManager implements HotkeyRegistrationCoordinator 
     return {
       code: "unavailable",
       message:
-        `${HOTKEY_LABELS[kind]} is not active — ${shortcutPlatformLabel(this.platform)} ` +
-        `or another app has reserved or is using ${this.display(accelerator)}. ` +
-        "Choose another combination, or Retry after it is freed."
+        `PwrSnap could not register ${this.display(accelerator)} for ${HOTKEY_LABELS[kind]}. ` +
+        "Choose another combination."
     };
   }
 
@@ -680,9 +711,10 @@ export class HotkeyRegistrationManager implements HotkeyRegistrationCoordinator 
   ): HotkeyRegistrationFailure {
     return {
       code: "registration_error",
+      threw: true,
       message:
         `${HOTKEY_LABELS[kind]} is not active because ${shortcutPlatformLabel(this.platform)} ` +
-        `could not register ${this.display(accelerator)}. Choose another combination, or Retry.`
+        `could not register ${this.display(accelerator)}. Choose another combination.`
     };
   }
 
@@ -705,6 +737,7 @@ export class HotkeyRegistrationManager implements HotkeyRegistrationCoordinator 
   ): HotkeyRegistrationFailure {
     return {
       code: "duplicate",
+      conflictsWith: existing,
       message:
         `${HOTKEY_LABELS[kind]} is not active because it duplicates ` +
         `${HOTKEY_LABELS[existing]}. Choose another combination.`
@@ -715,19 +748,17 @@ export class HotkeyRegistrationManager implements HotkeyRegistrationCoordinator 
     return acceleratorToDisplayText(accelerator, this.platform) || "that combination";
   }
 
-  private unavailable(
+  private registrationWriteError(
     kind: HotkeyKind,
     accelerator: string,
+    failure: HotkeyRegistrationFailure,
     cause?: unknown
   ): HotkeyRegistrationError {
     return new HotkeyRegistrationError({
-      code: "hotkey_unavailable",
+      code: failure.code === "duplicate" ? "hotkey_duplicate" : "hotkey_unavailable",
       hotkeyKind: kind,
       accelerator,
-      message:
-        `${HOTKEY_LABELS[kind]} could not claim ${this.display(accelerator)}. ` +
-        `${shortcutPlatformLabel(this.platform)} or another app may reserve that combination. ` +
-        "Choose another combination. The saved shortcut was not changed.",
+      message: `${failure.message} The saved shortcut is unchanged.`,
       ...(cause === undefined ? {} : { cause })
     });
   }

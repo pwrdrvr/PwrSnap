@@ -506,7 +506,7 @@ export function registerSettingsDataHandlers(options: {
       }
     } catch (cause) {
       if (cause instanceof HotkeyRegistrationError) {
-        return err(toSettingsError(cause.code, cause.message, cause));
+        return err(toSettingsError(cause.code, cause.message, { threw: cause.cause !== undefined }));
       }
       return err(
         toSettingsError(

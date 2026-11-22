@@ -33,6 +33,13 @@ import { dispatch, subscribe } from "../../lib/pwrsnap";
 
 export type SecretMap = Record<DesktopSettingsSecretName, SecretStatus>;
 
+export class SettingsPatchError extends Error {
+  constructor(readonly code: string, message: string, readonly threw = false) {
+    super(message);
+    this.name = "SettingsPatchError";
+  }
+}
+
 export type UseSettingsValue = {
   settings: Settings | null;
   secrets: SecretMap | null;
@@ -116,7 +123,9 @@ export function useSettings(): UseSettingsValue {
     const result = await dispatch("settings:write", p);
     if (!result.ok) {
       setError(result.error);
-      throw new Error(result.error.message);
+      const { cause, code, message } = result.error;
+      const threw = typeof cause === "object" && cause !== null && "threw" in cause && cause.threw === true;
+      throw new SettingsPatchError(code, message, threw);
     }
     // Intentionally no `setSettings(result.value)` — the main-process
     // handler awaits the `events:settings:changed` broadcast before

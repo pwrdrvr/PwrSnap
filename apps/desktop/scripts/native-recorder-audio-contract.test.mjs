@@ -46,13 +46,13 @@ describe("native recorder audio contract", () => {
   // reported a healthy source for a track holding six seconds of digital
   // silence. That is what let a recording claim system audio it never had.
   test("reports audio tracks that carried SOUND, not merely samples", () => {
-    expect(recorderSource).toContain('"hasSystemAudio": audioHeardSound');
+    expect(recorderSource).toContain('"hasSystemAudio": systemAudioTelemetry.heardSound');
     expect(recorderSource).toContain('"hasMicrophoneAudio": microphoneHeardSound');
     expect(recorderSource).not.toContain('"hasSystemAudio": audioSamplesAppended > 0');
   });
 
-  test("both sources measure against the shared silence floor", () => {
-    expect(recorderSource).toContain("peakAmplitude(of: buf, stopAt: audioSilenceFloor) >= audioSilenceFloor");
-    expect(microphoneSource).toContain("peakAmplitude(of: sampleBuffer, stopAt: audioSilenceFloor) >= audioSilenceFloor");
+  test("both sources measure only after the writer accepts the corresponding audio buffer", () => {
+    expect(recorderSource).toMatch(/ai\.append\(buf\) \{\s+audioSamplesAppended \+= 1\s+systemAudioTelemetry\.appended\(buf\)/);
+    expect(microphoneSource).toMatch(/input\.append\(sampleBuffer\) \{\s+samplesAppended \+= 1\s+audioTelemetry\.appended\(sampleBuffer\)/);
   });
 });

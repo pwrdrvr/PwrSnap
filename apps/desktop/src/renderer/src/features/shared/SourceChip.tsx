@@ -494,6 +494,7 @@ export function SourceChip({
   const tile = density === "control";
   const shownDevice = tile && device !== undefined ? shortDeviceLabel(device) : "";
   const subline = tile && (why !== undefined || shownDevice !== "");
+  const inlineWhy = !tile && why !== undefined;
   const hudTitle =
     density === "dense" ? (why === undefined ? name : `${name} — ${why}`) : undefined;
   return (
@@ -522,13 +523,13 @@ export function SourceChip({
         // shortcut the surface does not bind is the same
         // two-predicates-that-must-agree bug as the hint legend's.
         {...(keyBound ? { "aria-keyshortcuts": kbd } : {})}
-        {...(subline ? { "aria-describedby": subId } : {})}
+        {...(subline || inlineWhy ? { "aria-describedby": subId } : {})}
         onClick={onToggle}
       >
         <SourceGlyph source={source} />
         {density === "dense" ? null : <span className="ps-chip__name">{name}</span>}
         {showMeter ? <SourceMeter level={level} tone={tone} /> : null}
-        {!tile && why !== undefined ? <span className="ps-chip__why">{why}</span> : null}
+        {inlineWhy ? <span className="ps-chip__why" id={subId}>{why}</span> : null}
       </button>
       {hasAct ? (
         // No stopPropagation any more: there is no enclosing button left

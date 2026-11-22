@@ -58,10 +58,49 @@ func stage(_ message: String) {
     FileHandle.standardError.write(Data(("roundtrip: \(message)\n").utf8))
 }
 
+func checkPlanarStereo() throws {
+    // ScreenCaptureKit can deliver one Float32 buffer per channel.
+    // Give the channels different amplitudes so reading only one fails.
+    var asbd = AudioStreamBasicDescription(
+        mSampleRate: 48_000, mFormatID: kAudioFormatLinearPCM,
+        mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked | kAudioFormatFlagIsNonInterleaved,
+        mBytesPerPacket: 4, mFramesPerPacket: 1, mBytesPerFrame: 4,
+        mChannelsPerFrame: 2, mBitsPerChannel: 32, mReserved: 0
+    )
+    var format: CMAudioFormatDescription?
+    try check(CMAudioFormatDescriptionCreate(allocator: kCFAllocatorDefault, asbd: &asbd,
+        layoutSize: 0, layout: nil, magicCookieSize: 0, magicCookie: nil,
+        extensions: nil, formatDescriptionOut: &format) == noErr, "planar format")
+    var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 48_000),
+        presentationTimeStamp: CMTime(value: 1, timescale: 1), decodeTimeStamp: .invalid)
+    var source: CMSampleBuffer?
+    try check(CMSampleBufferCreate(allocator: kCFAllocatorDefault, dataBuffer: nil, dataReady: false,
+        makeDataReadyCallback: nil, refcon: nil, formatDescription: format,
+        sampleCount: 4, sampleTimingEntryCount: 1, sampleTimingArray: &timing,
+        sampleSizeEntryCount: 0, sampleSizeArray: nil, sampleBufferOut: &source) == noErr, "planar sample")
+    let list = AudioBufferList.allocate(maximumBuffers: 2)
+    defer { free(list.unsafeMutablePointer) }
+    list.unsafeMutablePointer.pointee.mNumberBuffers = 2
+    var values: [Float] = [0.25, -0.25, 0.25, -0.25, 0.5, 0.5, 0.5, 0.5]
+    try values.withUnsafeMutableBytes { bytes in
+        for channel in 0..<2 {
+            list[channel] = AudioBuffer(mNumberChannels: 1, mDataByteSize: 16,
+                mData: bytes.baseAddress!.advanced(by: channel * 16))
+        }
+        try source!.setDataBuffer(fromAudioBufferList: list.unsafePointer, flags: .audioBufferListAssure16ByteAlignment)
+    }
+    try check(CMSampleBufferSetDataReady(source!) == noErr, "ready planar sample")
+    var telemetry = AudioSampleTelemetry()
+    telemetry.appended(source!)
+    let normal = telemetry.report(at: DispatchTime.now().uptimeNanoseconds)
+    try check(abs((normal["rms"] as? Double ?? -1) - sqrt(0.15625)) < 0.0001, "RMS combines both planes")
+}
+
 @main
 struct MicrophoneRoundtrip {
     static func main() async throws {
         let url = URL(fileURLWithPath: CommandLine.arguments[1])
+        try checkPlanarStereo()
         stage("create tone writer")
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
         let input = AVAssetWriterInput(mediaType: .audio, outputSettings: [
@@ -74,9 +113,13 @@ struct MicrophoneRoundtrip {
         let forwarder = MicForwarder(input: input, writer: writer)
         forwarder.append(try sample(packet: -1))
         try check(forwarder.samplesAppended == 0, "countdown pre-roll must be dropped")
+        let preRoll = forwarder.reportAudio(at: DispatchTime.now().uptimeNanoseconds)
+        try check(preRoll["lastInputAgeMs"] is Double && preRoll["lastSampleAgeMs"] is NSNull && preRoll["rms"] is NSNull,
+                  "rejected pre-roll proves input is present but must never contribute to written telemetry")
         stage("start tone writer")
         try check(writer.startWriting(), "start writing")
         writer.startSession(atSourceTime: CMTime(value: 20, timescale: 1))
+        let expectedRMS = 0.3 / sqrt(2.0)
         for packet in 0..<48 {
             let deadline = Date().addingTimeInterval(5)
             while !input.isReadyForMoreMediaData && Date() < deadline {
@@ -85,6 +128,10 @@ struct MicrophoneRoundtrip {
             try check(input.isReadyForMoreMediaData, "AAC encoder stalled")
             forwarder.append(try sample(packet: packet))
         }
+        let observed = forwarder.reportAudio(at: DispatchTime.now().uptimeNanoseconds)
+        try check(abs((observed["rms"] as? Double ?? -1) - expectedRMS) < 0.001,
+                  "accepted sine-wave RMS must follow its analytic amplitude / sqrt(2)")
+        try check(observed["lastSampleAgeMs"] is Double, "written sample carries a timestamp")
         stage("finish tone writer appended=\(forwarder.samplesAppended)")
         input.markAsFinished()
         await writer.finishWriting()
@@ -120,6 +167,12 @@ struct MicrophoneRoundtrip {
             }
             quiet.append(try sample(packet: packet, amplitude: 0))
         }
+        let silence = quiet.reportAudio(at: DispatchTime.now().uptimeNanoseconds)
+        try check(silence["rms"] as? Double == 0 && silence["lastSampleAgeMs"] is Double,
+                  "the writer accepted four silent buffers")
+        let gap = quiet.reportAudio(at: DispatchTime.now().uptimeNanoseconds + 2_001_000_000)
+        try check(gap["rms"] is NSNull && (gap["lastSampleAgeMs"] as? Double ?? 0) > 2_000,
+                  "a sample gap has no RMS and carries the age of the last write")
         stage("finish quiet writer appended=\(quiet.samplesAppended)")
         quietInput.markAsFinished()
         await quietWriter.finishWriting()
@@ -157,7 +210,8 @@ struct MicrophoneRoundtrip {
         stage("decoded \(decoded) samples")
         let rms = sqrt(sum / Double(max(1, decoded)))
         let duration = try await asset.load(.duration).seconds
-        try check(decoded >= 48_000 && rms > 0.1, "audible microphone PCM must survive AAC")
+        try check(decoded >= 48_000 && abs(rms - expectedRMS) < 0.03,
+                  "offline AAC decode must agree with written RMS within encode tolerance")
         try check(duration >= 1 && duration < 1.2, "host-clock timestamps must be rebased to clip time")
         print("microphone AAC roundtrip: appended=\(forwarder.samplesAppended) decoded=\(decoded) rms=\(rms) duration=\(duration)")
     }

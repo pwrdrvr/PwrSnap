@@ -41,13 +41,15 @@ export function getRecordingState(): RecordingState {
 
 /** Source-of-truth setter + broadcaster. Always pair these — never
  *  mutate `state` directly from outside this module. */
-export function setRecordingState(next: RecordingState): void {
+export function setRecordingState(next: RecordingState, update?: "audio-telemetry"): void {
   state = next;
-  log.info("recording state", { phase: next.phase });
+  if (update === undefined) log.info("recording state", { phase: next.phase });
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue;
     win.webContents.send(EVENT_CHANNELS.recordingState, next);
   }
+  // A meter change must not reposition windows or rebuild the native tray.
+  if (update === "audio-telemetry") return;
   // Main-side fan-out — tray + recording-controller HUD react here
   // without needing their own BrowserWindow to receive the IPC
   // broadcast.

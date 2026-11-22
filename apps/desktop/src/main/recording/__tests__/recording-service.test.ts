@@ -7,6 +7,7 @@
 
 import { EventEmitter } from "node:events";
 import { dirname, extname, join } from "node:path";
+import fc from "fast-check";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 // Hoisted mock state so every imported module sees the same
@@ -333,6 +334,47 @@ const SUBJECT = {
   displayId: 1
 };
 const CAPS = { systemAudio: false, microphone: false };
+
+test("live audio reports accepted silence, source gaps, and writer gaps independently", async () => {
+  const { getRecordingService } = await import("../recording-service");
+  const service = getRecordingService();
+  const pending = service.start({
+    subject: SUBJECT, capabilities: { systemAudio: true, microphone: true }, countdownSeconds: 0
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  const child = mocks.spawnedChildren[0]!;
+  child.emitLine({ event: "started", physicalRect: SUBJECT.rect });
+  await pending;
+
+  const observation = fc.record({
+    state: fc.constantFrom("waiting", "writing", "no-input", "no-write"),
+    age: fc.integer({ min: 0, max: 1_999 })
+  });
+  const report = ({ state, age }: { state: string; age: number }) => ({
+    rms: state === "writing" ? 0 : null,
+    lastSampleAgeMs: state === "waiting" ? null : state === "writing" ? age : 2_001 + age,
+    lastInputAgeMs: state === "waiting" ? null : state === "no-input" ? 2_001 + age : age
+  });
+  fc.assert(fc.property(observation, observation, (system, mic) => {
+    const elapsedMs = system.state === "waiting" || mic.state === "waiting" ? 2_000 : 5_000;
+    const event = { event: "audioTelemetry", elapsedMs,
+      systemAudio: report(system), microphone: report(mic) };
+    child.emitLine(event);
+    expect(mocks.currentState).toMatchObject({
+      phase: "recording",
+      audioTelemetry: {
+        systemAudio: { state: system.state },
+        microphone: { state: mic.state }
+      }
+    });
+    const lastState = mocks.currentState;
+    child.emitLine(event);
+    expect(mocks.currentState).toBe(lastState);
+  }));
+  const cancelled = service.cancel();
+  child.emitLine({ event: "stopped" });
+  await cancelled;
+});
 
 describe("RecordingService.start cancel-during-countdown", () => {
   test("cancel mid-countdown bails the loop without re-asserting countdown state", async () => {

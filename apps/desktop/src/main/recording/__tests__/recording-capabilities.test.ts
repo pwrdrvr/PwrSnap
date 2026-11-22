@@ -19,8 +19,8 @@ describe("recording backend capabilities", () => {
         systemAudio: true,
         microphone: true,
         webcam: true,
-        liveAudioLevels: false,
-        liveDisconnectDetection: false,
+        liveAudioLevels: true,
+        liveDisconnectDetection: true,
         midRecordingToggles: false
       },
       outputs: { burst: true },

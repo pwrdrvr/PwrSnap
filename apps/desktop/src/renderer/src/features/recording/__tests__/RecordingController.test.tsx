@@ -447,13 +447,14 @@ describe("RecordingController failed state", () => {
 
 describe("RecordingController source chips", () => {
   async function renderWithCapabilities(
-    capabilities: RecordingCapabilities
+    capabilities: RecordingCapabilities,
+    backend: RecordingBackendCapabilities = macCapabilities
   ): Promise<void> {
     mocks.dispatch.mockImplementation(async (name: string) => {
       if (name === "recording:state") {
         return { ok: true, value: { ...recordingState(), capabilities } };
       }
-      if (name === "recording:capabilities") return { ok: true, value: macCapabilities };
+      if (name === "recording:capabilities") return { ok: true, value: backend };
       return { ok: true, value: undefined };
     });
     await renderController();
@@ -482,16 +483,38 @@ describe("RecordingController source chips", () => {
     expect(container.querySelector('[data-testid="rc-source-systemAudio"]')).toBeNull();
   });
 
-  // Neither shipped backend reports live levels, so the chip must not
-  // animate a meter it cannot source. `recorded` draws a static full
-  // read; a `live` tone here would be a fiction.
-  test("meters are static, because no backend reports live levels", async () => {
+  test("a backend without telemetry keeps the static armed indicator", async () => {
     await renderWithCapabilities({ systemAudio: false, microphone: true });
     const meter = container
       .querySelector('[data-testid="rc-source-microphone"]')
       ?.querySelector(".ps-meter");
     expect(meter?.getAttribute("data-tone")).toBe("recorded");
-    expect(macCapabilities.sources.liveAudioLevels).toBe(false);
+  });
+
+  test("a sample gap warns and clears on recovery, while written silence shows an empty live meter", async () => {
+    const capabilities = { systemAudio: true, microphone: true };
+    await renderWithCapabilities(capabilities, {
+      ...macCapabilities,
+      sources: { ...macCapabilities.sources, liveAudioLevels: true, liveDisconnectDetection: true }
+    });
+    const chip = (source: string) => container.querySelector(`[data-testid="rc-source-${source}"]`);
+    const emit = mocks.listeners.get(EVENT_CHANNELS.recordingState)!;
+    expect(chip("microphone")?.querySelector(".ps-meter")).toBeNull();
+    await act(async () => emit({
+      ...recordingState(), capabilities,
+      audioTelemetry: { microphone: { state: "no-input" }, systemAudio: { state: "writing", level: 0 } }
+    }));
+    expect(chip("microphone")?.textContent).toContain("No samples");
+    expect(chip("microphone")?.getAttribute("data-state")).toBe("silent");
+    expect(chip("systemAudio")?.getAttribute("data-state")).toBe("live");
+    expect(chip("systemAudio")?.querySelector(".ps-meter")?.getAttribute("data-level")).toBe("0");
+    await act(async () => emit({
+      ...recordingState(), capabilities,
+      audioTelemetry: { microphone: { state: "writing", level: 4 / 7 }, systemAudio: { state: "no-write" } }
+    }));
+    expect(chip("microphone")?.textContent).not.toContain("No samples");
+    expect(chip("microphone")?.querySelector(".ps-meter")?.getAttribute("data-level")).toBe("4");
+    expect(chip("systemAudio")?.textContent).toContain("Not written");
   });
 
   test.each([

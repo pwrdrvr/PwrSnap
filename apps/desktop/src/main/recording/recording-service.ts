@@ -22,6 +22,7 @@ import { nanoid } from "nanoid";
 import {
   BURST_FPS,
   BURST_MAX_FRAMES,
+  type RecordingAudioTelemetry,
   type RecordingCapabilities,
   type RecordingFailureCode,
   type RecordingOutput,
@@ -54,6 +55,7 @@ import {
   setRecordingState
 } from "./recording-state";
 import { resolveFfmpegPath } from "./ffmpeg-resolver";
+import { updateAudioTelemetry, type RecorderAudioTelemetryEvent } from "./recording-audio-telemetry";
 import { planWindowsFfmpegCapture, windowsCaptureStartUtcMs } from "./windows-ffmpeg-capture";
 
 const log = getMainLogger("pwrsnap:recording-service");
@@ -215,7 +217,7 @@ type RecorderStoppedEvent = {
   outputPath: string;
 };
 type RecorderErrorEvent = { event: "error"; code: string; message: string };
-type RecorderEvent = RecorderStartedEvent | RecorderStoppedEvent | RecorderErrorEvent | { event: "timeline"; utcTimeMs?: number } | { event: "cameraPreview"; excluded: boolean } | { event: "burstProgress"; kept?: number; written?: number };
+type RecorderEvent = RecorderStartedEvent | RecorderStoppedEvent | RecorderErrorEvent | RecorderAudioTelemetryEvent | { event: "timeline"; utcTimeMs?: number } | { event: "cameraPreview"; excluded: boolean } | { event: "burstProgress"; kept?: number; written?: number };
 
 // Resources and waiters belong to one admitted attempt, including the period
 // before a child exists. Never look up a child/temp directory through mutable
@@ -257,6 +259,7 @@ class RecordingAttempt {
   stopOperation: Promise<{ captureId: string; burstId?: string }> | null = null;
   /** Burst only: stills the ring holds, from the recorder's progress lines. */
   burstFrames = 0;
+  audioTelemetry: RecordingAudioTelemetry | undefined;
   cancelOperation: Promise<void> | null = null;
   cleanupOperation: Promise<void> | null = null;
   restarting = false;
@@ -274,6 +277,7 @@ class RecordingAttempt {
   wait<T>(operation: Promise<T>): Promise<T> {
     return Promise.race([operation, this.aborted.promise]);
   }
+
 }
 
 async function withDeadline<T>(operation: Promise<T>, timeoutMs: number, message: string): Promise<T> {
@@ -390,14 +394,15 @@ abstract class AttemptRecorderService implements RecordingService {
     }
   }
 
-  protected publishRecording(attempt: RecordingAttempt): void {
+  protected publishRecording(attempt: RecordingAttempt, update?: "audio-telemetry"): void {
     setRecordingState({
       phase: "recording", sessionId: attempt.sessionId,
       startedAt: new Date(attempt.startedAtMs).toISOString(),
       rect: attempt.rect, displayId: attempt.displayId,
       capabilities: this.recordedCapabilities(attempt),
+      ...(attempt.audioTelemetry === undefined ? {} : { audioTelemetry: attempt.audioTelemetry }),
       ...(attempt.options.output === "burst" ? { output: "burst" as const, burstFrames: attempt.burstFrames } : {})
-    });
+    }, update);
   }
 
   protected recordedCapabilities(attempt: RecordingAttempt): RecordingCapabilities {
@@ -800,6 +805,15 @@ class NativeRecorderService extends AttemptRecorderService {
       // process-global camera or settle startup successfully.
       if (attempt.cancelled && parsed.event !== "stopped") continue;
       switch (parsed.event) {
+        case "audioTelemetry": {
+          if (!attempt.startAcknowledged || attempt.options.output === "burst" ||
+            (attempt.phase !== "starting" && attempt.phase !== "recording")) break;
+          const next = updateAudioTelemetry(attempt.audioTelemetry, parsed, attempt.options.capabilities);
+          if (next === attempt.audioTelemetry) break;
+          attempt.audioTelemetry = next;
+          if (attempt.phase === "recording") this.publishRecording(attempt, "audio-telemetry");
+          break;
+        }
         case "timeline":
           if (parsed.utcTimeMs !== undefined) markCameraScreenStartUtc(parsed.utcTimeMs);
           break;

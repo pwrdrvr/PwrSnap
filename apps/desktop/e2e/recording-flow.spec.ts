@@ -17,6 +17,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
+import type { RecordingAudioTelemetry, RecordingState } from "@pwrsnap/shared";
 import { expect, launchPwrSnap, test } from "./fixtures/electron-app";
 
 const isMac = process.platform === "darwin";
@@ -29,6 +30,39 @@ const isMac = process.platform === "darwin";
 // motivated the migration. The video float-over tests below keep their
 // E2E shape — they inspect real BrowserWindow lifecycle and rendered
 // DOM, which the bus mock can't reproduce.
+
+test("in-take audio warnings keep Stop visible in the non-activating HUD", async () => {
+  test.skip(!isMac, "live recorder telemetry is available on macOS");
+  const app = await launchPwrSnap();
+  try {
+    const publish = (audioTelemetry: RecordingAudioTelemetry, update?: "audio-telemetry") =>
+      app.electronApp.evaluate(({ screen }, input) => {
+        const bridge = (globalThis as unknown as {
+          __PWRSNAP_TEST__: { setRecordingState: (state: RecordingState, update?: "audio-telemetry") => void }
+        }).__PWRSNAP_TEST__;
+        bridge.setRecordingState({
+          phase: "recording", sessionId: "audio-fixture", startedAt: new Date().toISOString(),
+          rect: { x: 0, y: 0, w: 640, h: 480 }, displayId: screen.getPrimaryDisplay().id,
+          capabilities: { systemAudio: true, microphone: true }, audioTelemetry: input.audioTelemetry
+        }, input.update);
+      }, { audioTelemetry, update });
+    const findHUD = () => app.electronApp.windows().find((page) => page.url().includes("stage=recording-controller"));
+    await publish({ systemAudio: { state: "writing", level: 0 }, microphone: { state: "writing", level: 4 / 7 } });
+    await expect.poll(() => findHUD() !== undefined).toBe(true);
+    const hud = findHUD()!;
+    await expect(hud.getByTestId("rc-source-microphone").locator(".ps-meter")).toHaveAttribute("data-level", "4");
+    await publish({ systemAudio: { state: "no-write" }, microphone: { state: "no-input" } }, "audio-telemetry");
+    await expect(hud.getByTestId("rc-source-microphone")).toHaveAttribute("data-state", "silent");
+    await expect(hud.getByTestId("rc-source-systemAudio")).toHaveAttribute("data-state", "silent");
+    const stop = hud.getByRole("button", { name: "Stop and save recording" });
+    await expect.poll(() => stop.evaluate((button) => button.getBoundingClientRect().right <= innerWidth)).toBe(true);
+    const focusable = await app.electronApp.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows().find((win) => win.webContents.getURL().includes("stage=recording-controller"))?.isFocusable());
+    expect(focusable).toBe(false);
+  } finally {
+    await app.close();
+  }
+});
 
 test.describe("video float-over", () => {
   test.skip(!isMac, "float-over relies on macOS BrowserWindow alwaysOnTop semantics");

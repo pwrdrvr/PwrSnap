@@ -14,6 +14,8 @@
 // Notifies main:
 //
 //   started   → { "event": "started", "physicalRect": { x,y,w,h } }
+//   audioTelemetry → elapsedMs and { rms, lastSampleAgeMs, lastInputAgeMs }
+//                    for each armed audio source
 //   stopped   → { "event": "stopped", "durationSec": 12.5,
 //                "containerFormat": "mp4",
 //                "hasSystemAudio": true, "hasMicrophoneAudio": false,
@@ -132,9 +134,9 @@ func diag(_ message: String) {
 }
 
 func emit(_ payload: [String: Any]) {
-    if let data = try? JSONSerialization.data(withJSONObject: payload, options: []) {
+    if var data = try? JSONSerialization.data(withJSONObject: payload, options: []) {
+        data.append(0x0a)
         FileHandle.standardOutput.write(data)
-        FileHandle.standardOutput.write("\n".data(using: .utf8)!)
     }
 }
 
@@ -171,10 +173,8 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private var videoSamplesAppended: Int = 0
     private var audioSamplesReceived: Int = 0
     private var audioSamplesAppended: Int = 0
-    /// Whether any appended system-audio buffer rose above the silence
-    /// floor. See `peakAmplitude` — an append count cannot tell a live tap
-    /// from one recording a room where nothing is playing.
-    private var audioHeardSound: Bool = false
+    private var systemAudioTelemetry = AudioSampleTelemetry()
+    private var audioTelemetryTimer: DispatchSourceTimer?
     /// SCStream's `.microphone` output (macOS 14+). Unused by today's
     /// recorder — mic capture runs through AVCaptureSession — but
     /// counted so a stray sample shows up in the stop() diag totals
@@ -459,14 +459,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         )
         diag("openStream attempt 1 returned \(started)")
         if started {
-            startedAtWallClock = Date()
-            emit([
-                "event": "started",
-                "physicalRect": [
-                    "x": req.rect.x, "y": req.rect.y,
-                    "w": req.rect.w, "h": req.rect.h
-                ]
-            ])
+            announceStarted(rect: req.rect)
             return
         }
 
@@ -494,14 +487,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         )
         diag("openStream attempt 2 returned \(retried)")
         if retried {
-            startedAtWallClock = Date()
-            emit([
-                "event": "started",
-                "physicalRect": [
-                    "x": req.rect.x, "y": req.rect.y,
-                    "w": req.rect.w, "h": req.rect.h
-                ]
-            ])
+            announceStarted(rect: req.rect)
         } else {
             // Both attempts failed. openStream emitted the error
             // for non-3805 cases; for -3805 specifically (which
@@ -753,7 +739,9 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         // > 0, append count = 0).
         switch type {
         case .screen: videoSamplesReceived += 1
-        case .audio: audioSamplesReceived += 1
+        case .audio:
+            audioSamplesReceived += 1
+            systemAudioTelemetry.received(buf)
         case .microphone:
             // SCStream's microphone output type (macOS 14+) is unused
             // here — mic capture goes through AVCaptureSession in
@@ -842,16 +830,10 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 }
             }
         case .audio:
-            if let ai = audioInput, ai.isReadyForMoreMediaData {
-                if ai.append(buf) {
-                    audioSamplesAppended += 1
-                    // Stop measuring once this source has proven itself —
-                    // the scan is per-buffer and there is nothing left to
-                    // learn after the first sound.
-                    if !audioHeardSound && peakAmplitude(of: buf, stopAt: audioSilenceFloor) >= audioSilenceFloor {
-                        audioHeardSound = true
-                    }
-                }
+            if let ai = audioInput, ai.isReadyForMoreMediaData,
+               ai.append(buf) {
+                audioSamplesAppended += 1
+                systemAudioTelemetry.appended(buf)
             }
         case .microphone:
             // Mic samples from SCStream (macOS 14+) are deliberately
@@ -916,6 +898,36 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         ])
     }
 
+    private func announceStarted(rect: RectPayload) {
+        writeQueue.sync {
+            startedAtWallClock = Date()
+            emit([
+                "event": "started",
+                "physicalRect": ["x": rect.x, "y": rect.y, "w": rect.w, "h": rect.h]
+            ])
+            guard audioInput != nil || micForwarder != nil else { return }
+            let start = DispatchTime.now()
+            let timer = DispatchSource.makeTimerSource(queue: writeQueue)
+            // A clock independent of the sample callbacks also reports gaps
+            // when every armed source has stopped delivering buffers.
+            timer.schedule(deadline: start + .milliseconds(125), repeating: .milliseconds(125), leeway: .milliseconds(20))
+            timer.setEventHandler { [weak self] in self?.reportAudio(since: start) }
+            audioTelemetryTimer = timer
+            timer.resume()
+        }
+    }
+
+    private func reportAudio(since start: DispatchTime) {
+        let now = DispatchTime.now().uptimeNanoseconds
+        var payload: [String: Any] = [
+            "event": "audioTelemetry",
+            "elapsedMs": Double(now - start.uptimeNanoseconds) / 1_000_000
+        ]
+        if audioInput != nil { payload["systemAudio"] = systemAudioTelemetry.report(at: now) }
+        if let micForwarder { payload["microphone"] = micForwarder.reportAudio(at: now) }
+        emit(payload)
+    }
+
     func stop() async {
         if let sink = burst {
             await stopBurst(sink)
@@ -925,6 +937,10 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         guard let s = stream, let writer = assetWriter else {
             diag("stop() guard failed: stream=\(stream != nil) writer=\(assetWriter != nil)")
             return
+        }
+        writeQueue.sync {
+            audioTelemetryTimer?.cancel()
+            audioTelemetryTimer = nil
         }
         do {
             try await s.stopCapture()
@@ -968,7 +984,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             // that was armed but silent reports false here and true in
             // `requested*`, which is what lets the app say "you asked for
             // system audio and got none" instead of claiming it captured.
-            "hasSystemAudio": audioHeardSound,
+            "hasSystemAudio": systemAudioTelemetry.heardSound,
             "hasMicrophoneAudio": microphoneHeardSound,
             "outputPath": outputURL?.path ?? ""
         ])

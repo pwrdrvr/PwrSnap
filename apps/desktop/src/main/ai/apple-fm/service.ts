@@ -1,6 +1,7 @@
 // Process-wide owner of the on-device model's status answer.
 
 import { AppleFmStatusService, defaultAppleFmProbeDeps, probeAppleFmStatus } from "./status";
+import { probeNativeCaptionStatus, resolveNativeCaptionRunner } from "./native";
 
 /** Electron's product version ("27.2") on macOS; null elsewhere and under
  *  plain Node, where `process.getSystemVersion` does not exist. */
@@ -13,8 +14,11 @@ function macosVersion(): string | null {
 let singleton: AppleFmStatusService | undefined;
 
 export function getAppleFmStatusService(): AppleFmStatusService {
-  singleton ??= new AppleFmStatusService(() =>
-    probeAppleFmStatus(defaultAppleFmProbeDeps(macosVersion))
-  );
+  singleton ??= new AppleFmStatusService(async () => {
+    const run = await resolveNativeCaptionRunner();
+    return run === null
+      ? probeAppleFmStatus(defaultAppleFmProbeDeps(macosVersion))
+      : probeNativeCaptionStatus(run, macosVersion());
+  });
   return singleton;
 }

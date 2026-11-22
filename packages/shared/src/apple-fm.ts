@@ -1,14 +1,7 @@
 // Apple's on-device Foundation Model as a caption backend.
 //
-// PwrSnap reaches the model through `/usr/bin/fm`, the Foundation Models
-// command-line tool that ships with macOS 27. This module is the vocabulary
-// main and the renderer share: the provider selector, the detected states,
-// and the words Settings shows for each. Nothing here spawns anything.
-//
-// Every state below is one the tool itself reports (measured on macOS 27.2;
-// see docs/solutions/2026-11-17-apple-fm-cli-captions-feasibility.md). The
-// tool being present is NOT a state: it ships on Macs that cannot run the
-// model.
+// Shared vocabulary for the on-device Foundation Models helper and the
+// development-only fm transport.
 
 /** `ai.defaults.enrichment.provider` (and `ai.enrichmentFallback.provider`)
  *  value that selects the on-device model. Captions only: chat surfaces
@@ -45,8 +38,8 @@ export function isAppleFmProvider(provider: string | null | undefined): boolean 
  * What PwrSnap could establish about the on-device model.
  *
  * - `unsupported-platform`: not macOS. The provider is not shown at all.
- * - `needs-macos`: macOS, but `/usr/bin/fm` is absent (it ships with 27).
- * - `license-required`: Apple's Legal Notice & Terms for the tool have not
+ * - `needs-macos`: the multimodal model requires macOS 27 or newer.
+ * - `license-required`: Apple's Legal Notice & Terms for the dev CLI have not
  *   been agreed to on this Mac. Only an administrator can, in Terminal.
  * - `provider-override`: the user's fm configuration names a default model
  *   provider. PwrSnap will not run a capture through fm in that state.
@@ -84,6 +77,8 @@ export const APPLE_FM_STATES: readonly AppleFmState[] = [
 
 export type AppleFmStatus = {
   state: AppleFmState;
+  /** Older clients and the development CLI omit the transport. */
+  transport?: "native";
   /** What macOS calls the model (e.g. "AFM 3 Core"), when ready and reported. */
   modelLabel: string | null;
   /** The tool's own sentence for a not-ready state, verbatim and bounded. */
@@ -119,6 +114,7 @@ export function parseAppleFmStatus(value: unknown): AppleFmStatus | null {
   if (typeof v.checkedAt !== "number" || !Number.isFinite(v.checkedAt)) return null;
   return {
     state: v.state as AppleFmState,
+    ...(v.transport === "native" ? { transport: "native" } : {}),
     modelLabel: v.modelLabel,
     detail: v.detail,
     macosVersion: v.macosVersion,
@@ -299,7 +295,7 @@ export function appleFmStateCopy(status: AppleFmStatus): AppleFmStateCopy {
         chip: "macos 27",
         title: "Needs macOS 27 or later",
         body:
-          "PwrSnap reaches the on-device model through a tool that ships with macOS 27." +
+          "PwrSnap uses the on-device image model available in macOS 27." +
           (status.macosVersion !== null ? ` This Mac runs macOS ${status.macosVersion}.` : "") +
           " There is nothing to turn on here yet.",
         severity: "needs",
@@ -311,7 +307,9 @@ export function appleFmStateCopy(status: AppleFmStatus): AppleFmStateCopy {
         badge: "Unavailable",
         chip: "check",
         title: "macOS reports the on-device model as unavailable",
-        body: "macOS gave a reason PwrSnap doesn't recognise. Its own words are below.",
+        body: status.transport === "native"
+          ? "Check Apple Intelligence in System Settings, then try Check again."
+          : "macOS gave a reason PwrSnap doesn't recognise. Its own words are below.",
         severity: "attention",
         reason: "unavailable",
         links: ["requirements", "availability"]
@@ -321,7 +319,9 @@ export function appleFmStateCopy(status: AppleFmStatus): AppleFmStateCopy {
         badge: "Check failed",
         chip: "check",
         title: "PwrSnap couldn't check the on-device model",
-        body: "The fm tool didn't answer, or answered in a way PwrSnap couldn't read. Check again; if it keeps failing, the detail below says what happened.",
+        body: status.transport === "native"
+          ? "PwrSnap couldn't read the on-device helper's status. Try Check again."
+          : "The fm tool didn't answer, or answered in a way PwrSnap couldn't read. Try Check again.",
         severity: "attention",
         reason: "check failed",
         links: ["tool"]
@@ -368,6 +368,16 @@ export function quotableAppleFmDetail(detail: string | null): string | null {
 }
 
 export function appleFmAgentPrompt(status: AppleFmStatus): string | null {
+  if (status.transport === "native") {
+    if (status.state === "ready" || status.state === "unsupported-platform") return null;
+    return [
+      "PwrSnap uses the macOS Foundation Models framework for on-device captions.",
+      `PwrSnap's model check reported: ${appleFmStateCopy(status).title}.`,
+      "Please check which macOS version and chip this Mac has, available disk space, and Apple's Apple Intelligence requirements. Tell me what to check in System Settings.",
+      PROMPT_GUARD,
+      `References: ${APPLE_FM_LINKS.requirements.url} and ${APPLE_FM_LINKS.availability.url}`
+    ].join("\n");
+  }
   const detail = quotableAppleFmDetail(status.detail);
   const said = detail !== null ? ` The tool said: "${detail}"` : "";
   switch (status.state) {

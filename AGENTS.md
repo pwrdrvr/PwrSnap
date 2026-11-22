@@ -50,7 +50,8 @@
 - **CI and E2E environments.** Reproduce the Linux GHA Desktop E2E job with
   `pnpm test:desktop-e2e:docker`; the macOS GHA job runs with
   `PWRSNAP_E2E_DISABLE_GPU=1`, which a plain local run does not set; macOS
-  CI/release jobs use standard GitHub-hosted `macos-26` runners only. Read
+  CI and packaging jobs use standard GitHub-hosted `macos-26` runners. The
+  Apple caption helper alone compiles on the standard `xcode-27` image. Read
   [docs/agents/ci-and-e2e.md](docs/agents/ci-and-e2e.md) before debugging an
   E2E or golden failure, or changing CI runners.
 - **Local headed desktop E2E belongs in the lab VM, not on the operator's
@@ -137,9 +138,9 @@ an AI provider, direct API, fallback, enrichment thread, ACP, `fm`, or budget.
   URL; never vendor the protocol package.
 - **Capture enrichment runs in a sandbox jail.** No command, tool, read
   outside the jail, or network, enforced in the transport. Never loosen it.
-- **Apple's on-device model runs through a fixed fm command line.** Only
-  `/usr/bin/fm` through `assertAppleFmArgs`; never agree to Apple's terms;
-  `AppleFmError` never falls back.
+- **Apple captions use a fixed local helper.** Use `SystemLanguageModel.default`
+  without tools, bounded Vision OCR and private stdin. The legacy development
+  CLI stays behind `assertAppleFmArgs`. `AppleFmError` never falls back.
 - **Only the operator's re-run is exempt from the enrichment budget.** Never
   key an exemption on a request field.
 

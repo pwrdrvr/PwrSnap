@@ -139,8 +139,17 @@ export const runAppleFm: FmRunner = createFmRunner(APPLE_FM_BINARY);
 /** The runner behind `runAppleFm`. `binary` is a parameter only so tests can
  *  stand a script in for the tool; production never passes anything else. */
 export function createFmRunner(binary: string): FmRunner {
+  return createAppleCaptionProcessRunner(binary, assertAppleFmArgs);
+}
+
+/** Both local caption transports use the same bounded child-process lifecycle.
+ * The caller supplies its own fixed command allowlist. */
+export function createAppleCaptionProcessRunner(
+  binary: string,
+  assertArgs: (args: readonly string[]) => void
+): FmRunner {
   return (args, options) => {
-    assertAppleFmArgs(args);
+    assertArgs(args);
     return new Promise<FmRunResult>((resolve, reject) => {
       if (options.signal?.aborted) {
         reject(new DOMException("fm run cancelled", "AbortError"));

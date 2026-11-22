@@ -63,6 +63,14 @@ if (process.platform !== "darwin") {
 
 mkdirSync(buildRoot, { recursive: true });
 
+if (process.env.PWRSNAP_PREBUILT_APPLE_CAPTION !== "1") {
+  execFileSync(process.execPath, [
+    join(__dirname, "build-apple-caption.mjs"),
+    "--if-supported",
+    ...(process.env.PWRSNAP_NATIVE_UNIVERSAL === "1" ? ["--universal"] : [])
+  ], { stdio: "inherit" });
+}
+
 const targets = [
   {
     name: "window-list",

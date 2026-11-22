@@ -438,6 +438,9 @@ if (!signStageOnly) {
     cwd: repoRoot,
     env: { PWRSNAP_NATIVE_UNIVERSAL: "1" }
   });
+  if (!existsSync(join(desktopRoot, "build", "native", "apple-caption"))) {
+    throw new Error("Apple caption helper is missing. Use Xcode with the macOS 27 SDK or stage the verified helper.");
+  }
 
   // 3b. The bundled LGPL ffmpeg is injected, not built. See the note by
   // the imports and docs/ffmpeg-build-reference.md.
@@ -648,6 +651,7 @@ step("verify packaged native helpers");
 const nativeHelpers = [
   join(builtApp, "Contents", "Resources", "pwrsnap-mcp"),
   join(builtApp, "Contents", "Resources", "PwrSnapWindowList"),
+  join(builtApp, "Contents", "Resources", "PwrSnapAppleCaption"),
   // PwrSnapRecorder — ScreenCaptureKit + AVFoundation recorder for
   // Fast Video Capture (issue #64). Without a valid Developer ID
   // signature, notarization rejects the bundle.

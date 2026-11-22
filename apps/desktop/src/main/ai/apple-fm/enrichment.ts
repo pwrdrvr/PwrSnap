@@ -1,9 +1,8 @@
 // Capture enrichment on Apple's on-device model.
 //
-// One `fm respond` per capture: the shared enrichment instructions, the
-// shared JSON schema, the app-prepared bounded image(s), and the capture's
-// metadata on stdin. One JSON object comes back and is validated exactly
-// like every other backend's. The transport rules live in fm-cli.ts.
+// One on-device turn per capture. The native helper receives the bounded
+// images and capture metadata together. An older development checkout uses
+// the guarded CLI. Both return a caption parsed by the shared validator.
 //
 // A failure never moves the capture to another provider. `AppleFmError` is
 // deliberately not one of the errors `isEnrichmentBackendUnavailable`
@@ -30,6 +29,7 @@ import {
   AppleFmOutputLimitError,
   AppleFmTimeoutError,
   runAppleFm,
+  type FmRunResult,
   type FmRunner
 } from "./fm-cli";
 import { APPLE_FM_PROBE_TIMEOUT_MS, isFmDefaultProviderUnset, saysLicenseRequired } from "./status";
@@ -43,6 +43,7 @@ export const APPLE_FM_QUEUE_LANE = APPLE_FM_PROVIDER;
 export const APPLE_FM_QUEUE_CONCURRENCY = 1;
 
 export const APPLE_FM_USER_AGENT = "PwrSnap Apple Foundation Models (fm)";
+export const APPLE_FM_NATIVE_USER_AGENT = "PwrSnap Apple Foundation Models (native)";
 
 export type AppleFmErrorCode =
   | "guardrail"
@@ -117,6 +118,21 @@ export function appleFmErrorFromOutput(text: string): AppleFmError {
   return new AppleFmError("failed", `the on-device model reported an error${detail}.`);
 }
 
+/** The bundled helper emits fixed machine-readable errors. Its stderr is
+ * deliberately never presented verbatim. */
+export function appleFmNativeError(result: string): AppleFmError {
+  switch (result.trim()) {
+    case "not-ready":
+      return new AppleFmError("not-ready", "the on-device model is unavailable on this Mac.");
+    case "guardrail":
+      return new AppleFmError("guardrail", "Apple's safety checks declined it. Regenerate, or pick another provider for captions.");
+    case "timeout":
+      return new AppleFmError("timeout", "the on-device model didn't answer in time. Regenerate to try again.");
+    default:
+      return new AppleFmError("failed", "the on-device model could not finish the caption.");
+  }
+}
+
 /** The exact `fm respond` argv for one enrichment. Pure and exported so the
  *  security-relevant shape is one greppable, testable value. */
 export function buildAppleFmEnrichmentArgs(input: {
@@ -152,6 +168,7 @@ export function appleFmScratchDir(): string {
 
 export type AppleFmEnrichmentOptions = {
   run?: FmRunner;
+  nativeRun?: FmRunner;
   scratchDir?: string;
   timeoutMs?: number;
   platform?: NodeJS.Platform;
@@ -159,12 +176,14 @@ export type AppleFmEnrichmentOptions = {
 
 export class AppleFmEnrichmentBackend implements EnrichmentBackend {
   private readonly run: FmRunner;
+  private readonly nativeRun: FmRunner | undefined;
   private readonly scratchDir: string;
   private readonly timeoutMs: number;
   private readonly platform: NodeJS.Platform;
 
   constructor(options: AppleFmEnrichmentOptions = {}) {
     this.run = options.run ?? runAppleFm;
+    this.nativeRun = options.nativeRun;
     this.scratchDir = options.scratchDir ?? appleFmScratchDir();
     this.timeoutMs = options.timeoutMs ?? APPLE_FM_ENRICHMENT_TIMEOUT_MS;
     this.platform = options.platform ?? process.platform;
@@ -178,10 +197,50 @@ export class AppleFmEnrichmentBackend implements EnrichmentBackend {
         "the on-device model is part of macOS and isn't available on this computer."
       );
     }
-    const signal = req.abortSignal !== undefined ? { signal: req.abortSignal } : {};
-
     // tmpdir can be reaped; make the jail before handing it to anything.
     await mkdir(this.scratchDir, { recursive: true });
+    const result = this.nativeRun === undefined
+      ? await this.invokeCli(req)
+      : await this.invokeNative(this.nativeRun, req);
+
+    let parsed: CaptureEnrichmentResponse["result"];
+    try {
+      parsed = parseCaptureEnrichmentResponse(result.stdout);
+    } catch {
+      throw new AppleFmError(
+        "invalid-output",
+        "the on-device model returned a caption PwrSnap couldn't read. Regenerate to try again."
+      );
+    }
+    return {
+      result: parsed,
+      threadId: `apple-fm-${randomUUID()}`,
+      turnId: randomUUID(),
+      userAgent: this.nativeRun === undefined ? APPLE_FM_USER_AGENT : APPLE_FM_NATIVE_USER_AGENT,
+      model: APPLE_FM_MODEL_ID,
+      modelProvider: APPLE_FM_PROVIDER,
+      serviceTier: null,
+      tokens: null
+    };
+  }
+
+  private async invokeNative(run: FmRunner, req: CaptureEnrichmentRequest): Promise<FmRunResult> {
+    const result = await this.attempt(() => run(["caption"], {
+      stdin: JSON.stringify({
+        metadata: buildCaptureEnrichmentPrompt(req.metadata),
+        imagePaths: req.imagePaths,
+        recognizeText: req.metadata.captureKind === "image"
+      }),
+      cwd: this.scratchDir,
+      timeoutMs: this.timeoutMs,
+      ...(req.abortSignal !== undefined ? { signal: req.abortSignal } : {})
+    }));
+    if (result.code !== 0) throw appleFmNativeError(result.stderr);
+    return result;
+  }
+
+  private async invokeCli(req: CaptureEnrichmentRequest): Promise<FmRunResult> {
+    const signal = req.abortSignal !== undefined ? { signal: req.abortSignal } : {};
     const schemaPath = join(this.scratchDir, "capture-enrichment.schema.json");
     await writeFile(schemaPath, JSON.stringify(CAPTURE_ENRICHMENT_SCHEMA), "utf8");
 
@@ -225,26 +284,7 @@ export class AppleFmEnrichmentBackend implements EnrichmentBackend {
       throw appleFmErrorFromOutput(result.stderr);
     }
 
-    let parsed: CaptureEnrichmentResponse["result"];
-    try {
-      parsed = parseCaptureEnrichmentResponse(result.stdout);
-    } catch {
-      throw new AppleFmError(
-        "invalid-output",
-        "the on-device model returned a caption PwrSnap couldn't read. Regenerate to try again."
-      );
-    }
-    return {
-      result: parsed,
-      threadId: `apple-fm-${randomUUID()}`,
-      turnId: randomUUID(),
-      userAgent: APPLE_FM_USER_AGENT,
-      model: APPLE_FM_MODEL_ID,
-      modelProvider: APPLE_FM_PROVIDER,
-      serviceTier: null,
-      // The tool reports no usage for a response, and the run costs nothing.
-      tokens: null
-    };
+    return result;
   }
 
   private async attempt<T>(action: () => Promise<T>): Promise<T> {
@@ -264,6 +304,9 @@ export class AppleFmEnrichmentBackend implements EnrichmentBackend {
         );
       }
       if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") {
+        if (this.nativeRun !== undefined) {
+          throw new AppleFmError("not-ready", "the bundled Apple captions helper couldn't be found.");
+        }
         throw new AppleFmError(
           "not-ready",
           `the on-device model needs macOS 27 or later; its command-line tool isn't on this Mac. ${SETTINGS_HINT}`

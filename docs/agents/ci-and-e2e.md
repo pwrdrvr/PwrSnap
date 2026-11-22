@@ -30,6 +30,10 @@ AGENTS.md or one of the other files in `docs/agents/`.
   well as actool 26+. Do not use a paid larger size or `macos-26-intel`, and
   do not move CI onto self-hosted machines. Fork pull requests run macOS E2E
   too, and the required Desktop E2E gate requires every platform to pass.
+  The Apple caption compile job alone uses the standard GitHub-hosted
+  `xcode-27` image for the macOS 27 SDK. It has no signing credentials and
+  returns a helper tied to the source commit and SHA-256. Preview packaging,
+  release preparation and signing stay on `macos-26`.
 - **Local headed desktop E2E belongs in the lab VM, not on the operator's
   machine.** It takes over the screen — opens windows, steals focus, drives
   the selector and global hotkeys — and the operator's real windows can leak

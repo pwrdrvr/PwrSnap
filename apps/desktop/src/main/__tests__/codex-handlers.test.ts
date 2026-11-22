@@ -12,6 +12,7 @@ import type { CustomCredentials } from "../ai/direct-api/credentials";
 import { body, json, model, server } from "../ai/direct-api/__tests__/fixtures";
 import { ENRICHMENT_QUEUE_MAX_AGE_MS } from "../ai/direct-api/enrichment-queue";
 import * as appleFmCli from "../ai/apple-fm/fm-cli";
+import * as appleFmNative from "../ai/apple-fm/native";
 import { getAppleFmStatusService } from "../ai/apple-fm/service";
 
 let testDb: Database.Database;
@@ -489,6 +490,7 @@ describe("Codex handlers", () => {
   // failure is never moved to the caption fallback.
   test.each([
     { scenario: "success", expected: "completed" },
+    { scenario: "native-success", expected: "completed" },
     { scenario: "guardrail", expected: "failed" },
     { scenario: "terms-with-fallback-armed", expected: "failed" }
   ] as const)("on-device Apple enrichment: $scenario → $expected", async ({ scenario, expected }) => {
@@ -503,8 +505,8 @@ describe("Codex handlers", () => {
       } }
     });
     const fmCalls: Array<{ args: string[]; stdin: string | undefined }> = [];
-    const runSpy = vi.spyOn(appleFmCli, "runAppleFm").mockImplementation(async (args, options) => {
-      appleFmCli.assertAppleFmArgs(args);
+    const scriptedRun: appleFmCli.FmRunner = async (args, options) => {
+      if (args[0] !== "caption") appleFmCli.assertAppleFmArgs(args);
       fmCalls.push({ args: [...args], stdin: options.stdin });
       if (args[0] === "config") return { code: 0, signal: null, stdout: "(none)\n", stderr: "" };
       if (scenario === "guardrail") {
@@ -517,7 +519,11 @@ describe("Codex handlers", () => {
         title: "On-device fixture", description: "Synthetic image captioned on this Mac", ocrText: "",
         filenameStem: "on-device-fixture", textAnchors: [], tags: []
       }) };
-    });
+    };
+    const runSpy = vi.spyOn(appleFmCli, "runAppleFm").mockImplementation(scriptedRun);
+    const native = scenario === "native-success";
+    const nativeSpy = vi.spyOn(appleFmNative, "resolveNativeCaptionRunner")
+      .mockResolvedValue(native ? scriptedRun : null);
     // The tool is macOS-only; the wiring under test is not.
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const invalidate = vi.spyOn(getAppleFmStatusService(), "invalidate");
@@ -537,21 +543,32 @@ describe("Codex handlers", () => {
       expect(run).toMatchObject({ status: expected, selectedModel: "system", fallbackFrom: null });
       expect(clientFactory).not.toHaveBeenCalled();
 
-      // The guard, then exactly one model turn, with the fixed argv.
-      expect(fmCalls.map((call) => call.args[0])).toEqual(["config", "respond"]);
-      const respond = fmCalls[1]!;
-      expect(respond.args.slice(0, 5)).toEqual(["respond", "--no-stream", "--greedy", "--model", "system"]);
-      const images = respond.args.flatMap((arg, i) => (arg === "--image" ? [respond.args[i + 1]] : []));
+      expect(fmCalls.map((call) => call.args[0])).toEqual(native ? ["caption"] : ["config", "respond"]);
+      const respond = fmCalls.at(-1)!;
+      let images: Array<string | undefined>;
+      if (native) {
+        expect(runSpy).not.toHaveBeenCalled();
+        expect(respond.args).toEqual(["caption"]);
+        const payload = JSON.parse(respond.stdin ?? "") as {
+          metadata: string; imagePaths: string[]; recognizeText: boolean
+        };
+        expect(payload.metadata).toContain("Capture metadata:");
+        expect(payload.recognizeText).toBe(true);
+        images = payload.imagePaths;
+      } else {
+        expect(respond.args.slice(0, 5)).toEqual(["respond", "--no-stream", "--greedy", "--model", "system"]);
+        images = respond.args.flatMap((arg, i) => (arg === "--image" ? [respond.args[i + 1]] : []));
+        expect(respond.stdin).toContain("Capture metadata:");
+      }
       expect(images).toHaveLength(1);
       // An app-prepared bounded copy, never the capture's own file.
       // Absolute on every platform (a Windows path starts with a drive).
-      expect(isAbsolute(images[0] ?? "")).toBe(true);
+      expect(typeof images[0] === "string" && isAbsolute(images[0])).toBe(true);
       expect(images[0]).not.toContain(tempRoot);
-      expect(respond.stdin).toContain("Capture metadata:");
 
       const usage = await bus.dispatch("codex:usageRunDetail", { runId: result.value.runId }, { principal: "ipc" });
       expect(usage).toMatchObject({ ok: true, value: { modelProvider: "apple:system" } });
-      if (scenario === "success") {
+      if (expected === "completed") {
         expect(getCaptureEnrichment("cap_1")?.suggestedDescription).toBe("Synthetic image captioned on this Mac");
         expect(usage).toMatchObject({ ok: true, value: { modelLabel: "Apple Intelligence (on-device)" } });
         expect(invalidate).not.toHaveBeenCalled();
@@ -564,6 +581,7 @@ describe("Codex handlers", () => {
         expect(invalidate).toHaveBeenCalledTimes(1);
       }
     } finally {
+      nativeSpy.mockRestore();
       runSpy.mockRestore();
       platformSpy.mockRestore();
       invalidate.mockRestore();
@@ -772,9 +790,13 @@ describe("Codex handlers", () => {
     });
     const withApple = async (body: (respondCalls: () => number) => Promise<void>): Promise<void> => {
       let respond = 0;
-      const runSpy = vi.spyOn(appleFmCli, "runAppleFm").mockImplementation(async (args) => {
-        appleFmCli.assertAppleFmArgs(args);
-        if (args[0] === "config") return { code: 0, signal: null, stdout: "(none)\n", stderr: "" };
+      const nativeSpy = vi.spyOn(appleFmNative, "resolveNativeCaptionRunner").mockResolvedValue(async (args, options) => {
+        expect(args).toEqual(["caption"]);
+        expect(JSON.parse(options.stdin ?? "")).toMatchObject({
+          metadata: expect.stringContaining("Capture metadata:"),
+          imagePaths: [expect.any(String)],
+          recognizeText: true
+        });
         respond += 1;
         return { code: 0, signal: null, stderr: "", stdout: appleCaption };
       });
@@ -782,7 +804,7 @@ describe("Codex handlers", () => {
       try {
         await body(() => respond);
       } finally {
-        runSpy.mockRestore();
+        nativeSpy.mockRestore();
         platformSpy.mockRestore();
       }
     };

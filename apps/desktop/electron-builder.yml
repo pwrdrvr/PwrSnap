@@ -191,6 +191,8 @@ mac:
     # can show a PwrSnap filename while raw image paste still works.
     - from: "build/native/pasteboard-writer"
       to: "PwrSnapPasteboardWriter"
+    - from: "build/native/apple-caption"
+      to: "PwrSnapAppleCaption"
     # FFmpeg built from upstream source by the controlled build repo
     # github.com/pwrdrvr/pwrsnap-ffmpeg-builds with no GPL or nonfree
     # configure flags; injected here by CI, never built in this repo.

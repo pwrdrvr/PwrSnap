@@ -1015,6 +1015,15 @@ export function FloatOver({
     onDragFile();
   };
 
+  // A card's FILE chip hands the OS a file the same way: the drag is a
+  // hold, or an armed toast would close 400 ms into it. The window-level
+  // mouseup / dragend / drop listeners release it.
+  const dragPreset = (preset: "low" | "med" | "high"): void => {
+    if (onDragPreset === undefined) return;
+    setNativeDragging(true);
+    onDragPreset(preset);
+  };
+
   return (
     <div
       ref={rootRef}
@@ -1307,7 +1316,7 @@ export function FloatOver({
                 disabled={card.disabled}
                 onCopy={armingCopy(onCopy)}
                 {...(onCopyPath !== undefined ? { onCopyPath: armingCopy(onCopyPath) } : {})}
-                {...(onDragPreset !== undefined ? { onDrag: onDragPreset } : {})}
+                {...(onDragPreset !== undefined ? { onDrag: dragPreset } : {})}
                 copyPulse={copyPulses?.[card.preset] ?? 0}
               />
             ))}

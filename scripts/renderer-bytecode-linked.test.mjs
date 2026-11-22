@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "nod
 import { createRequire, SourceMap } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { bytecodeBudget, importTool, overBudget } from "./check-renderer-bytecode.mjs";
 import { attributeLinkedFunctions, buildLinkedChunks, linkedBudgetCandidates } from "./lib/renderer-bytecode-attribution.mjs";
 import { compilerRuntime, measureBytecode } from "./lib/renderer-bytecode-compiler.mjs";
@@ -31,6 +31,22 @@ test("V8 code log sizes agree with Ignition disassembly for same-name nested fun
   const same = records.filter(({ name }) => name === "same");
   expect(same).toHaveLength(2);
   expect(new Set(same.map(({ start }) => start)).size).toBe(2);
+});
+
+test.each([["Node", false], ["Electron", true]])("%s measurements survive V8 log placeholders in the temp path", async (_name, useElectron) => {
+  const inputs = [{
+    file: "fixture.js", variant: "fixture", esm: true,
+    code: "import 'must-never-be-linked'; export function outer() { return () => 42; }"
+  }];
+  const expected = await measureBytecode(inputs, compilerRuntime(useElectron));
+  const root = mkdtempSync(join(tmpdir(), "pwrsnap-%p-%t-"));
+  try {
+    for (const key of ["TMPDIR", "TMP", "TEMP"]) vi.stubEnv(key, root);
+    expect(await measureBytecode(inputs, compilerRuntime(useElectron))).toEqual(expected);
+  } finally {
+    vi.unstubAllEnvs();
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("linked minified chunks keep application and vendor bytecode budgets distinct in Node and Electron", async () => {

@@ -109,11 +109,12 @@ async function readMeasurements(logPath, inputs) {
 
 export async function measureBytecode(modules, runtime = compilerRuntime()) {
   const scratch = mkdtempSync(join(tmpdir(), "pwrsnap-bytecode-"));
-  const logPath = join(scratch, "v8.log");
+  // V8 expands %p and %t in --logfile. Keep the scratch path in cwd.
+  const logFile = "v8.log";
   try {
     const child = spawn(runtime.executable, [
       "--no-lazy", "--no-compilation-cache", "--experimental-vm-modules", "--log-code", "--log-source-position", "--log-function-events",
-      "--no-log-source-code", "--no-logfile-per-isolate", `--logfile=${logPath}`, workerPath
+      "--no-log-source-code", "--no-logfile-per-isolate", `--logfile=${logFile}`, workerPath
     ], { cwd: scratch, env: runtime.env, timeout: 120_000, stdio: ["pipe", "pipe", "pipe"] });
     const inputs = [];
     const lines = async function* () {
@@ -133,7 +134,7 @@ export async function measureBytecode(modules, runtime = compilerRuntime()) {
     if (sent.status === "rejected") throw sent.reason;
     const versions = JSON.parse(stdout);
     if (!versions.v8 || versions.electron !== runtime.electron) throw new Error("Unexpected V8 compiler runtime");
-    const records = await readMeasurements(logPath, inputs);
+    const records = await readMeasurements(join(scratch, logFile), inputs);
     return { versions, records };
   } finally {
     rmSync(scratch, { recursive: true, force: true });

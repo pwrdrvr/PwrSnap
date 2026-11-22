@@ -2,12 +2,12 @@ import type { BrowserWindow } from "electron";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { ElectronQuitModel } from "../../__tests__/electron-quit-model";
+import { onWindowCloseCancelled } from "../../window-close-cancellation";
 import {
   completeSizzleCloseRequest,
   installSizzleQuitBarrier,
   isSizzleQuitDeferred,
   markSizzleCloseRendererReady,
-  onSizzleCloseCancelled,
   onSizzleQuitCancelled,
   wireSizzleCloseBarrier
 } from "../sizzle-close-barrier";
@@ -78,7 +78,7 @@ describe("Sizzle close barrier", () => {
     markSizzleCloseRendererReady(44);
     const closeCancelled = vi.fn();
     const quitCancelled = vi.fn();
-    const unsubscribeClose = onSizzleCloseCancelled(closeCancelled);
+    const unsubscribeClose = onWindowCloseCancelled(closeCancelled);
     const unsubscribeQuit = onSizzleQuitCancelled(quitCancelled);
     fake.close();
     expect(closeCancelled).not.toHaveBeenCalled();

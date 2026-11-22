@@ -9,11 +9,21 @@ const fixture = vi.hoisted(() => ({
   check: vi.fn(),
   install: vi.fn(),
   write: vi.fn(),
-  feed: vi.fn()
+  feed: vi.fn(),
+  burstConfirm: vi.fn(),
+  burstResponse: 1,
+  macWindowCount: 0
 }));
 vi.mock("electron", () => ({
-  app: { getVersion: () => "1.0.0", getPath: () => "" },
+  app: { getVersion: () => "1.0.0", getPath: () => "", on: () => {} },
+  BaseWindow: { getAllWindows: () => Array.from({ length: fixture.macWindowCount }) },
+  dialog: { showMessageBox: async () => ({ response: fixture.burstResponse }) },
   autoUpdater: {
+    on(event: string, handler: (...args: unknown[]) => void) {
+      const listeners = fixture.native.get(event) ?? new Set();
+      listeners.add(handler);
+      fixture.native.set(event, listeners);
+    },
     once(event: string, handler: (...args: unknown[]) => void) {
       const wrapped = (...args: unknown[]) => {
         fixture.native.get(event)?.delete(wrapped);
@@ -64,6 +74,15 @@ vi.mock("../mac-shipit-diagnostics", () => ({ readMacShipItDiagnostics: () => un
 vi.mock("../events", () => ({ broadcastRendererEventToLocalWindows: () => {} }));
 vi.mock("../process-split/event-relay", () => ({ relayRendererEventToPeer: () => {} }));
 vi.mock("../log", () => ({ getMainLogger: () => ({ info() {}, warn() {}, error() {}, debug() {} }) }));
+vi.mock("../window", () => ({
+  showBurstReviewWindow: (_id: string, guard: { confirm: (window: unknown) => Promise<boolean> }) => {
+    fixture.burstConfirm.mockImplementation(guard.confirm);
+  }
+}));
+vi.mock("../burst/burst-session", () => ({
+  getBurstSessionView: () => ({ frames: [{}], keptIndexes: [] }),
+  onBurstSessionChange: () => {}
+}));
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -75,8 +94,8 @@ function deferred<T>() {
 function emit(event: string, ...args: unknown[]) {
   for (const handler of [...fixture.events.get(event) ?? []]) handler(...args);
 }
-function emitNative(event: string): void {
-  for (const handler of [...fixture.native.get(event) ?? []]) handler();
+function emitNative(event: string, ...args: unknown[]): void {
+  for (const handler of [...fixture.native.get(event) ?? []]) handler(...args);
 }
 type Target = { version: string; channel: UpdateChannel };
 type Outcome = "ok" | "error" | "throw" | "cancel";
@@ -179,6 +198,7 @@ async function createReal(platform: "darwin" | "win32", prepareForMacClose?: () 
   updater.disposeAutoUpdater();
   fixture.events.clear();
   fixture.native.clear();
+  fixture.macWindowCount = 0;
   fixture.write.mockReset();
   fixture.install.mockReset();
   const real = new Real();
@@ -370,9 +390,10 @@ test("scheduled duplicate requests and shutdown completion share one native hand
 test("macOS update window closes run with selector creation paused until the install ends", async () => {
   await fc.assert(fc.asyncProperty(
     fc.constantFrom("error", "cancel", "dispose"),
-    fc.integer({ min: 0, max: 2 }),
-    async (end, nativeQuitEvents) => {
-      fc.pre(end !== "cancel" || nativeQuitEvents === 1);
+    fc.constantFrom("staging", "empty", "closing", "closed"),
+    async (end, phase) => {
+      fc.pre(end !== "cancel" || phase === "closing");
+      fc.pre(end !== "error" || phase !== "closing");
       const restore = vi.fn();
       const pauseSelector = vi.fn(() => restore);
       const real = await createReal("darwin", pauseSelector);
@@ -383,13 +404,18 @@ test("macOS update window closes run with selector creation paused until the ins
         await real.finish(0, "ok");
         await expect(promise).resolves.toEqual({ status: "restarting" });
         expect(pauseSelector).not.toHaveBeenCalled();
-        // Electron emits this before taking its close-window snapshot, and
-        // again when the last window closes.
-        for (let i = 0; i < nativeQuitEvents; i += 1) emitNative("before-quit-for-update");
-        const expectedPauses = nativeQuitEvents > 0 ? 1 : 0;
+        if (phase !== "staging") {
+          fixture.macWindowCount = phase === "empty" ? 0 : 1;
+          emitNative("before-quit-for-update");
+        }
+        if (phase === "closed") {
+          fixture.macWindowCount = 0;
+          emitNative("before-quit-for-update");
+        }
+        const expectedPauses = phase === "staging" ? 0 : 1;
         expect(pauseSelector).toHaveBeenCalledTimes(expectedPauses);
         expect(restore).not.toHaveBeenCalled();
-        if (end === "error") emit("error", new Error("native failure"));
+        if (end === "error") emitNative("error", new Error("native failure"));
         else if (end === "cancel") {
           real.window.close();
           expect(real.cancel()).toBe(true);
@@ -400,4 +426,58 @@ test("macOS update window closes run with selector creation paused until the ins
       } finally { await real.close(); }
     }
   ));
+});
+
+test("Burst Review Go Back ends the update close pass without closing the review window", async () => {
+  const { openBurstReviewWindow } = await import("../burst/burst-review-window");
+  // Burst Review's ordinary before-quit and will-quit listeners are irrelevant
+  // to the native close pass, which runs before either event.
+  openBurstReviewWindow("open-review");
+  await fc.assert(fc.asyncProperty(fc.boolean(), async (goBack) => {
+    const restore = vi.fn();
+    const real = await createReal("darwin", () => restore);
+    fixture.macWindowCount = 1;
+    fixture.burstResponse = goBack ? 1 : 0;
+    fixture.install.mockImplementation(() => {});
+    try {
+      const { promise } = await real.start();
+      await real.finish(0, "ok");
+      emitNative("before-quit-for-update");
+      const mayClose = await fixture.burstConfirm(real.window);
+      expect(mayClose).toBe(!goBack);
+      expect(restore).toHaveBeenCalledTimes(goBack ? 1 : 0);
+      expect(updater.installDownloadedAppUpdate() === promise).toBe(!goBack);
+    } finally { await real.close(); }
+  }), { examples: [[true]] });
+});
+
+test("check and staging errors cannot resume the selector while the update waits for Sizzle", async () => {
+  await fc.assert(fc.asyncProperty(fc.array(fc.boolean(), { minLength: 1, maxLength: 4 }), async (nativeErrors) => {
+    const restore = vi.fn();
+    const real = await createReal("darwin", () => restore);
+    fixture.macWindowCount = 1;
+    fixture.install.mockImplementation(() => {});
+    try {
+      const { promise } = await real.start();
+      await real.finish(0, "ok");
+      emitNative("before-quit-for-update");
+      real.window.close();
+      for (const fromNative of nativeErrors) {
+        const error = new Error("unrelated update check failed");
+        // MacUpdater forwards native staging failures as well as its own
+        // feed/download failures through the same electron-updater event.
+        if (fromNative) emitNative("error", error);
+        emit("error", error);
+        expect(restore).not.toHaveBeenCalled();
+        expect(updater.installDownloadedAppUpdate()).toBe(promise);
+      }
+      expect(barrier.completeSizzleCloseRequest(real.window.id, real.requestId, "close")).toBe(true);
+      fixture.macWindowCount = 0;
+      emitNative("before-quit-for-update");
+      emit("error", new Error("late feed failure"));
+      expect(restore).not.toHaveBeenCalled();
+      emitNative("error", new Error("native relaunch failed"));
+      expect(restore).toHaveBeenCalledOnce();
+    } finally { await real.close(); }
+  }), { examples: [[[false]]] });
 });

@@ -11,6 +11,7 @@ import { app, dialog } from "electron";
 import { closeBurstReviewWindow, showBurstReviewWindow } from "../window";
 import { getMainLogger } from "../log";
 import { onSizzleQuitCancelled } from "../sizzle/sizzle-close-barrier";
+import { notifyWindowCloseCancelled } from "../window-close-cancellation";
 import {
   discardAllBurstsSync,
   discardBurst,
@@ -63,7 +64,9 @@ export function openBurstReviewWindow(burstId: string): void {
         cancelId: 1,
         noLink: true
       });
-      return response === 0;
+      const discard = response === 0;
+      if (!discard && !window.isDestroyed()) notifyWindowCloseCancelled();
+      return discard;
     },
     // However the window went (confirmed close, quit, crash), its stills go.
     onClosed: () => {

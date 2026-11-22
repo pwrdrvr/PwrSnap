@@ -180,3 +180,54 @@ and
 - **Headless E2E cannot see any of this.** Placement, content protection
   and the park are window-server behavior. Check a change on a real
   display, and on Windows and Linux as well as macOS.
+
+## Taking the snap, then a leave, closes the toast; a close onto the tabs folds
+
+**Taking the snap arms the toast: a successful click on one of its copy
+cards (or a card's FILE chip), a ⌘1–3 shortcut copy, or a file dragged
+out of the preview or a FILE chip. From then on, every stretch with the
+pointer outside the window drains the bar over `COPY_LEAVE_CLOSE_MS`
+(400ms) and closes the toast the way the countdown does, onto the edge
+tabs. Every hold on the countdown other than the pointer still holds the
+close.** Owner: the countdown effect, `armingCopy`, the pulse effect and
+`startDragOut` in
+[FloatOver.tsx](../../apps/desktop/src/renderer/src/features/float-over/FloatOver.tsx).
+Pinned by
+[FloatOver-copy-close.property.test.tsx](../../apps/desktop/src/renderer/src/features/float-over/__tests__/FloatOver-copy-close.property.test.tsx),
+a model of enter / leave / copy / shortcut / drag / dragover / drop /
+wait sequences. Design: the "Float-Over Copy Close" page of the PwrSnap
+design canvas.
+
+- **Not Esc.** The toast never takes keyboard focus from the app the user
+  is in. The pointer leaving is the signal it already has.
+- **A ⌘1–3 copy usually closes the toast at once.** Main owns the chords
+  globally and pulses the card (`floatOverCopyPulse`), so the press comes
+  from another app with the pointer already elsewhere: the drain starts
+  right away. A failed card click does not arm. The pulse fires at the
+  keypress, before the copy's result, so a failed shortcut copy still
+  arms.
+- **A drag is not a hold; its leave is the leave.** Mid native drag the
+  window gets no mouse events, only `dragover` while the pointer is over
+  it. `DRAG_OUT_LEAVE_MS` without one means the file, and the pointer,
+  left. The toast then folds while the drag is still in flight; the drag
+  session belongs to the OS, and the window is only reshaped and parked,
+  never destroyed. Main prepares the dragged file before `startDrag`, and
+  the window parks at least ~800ms after the drag starts (150 + 400 +
+  260), so a cold render slower than that would start the drag from a
+  parked window. Not
+  verified on a real display yet: check macOS and Windows.
+- **Videos are not armed** by any of these: GIF/MP4 copies can encode for
+  seconds and the toast shows their progress.
+- **"Outside" is the window, not the toast.** Moving onto the rail is
+  still inside (`externalHover`). The see-through strip under a short
+  rail counts as outside.
+- **It is a timeout, not a dismiss.** It goes through `onTimeout`, so the
+  snap stays on the edge tabs until explicitly dismissed.
+- **Every close onto visible tabs folds into the edge** (`is-tucking`, the
+  `fo-tuck` keyframes in float-over-dock.css): the countdown, Tuck, and
+  a leave after taking the snap. A dismiss, Edit, Discard, a close with Recent captures
+  off, tabs on the left, no dock (native Wayland) and reduced motion keep
+  the plain fade. The fold is a transform on `.fo-shell`, never on
+  `.fo-host__measure`: the host measures that wrapper's own box, so main
+  does not resize the window mid-fold, and the fold needs nothing from
+  the window server on any platform.

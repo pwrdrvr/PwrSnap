@@ -45,6 +45,25 @@ const VARIANTS = {
 
 type VariantId = keyof typeof VARIANTS;
 
+/**
+ * After a successful click on one of the toast's own copy cards (or a
+ * card's FILE chip), the pointer leaving the window no longer resumes the
+ * countdown: the bar drains what is left over this long and the toast
+ * closes the way a countdown ends. Coming back inside it stops the drain.
+ */
+export const COPY_LEAVE_CLOSE_MS = 400;
+/**
+ * Dragging a file out of the toast arms it like a copy. During the native
+ * drag the window gets no mouse events, only `dragover` while the pointer
+ * is over it, every ~50ms; this long without one means it has left.
+ */
+export const DRAG_OUT_LEAVE_MS = 150;
+/** The plain exit (`fo-out` in float-over.css). */
+export const FADE_EXIT_MS = 220;
+/** The fold into the screen edge (`fo-tuck` in float-over.css), used for
+ *  every close that lands the snap on the edge tabs. */
+export const TUCK_EXIT_MS = 260;
+
 function dimText(w: number, h: number) {
   return `${w.toLocaleString()} × ${h.toLocaleString()}`;
 }
@@ -467,8 +486,10 @@ export function FloatOver({
   dockable?: boolean;
   /**
    * Settings → Recent captures. Off hides the Tuck button, which would
-   * send the snap to a dock nobody can see. Nothing else here follows it:
-   * the countdown and its timeout are the same either way.
+   * send the snap to a dock nobody can see, and a close onto the dock
+   * fades instead of folding into an edge with nothing on it. Nothing
+   * else here follows it: the countdown and its timeout are the same
+   * either way.
    */
   sidebarVisible?: boolean;
   /** The pointer is over part of the float-over window that is not this
@@ -599,7 +620,6 @@ export function FloatOver({
     null
   );
   const [hovering, setHovering] = useState(false);
-  const [nativeDragging, setNativeDragging] = useState(false);
   // A trim-handle drag on the video strip takes pointer capture, so it
   // keeps running after the pointer leaves the toast — `mouseleave`
   // fires, `hovering` drops, and without this term the countdown would
@@ -607,14 +627,27 @@ export function FloatOver({
   // VideoTimeline on release / cancel / lost capture / unmount.
   const [trimDragging, setTrimDragging] = useState(false);
   const [progress, setProgress] = useState(1);
-  const [exiting, setExiting] = useState(false);
+  const progressRef = useRef(1);
+  // "fade" for a close that removes the snap, "tuck" for one that lands
+  // it on the edge tabs (the window folds into that edge).
+  const [exiting, setExiting] = useState<"fade" | "tuck" | null>(null);
+  // The user took the snap: a copy card click that succeeded, a ⌘1–3
+  // copy, or a file dragged out. Leaving the window now closes the toast
+  // (COPY_LEAVE_CLOSE_MS) instead of resuming the countdown. Never
+  // disarms; the toast remounts for every snap it shows.
+  const [closeOnLeave, setCloseOnLeave] = useState(false);
+  // While a file dragged out of the toast is in flight: the timer that
+  // decides the pointer has left (DRAG_OUT_LEAVE_MS without a dragover).
+  const dragOutRef = useRef(false);
+  const dragOutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [storage, setStorage] = useState({ drive: false, dropbox: false, s3: false });
   const [visibleSrc, setVisibleSrc] = useState(src);
   const [sourceLoaded, setSourceLoaded] = useState(false);
 
   const isSuggestedDescriptionPreview =
     descriptionOrigin === "suggested" && suggestedDescription.trim().length > 0;
-  const startedAt = useRef(Date.now());
+  // Countdown time spent running, banked each time a run stops. Only a
+  // run adds to it, so an effect re-run while paused adds nothing.
   const elapsedAtPause = useRef(0);
   const rafRef = useRef<number | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -633,7 +666,7 @@ export function FloatOver({
   // latest callback without re-subscribing on every parent re-render.
   // Without this, an enrichment-arrived re-render (which creates a
   // fresh `onDismiss` function reference in FloatOverHost) would
-  // retrigger the countdown effect mid-tick, reset `startedAt.current`
+  // retrigger the countdown effect mid-tick, restart the current run
   // to "now", and effectively halt the countdown's forward progress.
   // See bug vii.
   const onDismissRef = useRef(onDismiss);
@@ -792,7 +825,6 @@ export function FloatOver({
     (!tuckMode && inFlight) ||
     externalHover ||
     hovering ||
-    nativeDragging ||
     trimDragging ||
     hasUserDescription ||
     hasUserTitle ||
@@ -832,61 +864,124 @@ export function FloatOver({
     replaceVisibleTags(tagsWithMutation(acceptedTags, pendingTagMutationRef.current));
   }, [acceptedTags.join("\0"), replaceVisibleTags]);
 
-  // Countdown over, or the Tuck button: play the exit, then hand the
-  // host the outcome. Reads refs so a re-render mid-exit cannot swap in
-  // a stale answer.
+  // A close through `onTimeout` lands the snap on the edge tabs whenever
+  // they can be seen, so the window folds into that edge instead of
+  // fading. Where there are no tabs (no dock, or Recent captures off) the
+  // fold would point at nothing, and the plain fade plays.
+  const tucksToEdge = dockable && sidebarVisible && onTimeout !== undefined;
+
+  // Countdown over, the Tuck button, or a leave after a copy: play the
+  // exit, then hand the host the outcome. Reads refs so a re-render
+  // mid-exit cannot swap in a stale answer.
   const finishCountdown = (): void => {
     // Once. The countdown keeps ticking through the exit animation, so a
     // Tuck or X pressed near the end would otherwise close twice.
     if (exitTimerRef.current !== null) return;
-    setExiting(true);
+    setExiting(tucksToEdge ? "tuck" : "fade");
     exitTimerRef.current = setTimeout(() => {
       const timeout = onTimeoutRef.current;
       if (timeout !== undefined) timeout({ inFlight: inFlightRef.current });
       else onDismissRef.current?.();
-    }, 220);
+    }, tucksToEdge ? TUCK_EXIT_MS : FADE_EXIT_MS);
   };
   const finishCountdownRef = useRef(finishCountdown);
   finishCountdownRef.current = finishCountdown;
 
   // Enrichment updates the contents without restarting this countdown.
+  // While paused nothing runs; a run banks its time when it stops. Once a
+  // copy has armed `closeOnLeave`, a run no longer counts down `autoMs`:
+  // it drains whatever is left of the bar over COPY_LEAVE_CLOSE_MS. Every
+  // hold that pauses the countdown also holds the close.
   useEffect(() => {
-    if (!startCountdown || !autoMs) return;
-    if (isPaused) {
-      elapsedAtPause.current += Date.now() - startedAt.current;
-      startedAt.current = Date.now();
-      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
-      return;
-    }
+    if (!startCountdown || !autoMs || isPaused) return;
+    const runStart = Date.now();
+    const drainFrom = progressRef.current;
     const tick = () => {
-      const elapsed = elapsedAtPause.current + (Date.now() - startedAt.current);
-      const p = Math.max(0, 1 - elapsed / autoMs);
+      const ran = Date.now() - runStart;
+      const p = closeOnLeave
+        ? Math.max(0, drainFrom * (1 - ran / COPY_LEAVE_CLOSE_MS))
+        : Math.max(0, 1 - (elapsedAtPause.current + ran) / autoMs);
+      progressRef.current = p;
       setProgress(p);
       if (p <= 0) {
         // Through a ref so we always reach the latest callbacks without
         // requiring the effect to re-subscribe on every parent re-render
-        // (which would reset `startedAt.current` mid-tick and stall the
+        // (which would restart the run mid-tick and stall the
         // countdown — bug vii).
         finishCountdownRef.current();
         return;
       }
       rafRef.current = requestAnimationFrame(tick);
     };
-    startedAt.current = Date.now();
     rafRef.current = requestAnimationFrame(tick);
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+      elapsedAtPause.current += Date.now() - runStart;
     };
     // `onDismiss` is intentionally NOT a dep — it is read via
     // `onDismissRef`. Adding it back would re-run this effect on
     // every parent re-render (e.g., enrichment IPC arrival),
-    // resetting startedAt.current and freezing the countdown.
+    // restarting the run and freezing the countdown.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPaused, startCountdown, autoMs]);
+  }, [isPaused, startCountdown, autoMs, closeOnLeave]);
+
+  // A click on a copy card (or its FILE chip) arms close-on-leave once
+  // the copy reports success.
+  const armingCopy = (action: CopyAction | undefined): CopyAction => (preset) => {
+    const outcome = action?.(preset);
+    if (outcome === undefined) {
+      if (action !== undefined) setCloseOnLeave(true);
+      return outcome;
+    }
+    return Promise.resolve(outcome).then((result) => {
+      if (result.ok) setCloseOnLeave(true);
+      return result;
+    });
+  };
+
+  // ⌘1–3 arm it too. Main pulses a card for every shortcut copy (it owns
+  // the chords globally, so this fires with another app frontmost); with
+  // the pointer already elsewhere, the toast drains and closes right
+  // away. The pulse counts are the host's and outlive a toast, so only a
+  // rise past what this toast mounted with counts.
+  const pulseTotal = (copyPulses?.low ?? 0) + (copyPulses?.med ?? 0) + (copyPulses?.high ?? 0);
+  const pulseBaselineRef = useRef(pulseTotal);
+  useEffect(() => {
+    if (pulseTotal > pulseBaselineRef.current) setCloseOnLeave(true);
+  }, [pulseTotal]);
+
+  // No dragover for DRAG_OUT_LEAVE_MS: the dragged file, and the pointer
+  // with it, has left the window.
+  const awaitDragOutLeave = (): void => {
+    if (dragOutTimerRef.current !== null) clearTimeout(dragOutTimerRef.current);
+    dragOutTimerRef.current = setTimeout(() => {
+      dragOutTimerRef.current = null;
+      setHovering(false);
+    }, DRAG_OUT_LEAVE_MS);
+  };
+  const endDragOut = (): void => {
+    dragOutRef.current = false;
+    if (dragOutTimerRef.current !== null) clearTimeout(dragOutTimerRef.current);
+    dragOutTimerRef.current = null;
+  };
+  const awaitDragOutLeaveRef = useRef(awaitDragOutLeave);
+  awaitDragOutLeaveRef.current = awaitDragOutLeave;
+  const endDragOutRef = useRef(endDragOut);
+  endDragOutRef.current = endDragOut;
+
+  // A file dragged out of the preview or a card's FILE chip is the snap
+  // being taken, like a copy: it arms close-on-leave, and the drag
+  // leaving the window is the leave. Nothing holds the toast for the
+  // drag.
+  const startDragOut = (): void => {
+    setCloseOnLeave(true);
+    dragOutRef.current = true;
+    awaitDragOutLeave();
+  };
 
   useEffect(() => {
     const finishNativeDrag = (event?: MouseEvent | DragEvent): void => {
-      setNativeDragging(false);
+      endDragOutRef.current();
       // Backstop for the trim hold. The strip's own pointerup only
       // reaches `VideoTimeline` while pointer capture holds; if capture
       // was never taken (setPointerCapture threw) the release lands on
@@ -901,45 +996,41 @@ export function FloatOver({
 
     const handleMouseMove = (event: MouseEvent): void => {
       syncHoverFromPoint(event.clientX, event.clientY);
-      if (nativeDragging && event.buttons === 0) {
-        setNativeDragging(false);
-      }
     };
     const handleMouseOut = (event: MouseEvent): void => {
-      if (event.relatedTarget === null) {
-        setHovering(false);
-        if (nativeDragging && event.buttons === 0) {
-          setNativeDragging(false);
-        }
-      }
+      if (event.relatedTarget === null) setHovering(false);
+    };
+    // Over the window mid-drag, the only sign of the pointer.
+    const handleDragOver = (event: DragEvent): void => {
+      if (!dragOutRef.current) return;
+      syncHoverFromPoint(event.clientX, event.clientY);
+      awaitDragOutLeaveRef.current();
     };
     const handleBlur = (): void => {
       setHovering(false);
-      setNativeDragging(false);
-    };
-    const handleKeyUp = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") {
-        setNativeDragging(false);
-      }
     };
 
     window.addEventListener("mousemove", handleMouseMove);
     window.addEventListener("mouseout", handleMouseOut);
+    window.addEventListener("dragover", handleDragOver);
     window.addEventListener("mouseup", finishNativeDrag);
     window.addEventListener("dragend", finishNativeDrag);
     window.addEventListener("drop", finishNativeDrag);
     window.addEventListener("blur", handleBlur);
-    window.addEventListener("keyup", handleKeyUp);
     return () => {
       window.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("mouseout", handleMouseOut);
+      window.removeEventListener("dragover", handleDragOver);
       window.removeEventListener("mouseup", finishNativeDrag);
       window.removeEventListener("dragend", finishNativeDrag);
       window.removeEventListener("drop", finishNativeDrag);
       window.removeEventListener("blur", handleBlur);
-      window.removeEventListener("keyup", handleKeyUp);
+      endDragOutRef.current();
     };
-  }, [nativeDragging]);
+    // Registered once: everything it calls is reached through refs, or
+    // reads only refs (syncHoverFromPoint).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Clear any pending exit-animation timer on unmount. Prevents a
   // setTimeout from a previous mount firing onDismiss after the NEW
@@ -955,16 +1046,21 @@ export function FloatOver({
 
   const dismissNow = () => {
     if (exitTimerRef.current !== null) return;
-    setExiting(true);
-    exitTimerRef.current = setTimeout(() => onDismiss?.(), 220);
+    setExiting("fade");
+    exitTimerRef.current = setTimeout(() => onDismiss?.(), FADE_EXIT_MS);
   };
 
   const dragFile = (event: React.DragEvent): void => {
     if (onDragFile === undefined) return;
     event.preventDefault();
-    setNativeDragging(true);
-    syncHoverFromPoint(event.clientX, event.clientY);
+    startDragOut();
     onDragFile();
+  };
+
+  const dragPreset = (preset: "low" | "med" | "high"): void => {
+    if (onDragPreset === undefined) return;
+    startDragOut();
+    onDragPreset(preset);
   };
 
   return (
@@ -973,7 +1069,8 @@ export function FloatOver({
       className={[
         "fo",
         `fo--variant-${variant}`,
-        exiting ? "is-exiting" : "is-entering",
+        exiting !== null ? "is-exiting" : "is-entering",
+        exiting === "tuck" ? "is-tucking" : "",
         isPaused ? "is-paused" : "",
         thinking ? "is-thinking" : ""
       ]
@@ -1256,9 +1353,9 @@ export function FloatOver({
                 bytes={card.bytes}
                 tag={card.tag}
                 disabled={card.disabled}
-                onCopy={(preset) => onCopy?.(preset)}
-                {...(onCopyPath !== undefined ? { onCopyPath } : {})}
-                {...(onDragPreset !== undefined ? { onDrag: onDragPreset } : {})}
+                onCopy={armingCopy(onCopy)}
+                {...(onCopyPath !== undefined ? { onCopyPath: armingCopy(onCopyPath) } : {})}
+                {...(onDragPreset !== undefined ? { onDrag: dragPreset } : {})}
                 copyPulse={copyPulses?.[card.preset] ?? 0}
               />
             ))}

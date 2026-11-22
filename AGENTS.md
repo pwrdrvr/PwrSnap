@@ -245,11 +245,13 @@ before changing the tray, its menu, or popover show, hide or sizing:
 - **Tray + float-over popover sizing — outer `inline-block` measurer.**
 
 Read [docs/agents/float-over.md](docs/agents/float-over.md) before changing
-float-over state delivery or the dock:
+float-over state delivery, the dock, or how the toast closes:
 
 - **The float-over asks for its state; main never sends it on a timer.**
 - **The float-over dock is the toast's own window, and it never lands in a
   capture.**
+- **Taking the snap (copy click, ⌘1–3, drag out), then a leave, closes
+  the toast; a close onto the tabs folds.**
 
 Read [docs/agents/recording.md](docs/agents/recording.md) before changing the
 recording frame, the HUD, anything shown during a take, or activation:

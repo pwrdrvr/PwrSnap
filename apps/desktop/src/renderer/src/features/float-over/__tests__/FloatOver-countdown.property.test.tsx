@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import fc from "fast-check";
 import type { CaptureEnrichment } from "@pwrsnap/shared";
-import { FloatOver } from "../FloatOver";
+import { FADE_EXIT_MS, FloatOver, TUCK_EXIT_MS } from "../FloatOver";
 import { DOCK_TUCK_COUNTDOWN_MS } from "../float-over-dock-model";
 
 beforeEach(() => {
@@ -100,8 +100,9 @@ test("enrichment settlement preserves progress and the original deadline", async
         expect(progress()).toBe(before);
         await advance(DOCK_TUCK_COUNTDOWN_MS - arrivalMs - 32);
         expect(onTimeout).not.toHaveBeenCalled();
-        // Allow one animation frame and the existing 220ms exit animation.
-        await advance(300);
+        // Allow the 32ms left, one animation frame, and the exit: the fold
+        // into the edge when the tabs show, the plain fade when they don't.
+        await advance(32 + 16 + (sidebarVisible ? TUCK_EXIT_MS : FADE_EXIT_MS) + 20);
         expect(onTimeout).toHaveBeenCalledExactlyOnceWith({ inFlight: false });
       } finally {
         await act(async () => root.unmount());

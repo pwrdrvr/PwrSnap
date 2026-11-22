@@ -43,6 +43,30 @@ body[data-stage="float-over"] .fo-host--dock[data-side="left"] { justify-content
   width: var(--fo-w, 392px);
 }
 
+/* ----- the fold into the edge -----
+   A close that lands the snap on the edge tabs (the countdown, Tuck, a
+   leave after a copy: `.fo.is-tucking`) folds the whole window — rail
+   and toast — into its right edge, which sits 24px from the screen edge,
+   so the clip at the window's edge reads as the snap slipping off-screen.
+   The transform is on the shell, never on `.fo-host__measure`: the host
+   measures that wrapper's own box, which a descendant's transform leaves
+   alone, so main does not resize the window mid-fold. Only for tabs on
+   the right: the toast sits bottom-right, and a fold to the right would
+   point away from tabs on the left, so those keep the plain fade. Keep
+   the duration in step with TUCK_EXIT_MS in FloatOver.tsx. */
+@keyframes fo-tuck {
+  0%   { transform: none; opacity: 1; }
+  45%  { transform: translateX(6px) scale(0.45, 0.9); opacity: 0.95; }
+  100% { transform: translateX(24px) scale(0.04, 0.7); opacity: 0; }
+}
+body[data-stage="float-over"] .fo-host[data-side="right"] .fo-shell:has(.fo.is-tucking) {
+  transform-origin: 100% 50%;
+  animation: fo-tuck 260ms cubic-bezier(0.55, 0, 0.85, 0.35) both;
+  pointer-events: none;
+}
+/* The shell folds; the toast inside it must not also fade out. */
+body[data-stage="float-over"] .fo-host[data-side="right"] .fo.is-tucking { animation: none; }
+
 /* ----- status glyph -----
    reading = spinner, waiting = hollow ring, ready = check, failed = bang. */
 .fod-st {
@@ -275,4 +299,9 @@ body[data-stage="float-over"] .fo-host--dock[data-side="left"] { justify-content
   .fod-tab,
   .fod-more { transition: none; }
   .fod-st[data-status="reading"] { animation: none; }
+  /* No fold: the toast plays the plain fade (`fo-out`) instead. */
+  body[data-stage="float-over"] .fo-host[data-side="right"] .fo-shell:has(.fo.is-tucking) { animation: none; }
+  body[data-stage="float-over"] .fo-host[data-side="right"] .fo.is-tucking {
+    animation: fo-out 220ms var(--ease-out) both;
+  }
 }

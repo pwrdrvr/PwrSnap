@@ -3,11 +3,12 @@ import { Kbd } from "./Kbd";
 
 type HkProps = {
   keys: string[];
+  inactive?: boolean;
 };
 
-export function Hk({ keys }: HkProps): ReactElement {
+export function Hk({ keys, inactive = false }: HkProps): ReactElement {
   return (
-    <span className="pss__hk" aria-label={keys.join("+")}>
+    <span className={`pss__hk${inactive ? " is-inactive" : ""}`} aria-label={keys.join("+")}>
       {keys.map((k, i) => (
         <Kbd key={`${k}-${i}`}>{k}</Kbd>
       ))}

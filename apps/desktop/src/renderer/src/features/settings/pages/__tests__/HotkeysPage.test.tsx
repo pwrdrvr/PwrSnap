@@ -7,7 +7,7 @@ import {
   type HotkeyRegistrationStatusSnapshot,
   type Settings
 } from "@pwrsnap/shared";
-import type { UseSettingsValue } from "../../useSettings";
+import { SettingsPatchError, type UseSettingsValue } from "../../useSettings";
 import { HotkeysPage } from "../HotkeysPage";
 
 beforeAll(() => {
@@ -270,7 +270,7 @@ describe("HotkeysPage recorder ownership", () => {
     ).toBe(false);
   });
 
-  test("disables Retry while a hotkey save is in flight", async () => {
+  test("hides recovery actions while recording and restores them after an unchanged save", async () => {
     const settings = settingsWith();
     const failed = activeStatus(settings.hotkeys);
     failed.quickCapture = {
@@ -289,7 +289,7 @@ describe("HotkeysPage recorder ownership", () => {
 
     await pressChord("r", "KeyR");
 
-    expect(buttonByName("Retry Quick Capture hotkey").disabled).toBe(true);
+    expect(document.querySelector("[aria-label='Retry Quick Capture hotkey']")).toBeNull();
 
     await act(async () => {
       save.resolve();
@@ -316,6 +316,55 @@ describe("HotkeysPage recorder ownership", () => {
     expect(view.querySelector("[role='alert']")?.textContent).not.toContain("still active");
   });
 
+  test("a PwrSnap duplicate opens recovery without issuing a settings write", async () => {
+    const view = await renderPage(settingsWith({ ...defaultHotkeysForPlatform("win32"), region: "Ctrl+Shift+R" }));
+    await act(async () => buttonByName("Change Quick Capture").click());
+    await pressChord("r", "KeyR");
+
+    expect(patchMock).not.toHaveBeenCalled();
+    expect(view.querySelector(".pss__hk-capture.is-recording")).toBeNull();
+    expect(view.querySelector(".pss__hk-recovery-title")?.textContent).toContain("Region already uses");
+    expect(document.activeElement).toBe(view.querySelector(".pss__hk-recovery-title"));
+    const show = [...view.querySelectorAll("button")].find((button) => button.textContent === "Show Region")!;
+    await act(async () => show.click());
+    expect(document.activeElement).toBe(buttonByName("Change Region"));
+  });
+
+  test("the recovery flow preserves the saved shortcut until a suggested alternative commits", async () => {
+    const settings = settingsWith();
+    const stale = activeStatus({ ...settings.hotkeys, quickCapture: "Control+Shift+X" });
+    const view = await renderPage(settings, { hotkeyStatus: stale });
+    const candidateError = new SettingsPatchError("hotkey_unavailable", "Could not register shortcut.");
+    patchMock.mockRejectedValueOnce(candidateError);
+    await act(async () => buttonByName("Change Quick Capture").click());
+    await pressChord("r", "KeyR");
+    expect(view.querySelector(".pss__hk-kept")?.textContent).toContain("Still saved");
+    expect(view.querySelector(".pss__hk-status")?.textContent).toBe("Checking");
+    expect(dispatchMock).toHaveBeenCalledWith("settings:endHotkeyRecording", expect.anything());
+    const alternatives = [...view.querySelectorAll<HTMLButtonElement>(".pss__hk-suggest-btn")];
+    expect(alternatives).toHaveLength(3);
+
+    patchMock.mockRejectedValueOnce(candidateError);
+    await act(async () => alternatives[0]?.click());
+    expect(patchMock).toHaveBeenLastCalledWith({ hotkeys: { quickCapture: "Alt+Shift+R" } });
+    expect(alternatives[0]?.disabled).toBe(true);
+    expect(alternatives[0]?.textContent).toContain("Not accepted");
+    expect(document.activeElement).toBe(alternatives[1]);
+    expect(contextValue.settings?.hotkeys.quickCapture).toBe(settings.hotkeys.quickCapture);
+
+    const updated = settingsWith({ ...settings.hotkeys, quickCapture: "Control+Shift+F9" });
+    dispatchMock.mockImplementation(async () => ({ ok: true, value: activeStatus(updated.hotkeys) }));
+    patchMock.mockImplementationOnce(async () => {
+      contextValue = { ...contextValue, settings: updated };
+      root?.render(createElement(HotkeysPage));
+    });
+    await act(async () => alternatives[1]?.click());
+    expect(patchMock).toHaveBeenLastCalledWith({ hotkeys: { quickCapture: "Control+Shift+F9" } });
+    expect(view.querySelector(".pss__hk-recovery")).toBeNull();
+    expect(view.querySelector(".pss__hk-confirm")?.textContent).toContain("Windows registered it for PwrSnap.");
+    expect(document.activeElement).toBe(buttonByName("Change Quick Capture"));
+  });
+
   test.each(["save", "cancel"] as const)(
     "shows a native re-registration failure after recorder %s",
     async (operation) => {
@@ -324,7 +373,7 @@ describe("HotkeysPage recorder ownership", () => {
         ? settingsWith({ ...before.hotkeys, quickCapture: "Control+Shift+R" })
         : before;
       const status = activeStatus(settings.hotkeys);
-      const failedRegistration = "PwrSnap could not register Quick Capture.";
+      const failedRegistration = `PwrSnap could not register ${operation === "save" ? "Ctrl+Shift+R" : "Ctrl+Shift+C"} for Quick Capture.`;
       const end = deferredSignal();
       let released = false;
       const view = await renderPage(before);

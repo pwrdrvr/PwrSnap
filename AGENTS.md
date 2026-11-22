@@ -368,6 +368,8 @@ warnings fail the process and clean runs pass.
 
 ## Toolchain: Node, pnpm, Linux sandbox
 
+Before building or running PwrSnap for testing, including asking the operator to test it, run `pnpm build:native` at least once in that checkout and again after native sources change. Otherwise PwrSnap starts without its MCP relay and native helpers.
+
 **Always enter the repo with nvm before installing:** `source ~/.nvm/nvm.sh`,
 `nvm use`, then `pnpm install` from the repo root, once per checkout/worktree.
 Never bypass the `preinstall` Node check, never share `node_modules` between

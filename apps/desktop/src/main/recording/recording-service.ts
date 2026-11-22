@@ -209,7 +209,7 @@ type RecorderStoppedEvent = {
   durationSec: number;
   containerFormat: "mp4" | "mov" | "burst";
   /** Burst only: the ring the recorder ended with. */
-  burst?: { written?: number; dropped?: number; failed?: number; evicted?: number; frames?: unknown[] };
+  burst?: { written?: number; dropped?: number; failed?: number; evicted?: number; frames?: unknown[]; pointerSprites?: unknown[] };
   hasSystemAudio: boolean;
   hasMicrophoneAudio: boolean;
   outputPath: string;
@@ -361,7 +361,10 @@ abstract class AttemptRecorderService implements RecordingService {
       // wait. Retirement drains allocation before releasing admission.
       const isBurst = attempt.options.output === "burst";
       attempt.allocation = mkdtemp(join(tmpdir(), isBurst ? BURST_TEMP_PREFIX : "pwrsnap-recording-")).then(async dir => {
-        if (isBurst) await mkdir(join(dir, "frames"));
+        if (isBurst) {
+          await mkdir(join(dir, "frames"));
+          if (attempt.options.captureCursor !== false) await mkdir(join(dir, "pointer"));
+        }
         attempt.tempDir = dir;
         attempt.outputPath = join(dir, `${attempt.sessionId}.mp4`);
         return dir;
@@ -503,7 +506,13 @@ abstract class AttemptRecorderService implements RecordingService {
           ? { bundleId: subject.appBundleId ?? null, appName: subject.appName ?? null }
           : null,
         sourceWindowTitle,
-        devicePixelRatio: displayScaleFactor(attempt.displayId)
+        devicePixelRatio: displayScaleFactor(attempt.displayId),
+        ...(attempt.options.captureCursor !== false
+          ? {
+              pointerDir: join(rootDir, "pointer"),
+              pointerSprites: Array.isArray(stopped.burst?.pointerSprites) ? stopped.burst.pointerSprites : []
+            }
+          : {})
       });
       // Ownership moved: retiring the attempt must not delete the stills.
       attempt.tempDir = null;
@@ -733,7 +742,9 @@ class NativeRecorderService extends AttemptRecorderService {
       microphone: options.capabilities.microphone,
       ...(options.capabilities.microphone && options.capabilities.microphoneDevice !== undefined
         ? { microphoneDevice: options.capabilities.microphoneDevice.label } : {}),
-      showsCursor: options.captureCursor,
+      // A burst never paints the pointer into its stills: it tracks it
+      // beside them instead (burstPointerDir), so moving it is not a change.
+      showsCursor: options.output === "burst" ? false : options.captureCursor,
       captureAtMs: Date.now() + options.countdownSeconds * 1000,
       excludePids: collectOurPids(), cameraPreview,
       ...(options.output === "burst"
@@ -742,7 +753,8 @@ class NativeRecorderService extends AttemptRecorderService {
             burstDir: join(attempt.tempDir ?? "", "frames"),
             burstFps: BURST_FPS,
             burstMaxFrames: BURST_MAX_FRAMES,
-            pixelScale: displayScaleFactor(attempt.displayId)
+            pixelScale: displayScaleFactor(attempt.displayId),
+            ...(options.captureCursor !== false ? { burstPointerDir: join(attempt.tempDir ?? "", "pointer") } : {})
           }
         : {})
     }) + "\n");

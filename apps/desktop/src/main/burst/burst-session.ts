@@ -9,11 +9,17 @@
 // directory to the boot-time `pwrsnap-*` temp sweep.
 //
 // Nothing here trusts a path it did not make. The recorder's report is a
-// list of paths over a pipe; each one must be a `frame-NNNNNN.png` directly
-// inside the session directory, or it is dropped.
+// list of paths over a pipe; each one must be a `frame-NNNNNN.png` (or, for
+// a pointer sprite, `pointer-N.png`) directly inside the directory made for
+// it, or it is dropped.
+//
+// The pointer is not in the stills' pixels. When the take tracked it, each
+// still carries where it was (still-local points) and which sprite it
+// showed; the review draws it on top, and a kept snap gets it back as the
+// same removable Cursor layer a screenshot has.
 
 import { realpathSync, rm, rmSync } from "node:fs";
-import { copyFile, rm as rmAsync } from "node:fs/promises";
+import { copyFile, readFile, rm as rmAsync } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { nanoid } from "nanoid";
 import {
@@ -26,12 +32,17 @@ import {
   type PwrSnapError,
   type Result
 } from "@pwrsnap/shared";
+import { computeCursorPlacement, type CursorLayerPlacement } from "../capture/cursor-placement";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:burst");
 
 export const BURST_TEMP_PREFIX = "pwrsnap-burst-";
 const FRAME_FILE = /^frame-(\d{6})\.png$/;
+const SPRITE_FILE = /^pointer-(\d{1,4})\.png$/;
+
+/** Where the pointer's hotspot was, in still-local POINTS, and its sprite. */
+export type FramePointer = { x: number; y: number; sprite: number | null };
 
 export type RecorderBurstFrame = {
   index: number;
@@ -39,6 +50,7 @@ export type RecorderBurstFrame = {
   utcMs: number;
   width: number;
   height: number;
+  pointer?: { x: number; y: number; sprite?: number };
 };
 
 type SessionFrame = {
@@ -47,6 +59,17 @@ type SessionFrame = {
   utcMs: number;
   widthPx: number;
   heightPx: number;
+  pointer?: FramePointer;
+};
+
+/** A pointer sprite the recorder wrote; sizes and hotspot in POINTS. */
+export type PointerSpriteFile = {
+  id: number;
+  path: string;
+  pointWidth: number;
+  pointHeight: number;
+  hotspotX: number;
+  hotspotY: number;
 };
 
 type BurstSession = {
@@ -60,6 +83,7 @@ type BurstSession = {
   sourceApp: { bundleId: string | null; appName: string | null } | null;
   sourceWindowTitle: string | null;
   devicePixelRatio: number;
+  sprites: Map<number, PointerSpriteFile>;
   /** A keep is running: a second keep or a discard waits for it. */
   busy: Promise<unknown> | null;
 };
@@ -110,15 +134,104 @@ export function acceptRecorderFrames(
     }
     if (dirname(resolved) !== root || basename(resolved) !== name) continue;
     if (byIndex.has(f.index)) continue;
+    const pointer = acceptPointer(f.pointer);
     byIndex.set(f.index, {
       index: f.index,
       path: resolved,
       utcMs: f.utcMs,
       widthPx: Math.round(f.width),
-      heightPx: Math.round(f.height)
+      heightPx: Math.round(f.height),
+      ...(pointer === null ? {} : { pointer })
     });
   }
   return [...byIndex.values()].sort((a, b) => a.index - b.index);
+}
+
+function acceptPointer(raw: unknown): FramePointer | null {
+  if (raw === null || typeof raw !== "object") return null;
+  const p = raw as Record<string, unknown>;
+  if (typeof p.x !== "number" || !Number.isFinite(p.x) || typeof p.y !== "number" || !Number.isFinite(p.y)) return null;
+  const sprite = typeof p.sprite === "number" && Number.isInteger(p.sprite) && p.sprite >= 0 ? p.sprite : null;
+  return { x: p.x, y: p.y, sprite };
+}
+
+/**
+ * The recorder's pointer sprites, narrowed to `pointer-<id>.png` files
+ * directly inside `pointerDir` with sane sizes. Pure apart from `realpath`.
+ */
+export function acceptPointerSprites(
+  pointerDir: string,
+  reported: readonly unknown[],
+  realpath: (p: string) => string = realpathSync
+): Map<number, PointerSpriteFile> {
+  const sprites = new Map<number, PointerSpriteFile>();
+  let root: string;
+  try {
+    root = realpath(pointerDir);
+  } catch {
+    return sprites;
+  }
+  const positive = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v > 0;
+  const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+  for (const raw of reported) {
+    if (raw === null || typeof raw !== "object") continue;
+    const sp = raw as Record<string, unknown>;
+    if (typeof sp.id !== "number" || !Number.isInteger(sp.id) || sp.id < 0 || typeof sp.path !== "string") continue;
+    if (!positive(sp.pointWidth) || !positive(sp.pointHeight) || !finite(sp.hotspotX) || !finite(sp.hotspotY)) continue;
+    const name = basename(sp.path);
+    const match = SPRITE_FILE.exec(name);
+    if (match === null || Number(match[1]) !== sp.id || sprites.has(sp.id)) continue;
+    let resolved: string;
+    try {
+      resolved = realpath(sp.path);
+    } catch {
+      continue;
+    }
+    if (dirname(resolved) !== root || basename(resolved) !== name) continue;
+    sprites.set(sp.id, {
+      id: sp.id,
+      path: resolved,
+      pointWidth: sp.pointWidth,
+      pointHeight: sp.pointHeight,
+      hotspotX: sp.hotspotX,
+      hotspotY: sp.hotspotY
+    });
+  }
+  return sprites;
+}
+
+/**
+ * Where a still's pointer sprite draws, in the still's PIXELS — the
+ * screenshot cursor math with the still itself as the captured region.
+ * Null when the still has no pointer, its sprite is unknown, or the hotspot
+ * was outside the still.
+ */
+export function framePointerPlacement(
+  frame: { widthPx: number; heightPx: number; pointer?: FramePointer },
+  sprites: ReadonlyMap<number, PointerSpriteFile>,
+  devicePixelRatio: number
+): (Omit<CursorLayerPlacement, "pngBytes"> & { sprite: PointerSpriteFile }) | null {
+  const pointer = frame.pointer;
+  if (pointer === undefined || pointer.sprite === null) return null;
+  const sprite = sprites.get(pointer.sprite);
+  if (sprite === undefined) return null;
+  const scale = devicePixelRatio > 0 ? devicePixelRatio : 1;
+  const placement = computeCursorPlacement({
+    sample: {
+      posX: pointer.x,
+      posY: pointer.y,
+      hotspotX: sprite.hotspotX,
+      hotspotY: sprite.hotspotY,
+      pointWidth: sprite.pointWidth,
+      pointHeight: sprite.pointHeight
+    },
+    regionOriginX: 0,
+    regionOriginY: 0,
+    regionWidth: frame.widthPx / scale,
+    regionHeight: frame.heightPx / scale,
+    scaleFactor: scale
+  });
+  return placement === null ? null : { ...placement, sprite };
 }
 
 export function openBurstSession(input: {
@@ -130,6 +243,9 @@ export function openBurstSession(input: {
   sourceApp: { bundleId: string | null; appName: string | null } | null;
   sourceWindowTitle: string | null;
   devicePixelRatio: number;
+  /** Where the recorder wrote pointer sprites, and its report of them. */
+  pointerDir?: string;
+  pointerSprites?: readonly unknown[];
 }): string {
   if (!basename(input.rootDir).startsWith(BURST_TEMP_PREFIX)) {
     throw new Error("burst root is not a burst temp directory");
@@ -145,6 +261,7 @@ export function openBurstSession(input: {
     sourceApp: input.sourceApp,
     sourceWindowTitle: input.sourceWindowTitle,
     devicePixelRatio: input.devicePixelRatio > 0 ? input.devicePixelRatio : 1,
+    sprites: input.pointerDir === undefined ? new Map() : acceptPointerSprites(input.pointerDir, input.pointerSprites ?? []),
     busy: null
   });
   log.info("burst session opened", { burstId: id, frames: sessions.get(id)!.frames.length });
@@ -152,22 +269,32 @@ export function openBurstSession(input: {
   return id;
 }
 
-export type BurstFrameVariant = "full" | "thumb";
+/** `pointer` addresses a pointer sprite: `index` is then the sprite id. */
+export type BurstFrameVariant = "full" | "thumb" | "pointer";
 
 export function burstFrameUrl(burstId: string, index: number, variant: BurstFrameVariant = "full"): string {
+  if (variant === "pointer") return `pwrsnap-screen://b/${burstId}/pointer/${index}`;
   return `pwrsnap-screen://b/${burstId}/${index}${variant === "thumb" ? "/thumb" : ""}`;
 }
 
-/** Parse `pwrsnap-screen://b/<burstId>/<index>[/thumb]`. Pure. */
+/** Parse `pwrsnap-screen://b/<burstId>/<index>[/thumb]` or
+ *  `pwrsnap-screen://b/<burstId>/pointer/<spriteId>`. Pure. */
 export function parseBurstFrameUrl(
   url: string
 ): { burstId: string; index: number; variant: BurstFrameVariant } | null {
   const prefix = "pwrsnap-screen://b/";
   if (!url.startsWith(prefix)) return null;
   const rest = url.slice(prefix.length).split(/[?#]/, 1)[0]!.replace(/\/+$/, "");
+  const sprite = /^([A-Za-z0-9_-]{6,32})\/pointer\/(\d{1,4})$/.exec(rest);
+  if (sprite !== null) return { burstId: sprite[1]!, index: Number(sprite[2]), variant: "pointer" };
   const match = /^([A-Za-z0-9_-]{6,32})\/(\d{1,7})(\/thumb)?$/.exec(rest);
   if (match === null) return null;
   return { burstId: match[1]!, index: Number(match[2]), variant: match[3] === undefined ? "full" : "thumb" };
+}
+
+/** The file a pointer sprite URL resolves to, or null. */
+export function burstPointerSpritePath(burstId: string, spriteId: number): string | null {
+  return sessions.get(burstId)?.sprites.get(spriteId)?.path ?? null;
 }
 
 /** The file a frame URL resolves to, or null once the session is gone. */
@@ -195,15 +322,29 @@ export function getBurstSessionView(burstId: string): BurstSessionView | null {
   const s = sessions.get(burstId);
   if (s === undefined) return null;
   const firstMs = s.frames[0]?.utcMs ?? 0;
-  const frames: BurstFrame[] = s.frames.map((f) => ({
-    index: f.index,
-    capturedAt: new Date(Math.round(f.utcMs)).toISOString(),
-    offsetMs: Math.round(f.utcMs - firstMs),
-    widthPx: f.widthPx,
-    heightPx: f.heightPx,
-    url: burstFrameUrl(s.id, f.index),
-    thumbUrl: burstFrameUrl(s.id, f.index, "thumb")
-  }));
+  const frames: BurstFrame[] = s.frames.map((f) => {
+    const placed = framePointerPlacement(f, s.sprites, s.devicePixelRatio);
+    return {
+      index: f.index,
+      capturedAt: new Date(Math.round(f.utcMs)).toISOString(),
+      offsetMs: Math.round(f.utcMs - firstMs),
+      widthPx: f.widthPx,
+      heightPx: f.heightPx,
+      url: burstFrameUrl(s.id, f.index),
+      thumbUrl: burstFrameUrl(s.id, f.index, "thumb"),
+      ...(placed === null
+        ? {}
+        : {
+            pointer: {
+              url: burstFrameUrl(s.id, placed.sprite.id, "pointer"),
+              left: placed.xPx / f.widthPx,
+              top: placed.yPx / f.heightPx,
+              width: placed.drawWidthPx / f.widthPx,
+              height: placed.drawHeightPx / f.heightPx
+            }
+          })
+    };
+  });
   return {
     burstId: s.id,
     frames,
@@ -289,6 +430,7 @@ export type PersistStill = (
     sourceWindowTitle: string | null;
     capturedAt: string;
     annotations?: Array<{ name: string; shape: Overlay }>;
+    cursorLayer?: CursorLayerPlacement;
     tags: string[];
   }
 ) => Promise<Result<CaptureRecord, PwrSnapError>>;
@@ -297,12 +439,15 @@ export type PersistStill = (
  * Keep the chosen frames as snaps (in capture order) and, once every one
  * has landed, end the session. Frames already kept by an earlier attempt
  * are skipped, so a retry after a partial failure never duplicates a snap.
+ * With `withPointer`, a still whose pointer was tracked gets it as a
+ * removable Cursor layer.
  */
 export async function keepBurstFrames(
   burstId: string,
   frameIndexes: readonly number[],
   stampTime: boolean,
-  persist: PersistStill
+  persist: PersistStill,
+  withPointer = true
 ): Promise<Result<{ captureIds: string[] }, PwrSnapError>> {
   const s = sessions.get(burstId);
   if (s === undefined) return { ok: false, error: { kind: "validation", code: "burst_not_found", message: "This burst has already been closed." } };
@@ -328,11 +473,22 @@ export async function keepBurstFrames(
       let result: Awaited<ReturnType<PersistStill>>;
       try {
         await copyFile(frame.path, staged);
+        const placed = withPointer ? framePointerPlacement(frame, s.sprites, s.devicePixelRatio) : null;
+        const cursorLayer: CursorLayerPlacement | undefined = placed === null
+          ? undefined
+          : {
+              pngBytes: await readFile(placed.sprite.path),
+              xPx: placed.xPx,
+              yPx: placed.yPx,
+              drawWidthPx: placed.drawWidthPx,
+              drawHeightPx: placed.drawHeightPx
+            };
         result = await persist(staged, s.sourceApp, {
           devicePixelRatio: s.devicePixelRatio,
           sourceWindowTitle: s.sourceWindowTitle,
           capturedAt: new Date(Math.round(frame.utcMs)).toISOString(),
           ...(stampTime ? { annotations: [captureTimeLabel(frame, firstKept)] } : {}),
+          ...(cursorLayer === undefined ? {} : { cursorLayer }),
           tags: ["burst"]
         });
       } catch (cause) {

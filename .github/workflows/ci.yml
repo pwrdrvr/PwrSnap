@@ -49,6 +49,7 @@ env:
     apps/desktop/native/recorder/frame-change.swift
     apps/desktop/native/recorder/main.swift
     apps/desktop/native/recorder/microphone.swift
+    apps/desktop/native/recorder/pointer.swift
     apps/desktop/native/recorder/tests/burst-ring.swift
     apps/desktop/native/recorder/tests/frame-change-model.swift
     apps/desktop/native/recorder/tests/microphone-match.swift

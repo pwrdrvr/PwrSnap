@@ -5,7 +5,13 @@
 // last still kept (by more than `changeFloor` visibly changed pixels — see
 // frame-change.swift) is written as a PNG into a directory the caller owns.
 // ScreenCaptureKit's own "something changed" is not enough: a pointer moving
-// outside a captured window delivers frames whose pixels are identical. The directory is a RING: once `maxFrames` stills exist, the oldest
+// outside a captured window delivers frames whose pixels are identical.
+//
+// With a `pointer` source the stills are recorded without the pointer and
+// each kept still notes where it was (pointer.swift), so pointer movement
+// alone is never a change and the pointer comes back as its own layer.
+//
+// The directory is a RING: once `maxFrames` stills exist, the oldest
 // is deleted as each new one lands, so a burst left running costs a
 // bounded amount of disk and the user reviews the last N seconds.
 //
@@ -31,6 +37,9 @@ final class BurstSink {
         let utcMs: Double
         let width: Int
         let height: Int
+        /// Where the pointer was when this still was accepted, in still-local
+        /// points (nil without a pointer source).
+        let pointer: PointerAt?
     }
 
     private let dir: URL
@@ -44,6 +53,7 @@ final class BurstSink {
     private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
     private let onProgress: (Int, Int) -> Void
     private let changeFloor: Int
+    private let pointer: (() -> PointerAt?)?
 
     private var lastAcceptedPts: Double = -Double.infinity
     /// The pixels of the last frame accepted for writing — what the next
@@ -61,6 +71,7 @@ final class BurstSink {
 
     init(
         dir: URL, fps: Double, maxFrames: Int, maxInFlight: Int = 4, changeFloor: Int = 0,
+        pointer: (() -> PointerAt?)? = nil,
         onProgress: @escaping (Int, Int) -> Void
     ) {
         self.dir = dir
@@ -70,6 +81,7 @@ final class BurstSink {
         self.slots = DispatchSemaphore(value: max(1, maxInFlight))
         self.onProgress = onProgress
         self.changeFloor = max(0, changeFloor)
+        self.pointer = pointer
     }
 
     /// One `.complete` screen sample. Called on the stream's sample queue.
@@ -97,6 +109,7 @@ final class BurstSink {
             return
         }
         reference = copy
+        let pointerAt = pointer?()
         // Host clock → UTC, sampled now: the same conversion the video path
         // uses for its timeline event.
         let hostNow = CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock()))
@@ -118,7 +131,10 @@ final class BurstSink {
                 }
                 self.written += 1
                 // Encodes finish out of order; keep the ring in capture order.
-                let frame = Frame(index: index, path: url.path, utcMs: utcMs, width: image.width, height: image.height)
+                let frame = Frame(
+                    index: index, path: url.path, utcMs: utcMs, width: image.width, height: image.height,
+                    pointer: pointerAt
+                )
                 let at = self.frames.firstIndex(where: { $0.index > index }) ?? self.frames.count
                 self.frames.insert(frame, at: at)
                 while self.frames.count > self.maxFrames {

@@ -74,6 +74,9 @@ struct StartRequest: Decodable {
     let burstDir: String?
     let burstFps: Double?
     let burstMaxFrames: Int?
+    /// Burst only: record the stills WITHOUT the pointer and track it beside
+    /// them, writing its sprites here (pointer.swift). Absent = no pointer.
+    let burstPointerDir: String?
     /// Backing pixels per point of the recorded display. Burst captures at
     /// full resolution; video keeps its historical point-sized output.
     let pixelScale: Double?
@@ -192,6 +195,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private var streamStartError: Error?
     /// Set for a burst take; the asset writer is never created then.
     private var burst: BurstSink?
+    private var burstPointer: PointerTracker?
 
     func start(req: StartRequest) async {
         diag("start() called displayId=\(req.displayId) rect=\(req.rect.x),\(req.rect.y) \(req.rect.w)x\(req.rect.h) captureAtMs=\(req.captureAtMs ?? -1) excludePids=\(req.excludePids ?? [])")
@@ -272,8 +276,24 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             let changeFloor = burstChangeFloor(pixelScale: scale)
             diag("burst mode dir=\(dirPath) fps=\(fps) maxFrames=\(maxFrames) out=\(cfg.width)x\(cfg.height) changeFloor=\(changeFloor)")
             var lastProgressEmit = Date.distantPast
+            var pointerSource: (() -> PointerAt?)?
+            if let pointerDir = req.burstPointerDir, !pointerDir.isEmpty {
+                // The pointer is tracked, not painted: moving it must not
+                // read as a change, and it comes back as a removable layer.
+                cfg.showsCursor = false
+                let displayOrigin = CGDisplayBounds(CGDirectDisplayID(req.displayId)).origin
+                let tracker = PointerTracker(
+                    dir: URL(fileURLWithPath: pointerDir),
+                    origin: CGPoint(x: displayOrigin.x + CGFloat(req.rect.x), y: displayOrigin.y + CGFloat(req.rect.y))
+                )
+                tracker.start()
+                burstPointer = tracker
+                pointerSource = { tracker.now() }
+                diag("burst pointer tracked origin=\(displayOrigin.x + CGFloat(req.rect.x)),\(displayOrigin.y + CGFloat(req.rect.y))")
+            }
             burst = BurstSink(
-                dir: URL(fileURLWithPath: dirPath), fps: fps, maxFrames: maxFrames, changeFloor: changeFloor
+                dir: URL(fileURLWithPath: dirPath), fps: fps, maxFrames: maxFrames, changeFloor: changeFloor,
+                pointer: pointerSource
             ) { kept, written in
                 // At most ~4 progress lines a second; the HUD only shows a count.
                 let now = Date()
@@ -861,7 +881,9 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         writeQueue.sync { }
         let result = sink.finish()
-        diag("burst finished kept=\(result.frames.count) written=\(result.written) dropped=\(result.dropped) failed=\(result.failed) evicted=\(result.evicted) unchanged=\(result.unchanged)")
+        burstPointer?.stop()
+        let sprites = burstPointer?.sprites() ?? []
+        diag("burst finished pointerSprites=\(sprites.count)  kept=\(result.frames.count) written=\(result.written) dropped=\(result.dropped) failed=\(result.failed) evicted=\(result.evicted) unchanged=\(result.unchanged)")
         emit([
             "event": "stopped",
             "durationSec": Date().timeIntervalSince(startedAtWallClock),
@@ -875,7 +897,20 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 "failed": result.failed,
                 "evicted": result.evicted,
                 "frames": result.frames.map { f in
-                    ["index": f.index, "path": f.path, "utcMs": f.utcMs, "width": f.width, "height": f.height] as [String: Any]
+                    var frame: [String: Any] = ["index": f.index, "path": f.path, "utcMs": f.utcMs, "width": f.width, "height": f.height]
+                    if let p = f.pointer {
+                        var pointer: [String: Any] = ["x": p.x, "y": p.y]
+                        if let sprite = p.sprite { pointer["sprite"] = sprite }
+                        frame["pointer"] = pointer
+                    }
+                    return frame
+                },
+                "pointerSprites": sprites.map { sp in
+                    [
+                        "id": sp.id, "path": sp.path, "pixelWidth": sp.pixelWidth, "pixelHeight": sp.pixelHeight,
+                        "pointWidth": sp.pointWidth, "pointHeight": sp.pointHeight,
+                        "hotspotX": sp.hotspotX, "hotspotY": sp.hotspotY
+                    ] as [String: Any]
                 }
             ] as [String: Any]
         ])

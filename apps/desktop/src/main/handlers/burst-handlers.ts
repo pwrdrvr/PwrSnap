@@ -29,14 +29,19 @@ export function registerBurstHandlers(): void {
       !Array.isArray(req.frameIndexes) ||
       req.frameIndexes.length > 5000 ||
       !req.frameIndexes.every((i) => Number.isInteger(i) && i >= 0) ||
-      typeof req.stampTime !== "boolean"
+      typeof req.stampTime !== "boolean" ||
+      (req.pointer !== undefined && typeof req.pointer !== "boolean")
     ) {
       return err({ kind: "validation", code: "invalid_request", message: "burstId, frameIndexes and stampTime are required" });
     }
     const storageBlocked = await ensureCapturesDirReady();
     if (storageBlocked !== null) return storageBlocked;
-    return keepBurstFrames(req.burstId, req.frameIndexes, req.stampTime, (tempPath, sourceApp, options) =>
-      persistStillCapture(tempPath, sourceApp, options)
+    return keepBurstFrames(
+      req.burstId,
+      req.frameIndexes,
+      req.stampTime,
+      (tempPath, sourceApp, options) => persistStillCapture(tempPath, sourceApp, options),
+      req.pointer ?? true
     );
   });
 

@@ -114,7 +114,8 @@ describe("BurstReview", () => {
     expect(mocks.dispatch).toHaveBeenCalledWith("burst:keep", {
       burstId: "burst-abc123",
       frameIndexes: [10, 11, 12],
-      stampTime: true
+      stampTime: true,
+      pointer: true
     });
   });
 
@@ -170,6 +171,54 @@ describe("BurstReview", () => {
       $("burst-discard")!.click();
     });
     expect(mocks.dispatch).toHaveBeenCalledWith("burst:discard", { burstId: "burst-abc123" });
+  });
+
+  test("the pointer is drawn over the still where it was, and the toggle hides it and leaves it off the snaps", async () => {
+    const pointer = { url: "pwrsnap-screen://b/burst-abc123/pointer/0", left: 0.25, top: 0.5, width: 0.02, height: 0.04 };
+    mocks.dispatch.mockImplementation(async (channel: string) => {
+      if (channel === "burst:get") {
+        const v = view();
+        // Only the newest still (14) had the pointer over it.
+        v.frames[4] = { ...v.frames[4]!, pointer };
+        return { ok: true, value: v };
+      }
+      if (channel === "burst:keep") return { ok: true, value: { captureIds: ["a"] } };
+      throw new Error(`unexpected ${channel}`);
+    });
+    await mount();
+    const drawn = $("burst-stage-pointer");
+    expect(drawn?.getAttribute("src")).toBe(pointer.url);
+    expect(drawn?.style.left).toBe("25%");
+    expect(drawn?.style.top).toBe("50%");
+    expect(drawn?.style.width).toBe("2%");
+    expect(drawn?.style.height).toBe("4%");
+    // The stage box carries the still's own aspect ratio for the overlay.
+    expect(drawn?.parentElement?.style.getPropertyValue("--ps-burst-ar")).toBe(String(800 / 600));
+
+    await press("ArrowLeft"); // 13: no pointer over it
+    expect($("burst-stage-pointer")).toBeNull();
+    await press("ArrowRight");
+    expect($("burst-stage-pointer")).not.toBeNull();
+
+    await act(async () => {
+      $("burst-pointer")!.click();
+    });
+    expect($("burst-stage-pointer")).toBeNull();
+    await press(" ");
+    await press("Enter", { metaKey: true });
+    expect(mocks.dispatch).toHaveBeenCalledWith("burst:keep", {
+      burstId: "burst-abc123",
+      frameIndexes: [14],
+      stampTime: true,
+      pointer: false
+    });
+  });
+
+  test("a burst without a tracked pointer offers no pointer toggle", async () => {
+    mocks.dispatch.mockResolvedValue({ ok: true, value: view() });
+    await mount();
+    expect($("burst-pointer")).toBeNull();
+    expect($("burst-stage-pointer")).toBeNull();
   });
 
   test("a burst that already ended says so", async () => {

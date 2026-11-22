@@ -13,6 +13,9 @@
 //      change floor is not written and takes no place in the ring; changes
 //      that are each small add up against that still; alpha never counts,
 //      nor does an invisible shimmer within the colour tolerance.
+//   6. With a pointer source, moving the pointer over unchanged pixels makes
+//      no still; a kept still carries the pointer as it was when that still
+//      was accepted. Each distinct sprite is written once.
 import CoreMedia
 import CoreVideo
 import Foundation
@@ -142,6 +145,41 @@ func unchangedFramesAreSkipped(dir: URL) {
     expect(onDisk.count == expectedKept.count, "skipped frames were never written: \(onDisk.sorted())")
 }
 
+/// Rule 6. The pixels come without the pointer (as ScreenCaptureKit gives
+/// them with showsCursor off); the fake source moves it on every call.
+func pointerTravelsBesideTheStills(dir: URL) {
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    var calls = 0
+    let sink = BurstSink(dir: dir, fps: 10, maxFrames: 100, maxInFlight: 64, changeFloor: 0, pointer: {
+        calls += 1
+        return PointerAt(x: Double(calls * 10), y: 5, sprite: calls % 2)
+    }) { _, _ in }
+    func screen(_ shade: UInt8, at t: Double) -> CMSampleBuffer {
+        makeFrame(pts: t, width: 8, height: 8) { _, _ in (shade, 0x40, 0x40, 0xFF) }
+    }
+    sink.consume(screen(0x10, at: 0.0))           // kept, pointer #1
+    for i in 1...5 { sink.consume(screen(0x10, at: Double(i) * 0.1)) }   // pointer moving, pixels unchanged
+    sink.consume(screen(0x90, at: 0.6))           // kept, pointer #2
+    let result = sink.finish()
+    expect(result.frames.count == 2, "pointer movement alone made no still (kept \(result.frames.count))")
+    expect(result.frames.map { $0.pointer } == [PointerAt(x: 10, y: 5, sprite: 1), PointerAt(x: 20, y: 5, sprite: 0)],
+           "each kept still carries the pointer sampled when it was accepted: \(result.frames.map { $0.pointer })")
+    expect(calls == 2, "the pointer is read only for stills that are kept (read \(calls) times)")
+
+    let sprites = dir.appendingPathComponent("sprites")
+    try? FileManager.default.createDirectory(at: sprites, withIntermediateDirectories: true)
+    let registry = PointerSpriteRegistry(dir: sprites)
+    let arrow = Data([1, 2, 3]), beam = Data([4, 5, 6])
+    let a1 = registry.register(png: arrow, pixelWidth: 2, pixelHeight: 2, pointWidth: 1, pointHeight: 1, hotspotX: 0, hotspotY: 0)
+    let b1 = registry.register(png: beam, pixelWidth: 2, pixelHeight: 2, pointWidth: 1, pointHeight: 1, hotspotX: 0, hotspotY: 0)
+    let a2 = registry.register(png: arrow, pixelWidth: 2, pixelHeight: 2, pointWidth: 1, pointHeight: 1, hotspotX: 0, hotspotY: 0)
+    let a3 = registry.register(png: arrow, pixelWidth: 2, pixelHeight: 2, pointWidth: 1, pointHeight: 1, hotspotX: 1, hotspotY: 0)
+    expect(a1 == 0 && b1 == 1 && a2 == 0 && a3 == 2, "one id per distinct sprite and hotspot: \([a1, b1, a2, a3])")
+    let files = ((try? FileManager.default.contentsOfDirectory(atPath: sprites.path)) ?? []).sorted()
+    expect(files == ["pointer-0.png", "pointer-1.png", "pointer-2.png"], "each sprite written once: \(files)")
+    expect((try? Data(contentsOf: sprites.appendingPathComponent("pointer-1.png"))) == beam, "sprite bytes as given")
+}
+
 func pixel(of path: String) -> (r: Int, g: Int, b: Int, w: Int, h: Int)? {
     guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
           let image = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
@@ -193,6 +231,7 @@ struct BurstRing {
             expect(frame.width == width && frame.height == height, "reported size matches")
         }
         unchangedFramesAreSkipped(dir: URL(fileURLWithPath: dir.path + "-unchanged"))
+        pointerTravelsBesideTheStills(dir: URL(fileURLWithPath: dir.path + "-pointer"))
         print("burst ring: ok fed=\(fed) kept=\(result.frames.count)")
     }
 }

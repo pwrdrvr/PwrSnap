@@ -11,6 +11,11 @@
 //   3. Frame URLs round-trip, and nothing else parses as one.
 //   4. The time label sits inside the still and says the clock time plus
 //      the offset from the first kept still.
+//   5. The pointer travels beside the stills: its hotspot lands exactly where
+//      the recorder saw it (still-local points × scale), it is drawn at its
+//      point size × scale, a hotspot off the still means no pointer, only
+//      sprites the recorder wrote in the pointer dir are served, and a kept
+//      still gets the sprite as its Cursor layer only when asked.
 
 import { mkdirSync, mkdtempSync, existsSync, rmSync, symlinkSync, writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,11 +25,14 @@ import { afterEach, describe, expect, test } from "vitest";
 import type { CaptureRecord } from "@pwrsnap/shared";
 import {
   __resetBurstSessionsForTests,
+  acceptPointerSprites,
   acceptRecorderFrames,
   BURST_TEMP_PREFIX,
+  burstPointerSpritePath,
   burstFrameUrl,
   captureTimeLabel,
   discardBurst,
+  framePointerPlacement,
   getBurstSessionView,
   keepBurstFrames,
   onBurstSessionChange,
@@ -251,13 +259,14 @@ describe("keepBurstFrames", () => {
 });
 
 describe("frame URLs", () => {
-  test("round-trip, full and thumb", () => {
+  test("round-trip, full, thumb and pointer sprite", () => {
     fc.assert(
       fc.property(
         fc.stringMatching(/^[A-Za-z0-9_-]{6,32}$/),
         fc.integer({ min: 0, max: 9_999_999 }),
-        fc.constantFrom("full" as const, "thumb" as const),
-        (id, index, variant) => {
+        fc.constantFrom("full" as const, "thumb" as const, "pointer" as const),
+        (id, rawIndex, variant) => {
+          const index = variant === "pointer" ? rawIndex % 10_000 : rawIndex;
           expect(parseBurstFrameUrl(burstFrameUrl(id, index, variant))).toEqual({ burstId: id, index, variant });
         }
       )
@@ -271,6 +280,10 @@ describe("frame URLs", () => {
       "pwrsnap-screen://b/abc/1",
       "pwrsnap-screen://b/abcdefgh/-1",
       "pwrsnap-screen://b/abcdefgh/1/thumbs",
+      "pwrsnap-screen://b/abcdefgh/pointer/",
+      "pwrsnap-screen://b/abcdefgh/pointer/12345",
+      "pwrsnap-screen://b/abcdefgh/pointer/1/thumb",
+      "pwrsnap-screen://b/abcdefgh/pointers/1",
       "pwrsnap-screen://b/abcdefgh/1.5",
       "pwrsnap-screen://r/abcdefgh",
       "pwrsnap-capture://b/abcdefgh/1"
@@ -307,5 +320,169 @@ describe("captureTimeLabel", () => {
         }
       )
     );
+  });
+});
+
+describe("the pointer beside the stills", () => {
+  const sprite = (over: Partial<{ hotspotX: number; hotspotY: number; pointWidth: number; pointHeight: number }> = {}) => ({
+    id: 0,
+    path: "/x/pointer-0.png",
+    hotspotX: 4,
+    hotspotY: 2,
+    pointWidth: 17,
+    pointHeight: 23,
+    ...over
+  });
+
+  test("the hotspot lands where the recorder saw it, at point size × scale, or not at all", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 20, max: 3000 }),
+        fc.integer({ min: 20, max: 2000 }),
+        fc.constantFrom(1, 1.5, 2, 3),
+        fc.double({ min: -100, max: 3100, noNaN: true }),
+        fc.double({ min: -100, max: 2100, noNaN: true }),
+        fc.double({ min: 0, max: 32, noNaN: true }),
+        fc.double({ min: 0, max: 32, noNaN: true }),
+        fc.double({ min: 4, max: 64, noNaN: true }),
+        (widthPx, heightPx, dpr, x, y, hx, hy, size) => {
+          const sp = sprite({ hotspotX: hx, hotspotY: hy, pointWidth: size, pointHeight: size * 1.25 });
+          const placed = framePointerPlacement(
+            { widthPx, heightPx, pointer: { x, y, sprite: 0 } },
+            new Map([[0, sp]]),
+            dpr
+          );
+          const inside = x >= 0 && y >= 0 && x < widthPx / dpr && y < heightPx / dpr;
+          if (!inside) {
+            expect(placed).toBeNull();
+            return;
+          }
+          expect(placed).not.toBeNull();
+          // The sprite's hotspot pixel is the recorder's point, in still pixels.
+          expect(placed!.xPx + hx * dpr).toBeCloseTo(x * dpr, 6);
+          expect(placed!.yPx + hy * dpr).toBeCloseTo(y * dpr, 6);
+          expect(placed!.drawWidthPx).toBeCloseTo(size * dpr, 6);
+          expect(placed!.drawHeightPx).toBeCloseTo(size * 1.25 * dpr, 6);
+        }
+      )
+    );
+  });
+
+  test("no pointer, no sprite, or an unknown sprite places nothing", () => {
+    const sprites = new Map([[0, sprite()]]);
+    expect(framePointerPlacement({ widthPx: 100, heightPx: 100 }, sprites, 1)).toBeNull();
+    expect(framePointerPlacement({ widthPx: 100, heightPx: 100, pointer: { x: 5, y: 5, sprite: null } }, sprites, 1)).toBeNull();
+    expect(framePointerPlacement({ widthPx: 100, heightPx: 100, pointer: { x: 5, y: 5, sprite: 3 } }, sprites, 1)).toBeNull();
+  });
+
+  test("only sprites the recorder wrote inside the pointer dir are accepted", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), BURST_TEMP_PREFIX));
+    roots.push(rootDir);
+    const pointerDir = join(rootDir, "pointer");
+    mkdirSync(pointerDir);
+    const good = join(pointerDir, "pointer-0.png");
+    writeFileSync(good, "arrow");
+    writeFileSync(join(pointerDir, "pointer-1.png"), "beam");
+    writeFileSync(join(rootDir, "pointer-2.png"), "outside");
+    symlinkSync(join(rootDir, "pointer-2.png"), join(pointerDir, "pointer-3.png"));
+    const meta = { pointWidth: 17, pointHeight: 23, hotspotX: 4, hotspotY: 2 };
+    const sprites = acceptPointerSprites(pointerDir, [
+      { id: 0, path: good, ...meta },
+      { id: 0, path: good, ...meta, hotspotX: 9 }, // duplicate id
+      { id: 7, path: join(pointerDir, "pointer-1.png"), ...meta }, // id ≠ file name
+      { id: 2, path: join(rootDir, "pointer-2.png"), ...meta }, // outside the dir
+      { id: 3, path: join(pointerDir, "pointer-3.png"), ...meta }, // symlink out of it
+      { id: 1, path: join(pointerDir, "pointer-1.png"), ...meta, pointWidth: 0 }, // no size
+      { id: 4, path: join(pointerDir, "pointer-4.png"), ...meta }, // never written
+      null,
+      "pointer-0.png"
+    ]);
+    expect([...sprites.keys()]).toEqual([0]);
+    expect(sprites.get(0)).toMatchObject({ hotspotX: 4, pointWidth: 17 });
+  });
+
+  test("the review gets the sprite's box as fractions; a kept still gets it as its Cursor layer only when asked", async () => {
+    const { rootDir, framesDir, reported } = makeBurstDir(3);
+    const pointerDir = join(rootDir, "pointer");
+    mkdirSync(pointerDir);
+    writeFileSync(join(pointerDir, "pointer-0.png"), "arrow sprite");
+    // 800×600 px stills at 2× = 400×300 pt. Still 0: pointer at (100, 50) pt.
+    // Still 1: off the still. Still 2: no sprite reading.
+    const frames = reported.map((f, i) => ({
+      ...f,
+      pointer: i === 0 ? { x: 100, y: 50, sprite: 0 } : i === 1 ? { x: 500, y: 50, sprite: 0 } : { x: 10, y: 10 }
+    }));
+    const burstId = openBurstSession({
+      rootDir,
+      framesDir,
+      frames,
+      evictedFrames: 0,
+      droppedFrames: 0,
+      sourceApp: null,
+      sourceWindowTitle: null,
+      devicePixelRatio: 2,
+      pointerDir,
+      pointerSprites: [{ id: 0, path: join(pointerDir, "pointer-0.png"), pointWidth: 16, pointHeight: 24, hotspotX: 4, hotspotY: 2 }]
+    });
+    const view = getBurstSessionView(burstId)!;
+    expect(view.frames[0]!.pointer).toEqual({
+      url: `pwrsnap-screen://b/${burstId}/pointer/0`,
+      left: ((100 - 4) * 2) / 800,
+      top: ((50 - 2) * 2) / 600,
+      width: (16 * 2) / 800,
+      height: (24 * 2) / 600
+    });
+    expect(view.frames[1]!.pointer).toBeUndefined();
+    expect(view.frames[2]!.pointer).toBeUndefined();
+    expect(burstPointerSpritePath(burstId, 0)).toMatch(/pointer-0\.png$/);
+    expect(burstPointerSpritePath(burstId, 1)).toBeNull();
+
+    const layers: Array<string | null> = [];
+    const persist: PersistStill = async (tempPath, _app, options) => {
+      unlinkSync(tempPath);
+      layers.push(
+        options.cursorLayer === undefined
+          ? null
+          : `${options.cursorLayer.pngBytes.toString()}@${options.cursorLayer.xPx},${options.cursorLayer.yPx} ${options.cursorLayer.drawWidthPx}x${options.cursorLayer.drawHeightPx}`
+      );
+      return { ok: true, value: { id: `cap-${layers.length}` } as CaptureRecord };
+    };
+    // Not asked: no layer at all.
+    const first = await keepBurstFrames(burstId, [0], false, persist, false);
+    expect(first.ok).toBe(true);
+    expect(layers).toEqual([null]);
+  });
+
+  test("keep with the pointer gives each still the layer the review drew", async () => {
+    const { rootDir, framesDir, reported } = makeBurstDir(2);
+    const pointerDir = join(rootDir, "pointer");
+    mkdirSync(pointerDir);
+    writeFileSync(join(pointerDir, "pointer-0.png"), "arrow sprite");
+    const burstId = openBurstSession({
+      rootDir,
+      framesDir,
+      frames: reported.map((f, i) => ({ ...f, pointer: { x: i === 0 ? 100 : 900, y: 50, sprite: 0 } })),
+      evictedFrames: 0,
+      droppedFrames: 0,
+      sourceApp: null,
+      sourceWindowTitle: null,
+      devicePixelRatio: 2,
+      pointerDir,
+      pointerSprites: [{ id: 0, path: join(pointerDir, "pointer-0.png"), pointWidth: 16, pointHeight: 24, hotspotX: 4, hotspotY: 2 }]
+    });
+    const layers: Array<string | null> = [];
+    const persist: PersistStill = async (tempPath, _app, options) => {
+      unlinkSync(tempPath);
+      layers.push(
+        options.cursorLayer === undefined
+          ? null
+          : `${options.cursorLayer.pngBytes.toString()}@${options.cursorLayer.xPx},${options.cursorLayer.yPx} ${options.cursorLayer.drawWidthPx}x${options.cursorLayer.drawHeightPx}`
+      );
+      return { ok: true, value: { id: `cap-${layers.length}` } as CaptureRecord };
+    };
+    const result = await keepBurstFrames(burstId, [0, 1], false, persist);
+    expect(result.ok).toBe(true);
+    // Still 1's hotspot (900 pt) is off its 400 pt-wide still: no layer.
+    expect(layers).toEqual([`arrow sprite@${(100 - 4) * 2},${(50 - 2) * 2} 32x48`, null]);
   });
 });

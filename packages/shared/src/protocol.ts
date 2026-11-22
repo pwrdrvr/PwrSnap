@@ -582,6 +582,9 @@ export type BurstFrame = {
   /** The same still scaled down for the filmstrip (JPEG, ≤ 360 px). A
    *  strip of 300 full-size stills would decode gigabytes. */
   thumbUrl: string;
+  /** The pointer, when the take tracked it: it is NOT in the still's pixels.
+   *  The sprite's box as fractions of the still (may overhang an edge). */
+  pointer?: { url: string; left: number; top: number; width: number; height: number };
 };
 
 export type BurstSessionView = {
@@ -5611,7 +5614,9 @@ export type Commands = {
    * `keptIndexes` saying what already landed.
    */
   "burst:keep": {
-    req: { burstId: string; frameIndexes: number[]; stampTime: boolean };
+    /** `pointer`: give each kept still its tracked pointer as a removable
+     *  Cursor layer (default true). */
+    req: { burstId: string; frameIndexes: number[]; stampTime: boolean; pointer?: boolean };
     res: { captureIds: string[] };
   };
   /** Delete every still and end the session. Idempotent. */

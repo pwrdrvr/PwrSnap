@@ -14,7 +14,7 @@
 //   A            choose all / none
 //   Cmd/Ctrl+Enter  keep the chosen stills
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement } from "react";
 import { acceleratorToDisplayKeys, BURST_FPS, type BurstFrame, type BurstSessionView } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
@@ -68,6 +68,9 @@ export function BurstReview({ burstId = readBurstId() }: { readonly burstId?: st
   const [focusIndex, setFocusIndex] = useState<number | null>(null);
   const [anchor, setAnchor] = useState<number | null>(null);
   const [stamp, setStamp] = useState(true);
+  // The pointer is not in the stills' pixels; this draws it on top here and
+  // gives each kept snap a removable Cursor layer.
+  const [withPointer, setWithPointer] = useState(true);
   const [busy, setBusy] = useState<Busy>(null);
   const [discardArmed, setDiscardArmed] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -105,6 +108,7 @@ export function BurstReview({ burstId = readBurstId() }: { readonly burstId?: st
 
   const focusPos = frames.findIndex((f) => f.index === focusIndex);
   const focused = focusPos >= 0 ? frames[focusPos]! : null;
+  const hasPointer = useMemo(() => frames.some((f) => f.pointer !== undefined), [frames]);
   // One Set per choice: the strip asks "is this still chosen?" per thumb.
   const chosenSet = useMemo(() => new Set(selection), [selection]);
   const firstChosenOffset = useMemo(() => {
@@ -137,14 +141,19 @@ export function BurstReview({ burstId = readBurstId() }: { readonly burstId?: st
     if (burstId === null || busy !== null || selection.length === 0) return;
     setBusy("keep");
     setError(null);
-    const result = await dispatch("burst:keep", { burstId, frameIndexes: [...selection], stampTime: stamp });
+    const result = await dispatch("burst:keep", {
+      burstId,
+      frameIndexes: [...selection],
+      stampTime: stamp,
+      pointer: withPointer
+    });
     setBusy(null);
     // On success main ends the session, and the session's end closes this
     // window. Nothing to do here but wait for it.
     if (result.ok) return;
     setError(`Couldn’t keep every still — ${result.error.message}. The ones marked Kept are in your Library.`);
     await refresh();
-  }, [burstId, busy, selection, stamp, refresh]);
+  }, [burstId, busy, selection, stamp, withPointer, refresh]);
 
   const discard = useCallback(async (): Promise<void> => {
     if (burstId === null || busy !== null) return;
@@ -269,20 +278,43 @@ export function BurstReview({ burstId = readBurstId() }: { readonly burstId?: st
           <section className="ps-burst__stage" aria-label="Selected still">
             {focused !== null ? (
               <>
-                <img
-                  key={`thumb-${focused.index}`}
-                  className="ps-burst__stage-under"
-                  src={focused.thumbUrl}
-                  alt=""
-                  aria-hidden="true"
-                />
-                <img
-                  key={`full-${focused.index}`}
-                  className="ps-burst__stage-img"
-                  src={focused.url}
-                  alt={`Still ${focusPos + 1} of ${frames.length}, ${formatClock(focused.capturedAt)}`}
-                  data-testid="burst-stage-img"
-                />
+                <div className="ps-burst__stage-box">
+                  <div
+                    className="ps-burst__stage-frame"
+                    style={{ "--ps-burst-ar": focused.widthPx / focused.heightPx } as CSSProperties}
+                  >
+                    <img
+                      key={`thumb-${focused.index}`}
+                      className="ps-burst__stage-under"
+                      src={focused.thumbUrl}
+                      alt=""
+                      aria-hidden="true"
+                    />
+                    <img
+                      key={`full-${focused.index}`}
+                      className="ps-burst__stage-img"
+                      src={focused.url}
+                      alt={`Still ${focusPos + 1} of ${frames.length}, ${formatClock(focused.capturedAt)}`}
+                      data-testid="burst-stage-img"
+                    />
+                    {withPointer && focused.pointer !== undefined && (
+                      <img
+                        className="ps-burst__pointer"
+                        src={focused.pointer.url}
+                        alt=""
+                        aria-hidden="true"
+                        draggable={false}
+                        data-testid="burst-stage-pointer"
+                        style={{
+                          left: `${focused.pointer.left * 100}%`,
+                          top: `${focused.pointer.top * 100}%`,
+                          width: `${focused.pointer.width * 100}%`,
+                          height: `${focused.pointer.height * 100}%`
+                        }}
+                      />
+                    )}
+                  </div>
+                </div>
                 <div className="ps-burst__chip" data-testid="burst-stage-time">
                   <b>{formatClock(focused.capturedAt)}</b>
                   <span>{formatOffset(focused.offsetMs)}</span>
@@ -402,6 +434,17 @@ export function BurstReview({ burstId = readBurstId() }: { readonly burstId?: st
                 )}
               </span>
             </label>
+            {hasPointer && (
+              <label className="ps-burst__stamp" data-tip="A removable Cursor layer — delete it in the editor to hide the pointer">
+                <input
+                  type="checkbox"
+                  checked={withPointer}
+                  data-testid="burst-pointer"
+                  onChange={(e) => setWithPointer(e.target.checked)}
+                />
+                <span>Pointer</span>
+              </label>
+            )}
             <span className="ps-burst__spacer" />
             <button
               type="button"

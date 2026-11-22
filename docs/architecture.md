@@ -246,7 +246,11 @@ a second, into a ring that keeps the newest 300
 from the last still kept by more than a text caret's worth of pixels, each
 changed by more than an invisible 3/255 (`native/recorder/frame-change.swift`).
 ScreenCaptureKit's own change signal is not enough: it reports frames whose
-pixels are identical. It records no sound or camera,
+pixels are identical. The pointer is never painted into a burst's stills:
+with the cursor on, the recorder tracks it beside them
+(`native/recorder/pointer.swift`), so moving it alone is not a change. The
+review draws it on top, and a kept still gets it back as the same removable
+Cursor layer a screenshot has. It records no sound or camera,
 and `recording:start` refuses a burst that asks for them. At Stop the
 recording service hands the temp directory to a burst session
 (`burst/burst-session.ts`), which owns it from then on. The Burst Review

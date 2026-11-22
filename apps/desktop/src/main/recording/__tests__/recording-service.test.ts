@@ -2400,8 +2400,11 @@ describe("RecordingService burst on darwin", () => {
     return getRecordingService();
   }
 
-  async function burstTake(service: import("../recording-service").RecordingService) {
-    const start = service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0, output: "burst" });
+  async function burstTake(
+    service: import("../recording-service").RecordingService,
+    extra: { captureCursor?: boolean } = {}
+  ) {
+    const start = service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0, output: "burst", ...extra });
     void start.catch(() => undefined);
     await vi.advanceTimersByTimeAsync(0);
     const child = mocks.spawnedChildren.at(-1)!;
@@ -2422,6 +2425,35 @@ describe("RecordingService burst on darwin", () => {
       frames: [{ index: 0, path: "/tmp/pwrsnap-burst-fake/frames/frame-000000.png", utcMs: 1, width: 200, height: 200 }]
     }
   };
+
+  // The pointer is never painted into a burst's stills — moving it must not
+  // read as a change. With the cursor on it is tracked beside them instead;
+  // with it off there is no pointer at all. "Unset" means on, as for video.
+  test.each([
+    { label: "on", captureCursor: true as boolean | undefined, tracked: true },
+    { label: "unset", captureCursor: undefined, tracked: true },
+    { label: "off", captureCursor: false, tracked: false }
+  ])("cursor $label: no pointer in the pixels; tracked beside them only when on", async ({ captureCursor, tracked }) => {
+    const service = await loadService();
+    const child = await burstTake(service, captureCursor === undefined ? {} : { captureCursor });
+    const startCmd = JSON.parse(child.stdin.write.mock.calls[0]![0].trim()) as Record<string, unknown>;
+    expect(startCmd.showsCursor).toBe(false);
+    if (tracked) expect(startCmd.burstPointerDir).toBe(join("/tmp/pwrsnap-burst-fake", "pointer"));
+    else expect("burstPointerDir" in startCmd).toBe(false);
+
+    const sprites = [{ id: 0, path: "/tmp/pwrsnap-burst-fake/pointer/pointer-0.png" }];
+    const stop = service.stop();
+    child.emitLine({ ...stoppedBurst, burst: { ...stoppedBurst.burst, pointerSprites: sprites } });
+    await vi.advanceTimersByTimeAsync(600);
+    await stop;
+    const input = mocks.openBurstSession.mock.calls.at(-1)![0];
+    if (tracked) {
+      expect(input).toMatchObject({ pointerDir: join("/tmp/pwrsnap-burst-fake", "pointer"), pointerSprites: sprites });
+    } else {
+      expect(input).not.toHaveProperty("pointerDir");
+      expect(input).not.toHaveProperty("pointerSprites");
+    }
+  });
 
   test("stills at pixel scale, progress in state, and the directory handed to the review", async () => {
     const service = await loadService();

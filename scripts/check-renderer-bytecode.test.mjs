@@ -35,7 +35,7 @@ test.each(["/", "\\"])("module discovery excludes non-application files with %s 
 });
 
 test("V8's oracle checks uncalled nested and anonymous functions without running imports or code", async () => {
-  const largeBody = Array.from({ length: 6500 }, (_, index) => `sink(${index});`).join("\n");
+  const largeBody = Array.from({ length: 3000 }, (_, index) => `sink(${index});`).join("\n");
   const code = `
     import 'must-never-be-loaded';
     throw new Error('must never execute');

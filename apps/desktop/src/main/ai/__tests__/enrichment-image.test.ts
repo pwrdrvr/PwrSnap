@@ -1,10 +1,15 @@
-import { access, mkdir, readdir, rm, stat } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
 import fc from "fast-check";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getVideoFrameSamples, prepareEnrichmentImage } from "../enrichment-image";
+
+vi.mock("sharp", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("sharp")>();
+  return { ...actual, default: vi.fn(actual.default) };
+});
 
 let tempRoot: string;
 
@@ -54,7 +59,7 @@ describe("prepareEnrichmentImage", () => {
       tempRoot
     });
 
-    const metadata = await sharp(prepared.path).metadata();
+    const metadata = await sharp(await readFile(prepared.path)).metadata();
     expect(metadata.format).toBe("jpeg");
     expect(metadata.width).toBe(512);
     expect(metadata.height).toBe(256);
@@ -107,12 +112,17 @@ describe("prepareEnrichmentImage", () => {
       fc.integer({ min: 64, max: 1800 }),
       fc.constantFrom(1, 6, 8),
       async (width, height, orientation) => {
-        const sourcePath = join(tempRoot, "oriented.jpg");
+        // Each case uses a fresh path so Sharp cannot cache a previous input.
+        const caseRoot = await mkdtemp(join(tempRoot, "oriented-"));
+        const sourcePath = join(caseRoot, "oriented.png");
         await sharp({ create: { width, height, channels: 3, background: "#102436" } })
-          .jpeg().withMetadata({ orientation }).toFile(sourcePath);
-        const prepared = await prepareEnrichmentImage(sourcePath, { format: "webp", tempRoot });
+          .png().withMetadata({ orientation }).toFile(sourcePath);
+        const prepared = await prepareEnrichmentImage(sourcePath, { format: "webp", tempRoot: caseRoot });
         try {
-          const encoded = await sharp(prepared.path).metadata();
+          // Reopening a scratch file through libvips can prevent unlink on Windows.
+          expect(vi.mocked(sharp).mock.calls.some(([input]) => input === prepared.path)).toBe(false);
+          const bytes = await readFile(prepared.path);
+          const encoded = await sharp(bytes).metadata();
           const longest = Math.max(width, height);
           expect(encoded).toMatchObject({ format: "webp", hasAlpha: false });
           expect(encoded.exif).toBeUndefined();
@@ -123,14 +133,16 @@ describe("prepareEnrichmentImage", () => {
           const orientedHeight = orientation === 1 ? height : width;
           expect(Math.abs(encoded.width - Math.round(orientedWidth * scale))).toBeLessThanOrEqual(1);
           expect(Math.abs(encoded.height - Math.round(orientedHeight * scale))).toBeLessThanOrEqual(1);
-          expect(prepared.byteSize).toBe((await stat(prepared.path)).size);
+          expect(prepared).toMatchObject({
+            width: encoded.width, height: encoded.height, byteSize: bytes.length
+          });
           expect(prepared.byteSize).toBeLessThanOrEqual(1_000_000);
         } finally {
           await prepared.cleanup();
         }
+        expect(await readdir(caseRoot)).toEqual(["oriented.png"]);
       }
     ), { numRuns: 24 });
-    expect(await readdir(tempRoot)).toEqual(["oriented.jpg"]);
   });
 
   it.each(["jpeg", "webp"] as const)("cleans up if %s exceeds the byte cap", async (format) => {

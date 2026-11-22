@@ -918,7 +918,7 @@ describe("Codex handlers", () => {
           const codex = {
             stillImageFormat: "webp" as const,
             enrichCapture: vi.fn(async ({ imagePaths }: CaptureEnrichmentRequest) => {
-              expect(await sharp(imagePaths[0]!).metadata()).toMatchObject({ format: "webp" });
+              expect(await sharp(await readFile(imagePaths[0]!)).metadata()).toMatchObject({ format: "webp" });
               await purgeCacheForCapture(captureId);
               await expect(readFile(cachedSource)).rejects.toMatchObject({ code: "ENOENT" });
               throw offline("httpConnectionFailed");
@@ -1903,7 +1903,7 @@ describe("Codex handlers", () => {
     if (!started.ok) return;
     await waitFor(() => client.started);
     const path = client.imagePath!;
-    expect(await sharp(path).metadata()).toMatchObject({ format: "webp" });
+    expect(await sharp(await readFile(path)).metadata()).toMatchObject({ format: "webp" });
 
     const cancelled = await bus.dispatch(
       "codex:cancel",

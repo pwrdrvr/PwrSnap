@@ -100,14 +100,13 @@ export async function prepareEnrichmentImage(
     const encoded = format === "webp"
       ? raster.webp({ quality, effort: 4 })
       : raster.jpeg({ quality, mozjpeg: true });
-    await encoded.toFile(outputPath);
-
-    const outputMetadata = await sharp(outputPath).metadata();
-    const outputStat = await stat(outputPath);
+    // Reopening the derivative in libvips can leave a file handle that
+    // prevents scratch cleanup on Windows.
+    const output = await encoded.toFile(outputPath);
     throwIfAborted(options.abortSignal);
-    if (outputStat.size > maxBytes) {
+    if (output.size > maxBytes) {
       throw new Error(
-        `prepared enrichment image exceeds ${maxBytes} byte limit (${outputStat.size})`
+        `prepared enrichment image exceeds ${maxBytes} byte limit (${output.size})`
       );
     }
 
@@ -116,16 +115,16 @@ export async function prepareEnrichmentImage(
       sourceWidth: metadata.width ?? options.sourceWidthPx ?? null,
       sourceHeight: metadata.height ?? options.sourceHeightPx ?? null,
       sourceMimeType: metadata.format ? `image/${metadata.format}` : null,
-      width: outputMetadata.width ?? 0,
-      height: outputMetadata.height ?? 0,
-      byteSize: outputStat.size,
+      width: output.width,
+      height: output.height,
+      byteSize: output.size,
       sentMimeType: `image/${format}`,
       format,
       encoder: format === "webp" ? "sharp libwebp" : "sharp mozjpeg",
       quality,
       maxEdgePx,
       maxBytes,
-      scaleRatio: scaleRatio(width, height, outputMetadata.width ?? 0, outputMetadata.height ?? 0),
+      scaleRatio: scaleRatio(width, height, output.width, output.height),
       cleanup: async () => {
         await rm(workDir, { force: true, recursive: true });
       }

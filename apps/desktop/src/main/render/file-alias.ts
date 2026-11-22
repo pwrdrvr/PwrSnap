@@ -26,6 +26,8 @@ async function publishAlias(stagingPath: string, aliasPath: string): Promise<voi
  * the exact render-cache bytes — hardlink when the filesystem
  * supports it (zero extra storage), copy fallback otherwise. A caller
  * may supply replacement bytes for the alias without modifying the render.
+ * For a cache alias with replacement bytes, hold cache-write admission
+ * from the source read through publication.
  *
  * Layout: `<cache-dir-of-source>/clipboard/<source-basename-stem>/<displayName>`.
  * The intermediate `<source-basename-stem>` directory disambiguates

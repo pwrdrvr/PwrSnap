@@ -37,10 +37,11 @@
 // THIS file makes sure the regression class can't come back invisibly.
 
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { setImmediate as settle } from "node:timers/promises";
 import sharp from "sharp";
 import fc from "fast-check";
 import { afterAll, beforeAll, beforeEach, afterEach, describe, expect, test, vi } from "vitest";
@@ -81,6 +82,19 @@ const namedPasteboardCalls: Array<{ pngPath: string; fileUrlPath: string; metaJs
 let testDataRoot: string;
 let testDocumentsRoot: string;
 let exportStrategy: ExportStrategy = "legacy";
+let afterReadFile: ((path: Parameters<typeof readFile>[0]) => Promise<void>) | undefined;
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...fs,
+    readFile: async (path: Parameters<typeof readFile>[0], options?: Parameters<typeof readFile>[1]) => {
+      const contents = await fs.readFile(path, options ?? null);
+      if (afterReadFile !== undefined) await afterReadFile(path);
+      return contents;
+    }
+  };
+});
 
 vi.mock("../handlers/settings-handlers", async (importOriginal) => ({
   ...await importOriginal<typeof import("../handlers/settings-handlers")>(),
@@ -176,6 +190,10 @@ const { packBundleV2, buildCompositeThumbnail } = await import(
   "../persistence/bundle-store"
 );
 const { insertLayerTreeForCapture } = await import("../persistence/layers-repo");
+const { getCaptureById } = await import("../persistence/captures-repo");
+const { withDerivedCacheCleanup } = await import("../persistence/derived-cache-gate");
+const { getCacheRoot } = await import("../persistence/paths");
+const { ensureEffectiveSrcPath } = await import("../persistence/source-store");
 
 const SOURCE_WIDTH = 400;
 const SOURCE_HEIGHT = 300;
@@ -218,6 +236,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   exportStrategy = "legacy";
+  afterReadFile = undefined;
   clipboardCaptured.length = 0;
   fileClipboardCaptured.length = 0;
   namedPasteboardCalls.length = 0;
@@ -781,6 +800,46 @@ describe("clipboard:copy PNG density round trip", () => {
       }
     ), { numRuns: 25 });
   });
+
+  test.each(["clear", "purge"] as const)(
+    "a PNG read already in flight cannot restore the cache after %s",
+    async (scope) => {
+      const id = "dpi_cleanup_race";
+      await seedV2Capture({ id, annotated: false });
+      const source = await ensureEffectiveSrcPath(getCaptureById(id)!);
+      let notifyRead!: () => void;
+      const reading = new Promise<void>((resolve) => { notifyRead = resolve; });
+      let finishRead!: () => void;
+      const unblock = new Promise<void>((resolve) => { finishRead = resolve; });
+      afterReadFile = async (path) => {
+        if (path !== source) return;
+        afterReadFile = undefined;
+        notifyRead();
+        await unblock;
+      };
+
+      const copy = bus.dispatch("clipboard:copy", { captureId: id, preset: "high" }, { principal: "ipc" });
+      await reading;
+      let deletionStarted = false;
+      const cleanup = withDerivedCacheCleanup(scope === "clear" ? "all" : { captureId: id }, async () => {
+        deletionStarted = true;
+        await rm(scope === "clear" ? getCacheRoot() : dirname(source), { recursive: true, force: true });
+      });
+      try {
+        await settle();
+        // Before the gate fix cleanup can finish removing the tree before
+        // the reader returns the bytes it already obtained.
+        if (deletionStarted) await cleanup;
+      } finally {
+        finishRead();
+        await Promise.all([copy, cleanup]);
+      }
+      await expect(stat(dirname(source))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await copy).toMatchObject({ ok: false });
+      expect(namedPasteboardCalls).toHaveLength(0);
+      expect(clipboardCaptured).toHaveLength(0);
+    }
+  );
 });
 
 // Additional pin for `clipboard:copyLayerFragment`'s private-UTI

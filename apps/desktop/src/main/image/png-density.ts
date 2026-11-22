@@ -20,34 +20,38 @@ export function pngWithDensity(png: Buffer, dpi: number): Buffer {
   densityChunk[16] = 1; // metre
   densityChunk.writeUInt32BE(crc32(densityChunk.subarray(4, 17)), 17);
 
-  // Both metadata chunks precede the first IDAT. Scan the header once and
-  // concatenate the original byte ranges with any updated chunks.
+  // pHYs goes before the first IDAT. Older PNGs can put eXIf after their
+  // image data, so scan chunk boundaries through IEND.
   const parts: Buffer[] = [];
   let remaining = 0;
   let hasDensity = false;
+  let seenImageData = false;
   for (let start = PNG_SIGNATURE.length; start + CHUNK_OVERHEAD <= png.length; ) {
     const end = start + CHUNK_OVERHEAD + png.readUInt32BE(start);
     if (end > png.length) break;
     const type = png.toString("ascii", start + 4, start + 8);
-    if (type === "IDAT") {
+    if (type === "IDAT" && !seenImageData) {
       if (!hasDensity) {
         parts.push(png.subarray(remaining, start), densityChunk);
         remaining = start;
       }
+      seenImageData = true;
+    }
+    if (type === "IEND" && seenImageData) {
       return parts.length === 0 ? png : Buffer.concat([...parts, png.subarray(remaining)]);
     }
-    const original = png.subarray(start, end);
-    const updated = type === "pHYs"
-      ? densityChunk
-      : type === "eXIf" ? exifWithDensity(original, dpi) : original;
-    if (type === "pHYs") hasDensity = true;
-    if (!original.equals(updated)) {
-      parts.push(png.subarray(remaining, start), updated);
-      remaining = end;
+    if (type === "pHYs" || type === "eXIf") {
+      const original = png.subarray(start, end);
+      const updated = type === "pHYs" ? densityChunk : exifWithDensity(original, dpi);
+      if (type === "pHYs") hasDensity = true;
+      if (!original.equals(updated)) {
+        parts.push(png.subarray(remaining, start), updated);
+        remaining = end;
+      }
     }
     start = end;
   }
-  throw new Error("PNG is missing image data");
+  throw new Error("PNG is missing image data or its end marker");
 }
 
 function exifWithDensity(chunk: Buffer, dpi: number): Buffer {

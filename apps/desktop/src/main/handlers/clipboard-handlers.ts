@@ -71,6 +71,7 @@ import {
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getCaptureById } from "../persistence/captures-repo";
+import { runGatedCacheWrite } from "../persistence/derived-cache-gate";
 import {
   readSourceForCapture,
   scheduleRepack
@@ -219,49 +220,51 @@ async function bakeRasterVisibleRegion(args: {
 // marker — lets PbScope tell two rapid copies of the same capture apart.
 let clipMetaSeq = 0;
 
-async function writeNamedImageToPasteboard(args: {
+async function prepareNamedImageAlias(args: {
   pngPath: string;
   displayName: string;
-  captureId: string;
-  preset: string;
   pngDensity?: { bytes: Buffer; dpi: number };
-}): Promise<boolean> {
+}): Promise<string | null> {
   try {
-    if (resolvePasteboardWriterPath() === null) return false;
+    if (resolvePasteboardWriterPath() === null) return null;
     const tagged = args.pngDensity !== undefined
       ? pngWithDensity(args.pngDensity.bytes, args.pngDensity.dpi)
       : undefined;
-    const aliasPath = await prepareRenderedFileAlias(
+    return await prepareRenderedFileAlias(
       args.pngPath,
       args.displayName,
       tagged === args.pngDensity?.bytes ? undefined : tagged
     );
-    clipMetaSeq += 1;
-    // Private `com.pwrdrvr.pwrsnap.clip-meta` flavor: NSPasteboard doesn't
-    // record the writing app, so PbScope badges any `com.pwrdrvr.*` flavor
-    // as PwrSnap-originated and uses captureId + seq to correlate a
-    // specific copy with what a remote Mac (Universal Clipboard /
-    // Splashtop) receives.
-    const metaJson = JSON.stringify({
-      captureId: args.captureId,
-      preset: args.preset,
-      seq: clipMetaSeq,
-      ts: Date.now(),
-      pid: process.pid
-    });
-    return await writeNamedPngToPasteboard({
-      pngPath: aliasPath,
-      fileUrlPath: aliasPath,
-      metaJson
-    });
   } catch (cause) {
-    if (cause instanceof PasteboardTimeoutError) throw cause;
     log.warn("named image pasteboard setup failed; falling back to image bytes", {
       displayName: args.displayName,
       message: cause instanceof Error ? cause.message : String(cause)
     });
-    return false;
+    return null;
   }
+}
+
+async function writeNamedImageToPasteboard(args: {
+  aliasPath: string | null;
+  captureId: string;
+  preset: string;
+}): Promise<boolean> {
+  if (args.aliasPath === null) return false;
+  clipMetaSeq += 1;
+  // PbScope identifies PwrSnap copies by this private flavor, and
+  // correlates a copy across machines by captureId + seq.
+  const metaJson = JSON.stringify({
+    captureId: args.captureId,
+    preset: args.preset,
+    seq: clipMetaSeq,
+    ts: Date.now(),
+    pid: process.pid
+  });
+  return writeNamedPngToPasteboard({
+    pngPath: args.aliasPath,
+    fileUrlPath: args.aliasPath,
+    metaJson
+  });
 }
 
 export function registerClipboardHandlers(): void {
@@ -279,13 +282,16 @@ export function registerClipboardHandlers(): void {
     }
     try {
       const still = await ensureVideoFrameStill(record, req.timeSec);
-      const namedPasteboardWritten = await writeNamedImageToPasteboard({
+      const aliasPath = await prepareNamedImageAlias({
         pngPath: still.path,
         displayName: buildVideoFrameDisplayName({
           record,
           enrichment: getCaptureEnrichment(record.id),
           timeSec: still.timeSec
-        }),
+        })
+      });
+      const namedPasteboardWritten = await writeNamedImageToPasteboard({
+        aliasPath,
         captureId: record.id,
         preset: `frame-${Math.round(still.timeSec * 1000)}ms`
       });
@@ -330,19 +336,41 @@ export function registerClipboardHandlers(): void {
       });
     }
 
-    const strategy = await getActiveExportStrategy();
-    const rung = imagePresetRung(req.preset, record, strategy);
-    const targetWidth = rung?.widthPx ?? Math.max(1, record.width_px);
-    // Use the selected output scale (including aliased rungs). A smaller
-    // image at or under logical resolution is a standalone 1× image. The
-    // paste heuristic rounds density to an integer, so require a full 2×
-    // before tagging Retina and keep the existing 3× ceiling.
-    const outputDpr = Math.min(3, Math.max(1, Math.floor((rung?.onScreenMultiple ?? 1) + 1e-6)));
+    const prepare = async (signal?: AbortSignal) => {
+      const strategy = await getActiveExportStrategy();
+      signal?.throwIfAborted();
+      const rung = imagePresetRung(req.preset, record, strategy);
+      const targetWidth = rung?.widthPx ?? Math.max(1, record.width_px);
+      const result = await resolveImagePresetFile(record, req.preset, strategy);
+      const buf = await readFile(result.path, { signal });
+      signal?.throwIfAborted();
+      const image = nativeImage.createFromBuffer(buf);
+      let aliasPath: string | null = null;
+      if (signal !== undefined && !image.isEmpty()) {
+        // The paste heuristic rounds to an integer. Require a full 2× for
+        // Retina and keep the supported 1×–3× range.
+        const outputDpr = Math.min(3, Math.max(1, Math.floor((rung?.onScreenMultiple ?? 1) + 1e-6)));
+        aliasPath = await prepareNamedImageAlias({
+          pngPath: result.path,
+          displayName: buildPastedImageDisplayName({
+            record,
+            enrichment: getCaptureEnrichment(record.id),
+            preset: req.preset
+          }),
+          pngDensity: { bytes: buf, dpi: 72 * outputDpr }
+        });
+      }
+      return { aliasPath, byteSize: buf.length, image, result, targetWidth };
+    };
 
     try {
-      const result = await resolveImagePresetFile(record, req.preset, strategy);
-      const buf = await readFile(result.path);
-      const image = nativeImage.createFromBuffer(buf);
+      // Hold admission through preparation of the named PNG. Once the file
+      // is published, the pasteboard helper can run outside the gate.
+      // A copy is an independent action, so give it its own gate key.
+      const prepared = resolvePasteboardWriterPath() === null
+        ? await prepare()
+        : await runGatedCacheWrite(record.id, `clipboard:copy:${nanoid()}`, prepare);
+      const { aliasPath, byteSize, image, result, targetWidth } = prepared;
       if (image.isEmpty()) {
         return err({
           kind: "render",
@@ -350,17 +378,10 @@ export function registerClipboardHandlers(): void {
           message: "nativeImage decoded to empty buffer"
         });
       }
-      const displayName = buildPastedImageDisplayName({
-        record,
-        enrichment: getCaptureEnrichment(record.id),
-        preset: req.preset
-      });
       const namedPasteboardWritten = await writeNamedImageToPasteboard({
-        pngPath: result.path,
-        displayName,
+        aliasPath,
         captureId: record.id,
-        preset: req.preset,
-        pngDensity: { bytes: buf, dpi: 72 * outputDpr }
+        preset: req.preset
       });
       if (!namedPasteboardWritten) {
         // Electron's image writer re-encodes the PNG and can discard its
@@ -378,7 +399,7 @@ export function registerClipboardHandlers(): void {
         captureId: record.id,
         preset: req.preset,
         targetWidth,
-        byteSize: buf.length,
+        byteSize,
         fromCache: result.fromCache,
         sourceReused: result.sourceReused,
         namedPasteboardWritten

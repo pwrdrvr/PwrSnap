@@ -22,18 +22,19 @@ function isNonnegativeNumber(value: unknown): value is number {
 
 function readAudio(value: unknown, elapsedMs: number): RecordingAudioReading | undefined {
   if (value === null || typeof value !== "object") return undefined;
-  const { lastSampleAgeMs, lastInputAgeMs, rms } = value as Record<string, unknown>;
+  const { lastSampleAgeMs, lastInputAgeMs, rms, muted } = value as Record<string, unknown>;
   if (!(lastSampleAgeMs === null || isNonnegativeNumber(lastSampleAgeMs)) ||
       !(lastInputAgeMs === null || isNonnegativeNumber(lastInputAgeMs)) ||
       !(rms === null || isNonnegativeNumber(rms))) return undefined;
+  const mute = muted === true ? { muted: true as const } : {};
   if ((lastSampleAgeMs ?? elapsedMs) > SAMPLE_GAP_MS) {
-    return { state: lastInputAgeMs !== null && lastInputAgeMs <= SAMPLE_GAP_MS ? "no-write" : "no-input" };
+    return { ...mute, state: lastInputAgeMs !== null && lastInputAgeMs <= SAMPLE_GAP_MS ? "no-write" : "no-input" };
   }
-  if (lastSampleAgeMs === null) return { state: "waiting" };
+  if (lastSampleAgeMs === null) return { ...mute, state: "waiting" };
   const db = rms === null ? null : 20 * Math.log10(rms);
   const level = db === null ? null :
     SEGMENT_THRESHOLDS_DB.filter((threshold) => db >= threshold).length / SEGMENT_THRESHOLDS_DB.length;
-  return { state: "writing", level };
+  return { ...mute, state: "writing", level };
 }
 
 /** The native write queue supplies ages from its own monotonic clock. Keep
@@ -50,7 +51,7 @@ export function updateAudioTelemetry(
     const previous = current?.[source];
     const reading = readAudio(event[source], event.elapsedMs);
     if (reading === undefined) continue;
-    if (previous?.state === reading.state &&
+    if (previous?.state === reading.state && previous.muted === reading.muted &&
       (reading.state !== "writing" ||
         (previous.state === "writing" && previous.level === reading.level))) continue;
     next = { ...next, [source]: reading };

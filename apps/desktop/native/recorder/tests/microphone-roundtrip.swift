@@ -94,6 +94,19 @@ func checkPlanarStereo() throws {
     telemetry.appended(source!)
     let normal = telemetry.report(at: DispatchTime.now().uptimeNanoseconds)
     try check(abs((normal["rms"] as? Double ?? -1) - sqrt(0.15625)) < 0.0001, "RMS combines both planes")
+    telemetry.setMuted(true)
+    guard let silent = telemetry.bufferForWriting(source!) else {
+        try check(false, "muting must preserve the planar sample layout")
+        return
+    }
+    try check(CMSampleBufferGetNumSamples(silent) == 4 &&
+              CMSampleBufferGetPresentationTimeStamp(silent) == timing.presentationTimeStamp, "mute preserves timing")
+    try silent.withAudioBufferList { buffers, _ in
+        try check(buffers.count == 2 && buffers.allSatisfy { $0.mNumberChannels == 1 && $0.mDataByteSize == 16 },
+                  "mute preserves both PCM planes")
+    }
+    telemetry.appended(silent)
+    try check(telemetry.report(at: DispatchTime.now().uptimeNanoseconds)["rms"] as? Double == 0, "both planes are silent")
 }
 
 @main
@@ -121,6 +134,14 @@ struct MicrophoneRoundtrip {
         writer.startSession(atSourceTime: CMTime(value: 20, timescale: 1))
         let expectedRMS = 0.3 / sqrt(2.0)
         for packet in 0..<48 {
+            if packet == 12 || packet == 36 {
+                let observed = forwarder.reportAudio(at: DispatchTime.now().uptimeNanoseconds)
+                let targetRMS = packet == 12 ? expectedRMS : 0
+                try check(abs((observed["rms"] as? Double ?? -1) - targetRMS) < 0.001,
+                          "accepted samples must reflect the active mute interval")
+                try check(observed["muted"] as? Bool == (packet == 36), "report carries the writer's mute state")
+                forwarder.setMuted(packet == 12)
+            }
             let deadline = Date().addingTimeInterval(5)
             while !input.isReadyForMoreMediaData && Date() < deadline {
                 try await Task.sleep(nanoseconds: 1_000_000)
@@ -196,7 +217,11 @@ struct MicrophoneRoundtrip {
             throw NSError(domain: "MicrophoneRoundtrip", code: 1, userInfo: [NSLocalizedDescriptionKey: "PCM decode storage"])
         }
         stage("decode offline PCM")
-        var sum = 0.0
+        // AAC has a transition region at each mute edge. Measure the interior
+        // of each interval independently so a shifted or shortened track
+        // cannot pass by containing the right total audible energy.
+        let intervals = [2400..<10000, 15000..<34000, 39000..<46700]
+        var sums = [0.0, 0.0, 0.0]
         var decoded = 0
         while file.framePosition < file.length {
             try file.read(into: buffer)
@@ -204,15 +229,20 @@ struct MicrophoneRoundtrip {
             guard let values = buffer.floatChannelData?[0] else {
                 throw NSError(domain: "MicrophoneRoundtrip", code: 1, userInfo: [NSLocalizedDescriptionKey: "decoded Float32 PCM"])
             }
-            for index in 0..<Int(buffer.frameLength) { sum += Double(values[index] * values[index]) }
+            for index in 0..<Int(buffer.frameLength) {
+                if let interval = intervals.firstIndex(where: { $0.contains(decoded + index) }) {
+                    sums[interval] += Double(values[index] * values[index])
+                }
+            }
             decoded += Int(buffer.frameLength)
         }
         stage("decoded \(decoded) samples")
-        let rms = sqrt(sum / Double(max(1, decoded)))
+        let levels = zip(sums, intervals).map { sqrt($0.0 / Double($0.1.count)) }
         let duration = try await asset.load(.duration).seconds
-        try check(decoded >= 48_000 && abs(rms - expectedRMS) < 0.03,
-                  "offline AAC decode must agree with written RMS within encode tolerance")
+        try check(decoded >= 48_000 && abs(levels[0] - expectedRMS) < 0.03 &&
+                  levels[1] < 0.0025 && abs(levels[2] - expectedRMS) < 0.03,
+                  "one encoded track must retain tone, silence and resumed tone at the same offsets: \(levels)")
         try check(duration >= 1 && duration < 1.2, "host-clock timestamps must be rebased to clip time")
-        print("microphone AAC roundtrip: appended=\(forwarder.samplesAppended) decoded=\(decoded) rms=\(rms) duration=\(duration)")
+        print("microphone AAC roundtrip: appended=\(forwarder.samplesAppended) decoded=\(decoded) rms=\(levels) duration=\(duration)")
     }
 }

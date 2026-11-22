@@ -9,6 +9,8 @@
 //             "w": …, "h": … }, "outputPath": "/tmp/foo.mp4",
 //             "systemAudio": true, "microphone": false,
 //             "showsCursor": true }   // optional; omitted ⇒ true
+//   muteAudio → { "type": "muteAudio", "requestId": 1,
+//                 "source": "microphone", "muted": true }
 //   stop   → { "type": "stop" }
 //
 // Notifies main:
@@ -16,6 +18,7 @@
 //   started   → { "event": "started", "physicalRect": { x,y,w,h } }
 //   audioTelemetry → elapsedMs and { rms, lastSampleAgeMs, lastInputAgeMs }
 //                    for each armed audio source
+//   audioMuteResult → { "requestId": 1, "applied": true }
 //   stopped   → { "event": "stopped", "durationSec": 12.5,
 //                "containerFormat": "mp4",
 //                "hasSystemAudio": true, "hasMicrophoneAudio": false,
@@ -96,8 +99,16 @@ struct RectPayload: Decodable {
     let h: Int
 }
 
+struct MuteAudioRequest: Decodable {
+    enum Source: String, Decodable { case systemAudio, microphone }
+    let requestId: Int
+    let source: Source
+    let muted: Bool
+}
+
 enum Inbound: Decodable {
     case start(StartRequest)
+    case muteAudio(MuteAudioRequest)
     case stop
 
     enum CodingKeys: String, CodingKey { case type }
@@ -108,6 +119,8 @@ enum Inbound: Decodable {
         switch kind {
         case "start":
             self = .start(try StartRequest(from: decoder))
+        case "muteAudio":
+            self = .muteAudio(try MuteAudioRequest(from: decoder))
         case "stop":
             self = .stop
         default:
@@ -175,6 +188,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private var audioSamplesAppended: Int = 0
     private var systemAudioTelemetry = AudioSampleTelemetry()
     private var audioTelemetryTimer: DispatchSourceTimer?
+    private var audioTelemetryStart: DispatchTime?
     /// SCStream's `.microphone` output (macOS 14+). Unused by today's
     /// recorder — mic capture runs through AVCaptureSession — but
     /// counted so a stray sample shows up in the stop() diag totals
@@ -831,9 +845,10 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             }
         case .audio:
             if let ai = audioInput, ai.isReadyForMoreMediaData,
-               ai.append(buf) {
+               let written = systemAudioTelemetry.bufferForWriting(buf),
+               ai.append(written) {
                 audioSamplesAppended += 1
-                systemAudioTelemetry.appended(buf)
+                systemAudioTelemetry.appended(written)
             }
         case .microphone:
             // Mic samples from SCStream (macOS 14+) are deliberately
@@ -912,8 +927,31 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             // when every armed source has stopped delivering buffers.
             timer.schedule(deadline: start + .milliseconds(125), repeating: .milliseconds(125), leeway: .milliseconds(20))
             timer.setEventHandler { [weak self] in self?.reportAudio(since: start) }
+            audioTelemetryStart = start
             audioTelemetryTimer = timer
             timer.resume()
+        }
+    }
+
+    func muteAudio(_ request: MuteAudioRequest) {
+        writeQueue.sync {
+            var applied = false
+            if let start = audioTelemetryStart {
+                switch request.source {
+                case .systemAudio:
+                    if audioInput != nil {
+                        systemAudioTelemetry.setMuted(request.muted)
+                        applied = true
+                    }
+                case .microphone:
+                    if let micForwarder {
+                        micForwarder.setMuted(request.muted)
+                        applied = true
+                    }
+                }
+                if applied { reportAudio(since: start) }
+            }
+            emit(["event": "audioMuteResult", "requestId": request.requestId, "applied": applied])
         }
     }
 
@@ -941,6 +979,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         writeQueue.sync {
             audioTelemetryTimer?.cancel()
             audioTelemetryTimer = nil
+            audioTelemetryStart = nil
         }
         do {
             try await s.stopCapture()
@@ -1064,6 +1103,8 @@ if #available(macOS 13.0, *) {
                 switch cmd {
                 case .start(let req):
                     Task { await recorder.start(req: req) }
+                case .muteAudio(let req):
+                    recorder.muteAudio(req)
                 case .stop:
                     Task {
                         await recorder.stop()

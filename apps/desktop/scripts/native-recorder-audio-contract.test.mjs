@@ -52,7 +52,7 @@ describe("native recorder audio contract", () => {
   });
 
   test("both sources measure only after the writer accepts the corresponding audio buffer", () => {
-    expect(recorderSource).toMatch(/ai\.append\(buf\) \{\s+audioSamplesAppended \+= 1\s+systemAudioTelemetry\.appended\(buf\)/);
-    expect(microphoneSource).toMatch(/input\.append\(sampleBuffer\) \{\s+samplesAppended \+= 1\s+audioTelemetry\.appended\(sampleBuffer\)/);
+    expect(recorderSource).toMatch(/let written = systemAudioTelemetry\.bufferForWriting\(buf\),\s+ai\.append\(written\) \{\s+audioSamplesAppended \+= 1\s+systemAudioTelemetry\.appended\(written\)/);
+    expect(microphoneSource).toMatch(/let written = audioTelemetry\.bufferForWriting\(sampleBuffer\),\s+input\.append\(written\) \{\s+samplesAppended \+= 1\s+audioTelemetry\.appended\(written\)/);
   });
 });

@@ -72,7 +72,7 @@ vi.mock("../camera-recording", () => ({
 }));
 
 class FakeChild extends EventEmitter {
-  stdin = { write: vi.fn() };
+  stdin = Object.assign(new EventEmitter(), { write: vi.fn() });
   stdout = new EventEmitter();
   stderr = new EventEmitter();
   killCalled = false;
@@ -374,6 +374,48 @@ test("live audio reports accepted silence, source gaps, and writer gaps independ
   const cancelled = service.cancel();
   child.emitLine({ event: "stopped" });
   await cancelled;
+});
+
+test("mute requests go only to the armed source in the current take and settle on its own acknowledgement", async () => {
+  const { getRecordingService } = await import("../recording-service");
+  const service = getRecordingService();
+  const pending = service.start({
+    subject: SUBJECT, capabilities: { systemAudio: false, microphone: true }, countdownSeconds: 0
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  const child = mocks.spawnedChildren[0]!;
+  child.emitLine({ event: "started", physicalRect: SUBJECT.rect });
+  const { sessionId } = await pending;
+  const adjust = (muted: boolean) => service.muteAudio!({ sessionId, source: "microphone", muted });
+  await expect(service.muteAudio!({ sessionId: "old", source: "microphone", muted: true })).rejects.toThrow("control_unavailable");
+  await expect(service.muteAudio!({ sessionId, source: "systemAudio", muted: true })).rejects.toThrow("control_unavailable");
+  expect(child.stdin.write).toHaveBeenCalledTimes(1);
+
+  await fc.assert(fc.asyncProperty(fc.array(fc.boolean(), { minLength: 1, maxLength: 10 }), async changes => {
+    for (const muted of changes) {
+      const acknowledged = vi.fn();
+      const request = adjust(muted).then(acknowledged);
+      const lastWrite = child.stdin.write.mock.calls.at(-1)?.[0];
+      const details = JSON.parse(lastWrite as string) as { requestId: number };
+      expect(details).toMatchObject({ type: "muteAudio", source: "microphone", muted });
+      child.emitLine({ event: "audioMuteResult", requestId: details.requestId - 1, applied: true });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(acknowledged).not.toHaveBeenCalled();
+      await expect(adjust(!muted)).rejects.toThrow("control_unavailable");
+      child.emitLine({ event: "audioTelemetry", elapsedMs: 125, microphone: {
+        lastInputAgeMs: 5, lastSampleAgeMs: 5, rms: muted ? 0 : 0.5, muted
+      } });
+      child.emitLine({ event: "audioMuteResult", requestId: details.requestId, applied: true });
+      await request;
+      const state = mocks.currentState.audioTelemetry as { microphone: { muted?: boolean } };
+      expect(state.microphone.muted === true).toBe(muted);
+    }
+  }), { numRuns: 25 });
+
+  const inFlight = expect(adjust(true)).rejects.toThrow("cancelled");
+  const cancelled = service.cancel();
+  child.emitLine({ event: "stopped" });
+  await Promise.all([inFlight, cancelled]);
 });
 
 describe("RecordingService.start cancel-during-countdown", () => {

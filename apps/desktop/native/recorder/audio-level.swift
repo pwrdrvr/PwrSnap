@@ -17,6 +17,18 @@ struct AudioSampleTelemetry {
     private var lastSample: UInt64?
     private var window = AudioLevels()
     private(set) var heardSound = false
+    private(set) var muted = false
+
+    mutating func setMuted(_ muted: Bool) {
+        guard self.muted != muted else { return }
+        self.muted = muted
+        window = AudioLevels()
+    }
+
+    func bufferForWriting(_ sample: CMSampleBuffer) -> CMSampleBuffer? {
+        muted ? silentPCM(matching: sample) : sample
+    }
+
     mutating func received(_ sample: CMSampleBuffer) {
         if CMSampleBufferGetNumSamples(sample) > 0 {
             lastInput = DispatchTime.now().uptimeNanoseconds
@@ -32,12 +44,55 @@ struct AudioSampleTelemetry {
 
     mutating func report(at now: UInt64) -> [String: Any] {
         let reading: [String: Any] = [
+            "muted": muted,
             "rms": window.rms.map { $0 as Any } ?? NSNull(),
             "lastSampleAgeMs": lastSample.map { Double(now - $0) / 1_000_000 as Any } ?? NSNull(),
             "lastInputAgeMs": lastInput.map { Double(now - $0) / 1_000_000 as Any } ?? NSNull()
         ]
         window = AudioLevels()
         return reading
+    }
+}
+
+/// Keep the armed AAC track and its original timing when muted. The writer
+/// gets fresh silence with the same PCM layout. If the source changes to an
+/// unreadable format, drop that packet while muted rather than forwarding it.
+private func silentPCM(matching sample: CMSampleBuffer) -> CMSampleBuffer? {
+    guard let format = CMSampleBufferGetFormatDescription(sample),
+          let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(format)?.pointee,
+          asbd.mFormatID == kAudioFormatLinearPCM else { return nil }
+    let samples = CMSampleBufferGetNumSamples(sample)
+    guard samples > 0 else { return nil }
+    let signedOrFloat = asbd.mFormatFlags & (kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsFloat) != 0
+    let unsigned8Bit = asbd.mBitsPerChannel == 8 &&
+        (asbd.mBytesPerFrame == 1 || asbd.mBytesPerFrame == asbd.mChannelsPerFrame)
+    guard signedOrFloat || unsigned8Bit else { return nil }
+    return try? sample.withAudioBufferList { original, _ -> CMSampleBuffer? in
+        guard let largestBuffer = original.map(\.mDataByteSize).max(), largestBuffer > 0,
+              let bytes = calloc(1, Int(largestBuffer)) else { return nil }
+        defer { free(bytes) }
+        if !signedOrFloat { memset(bytes, 0x80, Int(largestBuffer)) }
+
+        let silence = AudioBufferList.allocate(maximumBuffers: original.count)
+        defer { free(silence.unsafeMutablePointer) }
+        silence.unsafeMutablePointer.pointee.mNumberBuffers = UInt32(original.count)
+        for (index, buffer) in original.enumerated() {
+            silence[index] = AudioBuffer(mNumberChannels: buffer.mNumberChannels,
+                mDataByteSize: buffer.mDataByteSize, mData: bytes)
+        }
+        var timing = CMSampleTimingInfo()
+        var output: CMSampleBuffer?
+        guard CMSampleBufferGetSampleTimingInfo(sample, at: 0, timingInfoOut: &timing) == noErr,
+              CMSampleBufferCreate(allocator: kCFAllocatorDefault, dataBuffer: nil, dataReady: false,
+                makeDataReadyCallback: nil, refcon: nil, formatDescription: format,
+                sampleCount: samples, sampleTimingEntryCount: 1, sampleTimingArray: &timing,
+                sampleSizeEntryCount: 0, sampleSizeArray: nil, sampleBufferOut: &output) == noErr,
+              let output,
+              CMSampleBufferSetDataBufferFromAudioBufferList(output, blockBufferAllocator: nil,
+                blockBufferMemoryAllocator: nil, flags: kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
+                bufferList: silence.unsafePointer) == noErr,
+              CMSampleBufferSetDataReady(output) == noErr else { return nil }
+        return output
     }
 }
 

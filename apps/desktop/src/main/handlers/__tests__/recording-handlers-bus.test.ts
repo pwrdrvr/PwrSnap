@@ -37,6 +37,7 @@ const mocks = vi.hoisted(() => ({
     throw new Error("not_recording");
   }),
   start: vi.fn(),
+  muteAudio: vi.fn(async () => undefined),
   askForMediaAccess: vi.fn(async () => true),
   stop: vi.fn(),
   retryCapabilities: vi.fn(() => ({ microphone: false, systemAudio: false })),
@@ -142,6 +143,7 @@ beforeEach(() => {
   mocks.cancel.mockClear();
   mocks.restart.mockClear();
   mocks.start.mockClear();
+  mocks.muteAudio.mockClear();
   mocks.stop.mockReset();
   mocks.stop.mockResolvedValue({ captureId: "cap-1" });
   mocks.askForMediaAccess.mockReset();
@@ -462,6 +464,21 @@ describe("recording:* command-bus surface", () => {
       });
     }
     expect(mocks.stop).not.toHaveBeenCalled();
+  });
+
+  test("recording:muteAudio remains gated while the HUD control is unavailable", async () => {
+    const request = { sessionId: "rec-1", source: "microphone", muted: true } as const;
+    const send = () => bus.dispatch("recording:muteAudio", request, { principal: "ipc" });
+    const state = {
+      phase: "recording", sessionId: request.sessionId, startedAt: new Date(0).toISOString(),
+      rect: { x: 0, y: 0, w: 100, h: 100 }, displayId: 1,
+      capabilities: { systemAudio: false, microphone: true }
+    } as const;
+    setRecordingState(state);
+    expect(await send()).toMatchObject({ ok: false, error: { code: "control_unavailable" } });
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    expect(await send()).toMatchObject({ ok: false, error: { code: "control_unavailable" } });
+    expect(mocks.muteAudio).not.toHaveBeenCalled();
   });
 
   test("recording:cancel cannot interrupt Stop-owned finalization", async () => {

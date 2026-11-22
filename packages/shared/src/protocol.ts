@@ -409,12 +409,15 @@ export type RecordingState =
 
 export type RecordingAudioSource = "systemAudio" | "microphone";
 
-export type RecordingAudioReading =
+export type RecordingAudioReading = (
   | { state: "waiting" | "no-input" | "no-write" }
   /** 0–1 in meter steps. Null means no PCM level was measurable in this window. */
-  | { state: "writing"; level: number | null };
+  | { state: "writing"; level: number | null }
+) & { muted?: true };
 
 export type RecordingAudioTelemetry = Partial<Record<RecordingAudioSource, RecordingAudioReading>>;
+
+export type RecordingAudioMuteRequest = { sessionId: string; source: RecordingAudioSource; muted: boolean };
 
 /**
  * How the recording frame is allowed to relate to the recorded rect.
@@ -5673,6 +5676,8 @@ export type Commands = {
    * is in flight.
    */
   "recording:restart": { req: Record<string, never>; res: { sessionId: string } };
+  /** Silence or resume an armed audio track in this take. */
+  "recording:muteAudio": { req: RecordingAudioMuteRequest; res: void };
   /** Retry only the currently displayed failed session with its original
    * subject/capabilities. A stale failure card cannot start a new take. */
   "recording:retry": { req: { sessionId: string }; res: { sessionId: string } };

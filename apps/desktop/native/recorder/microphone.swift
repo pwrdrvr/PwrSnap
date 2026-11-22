@@ -27,10 +27,16 @@ final class MicForwarder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
         audioTelemetry.received(sampleBuffer)
         if writer.status == .writing &&
            CMSampleBufferDataIsReady(sampleBuffer) &&
-           input.isReadyForMoreMediaData && input.append(sampleBuffer) {
+           input.isReadyForMoreMediaData,
+           let written = audioTelemetry.bufferForWriting(sampleBuffer),
+           input.append(written) {
             samplesAppended += 1
-            audioTelemetry.appended(sampleBuffer)
+            audioTelemetry.appended(written)
         }
+    }
+
+    func setMuted(_ muted: Bool) {
+        audioTelemetry.setMuted(muted)
     }
 
     func reportAudio(at now: UInt64) -> [String: Any] {

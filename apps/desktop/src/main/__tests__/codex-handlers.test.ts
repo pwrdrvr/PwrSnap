@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
-import type { CodexModelOption, EnrichmentResult, Settings } from "@pwrsnap/shared";
+import type { AiSurfaceDefault, CodexModelOption, EnrichmentResult, Settings } from "@pwrsnap/shared";
 import { CustomModelService } from "../ai/direct-api/service";
 import type { CustomCredentials } from "../ai/direct-api/credentials";
 import { body, json, model, server } from "../ai/direct-api/__tests__/fixtures";
@@ -786,7 +786,7 @@ describe("Codex handlers", () => {
         platformSpy.mockRestore();
       }
     };
-    const lunaSettings = (fallback: Settings["ai"]["enrichmentFallback"]): Settings => {
+    const lunaSettings = (fallback: AiSurfaceDefault | null): Settings => {
       const settings = testSettings();
       settings.ai.enabled = true;
       settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";

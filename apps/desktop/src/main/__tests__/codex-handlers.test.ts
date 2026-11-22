@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { readFileSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, readFile, rm } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import type { AiSurfaceDefault, CodexModelOption, EnrichmentResult, Settings } from "@pwrsnap/shared";
 import { CustomModelService } from "../ai/direct-api/service";
+import { CaptureEnrichmentClient, type CaptureEnrichmentRequest } from "../ai/capture-enrichment-client";
 import type { CustomCredentials } from "../ai/direct-api/credentials";
 import { body, json, model, server } from "../ai/direct-api/__tests__/fixtures";
 import { ENRICHMENT_QUEUE_MAX_AGE_MS } from "../ai/direct-api/enrichment-queue";
@@ -58,7 +59,8 @@ const {
 const { getAiRun } = await import("../persistence/ai-runs-repo");
 const { getCaptureEnrichment } = await import("../persistence/enrichment-repo");
 const { defaultSettings } = await import("../settings/desktop-settings-service");
-const { DesktopSettingsStore } = await import("../settings/desktop-settings-store");
+const { DesktopSettingsStore, __setDesktopSettingsStoreForTests } =
+  await import("../settings/desktop-settings-store");
 const { AiEnrichmentBudget } = await import("../ai/enrichment-budget");
 const { EnrichmentPrimaryHealth } = await import("../ai/enrichment-fallback");
 const { CodexTurnFailedError } = await import("../ai/codex-turn-error");
@@ -227,11 +229,14 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reje
 }
 
 class HangingCodexClient {
+  readonly stillImageFormat = "webp";
+  imagePath: string | undefined;
   aborted = false;
   started = false;
 
-  async enrichCapture(request: { abortSignal?: AbortSignal }): Promise<never> {
+  async enrichCapture(request: CaptureEnrichmentRequest): Promise<never> {
     this.started = true;
+    this.imagePath = request.imagePaths[0];
     if (request.abortSignal?.aborted) {
       this.aborted = true;
       throw new DOMException("aborted", "AbortError");
@@ -293,6 +298,7 @@ describe("Codex handlers", () => {
 
   afterEach(async () => {
     unregisterCodexHandlers();
+    __setDesktopSettingsStoreForTests(null);
     resetCodexCompatibilityAlertForTests();
     testDb.close();
     await rm(tempRoot, { force: true, recursive: true });
@@ -302,6 +308,51 @@ describe("Codex handlers", () => {
     registerCodexHandlers();
 
     expect(bus.isRegistered("codex:ask")).toBe(false);
+  });
+
+  test.each([
+    ["0.144.0", "webp"],
+    ["0.169.0", "webp"],
+    ["0.171.0", "webp"],
+    ["0.172.0-alpha.1", "jpeg"]
+  ])("codex:enrich prepares %s still inputs as %s", async (version, format) => {
+    const settings = testSettings();
+    settings.ai.enabled = true;
+    settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+    const store = new DesktopSettingsStore({ filePath: join(tempRoot, "settings.json") });
+    __setDesktopSettingsStoreForTests(store);
+    const resolve = vi.spyOn(store, "resolveCompatibleCodexCommand")
+      .mockResolvedValue({ command: "codex", source: "path", version });
+    const observed = deferred<{ path: string; bytes: Buffer }>();
+    const enrich = vi.spyOn(CaptureEnrichmentClient.prototype, "enrichCapture")
+      .mockImplementation(async (request) => {
+        const path = request.imagePaths[0]!;
+        observed.resolve({ path, bytes: await readFile(path) });
+        return new FakeCodexClient().enrichCapture(request);
+      });
+    try {
+      registerCodexHandlers({ settingsReader: async () => settings, budget: new AiEnrichmentBudget() });
+      const started = await bus.dispatch("codex:enrich", { captureId: "cap_1" }, { principal: "ipc" });
+      if (!started.ok) throw new Error(started.error.message);
+      const { runId } = started.value;
+      await waitFor(() => getAiRun(runId)?.status === "completed");
+      const { path, bytes } = await observed.promise;
+      expect(await sharp(bytes).metadata()).toMatchObject({ format, width: 640, height: 360 });
+      expect(path.endsWith(format === "webp" ? ".webp" : ".jpg")).toBe(true);
+      const detail = await bus.dispatch("codex:usageRunDetail", { runId }, { principal: "ipc" });
+      expect(detail.ok && detail.value?.mediaInputs).toEqual([expect.objectContaining({
+        transform: `prepared-${format}`,
+        sentMimeType: `image/${format}`,
+        format,
+        sentByteSize: bytes.length,
+        maxEdgePx: 1024,
+        maxBytes: 1_000_000
+      })]);
+      await vi.waitFor(async () => { await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" }); });
+      expect(resolve).toHaveBeenCalledTimes(1);
+    } finally {
+      enrich.mockRestore();
+    }
   });
 
   test("codex:compatibilityAlert returns the durable guard snapshot", async () => {
@@ -509,6 +560,10 @@ describe("Codex handlers", () => {
       if (args[0] !== "caption") appleFmCli.assertAppleFmArgs(args);
       fmCalls.push({ args: [...args], stdin: options.stdin });
       if (args[0] === "config") return { code: 0, signal: null, stdout: "(none)\n", stderr: "" };
+      const imagePath = args[0] === "caption"
+        ? (JSON.parse(options.stdin ?? "") as { imagePaths: string[] }).imagePaths[0]!
+        : args[args.indexOf("--image") + 1]!;
+      expect(await sharp(imagePath).metadata()).toMatchObject({ format: "jpeg" });
       if (scenario === "guardrail") {
         return { code: 1, signal: null, stdout: "", stderr: "Error: The model's safety guardrails were triggered.\n" };
       }
@@ -788,21 +843,27 @@ describe("Codex handlers", () => {
       title: "Offline fixture", description: "Synthetic snap captioned on this Mac", ocrText: "",
       filenameStem: "offline-fixture", textAnchors: [], tags: []
     });
-    const withApple = async (body: (respondCalls: () => number) => Promise<void>): Promise<void> => {
+    const withApple = async (
+      body: (respondCalls: () => number, paths: readonly string[]) => Promise<void>
+    ): Promise<void> => {
       let respond = 0;
+      const paths: string[] = [];
       const nativeSpy = vi.spyOn(appleFmNative, "resolveNativeCaptionRunner").mockResolvedValue(async (args, options) => {
         expect(args).toEqual(["caption"]);
-        expect(JSON.parse(options.stdin ?? "")).toMatchObject({
+        const input = JSON.parse(options.stdin ?? "") as { imagePaths: string[] };
+        expect(input).toMatchObject({
           metadata: expect.stringContaining("Capture metadata:"),
           imagePaths: [expect.any(String)],
           recognizeText: true
         });
+        expect(await sharp(input.imagePaths[0]!).metadata()).toMatchObject({ format: "jpeg" });
+        paths.push(...input.imagePaths);
         respond += 1;
         return { code: 0, signal: null, stderr: "", stdout: appleCaption };
       });
       const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
       try {
-        await body(() => respond);
+        await body(() => respond, paths);
       } finally {
         nativeSpy.mockRestore();
         platformSpy.mockRestore();
@@ -833,10 +894,19 @@ describe("Codex handlers", () => {
       { scenario: "turn timeout", error: new Error("Codex one-shot turn timed out"), expected: "failed" },
       { scenario: "local setup error", error: new Error("spawn codex ENOENT"), expected: "failed" }
     ])("$scenario → $expected", async ({ error, expected }) => {
-      await withApple(async (respondCalls) => {
+      await withApple(async (respondCalls, applePaths) => {
         const settings = lunaSettings({ provider: "apple:system" });
-        const codex = { enrichCapture: vi.fn(async () => { throw error; }), close: async () => undefined };
-        registerCodexHandlers({ clientFactory: () => codex as never, settingsReader: async () => settings,
+        let primaryImage: { path: string; bytes: Buffer } | undefined;
+        const codex = {
+          stillImageFormat: "webp" as const,
+          enrichCapture: vi.fn(async ({ imagePaths }: CaptureEnrichmentRequest) => {
+            const path = imagePaths[0]!;
+            primaryImage = { path, bytes: await readFile(path) };
+            throw error;
+          }),
+          close: async () => undefined
+        };
+        registerCodexHandlers({ clientFactory: () => codex, settingsReader: async () => settings,
           budget: new AiEnrichmentBudget(), primaryHealth: new EnrichmentPrimaryHealth(() => 0, 60_000) });
         const result = await bus.dispatch("codex:enrich", { captureId: "cap_1" }, { principal: "ipc" });
         expect(result.ok).toBe(true);
@@ -844,6 +914,14 @@ describe("Codex handlers", () => {
         await settle(result.value.runId);
         const run = getAiRun(result.value.runId);
         expect(codex.enrichCapture).toHaveBeenCalledTimes(1);
+        expect(primaryImage).toBeDefined();
+        expect(await sharp(primaryImage!.bytes).metadata()).toMatchObject({ format: "webp" });
+        await vi.waitFor(async () => {
+          await expect(readFile(primaryImage!.path)).rejects.toMatchObject({ code: "ENOENT" });
+        });
+        const detail = await bus.dispatch("codex:usageRunDetail", { runId: result.value.runId }, { principal: "ipc" });
+        expect(detail.ok && detail.value?.mediaInputs.map((input) => input.transform))
+          .toEqual([expected === "fallback" ? "prepared-jpeg" : "prepared-webp"]);
         if (expected === "failed") {
           expect(run).toMatchObject({ status: "failed", fallbackFrom: null });
           expect(respondCalls()).toBe(0);
@@ -851,6 +929,11 @@ describe("Codex handlers", () => {
         }
         expect(run).toMatchObject({ status: "completed", fallbackFrom: "codex", selectedModel: "system" });
         expect(respondCalls()).toBe(1);
+        expect(applePaths).toHaveLength(1);
+        expect(applePaths[0]).not.toBe(primaryImage!.path);
+        await vi.waitFor(async () => {
+          await expect(readFile(applePaths[0]!)).rejects.toMatchObject({ code: "ENOENT" });
+        });
         expect(getCaptureEnrichment("cap_1")).toMatchObject({
           status: "completed", fallbackFrom: "codex", suggestedDescription: "Synthetic snap captioned on this Mac"
         });
@@ -1701,6 +1784,8 @@ describe("Codex handlers", () => {
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     await waitFor(() => client.started);
+    const path = client.imagePath!;
+    expect(await sharp(path).metadata()).toMatchObject({ format: "webp" });
 
     const cancelled = await bus.dispatch(
       "codex:cancel",
@@ -1712,6 +1797,7 @@ describe("Codex handlers", () => {
     await waitFor(() => getAiRun(started.value.runId)?.status === "cancelled");
     await waitFor(() => client.aborted);
     expect(client.aborted).toBe(true);
+    await vi.waitFor(async () => { await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" }); });
   });
 
   test("codex:enrich fails (not cancels) a run whose turn outruns the timeout", async () => {

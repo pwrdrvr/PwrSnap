@@ -83,8 +83,10 @@ import {
   type AiEnrichmentBudget
 } from "../ai/enrichment-budget";
 import {
+  DEFAULT_ENRICHMENT_IMAGE_MAX_EDGE_PX,
   prepareEnrichmentImage,
   prepareEnrichmentVideoFrames,
+  type EnrichmentStillFormat,
   type PreparedEnrichmentImage,
   type PreparedEnrichmentVideoFrames
 } from "../ai/enrichment-image";
@@ -137,10 +139,14 @@ import { getDesktopSettingsStore } from "../settings/desktop-settings-store";
 
 const log = getMainLogger("pwrsnap:codex-handlers");
 
+type CodexEnrichmentBackend = EnrichmentBackend & {
+  readonly stillImageFormat?: EnrichmentStillFormat;
+};
+
 export type CodexClientFactory = (
   command: string,
   env?: NodeJS.ProcessEnv
-) => CaptureEnrichmentClient | Promise<CaptureEnrichmentClient>;
+) => CodexEnrichmentBackend | Promise<CodexEnrichmentBackend>;
 export type SettingsReader = () => Promise<Settings>;
 export type SettingsWriter = (patch: SettingsPatch) => Promise<Settings>;
 type ModelDefaultsReconciler = (
@@ -243,6 +249,7 @@ function preparedMediaShape(
       imageCount: prepared.frames.length,
       maxEdgePx: Math.max(0, ...prepared.frames.map((frame) => Math.max(frame.width, frame.height))),
       byteSizes: prepared.frames.map((frame) => frame.byteSize),
+      formats: prepared.frames.map((frame) => frame.format),
       videoFrameSamplePositions: prepared.frames.map((frame) => ({
         positionPct: frame.positionPct,
         timestampSec: frame.timestampSec
@@ -253,6 +260,7 @@ function preparedMediaShape(
     imageCount: 1,
     maxEdgePx: Math.max(prepared.width, prepared.height),
     byteSizes: [prepared.byteSize],
+    formats: [prepared.format],
     videoFrameSamplePositions: []
   };
 }
@@ -273,7 +281,7 @@ function preparedMediaInputs(
     {
       ...preparedImageAccountingBase(prepared, 0),
       role: "capture",
-      transform: "prepared-jpeg"
+      transform: `prepared-${prepared.format}`
     }
   ];
 }
@@ -892,8 +900,9 @@ export function registerCodexHandlers(params?: {
       selectedModel: primary.selectedModel,
       request: {
         media: {
-          maxLongEdgePx: 1024,
-          format: "jpeg",
+          maxLongEdgePx: DEFAULT_ENRICHMENT_IMAGE_MAX_EDGE_PX,
+          // The still format is chosen at the turn, for the active backend.
+          ...(capture.kind === "video" ? { format: "jpeg" } : {}),
           samples:
             capture.kind === "video" && capture.video !== null && capture.video !== undefined
               ? [15, 50, 85]
@@ -1317,6 +1326,7 @@ async function runCaptureEnrichment(params: {
   activeRuns.set(params.runId, abortController);
 
   let prepared: PreparedEnrichmentImage | PreparedEnrichmentVideoFrames | null = null;
+  const scratchMedia: Array<PreparedEnrichmentImage | PreparedEnrichmentVideoFrames> = [];
   let client: EnrichmentBackend | null = null;
   let slot: ReturnType<EnrichmentQueue["acquire"]> | undefined;
   // A Direct API backend shares its connection's concurrency slots with every
@@ -1421,50 +1431,37 @@ async function runCaptureEnrichment(params: {
     const sourcePath = await ensureEffectiveSrcPath(params.capture);
 
     const metadata: CaptureEnrichmentPromptMetadata = { ...params.metadata };
-    let imagePaths: string[];
-    if (metadata.captureKind === "video") {
-      if (
-        typeof metadata.videoDurationSec !== "number" ||
-        !Number.isFinite(metadata.videoDurationSec) ||
-        metadata.videoDurationSec < 0
-      ) {
+    const prepareMedia = async (
+      stillFormat: EnrichmentStillFormat
+    ): Promise<PreparedEnrichmentImage | PreparedEnrichmentVideoFrames> => {
+      if (prepared !== null && ("frames" in prepared || prepared.format === stillFormat)) {
+        return prepared;
+      }
+      const abortSignal = abortController.signal;
+      if (metadata.captureKind !== "video") {
+        // A fallback may require a different encoding of the original still.
+        return prepareEnrichmentImage(sourcePath, { format: stillFormat, abortSignal });
+      }
+      const durationSec = metadata.videoDurationSec;
+      if (typeof durationSec !== "number" || !Number.isFinite(durationSec) || durationSec < 0) {
         throw new Error("video capture enrichment requires duration metadata");
       }
-      prepared = await prepareEnrichmentVideoFrames(sourcePath, {
-        durationSec: metadata.videoDurationSec,
+      const video = await prepareEnrichmentVideoFrames(sourcePath, {
+        durationSec,
         sourceWidthPx: metadata.widthPx,
         sourceHeightPx: metadata.heightPx,
-        abortSignal: abortController.signal
+        abortSignal
       });
-      metadata.videoFrameSamples = prepared.frames.map(({ positionPct, timestampSec }) => ({
+      metadata.videoFrameSamples = video.frames.map(({ positionPct, timestampSec }) => ({
         positionPct,
         timestampSec
       }));
-      imagePaths = prepared.frames.map((frame) => frame.path);
-    } else {
-      prepared = await prepareEnrichmentImage(sourcePath, {
-        abortSignal: abortController.signal
-      });
-      imagePaths = [prepared.path];
-    }
-
-    replaceAiRunMediaInputs(params.runId, preparedMediaInputs(prepared));
-
-    log.info("capture enrichment turn starting", {
-      runId: params.runId,
-      captureId,
-      captureKind: params.metadata.captureKind,
-      sourceAppName: params.metadata.sourceAppName,
-      sourceAppBundleId: params.metadata.sourceAppBundleId,
-      triggerSource: params.triggerSource,
-      provider,
-      preparedMedia: preparedMediaShape(prepared),
-      bucketBefore: params.budgetBefore,
-      bucketAfter: params.budgetAfter
-    });
+      return video;
+    };
 
     const runTurn = async (plan: EnrichmentBackendPlan): Promise<CaptureEnrichmentResponse> => {
       const acpAgentId = plan.acpAgentId;
+      let stillFormat: EnrichmentStillFormat = "jpeg";
       abortController.signal.throwIfAborted();
       if (plan.appleFm) {
         const nativeRun = await resolveNativeCaptionRunner();
@@ -1486,8 +1483,33 @@ async function runCaptureEnrichment(params: {
         if (acpClient === null) throw new AcpAgentUnavailableError(acpAgentId);
         client = acpClient;
       } else {
-        client = await params.clientFactory(params.command, params.env);
+        const codexClient = await params.clientFactory(params.command, params.env);
+        client = codexClient;
+        stillFormat = codexClient.stillImageFormat ?? "jpeg";
       }
+      abortController.signal.throwIfAborted();
+      const media = await prepareMedia(stillFormat);
+      // The per-run accounting describes the latest prepared input handed
+      // to a backend. An offline hop may replace it with a new derivative.
+      if (prepared !== media) {
+        prepared = media;
+        scratchMedia.push(media);
+        abortController.signal.throwIfAborted();
+        replaceAiRunMediaInputs(params.runId, preparedMediaInputs(media));
+      }
+      const imagePaths = "frames" in media ? media.frames.map((frame) => frame.path) : [media.path];
+      log.info("capture enrichment turn starting", {
+        runId: params.runId,
+        captureId,
+        captureKind: metadata.captureKind,
+        sourceAppName: metadata.sourceAppName,
+        sourceAppBundleId: metadata.sourceAppBundleId,
+        triggerSource: params.triggerSource,
+        provider,
+        preparedMedia: preparedMediaShape(prepared),
+        bucketBefore: params.budgetBefore,
+        bucketAfter: params.budgetAfter
+      });
       // Bound the turn: a stalled agent (the ACP path forwards an abort
       // signal but enforces no deadline) would otherwise leave the run in
       // `running` forever. On timeout we abort the controller (best-effort
@@ -1545,8 +1567,8 @@ async function runCaptureEnrichment(params: {
         // re-run what failed once the primary answers again.
         health.noteUnreachable(active.provider);
         if (resolveFallback === undefined) throw primaryError;
-        // Nothing answered at the primary: move the SAME run (prepared media
-        // and all) to the fallback, once. Warned once per outage, then quiet
+        // Nothing answered at the primary: move the same run to the
+        // fallback, once. Warned once per outage, then quiet
         // until the primary answers again. Logged before resolving, so the
         // primary's failure is on record even if resolution fails.
         const details = {
@@ -1721,12 +1743,14 @@ async function runCaptureEnrichment(params: {
   } finally {
     activeRuns.delete(params.runId);
     params.ctx.signal.removeEventListener("abort", abortFromContext);
-    await prepared?.cleanup().catch((error: unknown) => {
-      log.warn("enrichment image cleanup failed", {
-        runId: params.runId,
-        message: error instanceof Error ? error.message : String(error)
-      });
-    });
+    await Promise.all(scratchMedia.map((media) =>
+      media.cleanup().catch((error: unknown) => {
+        log.warn("enrichment image cleanup failed", {
+          runId: params.runId,
+          message: error instanceof Error ? error.message : String(error)
+        });
+      })
+    ));
     // The default Codex enrichment wrapper is processless; the app-wide Codex
     // owner closes at app shutdown. Test-provided clients may still need close.
     await releaseClient(active);

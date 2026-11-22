@@ -1,7 +1,8 @@
-import { access, mkdir, rm, stat } from "node:fs/promises";
+import { access, mkdir, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
+import fc from "fast-check";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getVideoFrameSamples, prepareEnrichmentImage } from "../enrichment-image";
 
@@ -100,7 +101,39 @@ describe("prepareEnrichmentImage", () => {
     await prepared.cleanup();
   });
 
-  it("cleans up if the derivative exceeds the byte cap", async () => {
+  it("encodes an opaque, metadata-free WebP that fits the cap at every tested orientation", async () => {
+    await fc.assert(fc.asyncProperty(
+      fc.integer({ min: 64, max: 1800 }),
+      fc.integer({ min: 64, max: 1800 }),
+      fc.constantFrom(1, 6, 8),
+      async (width, height, orientation) => {
+        const sourcePath = join(tempRoot, "oriented.jpg");
+        await sharp({ create: { width, height, channels: 3, background: "#102436" } })
+          .jpeg().withMetadata({ orientation }).toFile(sourcePath);
+        const prepared = await prepareEnrichmentImage(sourcePath, { format: "webp", tempRoot });
+        try {
+          const encoded = await sharp(prepared.path).metadata();
+          const longest = Math.max(width, height);
+          expect(encoded).toMatchObject({ format: "webp", hasAlpha: false });
+          expect(encoded.exif).toBeUndefined();
+          expect(encoded.icc).toBeUndefined();
+          expect(Math.max(encoded.width, encoded.height)).toBe(Math.min(longest, 1024));
+          const scale = Math.min(1, 1024 / longest);
+          const orientedWidth = orientation === 1 ? width : height;
+          const orientedHeight = orientation === 1 ? height : width;
+          expect(Math.abs(encoded.width - Math.round(orientedWidth * scale))).toBeLessThanOrEqual(1);
+          expect(Math.abs(encoded.height - Math.round(orientedHeight * scale))).toBeLessThanOrEqual(1);
+          expect(prepared.byteSize).toBe((await stat(prepared.path)).size);
+          expect(prepared.byteSize).toBeLessThanOrEqual(1_000_000);
+        } finally {
+          await prepared.cleanup();
+        }
+      }
+    ), { numRuns: 24 });
+    expect(await readdir(tempRoot)).toEqual(["oriented.jpg"]);
+  });
+
+  it.each(["jpeg", "webp"] as const)("cleans up if %s exceeds the byte cap", async (format) => {
     const sourcePath = join(tempRoot, "source.png");
     await sharp({
       create: {
@@ -115,9 +148,11 @@ describe("prepareEnrichmentImage", () => {
 
     await expect(
       prepareEnrichmentImage(sourcePath, {
+        format,
         maxBytes: 12,
         tempRoot
       })
     ).rejects.toThrow(/byte limit/);
+    expect(await readdir(tempRoot)).toEqual(["source.png"]);
   });
 });

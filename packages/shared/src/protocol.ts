@@ -4250,11 +4250,14 @@ export type AiUsageCostEstimate =
 
 export type AiRunMediaTransform =
   | "prepared-jpeg"
+  | "prepared-webp"
   | "bare-image"
   | "video-frame"
   | "rendered-composite"
   | "unknown";
 
+/** Media supplied by PwrSnap to the backend. For enrichment, the sent
+ *  fields describe the local derivative before backend request encoding. */
 export type AiRunMediaInput = {
   id: string;
   aiRunId: string;

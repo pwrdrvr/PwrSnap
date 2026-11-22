@@ -18,6 +18,7 @@
 import type { AiUsageTokenBreakdown, EnrichmentResult } from "@pwrsnap/shared";
 import { resolveCodexThreadConfig } from "./codex-thread-config";
 import { runCodexOneShotFromPool } from "./codex-agent-pool";
+import type { EnrichmentStillFormat } from "./enrichment-image";
 import {
   defaultEnrichmentWorkspaceDir,
   type EnrichmentRunDiagnostics
@@ -105,6 +106,7 @@ function toBreakdown(
 }
 
 export class CaptureEnrichmentClient {
+  readonly stillImageFormat: EnrichmentStillFormat;
   private readonly command: string;
   private readonly env?: NodeJS.ProcessEnv;
   private readonly workspaceDir: string;
@@ -122,6 +124,11 @@ export class CaptureEnrichmentClient {
     // Pick the config overlay shape from the store-published discovery result.
     // This must never run a second `--version` probe on a capture path.
     this.threadConfig = resolveCodexThreadConfig(options.codexVersion);
+    // The released 0.x app-server preserves bounded localImage WebP bytes on
+    // the Responses request (verified on 0.144.0, 0.169.0 and 0.171.0).
+    // Use JPEG for older versions, prereleases and unrecognized version strings.
+    const stableMinor = /^0\.(0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.exec(options.codexVersion ?? "")?.[1];
+    this.stillImageFormat = stableMinor !== undefined && Number(stableMinor) >= 144 ? "webp" : "jpeg";
   }
 
   async enrichCapture(request: CaptureEnrichmentRequest): Promise<CaptureEnrichmentResponse> {

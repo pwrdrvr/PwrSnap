@@ -14,6 +14,8 @@ export const DEFAULT_ENRICHMENT_IMAGE_MAX_EDGE_PX = 1024;
 export const DEFAULT_ENRICHMENT_IMAGE_QUALITY = 75;
 export const DEFAULT_ENRICHMENT_IMAGE_MAX_BYTES = 1_000_000;
 
+export type EnrichmentStillFormat = "jpeg" | "webp";
+
 export type PreparedEnrichmentImage = {
   path: string;
   sourceWidth: number | null;
@@ -22,8 +24,8 @@ export type PreparedEnrichmentImage = {
   width: number;
   height: number;
   byteSize: number;
-  sentMimeType: "image/jpeg";
-  format: "jpeg";
+  sentMimeType: `image/${EnrichmentStillFormat}`;
+  format: EnrichmentStillFormat;
   encoder: string;
   quality: number;
   maxEdgePx: number;
@@ -60,21 +62,23 @@ export const VIDEO_ENRICHMENT_SAMPLE_PERCENTS = [15, 50, 85] as const;
 
 export async function prepareEnrichmentImage(
   sourcePath: string,
-  options: PrepareEnrichmentImageOptions = {}
+  options: PrepareEnrichmentImageOptions & { format?: EnrichmentStillFormat } = {}
 ): Promise<PreparedEnrichmentImage> {
   throwIfAborted(options.abortSignal);
   const maxEdgePx = options.maxEdgePx ?? DEFAULT_ENRICHMENT_IMAGE_MAX_EDGE_PX;
   const quality = options.quality ?? DEFAULT_ENRICHMENT_IMAGE_QUALITY;
   const maxBytes = options.maxBytes ?? DEFAULT_ENRICHMENT_IMAGE_MAX_BYTES;
+  const format = options.format ?? "jpeg";
   const tempParent = options.tempRoot ?? tmpdir();
 
   await mkdir(tempParent, { recursive: true });
   const workDir = await mkdtemp(join(tempParent, "pwrsnap-ai-"));
-  const outputPath = join(workDir, "capture.jpg");
+  const outputPath = join(workDir, format === "webp" ? "capture.webp" : "capture.jpg");
 
   try {
     const image = sharp(sourcePath, { limitInputPixels: 80_000_000 }).rotate();
     const metadata = await image.metadata();
+    throwIfAborted(options.abortSignal);
     const width = metadata.width ?? options.sourceWidthPx ?? maxEdgePx;
     const height = metadata.height ?? options.sourceHeightPx ?? maxEdgePx;
     const longestEdge = Math.max(width, height);
@@ -88,14 +92,19 @@ export async function prepareEnrichmentImage(
           }
         : undefined;
 
-    await image
-      .resize(resize)
-      .flatten({ background: "#ffffff" })
-      .jpeg({ quality, mozjpeg: true })
-      .toFile(outputPath);
+    const raster = image
+      .resize(format === "webp"
+        ? { width: maxEdgePx, height: maxEdgePx, fit: "inside", withoutEnlargement: true }
+        : resize)
+      .flatten({ background: "#ffffff" });
+    const encoded = format === "webp"
+      ? raster.webp({ quality, effort: 4 })
+      : raster.jpeg({ quality, mozjpeg: true });
+    await encoded.toFile(outputPath);
 
     const outputMetadata = await sharp(outputPath).metadata();
     const outputStat = await stat(outputPath);
+    throwIfAborted(options.abortSignal);
     if (outputStat.size > maxBytes) {
       throw new Error(
         `prepared enrichment image exceeds ${maxBytes} byte limit (${outputStat.size})`
@@ -110,9 +119,9 @@ export async function prepareEnrichmentImage(
       width: outputMetadata.width ?? 0,
       height: outputMetadata.height ?? 0,
       byteSize: outputStat.size,
-      sentMimeType: "image/jpeg",
-      format: "jpeg",
-      encoder: "sharp mozjpeg",
+      sentMimeType: `image/${format}`,
+      format,
+      encoder: format === "webp" ? "sharp libwebp" : "sharp mozjpeg",
       quality,
       maxEdgePx,
       maxBytes,

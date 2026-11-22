@@ -14,6 +14,7 @@ export type HotCpuProfileSample = {
    *  ~43% during the 2026-08-20 incident) — kept only for comparison;
    *  `cpuPercent` (cumulative-delta) is the reading that matters. */
   electronCpuPercent?: number;
+  measurement?: "baseline" | "cumulative" | "electron";
   cumulativeCpuDeltaSeconds?: number;
   cumulativeCpuSeconds?: number;
   wallDeltaSeconds?: number;
@@ -62,6 +63,7 @@ type HotCpuProfileSessionManifest = {
     startDelayMs: number;
     triggerMode: string;
     intervalMs: number;
+    rules?: NonNullable<Extract<HotCpuProfileConfig, { enabled: true }>["rules"]>;
     thresholdPercent: number;
     slowburnThresholdPercent: number;
     consecutiveSamples: number;
@@ -96,7 +98,13 @@ async function writeManifest(
   manifestPath: string,
   manifest: HotCpuProfileSessionManifest
 ): Promise<void> {
-  await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  const pending = `${manifestPath}.pending`;
+  try {
+    await fs.writeFile(pending, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    await fs.rename(pending, manifestPath);
+  } finally {
+    await fs.rm(pending, { force: true });
+  }
 }
 
 export async function createHotCpuProfileSession(options: {
@@ -114,6 +122,8 @@ export async function createHotCpuProfileSession(options: {
   const samplesPath = path.join(directoryPath, "samples.ndjson");
   const eventsPath = path.join(directoryPath, "events.ndjson");
   const artifacts: string[] = [];
+  let artifactWrites = Promise.resolve();
+  let eventWrites = Promise.resolve();
 
   const manifest: HotCpuProfileSessionManifest = {
     id: sessionId,
@@ -126,6 +136,7 @@ export async function createHotCpuProfileSession(options: {
       startDelayMs: options.config.startDelayMs,
       triggerMode: options.config.triggerMode,
       intervalMs: options.config.intervalMs,
+      ...(options.config.rules ? { rules: options.config.rules } : {}),
       thresholdPercent: options.config.thresholdPercent,
       slowburnThresholdPercent: options.config.slowburnThresholdPercent,
       consecutiveSamples: options.config.consecutiveSamples,
@@ -140,7 +151,7 @@ export async function createHotCpuProfileSession(options: {
 
   try {
     await fs.mkdir(options.config.outputRoot, { recursive: true });
-    await fs.mkdir(directoryPath);
+    await fs.mkdir(directoryPath, { mode: 0o700 });
     await writeManifest(manifestPath, manifest);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
@@ -156,12 +167,23 @@ export async function createHotCpuProfileSession(options: {
     targetPath: string,
     record: HotCpuProfileSample | HotCpuProfileEvent
   ): Promise<void> {
-    await fs.appendFile(targetPath, serializeNdjsonRecord(record), "utf8");
+    await fs.appendFile(targetPath, serializeNdjsonRecord(record), { encoding: "utf8", mode: 0o600 });
   }
 
-  async function registerArtifact(filename: string): Promise<void> {
-    artifacts.push(filename);
-    await writeManifest(manifestPath, manifest);
+  function appendEvent(event: HotCpuProfileEvent): Promise<void> {
+    const write = eventWrites.then(() => appendRecord(eventsPath, event));
+    eventWrites = write.catch(() => undefined);
+    return write;
+  }
+
+  function registerArtifact(filename: string): Promise<void> {
+    const write = artifactWrites.then(async () => {
+      if (artifacts.includes(filename)) return;
+      await writeManifest(manifestPath, { ...manifest, artifacts: [...artifacts, filename] });
+      artifacts.push(filename);
+    });
+    artifactWrites = write.catch(() => undefined);
+    return write;
   }
 
   return {
@@ -174,7 +196,7 @@ export async function createHotCpuProfileSession(options: {
       eventsPath,
       target: options.target,
       appendSample: async (sample) => appendRecord(samplesPath, sample),
-      appendEvent: async (event) => appendRecord(eventsPath, event),
+      appendEvent,
       createProfilePath: (index) =>
         path.join(
           directoryPath,

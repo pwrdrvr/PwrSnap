@@ -92,3 +92,51 @@ test("quit joins an already stopping trace through its manifest write", async ()
   expect(mocks.stopRecording).toHaveBeenCalledOnce();
   expect(mocks.appendEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "trace-stop" }));
 });
+
+test.each([
+  { reason: "sigusr2", stayArmed: true },
+  { reason: "autostart", stayArmed: true },
+  { reason: "sigusr2", stayArmed: false },
+  { reason: "autostart", stayArmed: false }
+])("$reason takes priority and only rearms when rolling tracing stays enabled ($stayArmed)", async ({ reason, stayArmed }) => {
+  const { ChromiumTrace } = await import("../chromium-trace");
+  const calls: string[] = [];
+  const flush = deferred();
+  const rollingStart = vi.fn(async () => { calls.push("rolling start"); });
+  const rollingStop = vi.fn(async (raw: string) => {
+    calls.push("rolling stop");
+    await flush.promise;
+    return raw;
+  });
+  const rolling = new ChromiumTrace(() => ({
+    startRecording: rollingStart, stopRecording: rollingStop
+  }), vi.fn(), { workerModule: new URL("../chromium-trace-worker.ts", import.meta.url) });
+  mocks.startRecording.mockImplementation(async () => { calls.push("explicit start"); });
+  mocks.stopRecording.mockImplementation(async () => { calls.push("explicit stop"); });
+  const r = await recorder(reason === "autostart" ? "5" : "0");
+  try {
+    await rolling.setArmed(true);
+    if (reason === "sigusr2") process.emit("SIGUSR2");
+    await vi.advanceTimersByTimeAsync(5);
+    expect(calls).toEqual(["rolling start", "rolling stop"]);
+    flush.resolve();
+    await r.startContentTrace("duplicate");
+    expect(calls).toEqual(["rolling start", "rolling stop", "explicit start"]);
+    expect(mocks.appendEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: "trace-start", detail: expect.objectContaining({ reason })
+    }));
+    if (!stayArmed) await rolling.setArmed(false);
+    await r.stopContentTrace("test");
+    const completed = ["rolling start", "rolling stop", "explicit start", "explicit stop"];
+    if (stayArmed) {
+      await vi.waitFor(() => expect(calls).toEqual([...completed, "rolling start"]));
+    } else {
+      expect(calls).toEqual(completed);
+      expect(rolling.hasPendingWork).toBe(false);
+    }
+  } finally {
+    flush.resolve();
+    await r.shutdownContentTrace();
+    await rolling.shutdown(100);
+  }
+});

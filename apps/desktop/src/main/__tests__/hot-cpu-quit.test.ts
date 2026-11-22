@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   createSession: vi.fn(),
   start: vi.fn(),
   stop: vi.fn(),
+  updateRules: vi.fn(),
   config: vi.fn()
 }));
 vi.mock("electron", () => ({ app: { getVersion: () => "1.0.0" } }));
@@ -15,12 +16,13 @@ vi.mock("../settings/desktop-settings-store", () => ({
   getDesktopSettingsStore: () => ({ read: mocks.readSettings })
 }));
 vi.mock("../diagnostics/hot-cpu-profile-paths", () => ({ hotCpuDiagnosticsRoot: () => "/unused" }));
-vi.mock("../diagnostics/hot-cpu-profile-config", () => ({ resolveHotCpuProfileConfig: mocks.config }));
+vi.mock("../diagnostics/hot-cpu-profile-config", () => ({ resolveHotCpuProfileConfig: mocks.config, hotCpuChromiumTraceEnabled: () => false }));
 vi.mock("../diagnostics/hot-cpu-profile-session", () => ({ createHotCpuProfileSession: mocks.createSession }));
 vi.mock("../diagnostics/hot-cpu-profiler", () => ({
   HotCpuProfiler: class {
     start = mocks.start;
     stop = mocks.stop;
+    updateRules = mocks.updateRules;
   }
 }));
 
@@ -117,4 +119,19 @@ test("a monitor with profiling off is not pending quit work; a running profiler 
   w.syncHotCpuProfilersFromSettings("settings-changed");
   await vi.waitFor(() => expect(mocks.start).toHaveBeenCalledOnce());
   expect(w.hasActiveHotCpuProfilers()).toBe(true);
+});
+
+
+test("rule edits reconfigure the existing profiler without replacing its session", async () => {
+  const w = await import("../window");
+  w.installMainProcessHotCpuMonitor();
+  await vi.waitFor(() => expect(mocks.start).toHaveBeenCalledOnce());
+  const newConfig = { enabled: true, startDelayMs: 0, intervalMs: 1000, triggerMode: "spike" };
+  mocks.config.mockReturnValue(newConfig);
+  w.syncHotCpuProfilersFromSettings("settings-changed");
+  await vi.waitFor(() => expect(mocks.updateRules).toHaveBeenCalledWith(newConfig));
+  expect(mocks.start).toHaveBeenCalledOnce();
+  expect(mocks.stop).not.toHaveBeenCalled();
+  expect(mocks.createSession).toHaveBeenCalledOnce();
+  await w.stopHotCpuProfilers();
 });

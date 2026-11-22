@@ -8,12 +8,12 @@
 
 import { useEffect, useState, type ReactElement } from "react";
 import type {
-  HotCpuProfileStartDelayMs,
-  HotCpuProfileTriggerMode
+  HotCpuProfileStartDelayMs
 } from "@pwrsnap/shared";
-import { desktopFileManagerName } from "@pwrsnap/shared";
+import { desktopFileManagerName, hotCpuRulesCadenceMs, migrateHotCpuCaptureRules } from "@pwrsnap/shared";
 import { dispatch } from "../../../lib/pwrsnap";
 import { Card, Row, Switch } from "../components";
+import { HotCpuCaptureRulesRow } from "./HotCpuCaptureRules";
 import { useSettingsContext } from "../SettingsContext";
 
 const START_DELAY_OPTIONS: readonly {
@@ -24,16 +24,6 @@ const START_DELAY_OPTIONS: readonly {
   { label: "Immediate", meta: "Arm now", value: 0 },
   { label: "5 seconds", meta: "Short setup", value: 5_000 },
   { label: "10 seconds", meta: "Long setup", value: 10_000 }
-];
-
-const TRIGGER_MODE_OPTIONS: readonly {
-  label: string;
-  meta: string;
-  value: HotCpuProfileTriggerMode;
-}[] = [
-  { label: "Spike", meta: "> 50%", value: "spike" },
-  { label: "Sustained", meta: "2x > 50%", value: "sustained" },
-  { label: "Slowburn", meta: "2x > 15%", value: "slowburn" }
 ];
 
 const HEAP_SNAPSHOT_LIMIT_OPTIONS: readonly {
@@ -89,13 +79,15 @@ export function DeveloperPage(): ReactElement {
   const { settings, patch } = useSettingsContext();
   const ready = settings !== null;
   const developerMode = settings?.general.developerMode ?? false;
-  const hotCpuEnabled = settings?.general.hotCpuProfilingEnabled ?? false;
+  const environment = settings?.hotCpuProfilingEnvironment;
+  const captureHeapSnapshot = settings?.general.hotCpuProfilingCaptureHeapSnapshot ?? false;
+  const hotCpuEnabled = environment?.armed || settings?.general.hotCpuProfilingEnabled || captureHeapSnapshot;
   const startDelayMs = settings?.general.hotCpuProfilingStartDelayMs ?? 0;
-  const triggerMode = settings?.general.hotCpuProfilingTriggerMode ?? "sustained";
-  const slowburnThreshold =
-    settings?.general.hotCpuProfilingSlowburnThresholdPercent ?? 15;
-  const captureHeapSnapshot =
-    settings?.general.hotCpuProfilingCaptureHeapSnapshot ?? false;
+  const rules = settings?.general.hotCpuProfilingRules ?? migrateHotCpuCaptureRules(
+    settings?.general.hotCpuProfilingTriggerMode, settings?.general.hotCpuProfilingSlowburnThresholdPercent
+  );
+  const cadenceMs = environment?.rules?.cadenceMs ?? hotCpuRulesCadenceMs(rules);
+  const captureChromiumTrace = environment?.chromiumTrace ?? settings?.general.hotCpuProfilingCaptureChromiumTrace ?? false;
   const heapSnapshotLimit = settings?.general.hotCpuProfilingHeapSnapshotLimit ?? 2;
   const [countdownEndsAt, setCountdownEndsAt] = useState<number | null>(null);
   const [countdownRemainingMs, setCountdownRemainingMs] = useState(0);
@@ -133,7 +125,7 @@ export function DeveloperPage(): ReactElement {
   const stopHotCpuCapture = async (): Promise<void> => {
     setCountdownEndsAt(null);
     setCountdownRemainingMs(0);
-    await patch({ general: { hotCpuProfilingEnabled: false } });
+    await patch({ general: { hotCpuProfilingEnabled: false, hotCpuProfilingCaptureHeapSnapshot: false } });
   };
 
   const revealDiagnosticsRoot = async (): Promise<void> => {
@@ -184,7 +176,7 @@ export function DeveloperPage(): ReactElement {
       <Card eyebrow="DIAGNOSTICS" title="Hot CPU profiling">
         <Row
           label="CPU profile capture"
-          sub="Arms the Library renderer and main-process monitors; writes a DevTools .cpuprofile when either stays hot, with per-process CPU (incl. GPU) in the session samples."
+          sub="Arms the Library renderer and main-process monitors; writes a DevTools .cpuprofile when a capture rule matches, with per-process CPU (incl. GPU) in the session samples."
           tag={hotCpuEnabled ? "monitoring" : "not armed"}
         >
           <div className="pss__update-channel">
@@ -192,7 +184,7 @@ export function DeveloperPage(): ReactElement {
               <button
                 className="pss__top-btn"
                 type="button"
-                disabled={!ready}
+                disabled={!ready || environment?.armed === true}
                 onClick={() => {
                   void stopHotCpuCapture();
                 }}
@@ -215,7 +207,7 @@ export function DeveloperPage(): ReactElement {
               {countdownActive
                 ? `Starting in ${countdownSeconds}s`
                 : hotCpuEnabled
-                  ? "Monitoring"
+                  ? `${environment?.armed ? "Armed by environment" : "Monitoring"} · samples every ${cadenceMs / 1000} s`
                   : "Artifacts save under the diagnostics folder in app data."}
             </span>
           </div>
@@ -237,20 +229,22 @@ export function DeveloperPage(): ReactElement {
           />
         </Row>
 
+        <HotCpuCaptureRulesRow rules={rules} environment={environment?.rules} disabled={!ready}
+          onChange={(next) => patch({ general: { hotCpuProfilingRules: next } })} />
+
         <Row
-          label="CPU profile trigger"
-          sub={`Slowburn uses ${slowburnThreshold}% across the same consecutive-sample window.`}
-          tag={triggerMode}
+          label="Chromium trace"
+          sub="Keep a rolling trace of renderer layout, paint, and compositor events while capture is armed. Saves a filtered trace beside the renderer profile when a trace is available."
+          tag="trace"
         >
-          <SegmentButtons
-            ariaLabel="CPU profile trigger"
-            disabled={!ready}
-            options={TRIGGER_MODE_OPTIONS}
-            value={triggerMode}
-            onChange={(next) => {
-              void patch({ general: { hotCpuProfilingTriggerMode: next } });
-            }}
-          />
+          <Switch on={captureChromiumTrace} label="Chromium trace"
+            disabled={!ready || environment?.chromiumTrace !== undefined}
+            onChange={(next) => { void patch({ general: { hotCpuProfilingCaptureChromiumTrace: next } }); }} />
+          <span className="pss__update-note">
+            {environment?.chromiumTrace !== undefined
+              ? "Set by PWRSNAP_HOT_CPU_PROFILING_CHROMIUM_TRACE."
+              : "Off by default. Recording adds overhead, so turn it off after investigating."}
+          </span>
         </Row>
 
         <Row

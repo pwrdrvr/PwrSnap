@@ -3653,3 +3653,54 @@ a.pss__top-btn[aria-disabled="true"]:hover {
 /* Got it is first in the DOM so it takes the dialog's initial focus;
    it still sits on the right, where a dialog's primary action goes. */
 .pss__chatgpt-welcome-footer { flex-direction: row-reverse; justify-content: flex-start; }
+
+.pss__capture-rules {
+  display: grid;
+  gap: 9px;
+  color: var(--text-secondary);
+  font: 400 12px/1.45 var(--font-sans);
+}
+.pss__capture-rule + .pss__capture-rule {
+  border-top: 1px dashed var(--border-subtle);
+  padding-top: 10px;
+}
+.pss__rule-heading,
+.pss__rule-values,
+.pss__rule-values label,
+.pss__rule-heading > label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+.pss__rule-heading { gap: 12px; }
+.pss__rule-heading > label {
+  min-width: 98px;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.pss__rule-heading input { margin: 0; accent-color: var(--accent); }
+.pss__rule-values { margin: 7px 0 0 20px; color: var(--text-muted); }
+.pss__rule-values input,
+.pss__rule-values select {
+  padding: 4px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font: inherit;
+  height: 28px;
+}
+.pss__rule-values input { width: 61px; font-family: var(--font-mono); }
+.pss__rule-values input:disabled,
+.pss__rule-values select:disabled { opacity: 0.5; }
+.pss__rule-values :focus-visible,
+.pss__rule-heading input:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.pss__rule-unit { font-family: var(--font-mono); }
+.pss__rule-summary,
+.pss__rule-error,
+.pss__rule-warning { margin: 0; overflow-wrap: anywhere; }
+.pss__rule-summary { margin-top: 4px; }
+.pss__rule-status:empty { display: none; }
+.pss__rule-error { color: var(--text-danger, var(--accent)); margin-top: 4px; }
+.pss__rule-warning { color: var(--accent); }

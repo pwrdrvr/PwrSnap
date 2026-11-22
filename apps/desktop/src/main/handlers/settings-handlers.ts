@@ -1,3 +1,4 @@
+import { hotCpuSettingsWithEnvironment } from "../diagnostics/hot-cpu-profile-config";
 import { mcpExecutablePath, quoteMcpExecutable } from "../ai/mcp/mcp-executable";
 import { registerCustomModelHandlers } from "./custom-model-handlers";
 import { registerAppleFmHandlers } from "./apple-fm-handlers";
@@ -196,7 +197,7 @@ export async function broadcastSettingsChanged(
   try {
     const settings = overrides?.settings ?? (await service.read());
     const secretMap = await secrets.getAllStatus();
-    payload = { settings, secrets: secretMap };
+    payload = { settings: hotCpuSettingsWithEnvironment(settings), secrets: secretMap };
   } catch (cause) {
     log.warn("settings-handlers: failed to assemble broadcast payload", {
       message: cause instanceof Error ? cause.message : String(cause)
@@ -398,7 +399,7 @@ export function registerSettingsDataHandlers(options: {
     const { service } = ensureServices();
     try {
       const settings = await service.read();
-      return ok(settings);
+      return ok(hotCpuSettingsWithEnvironment(settings));
     } catch (cause) {
       return err(toSettingsError("read_failed", "failed to read settings", cause));
     }
@@ -516,7 +517,7 @@ export function registerSettingsDataHandlers(options: {
       );
     }
     await broadcastSettingsChanged(service, secrets, { settings: merged });
-    return ok(merged);
+    return ok(hotCpuSettingsWithEnvironment(merged));
   });
 
   bus.register("settings:refreshCodexDiscovery", async (req) => {

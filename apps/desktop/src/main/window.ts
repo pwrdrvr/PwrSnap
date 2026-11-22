@@ -1,11 +1,12 @@
 import {
   app,
   BrowserWindow,
+  contentTracing,
   screen,
   type BrowserWindowConstructorOptions,
   type Rectangle
 } from "electron";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   APP_DOCUMENT_KINDS,
   APP_DOCUMENT_TITLES,
@@ -19,9 +20,10 @@ import {
 import { AppWindowFocusOrder, type ActivateWindowState } from "./app-window-focus-order";
 import { bus } from "./command-bus";
 import { installDevelopmentDockIcon, showDockWithDevelopmentIcon } from "./development-dock-icon";
-import { createHotCpuProfileSession } from "./diagnostics/hot-cpu-profile-session";
+import { ChromiumTrace } from "./diagnostics/chromium-trace";
+import { createHotCpuProfileSession, type HotCpuProfileSession } from "./diagnostics/hot-cpu-profile-session";
 import { hotCpuDiagnosticsRoot } from "./diagnostics/hot-cpu-profile-paths";
-import { resolveHotCpuProfileConfig } from "./diagnostics/hot-cpu-profile-config";
+import { hotCpuChromiumTraceEnabled, resolveHotCpuProfileConfig } from "./diagnostics/hot-cpu-profile-config";
 import { HotCpuProfiler, type HotCpuTarget } from "./diagnostics/hot-cpu-profiler";
 import { createMainProcessHotCpuTarget } from "./diagnostics/main-process-hot-cpu-target";
 import { broadcastRendererEventToLocalWindows } from "./events";
@@ -33,7 +35,7 @@ import {
 } from "./settings/startup-appearance";
 import { linuxSquareCorners } from "./linux-window-corners";
 import { getMainLogFilePath, getMainLogger } from "./log";
-import { attachRendererStartupProfiling } from "./startup-profiler";
+import { attachRendererStartupProfiling, isMainProcessStartupProfileActive } from "./startup-profiler";
 import { getRuntimeProcessRole } from "./process-role";
 import { activateForUserSurface } from "./process-split/activate-user-surface";
 import { signalLibraryWindowReady } from "./process-split/agent-bridge";
@@ -59,6 +61,39 @@ const hotCpuLog = getMainLogger("pwrsnap:hot-cpu");
 const hotCpuProfilerSyncHandlers = new Map<number, (reason: string) => void>();
 const hotCpuProfilerSlots = new Set<HotCpuProfilerSlot>();
 let hotCpuShuttingDown = false;
+const chromiumTrace = new ChromiumTrace(() => contentTracing, (message) => hotCpuLog.warn(message), {
+  workerModule: join(import.meta.dirname, "chromium-trace-worker.js")
+});
+let chromiumTraceAllowed = true;
+const traceEligibleProfilers = new Set<HotCpuProfiler>();
+const tracePublications = new Set<Promise<void>>();
+
+function updateChromiumTrace(): Promise<void> {
+  return chromiumTrace.setArmed(!hotCpuShuttingDown && chromiumTraceAllowed && traceEligibleProfilers.size > 0);
+}
+
+function captureChromiumTrace(
+  session: HotCpuProfileSession, profilePath: string, triggerMonotonicMs: number,
+  capturedAt: string, profileDurationMs: number
+): (written: boolean) => void {
+  const filename = basename(profilePath, ".cpuprofile") + ".trace.json";
+  let settle!: (written: boolean) => void;
+  const profile = new Promise<boolean>((resolve) => { settle = resolve; });
+  const publication = chromiumTrace.capture(join(session.directoryPath, filename),
+    triggerMonotonicMs, profile, profileDurationMs
+  ).then(async (result) => {
+    if (result.status === "skipped" && result.reason === "canceled") return;
+    if (result.status === "written") await session.registerArtifact(filename);
+    await session.appendEvent({
+      capturedAt: new Date().toISOString(),
+      type: `chromium-trace-${result.status}`,
+      detail: { filename, triggerAt: capturedAt, ...result }
+    });
+  }).catch(() => hotCpuLog.warn("Could not register Chromium trace in the hot CPU session"));
+  tracePublications.add(publication);
+  void publication.then(() => tracePublications.delete(publication));
+  return settle;
+}
 
 /**
  * Per-platform window chrome for the main + secondary app windows.
@@ -435,7 +470,13 @@ async function readHotCpuSettings(): Promise<Settings> {
   return getDesktopSettingsStore().read();
 }
 
-export function syncHotCpuProfilersFromSettings(reason: string): void {
+export function syncHotCpuProfilersFromSettings(reason: string, settings?: Settings): void {
+  if (settings && hotCpuChromiumTraceEnabled()) {
+    chromiumTraceAllowed = settings.general.hotCpuProfilingEnabled ||
+      settings.general.hotCpuProfilingCaptureHeapSnapshot || resolveHotCpuProfileConfig().enabled;
+    void updateChromiumTrace();
+    if (!chromiumTraceAllowed) chromiumTrace.cancelCapture();
+  }
   for (const sync of hotCpuProfilerSyncHandlers.values()) {
     sync(reason);
   }
@@ -460,13 +501,18 @@ type HotCpuProfilerSlot = {
  * role, profiling enabled or not.
  */
 export function hasActiveHotCpuProfilers(): boolean {
-  return [...hotCpuProfilerSlots].some((slot) => slot.isActive());
+  return chromiumTrace.hasPendingWork || tracePublications.size > 0 ||
+    [...hotCpuProfilerSlots].some((slot) => slot.isActive());
 }
 
 /** Stop main and renderer captures before their debugger targets are destroyed. */
 export async function stopHotCpuProfilers(): Promise<void> {
   hotCpuShuttingDown = true;
-  await Promise.all([...hotCpuProfilerSlots].map((slot) => slot.shutdown()));
+  await Promise.all([
+    chromiumTrace.shutdown(8_500),
+    ...[...hotCpuProfilerSlots].map((slot) => slot.shutdown())
+  ]);
+  await Promise.all(tracePublications);
 }
 
 function hotCpuConfigKey(hotCpuConfig: EnabledHotCpuConfig): string {
@@ -519,9 +565,19 @@ async function createHotCpuProfilerForTarget(options: {
     sessionDirectory: created.session.directoryPath
   });
 
-  return new HotCpuProfiler({
+  const captureTrace = options.target === "renderer" && hotCpuChromiumTraceEnabled();
+  const profiler = new HotCpuProfiler({
     config: options.config,
     getAppMetrics: () => app.getAppMetrics(),
+    ...(captureTrace ? {
+      onEligibilityChanged: () => {
+        if (profiler.canCaptureAnotherProfile()) traceEligibleProfilers.add(profiler);
+        else traceEligibleProfilers.delete(profiler);
+        return updateChromiumTrace();
+      },
+      onProfileTriggered: (profilePath, triggerMonotonicMs, capturedAt) =>
+        captureChromiumTrace(created.session, profilePath, triggerMonotonicMs, capturedAt, options.config.profileDurationMs)
+    } : {}),
     onHeapSnapshotLimitReached: async () => {
       await bus.dispatch(
         "settings:write",
@@ -537,6 +593,7 @@ async function createHotCpuProfilerForTarget(options: {
     session: created.session,
     target: options.hotCpuTarget
   });
+  return profiler;
 }
 
 /** Settings-synced lifecycle for one profiler target: serialized syncs,
@@ -550,6 +607,7 @@ function createHotCpuProfilerSlot(options: {
 }): HotCpuProfilerSlot {
   let configKey: string | null = null;
   let profilerPromise: Promise<HotCpuProfiler | null> | null = null;
+  let startedProfiler: HotCpuProfiler | null = null;
   let generation = 0;
   let syncQueue: Promise<void> = Promise.resolve();
   const stopping = new Set<Promise<void>>();
@@ -559,6 +617,7 @@ function createHotCpuProfilerSlot(options: {
     const pending = profilerPromise;
     configKey = null;
     profilerPromise = null;
+    startedProfiler = null;
     if (pending === null) return;
 
     try {
@@ -611,7 +670,8 @@ function createHotCpuProfilerSlot(options: {
         await stop(reason);
       }
 
-      if (hotCpuShuttingDown) return;
+      await Promise.all(stopping);
+      if (hotCpuShuttingDown || !options.isReady()) return;
 
       const startGeneration = generation;
       configKey = nextConfigKey;
@@ -629,6 +689,7 @@ function createHotCpuProfilerSlot(options: {
       }
 
       await profiler.start();
+      if (startGeneration === generation) startedProfiler = profiler;
     } catch (error) {
       hotCpuLog.warn("failed to sync hot CPU diagnostics", {
         reason,
@@ -652,7 +713,8 @@ function createHotCpuProfilerSlot(options: {
     shutdown: async (): Promise<void> => {
       await Promise.all([stop("app-quit"), syncQueue, ...stopping]);
     },
-    isActive: (): boolean => profilerPromise !== null || stopping.size > 0
+    isActive: (): boolean => stopping.size > 0 ||
+      (profilerPromise !== null && (startedProfiler?.hasPendingWork ?? true))
   };
   hotCpuProfilerSlots.add(slot);
   return slot;
@@ -692,7 +754,7 @@ export function installMainProcessHotCpuMonitor(): void {
       createHotCpuProfilerForTarget({
         config,
         target: "main",
-        hotCpuTarget: createMainProcessHotCpuTarget()
+        hotCpuTarget: createMainProcessHotCpuTarget(isMainProcessStartupProfileActive)
       })
   });
   mainHotCpuProfilerSlot = slot;
@@ -969,10 +1031,10 @@ export function createMainWindow(): BrowserWindow {
     allowNextHotkeyRecorderDocument(webContents.id);
   });
 
-  let rendererLoaded = false;
+  let rendererPid: number | null = null;
   const rendererHotCpuSlot = createHotCpuProfilerSlot({
     target: "renderer",
-    isReady: () => rendererLoaded && !window.isDestroyed() && !webContents.isDestroyed(),
+    isReady: () => rendererPid !== null && !window.isDestroyed() && !webContents.isDestroyed(),
     createProfiler: (config) =>
       createHotCpuProfilerForTarget({
         config,
@@ -985,8 +1047,11 @@ export function createMainWindow(): BrowserWindow {
   // installed at boot for every role by `installMainProcessHotCpuMonitor`.
   // Backstop only, for windows created before/without that boot step.
   installMainProcessHotCpuMonitor();
-  webContents.once("did-finish-load", () => {
-    rendererLoaded = true;
+  webContents.on("did-finish-load", () => {
+    if (window.isDestroyed() || webContents.isDestroyed()) return;
+    const pid = webContents.getOSProcessId();
+    if (rendererPid !== null && rendererPid !== pid) void rendererHotCpuSlot.stop("renderer-replaced");
+    rendererPid = pid;
     rendererHotCpuSlot.sync("renderer-loaded");
   });
 
@@ -1075,7 +1140,9 @@ export function createMainWindow(): BrowserWindow {
       app.dock?.hide();
     }
   });
-  window.webContents.on("render-process-gone", (_event, details) => {
+  webContents.on("render-process-gone", (_event, details) => {
+    rendererPid = null;
+    void rendererHotCpuSlot.stop("renderer-gone");
     log.warn("main window renderer crashed", { id: window.id, reason: details.reason });
   });
   window.webContents.on("unresponsive", () => {

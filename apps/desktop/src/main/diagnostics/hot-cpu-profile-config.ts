@@ -41,6 +41,10 @@ function isEnabled(value: string | undefined): boolean {
   return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 }
 
+export function hotCpuChromiumTraceEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isEnabled(env.PWRSNAP_HOT_CPU_PROFILING_CHROMIUM_TRACE);
+}
+
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
   const parsed = Number.parseInt(value, 10);

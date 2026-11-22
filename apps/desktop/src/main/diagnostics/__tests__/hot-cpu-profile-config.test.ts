@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { resolveHotCpuProfileConfig } from "../hot-cpu-profile-config";
+import { hotCpuChromiumTraceEnabled, resolveHotCpuProfileConfig } from "../hot-cpu-profile-config";
 
 const baseEnv: NodeJS.ProcessEnv = { PWRSNAP_HOT_CPU_PROFILING: "1" };
 
@@ -41,4 +41,10 @@ describe("resolveHotCpuProfileConfig per-target thresholds", () => {
       slowburnThresholdPercent: 20
     });
   });
+});
+
+test("Chromium capture requires its own explicit opt-in", () => {
+  expect(hotCpuChromiumTraceEnabled(baseEnv)).toBe(false);
+  expect(hotCpuChromiumTraceEnabled({ PWRSNAP_HOT_CPU_PROFILING_CHROMIUM_TRACE: "off" })).toBe(false);
+  expect(hotCpuChromiumTraceEnabled({ PWRSNAP_HOT_CPU_PROFILING_CHROMIUM_TRACE: " true " })).toBe(true);
 });

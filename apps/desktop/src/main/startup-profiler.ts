@@ -83,6 +83,10 @@ function flushMarks(): void {
 
 let mainSession: Session | null = null;
 
+export function isMainProcessStartupProfileActive(): boolean {
+  return mainSession !== null;
+}
+
 /**
  * Begin the main-process CPU profile. Called from startup-profile-boot.ts
  * at module-eval time so evaluation of the rest of the bundle is part of
@@ -106,7 +110,6 @@ export function beginMainProcessProfile(): void {
 function stopMainProcessProfile(): void {
   const session = mainSession;
   if (session === null) return;
-  mainSession = null;
   session.post("Profiler.stop", (error, params) => {
     try {
       if (error !== null) {
@@ -124,6 +127,7 @@ function stopMainProcessProfile(): void {
       );
     } finally {
       session.disconnect();
+      mainSession = null;
       flushMarks();
     }
   });

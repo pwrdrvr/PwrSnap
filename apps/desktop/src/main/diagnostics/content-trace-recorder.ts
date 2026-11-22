@@ -25,6 +25,7 @@
 import { basename } from "node:path";
 import { app, contentTracing } from "electron";
 import { getMainLogger } from "../log";
+import { tryAcquireChromiumTrace } from "./chromium-trace-lease";
 import { resolveContentTraceConfig, type ContentTraceConfig } from "./content-trace-config";
 import { contentTraceDiagnosticsRoot } from "./content-trace-paths";
 import {
@@ -48,6 +49,7 @@ type RecorderState = {
    *  contentTracing running with nothing left to stop it. */
   busy: boolean;
   recording: boolean;
+  releaseTrace: (() => void) | undefined;
   stopTimer: NodeJS.Timeout | null;
   cpuTimer: NodeJS.Timeout | null;
   cpuTracker: ProcessCpuBreakdownTracker;
@@ -135,23 +137,32 @@ async function startContentTraceInner(reason: string): Promise<void> {
     log().info("already recording — ignoring start");
     return;
   }
-  current.busy = true;
-
-  const session = await ensureSession(current);
-  if (session === null) {
-    current.busy = false;
+  const release = tryAcquireChromiumTrace();
+  if (!release) {
+    log().info("Chromium tracing is already owned by another diagnostic");
     return;
   }
+  current.busy = true;
+  current.releaseTrace = release;
 
-  current.traceIndex += 1;
-  const index = current.traceIndex;
-
+  let index: number;
+  let session: ContentTraceSession | null;
   try {
+    session = await ensureSession(current);
+    if (session === null) {
+      current.busy = false;
+      current.releaseTrace = undefined;
+      release();
+      return;
+    }
+    index = ++current.traceIndex;
     await contentTracing.startRecording({
       included_categories: current.config.categories
     });
   } catch (error) {
     current.busy = false;
+    current.releaseTrace = undefined;
+    release();
     log().warn(
       `startRecording failed: ${error instanceof Error ? error.message : String(error)}`
     );
@@ -207,7 +218,13 @@ async function stopContentTraceInner(reason: string): Promise<string | null> {
   const tracePath = session.createTracePath(current.traceIndex);
   try {
     await contentTracing.stopRecording(tracePath);
+    current.releaseTrace?.();
+    current.releaseTrace = undefined;
   } catch (error) {
+    if (error instanceof Error && error.message === "Failed to stop tracing - no trace in progress") {
+      current.releaseTrace?.();
+      current.releaseTrace = undefined;
+    }
     log().warn(
       `stopRecording failed: ${error instanceof Error ? error.message : String(error)}`
     );
@@ -273,6 +290,7 @@ export function installContentTraceHook(options?: {
     traceIndex: 0,
     busy: false,
     recording: false,
+    releaseTrace: undefined,
     stopTimer: null,
     cpuTimer: null,
     cpuTracker: new ProcessCpuBreakdownTracker()

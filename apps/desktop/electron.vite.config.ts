@@ -182,7 +182,9 @@ export default defineConfig(({ command }) => {
         // imports inside source-form packages, and we don't want to ship
         // TS source separately. Mirrors PwrAgnt.
         externalizeDepsPlugin({
-          exclude: ["@pwrsnap/shared", "@pwrdrvr/codex-app-server-protocol"]
+          exclude: [
+            "@pwrsnap/shared", "@pwrdrvr/codex-app-server-protocol", "stream-json", "stream-chain"
+          ]
         }),
         copyMainAssetsPlugin()
       ],
@@ -208,6 +210,7 @@ export default defineConfig(({ command }) => {
               __dirname,
               "src/main/workers/paste-image-worker.ts"
             ),
+            "chromium-trace-worker": resolve(__dirname, "src/main/diagnostics/chromium-trace-worker.ts"),
             "composite-thumbnail-worker": resolve(
               __dirname,
               "src/main/workers/composite-thumbnail-worker.ts"

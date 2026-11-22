@@ -96,7 +96,13 @@ async function writeManifest(
   manifestPath: string,
   manifest: HotCpuProfileSessionManifest
 ): Promise<void> {
-  await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  const pending = `${manifestPath}.pending`;
+  try {
+    await fs.writeFile(pending, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    await fs.rename(pending, manifestPath);
+  } finally {
+    await fs.rm(pending, { force: true });
+  }
 }
 
 export async function createHotCpuProfileSession(options: {
@@ -114,6 +120,7 @@ export async function createHotCpuProfileSession(options: {
   const samplesPath = path.join(directoryPath, "samples.ndjson");
   const eventsPath = path.join(directoryPath, "events.ndjson");
   const artifacts: string[] = [];
+  let artifactWrites = Promise.resolve();
 
   const manifest: HotCpuProfileSessionManifest = {
     id: sessionId,
@@ -140,7 +147,7 @@ export async function createHotCpuProfileSession(options: {
 
   try {
     await fs.mkdir(options.config.outputRoot, { recursive: true });
-    await fs.mkdir(directoryPath);
+    await fs.mkdir(directoryPath, { mode: 0o700 });
     await writeManifest(manifestPath, manifest);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
@@ -156,12 +163,17 @@ export async function createHotCpuProfileSession(options: {
     targetPath: string,
     record: HotCpuProfileSample | HotCpuProfileEvent
   ): Promise<void> {
-    await fs.appendFile(targetPath, serializeNdjsonRecord(record), "utf8");
+    await fs.appendFile(targetPath, serializeNdjsonRecord(record), { encoding: "utf8", mode: 0o600 });
   }
 
-  async function registerArtifact(filename: string): Promise<void> {
-    artifacts.push(filename);
-    await writeManifest(manifestPath, manifest);
+  function registerArtifact(filename: string): Promise<void> {
+    const write = artifactWrites.then(async () => {
+      if (artifacts.includes(filename)) return;
+      await writeManifest(manifestPath, { ...manifest, artifacts: [...artifacts, filename] });
+      artifacts.push(filename);
+    });
+    artifactWrites = write.catch(() => undefined);
+    return write;
   }
 
   return {

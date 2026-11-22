@@ -10,7 +10,7 @@
 import { Session } from "node:inspector";
 import type { HotCpuTarget } from "./hot-cpu-profiler";
 
-export function createMainProcessHotCpuTarget(): HotCpuTarget {
+export function createMainProcessHotCpuTarget(isStartupProfilerActive = () => false): HotCpuTarget {
   let session: Session | null = null;
 
   return {
@@ -28,7 +28,7 @@ export function createMainProcessHotCpuTarget(): HotCpuTarget {
         session = null;
         current?.disconnect();
       },
-      isAttached: () => session !== null,
+      isAttached: () => session !== null || isStartupProfilerActive(),
       sendCommand: (method, params) =>
         new Promise((resolve, reject) => {
           if (session === null) {

@@ -706,7 +706,7 @@ class NativeRecorderService extends AttemptRecorderService {
     attempt.audioMuteRequests.set(source, { id: requestId, result });
     try {
       child.stdin.write(JSON.stringify({ type: "muteAudio", requestId, source, muted }) + "\n");
-      const applied = await withDeadline(attempt.wait(result.promise), 2_000, "recorder_mute_timeout");
+      const applied = await withDeadline(attempt.wait(result.promise), 1_500, "recorder_mute_timeout");
       if (!applied) throw new Error("control_unavailable");
     } finally {
       attempt.audioMuteRequests.delete(source);

@@ -410,9 +410,11 @@ export type RecordingState =
 export type RecordingAudioSource = "systemAudio" | "microphone";
 
 export type RecordingAudioReading = (
-  | { state: "waiting" | "no-input" | "no-write" }
+  | { state: "waiting" }
+  | { state: "no-input" | "no-write"; lastSampleAtMs: number | null }
   /** 0–1 in meter steps. Null means no PCM level was measurable in this window. */
-  | { state: "writing"; level: number | null }
+  | { state: "writing"; level: number | null; clipping?: true;
+      recovery?: { atMs: number; gapMs: number } }
 ) & { muted?: true };
 
 export type RecordingAudioTelemetry = Partial<Record<RecordingAudioSource, RecordingAudioReading>>;

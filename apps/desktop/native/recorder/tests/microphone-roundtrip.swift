@@ -114,6 +114,12 @@ struct MicrophoneRoundtrip {
     static func main() async throws {
         let url = URL(fileURLWithPath: CommandLine.arguments[1])
         try checkPlanarStereo()
+        var clipping = AudioSampleTelemetry()
+        clipping.appended(try sample(packet: 0, amplitude: 0.99))
+        let clippedAt = DispatchTime.now().uptimeNanoseconds
+        try check(clipping.report(at: clippedAt)["clipping"] as? Bool == true, "accepted peak above -1 dBFS clips")
+        try check(clipping.report(at: clippedAt + 1_500_000_000)["clipping"] as? Bool == true, "clip latch holds")
+        try check(clipping.report(at: clippedAt + 1_500_000_001)["clipping"] as? Bool == false, "clip latch expires")
         stage("create tone writer")
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
         let input = AVAssetWriterInput(mediaType: .audio, outputSettings: [

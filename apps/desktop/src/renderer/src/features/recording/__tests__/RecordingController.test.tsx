@@ -499,22 +499,76 @@ describe("RecordingController source chips", () => {
     });
     const chip = (source: string) => container.querySelector(`[data-testid="rc-source-${source}"]`);
     const emit = mocks.listeners.get(EVENT_CHANNELS.recordingState)!;
-    expect(chip("microphone")?.querySelector(".ps-meter")).toBeNull();
+    expect(chip("microphone")?.querySelector(".ps-meter")?.getAttribute("data-level")).toBe("0");
     await act(async () => emit({
       ...recordingState(), capabilities,
-      audioTelemetry: { microphone: { state: "no-input" }, systemAudio: { state: "writing", level: 0 } }
+      audioTelemetry: {
+        microphone: { state: "no-input", lastSampleAtMs: 12000 },
+        systemAudio: { state: "writing", level: 0 }
+      }
     }));
-    expect(chip("microphone")?.textContent).toContain("No samples");
+    const notice = () => container.querySelector("[data-recording-caption]")?.textContent;
+    expect(notice()).toBe("Microphone stopped sending audio at 00:12 · recording continues");
     expect(chip("microphone")?.getAttribute("data-state")).toBe("silent");
     expect(chip("systemAudio")?.getAttribute("data-state")).toBe("live");
     expect(chip("systemAudio")?.querySelector(".ps-meter")?.getAttribute("data-level")).toBe("0");
     await act(async () => emit({
       ...recordingState(), capabilities,
-      audioTelemetry: { microphone: { state: "writing", level: 4 / 7 }, systemAudio: { state: "no-write" } }
+      audioTelemetry: {
+        microphone: { state: "writing", level: 4 / 7, recovery: { atMs: 18000, gapMs: 6000 } },
+        systemAudio: { state: "no-write", lastSampleAtMs: null }
+      }
     }));
-    expect(chip("microphone")?.textContent).not.toContain("No samples");
     expect(chip("microphone")?.querySelector(".ps-meter")?.getAttribute("data-level")).toBe("4");
-    expect(chip("systemAudio")?.textContent).toContain("Not written");
+    expect(notice()).toBe("System audio has reached the recorder without being written · recording continues");
+    await act(async () => emit({
+      ...recordingState(), capabilities,
+      audioTelemetry: {
+        microphone: { state: "writing", level: 4 / 7, recovery: { atMs: 18000, gapMs: 6000 } },
+        systemAudio: { state: "writing", level: 0 }
+      }
+    }));
+    expect(notice()).toBe("Microphone back at 00:18 · 6 s missing");
+  });
+
+  test("a mute presents the pending target, follows the recorder, and never carries to the next take", async () => {
+    const capabilities = { systemAudio: false, microphone: true };
+    const backend = {
+      ...macCapabilities,
+      sources: { ...macCapabilities.sources, midRecordingToggles: true, liveAudioLevels: true, liveDisconnectDetection: true }
+    };
+    await renderWithCapabilities(capabilities, backend);
+    let settle!: (result: { ok: boolean }) => void;
+    mocks.dispatch.mockImplementation(() => new Promise((resolve) => { settle = resolve; }));
+    const emit = mocks.listeners.get(EVENT_CHANNELS.recordingState)!;
+    const chip = container.querySelector('[data-testid="rc-source-microphone"]')!;
+    const button = chip.querySelector("button")!;
+    const notice = () => container.querySelector("[data-recording-caption]")?.textContent;
+    const publish = (muted: boolean, sessionId = "rec-1") => emit({
+      ...recordingState(), capabilities, sessionId,
+      audioTelemetry: { microphone: { state: "writing", level: muted ? 0 : 0.5, ...(muted ? { muted } : {}) } }
+    });
+    await act(async () => publish(false));
+    expect(button.getAttribute("aria-label")).toBe("Microphone");
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    await act(async () => button.click());
+    expect(mocks.dispatch).toHaveBeenCalledWith("recording:muteAudio", { sessionId: "rec-1", source: "microphone", muted: true });
+    expect(chip.getAttribute("aria-busy")).toBe("true");
+    expect(chip.getAttribute("data-state")).toBe("muted");
+    await act(async () => button.click());
+    expect(mocks.dispatch.mock.calls.filter(([name]) => name === "recording:muteAudio")).toHaveLength(1);
+    await act(async () => { publish(true); settle({ ok: true }); });
+    expect(chip.getAttribute("aria-busy")).toBeNull();
+    expect(button.getAttribute("aria-pressed")).toBe("false");
+    expect(notice()).toContain("Microphone muted");
+    expect(container.querySelector(".sr-only[role=status]")?.textContent).toBe("");
+    await act(async () => button.click());
+    await act(async () => settle({ ok: false }));
+    expect(notice()).toBe("Couldn’t unmute microphone · it is still muted");
+    expect(container.querySelector(".sr-only[role=status]")?.textContent).toBe(notice());
+    await act(async () => publish(false, "replacement"));
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    expect(notice()).toContain("not visible");
   });
 
   test.each([

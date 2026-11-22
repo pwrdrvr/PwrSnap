@@ -51,6 +51,8 @@ export type SourceChipState =
   | "live"
   /** Requested and granted, but nothing has arrived. */
   | "silent"
+  /** The live recorder is writing silence to this armed track. */
+  | "muted"
   /** Never granted. Carries an inline grant action. */
   | "ask"
   /** Granted once, revoked since. Carries an inline Settings action. */
@@ -118,6 +120,9 @@ export type SourceChipProps = {
    * someone whose system audio is working fine.
    */
   readonly noMeter?: boolean;
+  readonly busy?: boolean;
+  readonly flag?: boolean;
+  readonly controlTitle?: string;
   readonly testId?: string;
 };
 
@@ -193,7 +198,10 @@ const ON_STATES: ReadonlySet<SourceChipState> = new Set<SourceChipState>([
  */
 const INERT_STATES: ReadonlySet<SourceChipState> = new Set<SourceChipState>(["unsupported"]);
 
-function SourceGlyph({ source }: { readonly source: RecordingSourceKind }): ReactElement {
+function SourceGlyph({ source, muted = false }: {
+  readonly source: RecordingSourceKind;
+  readonly muted?: boolean;
+}): ReactElement {
   const common = {
     width: 13,
     height: 13,
@@ -213,14 +221,20 @@ function SourceGlyph({ source }: { readonly source: RecordingSourceKind }): Reac
           <rect x="5.6" y="1.6" width="4.8" height="8" rx="2.4" />
           <path d="M3.2 7.4a4.8 4.8 0 0 0 9.6 0" />
           <path d="M8 12.2v2.2" />
+          {muted && <>
+            <path className="ps-chip__knock" d="M2.6 2.6l10.8 10.8" strokeWidth="3.4" />
+            <path d="M2.6 2.6l10.8 10.8" />
+          </>}
         </svg>
       );
     case "systemAudio":
       return (
         <svg {...common}>
           <path d="M2.2 6.2h2.4L8 3.2v9.6L4.6 9.8H2.2z" />
-          <path d="M10.8 6.1a2.6 2.6 0 0 1 0 3.8" />
-          <path d="M12.7 4.2a5.2 5.2 0 0 1 0 7.6" />
+          {muted ? <path d="m10.6 6.2 3.6 3.6m0-3.6-3.6 3.6" /> : <>
+            <path d="M10.8 6.1a2.6 2.6 0 0 1 0 3.8" />
+            <path d="M12.7 4.2a5.2 5.2 0 0 1 0 7.6" />
+          </>}
         </svg>
       );
     case "camera":
@@ -291,7 +305,7 @@ export function SourceMeter({
 }
 
 /** Drawn in place of the source's glyph when it is armed and in trouble. */
-function WarnGlyph(): ReactElement {
+export function WarnGlyph(): ReactElement {
   return (
     <svg
       className="ps-chip__ico ps-chip__ico--warn"
@@ -350,6 +364,9 @@ export function SourceChip({
   onScrim = false,
   meterTone,
   noMeter = false,
+  busy = false,
+  flag = false,
+  controlTitle,
   media,
   testId
 }: SourceChipProps): ReactElement {
@@ -494,14 +511,19 @@ export function SourceChip({
   const tile = density === "control";
   const shownDevice = tile && device !== undefined ? shortDeviceLabel(device) : "";
   const subline = tile && (why !== undefined || shownDevice !== "");
-  const inlineWhy = !tile && why !== undefined;
+  const denseToggle = density === "dense" && onToggle !== undefined;
+  const described = !tile && why !== undefined;
+  const inlineWhy = described && !denseToggle;
+  const muted = density === "dense" && state === "muted";
   const hudTitle =
-    density === "dense" ? (why === undefined ? name : `${name} — ${why}`) : undefined;
+    density === "dense" ? controlTitle ?? (why === undefined ? name : `${name} — ${why}`) : undefined;
   return (
     <span
       className={className}
       data-state={state}
       data-source={source}
+      {...(denseToggle ? { "data-toggle": "true" } : {})}
+      {...(denseToggle && busy ? { "aria-busy": true } : {})}
       {...(clipping ? { "data-clipping": "true" } : {})}
       title={hudTitle}
       {...(grouped ? { role: "group", "aria-label": name } : {})}
@@ -523,14 +545,18 @@ export function SourceChip({
         // shortcut the surface does not bind is the same
         // two-predicates-that-must-agree bug as the hint legend's.
         {...(keyBound ? { "aria-keyshortcuts": kbd } : {})}
-        {...(subline || inlineWhy ? { "aria-describedby": subId } : {})}
+        {...(subline || described ? { "aria-describedby": subId } : {})}
+        {...(denseToggle && busy ? { "aria-disabled": true } : {})}
         onClick={onToggle}
       >
-        <SourceGlyph source={source} />
+        <SourceGlyph source={source} muted={muted} />
         {density === "dense" ? null : <span className="ps-chip__name">{name}</span>}
-        {showMeter ? <SourceMeter level={level} tone={tone} /> : null}
+        {muted ? <span className="ps-chip__mute" aria-hidden="true">MUTE</span> :
+          showMeter ? <SourceMeter level={level} tone={tone} /> : null}
         {inlineWhy ? <span className="ps-chip__why" id={subId}>{why}</span> : null}
       </button>
+      {denseToggle && described ? <span id={subId} hidden>{why}</span> : null}
+      {denseToggle && flag ? <span className="ps-chip__flag" aria-hidden="true" /> : null}
       {hasAct ? (
         // No stopPropagation any more: there is no enclosing button left
         // for a click to reach. Wrapped rather than passed straight to

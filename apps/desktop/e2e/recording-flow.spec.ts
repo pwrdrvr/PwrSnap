@@ -51,11 +51,20 @@ test("in-take audio warnings keep Stop visible in the non-activating HUD", async
     await expect.poll(() => findHUD() !== undefined).toBe(true);
     const hud = findHUD()!;
     await expect(hud.getByTestId("rc-source-microphone").locator(".ps-meter")).toHaveAttribute("data-level", "4");
-    await publish({ systemAudio: { state: "no-write" }, microphone: { state: "no-input" } }, "audio-telemetry");
-    await expect(hud.getByTestId("rc-source-microphone")).toHaveAttribute("data-state", "silent");
-    await expect(hud.getByTestId("rc-source-systemAudio")).toHaveAttribute("data-state", "silent");
     const stop = hud.getByRole("button", { name: "Stop and save recording" });
+    const stopPosition = await stop.evaluate((button) => Math.round(button.getBoundingClientRect().right));
+    await hud.locator(".rc-root").screenshot({ path: test.info().outputPath("live-audio-levels.png") });
+    await publish({
+      systemAudio: { state: "no-write", lastSampleAtMs: null },
+      microphone: { state: "no-input", lastSampleAtMs: 12000, muted: true }
+    }, "audio-telemetry");
+    const mic = hud.getByTestId("rc-source-microphone");
+    await expect(mic).toHaveAttribute("data-state", "muted");
+    await expect(mic.locator(".ps-chip__flag")).toBeVisible();
+    await expect(hud.getByTestId("rc-source-systemAudio")).toHaveAttribute("data-state", "silent");
     await expect.poll(() => stop.evaluate((button) => button.getBoundingClientRect().right <= innerWidth)).toBe(true);
+    expect(await stop.evaluate((button) => Math.round(button.getBoundingClientRect().right))).toBe(stopPosition);
+    await hud.locator(".rc-root").screenshot({ path: test.info().outputPath("audio-muted-with-gaps.png") });
     const focusable = await app.electronApp.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows().find((win) => win.webContents.getURL().includes("stage=recording-controller"))?.isFocusable());
     expect(focusable).toBe(false);

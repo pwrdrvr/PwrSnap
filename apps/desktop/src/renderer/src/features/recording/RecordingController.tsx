@@ -22,19 +22,9 @@ import {
   type RecordingState
 } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
-import { SourceChip } from "../shared/SourceChip";
+import { SourceChip, WarnGlyph } from "../shared/SourceChip";
+import { formatHMS, useRecordingHudAudio } from "./recording-hud-audio";
 import "./RecordingController.css";
-
-function formatHMS(seconds: number): string {
-  const total = Math.max(0, Math.floor(seconds));
-  const hh = Math.floor(total / 3600);
-  const mm = Math.floor((total % 3600) / 60);
-  const ss = total % 60;
-  if (hh > 0) {
-    return `${hh}:${mm.toString().padStart(2, "0")}:${ss.toString().padStart(2, "0")}`;
-  }
-  return `${mm.toString().padStart(2, "0")}:${ss.toString().padStart(2, "0")}`;
-}
 
 export function RecordingController(): ReactElement {
   const [state, setState] = useState<RecordingState>({ phase: "idle" });
@@ -42,6 +32,7 @@ export function RecordingController(): ReactElement {
   const [elapsedSec, setElapsedSec] = useState(0);
   const [armedAction, setArmedAction] = useState<"restart" | "cancel" | null>(null);
   const [busyAction, setBusyAction] = useState<"stop" | "restart" | "cancel" | null>(null);
+  const audio = useRecordingHudAudio(state.phase === "recording" ? state : null, backend);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   // Snapshot on mount, then subscribe.
@@ -285,28 +276,16 @@ export function RecordingController(): ReactElement {
                       role="group"
                       aria-label="Recording sources"
                     >
-                      {sources.map((source) => {
-                        const reading = source === "camera" ? undefined : state.audioTelemetry?.[source];
-                        const monitor = backend?.sources.liveAudioLevels ?? (reading !== undefined);
-                        const level = monitor && reading?.state === "writing" ? reading.level : null;
-                        const warning = backend?.sources.liveDisconnectDetection ?? (reading !== undefined);
-                        const why = warning && reading?.state === "no-input" ? "No samples" :
-                          warning && reading?.state === "no-write" ? "Not written" : undefined;
-                        return (
-                          <SourceChip
-                            key={source}
-                            source={source}
-                            state={why === undefined ? "live" : "silent"}
-                            density="dense"
-                            onScrim
-                            meterTone={monitor ? "live" : "recorded"}
-                            noMeter={(monitor || backend === null) && level === null}
-                            {...(level !== null ? { level } : {})}
-                            {...(why !== undefined ? { why } : {})}
-                            testId={`rc-source-${source}`}
-                          />
-                        );
-                      })}
+                      {sources.map((source) => (
+                        <SourceChip
+                          key={source}
+                          source={source}
+                          density="dense"
+                          onScrim
+                          testId={`rc-source-${source}`}
+                          {...(source === "camera" ? { state: "live" as const } : audio.chip(source))}
+                        />
+                      ))}
                     </div>
                   </>
                 )}
@@ -375,8 +354,16 @@ export function RecordingController(): ReactElement {
                   : "Cancel discards this take. Press Confirm cancel again."}
               </div>
             )}
-            <div data-recording-caption className="rc__caption">
-              {isBurst
+            <div
+              data-recording-caption
+              className="rc__caption"
+              data-tone={audio.notice?.tone}
+              title={audio.notice?.text}
+            >
+              {audio.notice !== null ? <>
+                {audio.notice.tone === "warn" ? <WarnGlyph /> : null}
+                <span>{audio.notice.text}</span>
+              </> : isBurst
                 ? `${BURST_FPS} stills a second while the screen changes · keeps the last ${Math.round(BURST_MAX_FRAMES / BURST_FPS)} s`
                 : backend === null
                 ? "Checking recorder capabilities…"
@@ -385,6 +372,9 @@ export function RecordingController(): ReactElement {
                   : state.rect.w === 0 && state.rect.h === 0
                     ? "Windows full-display recordings may include this controller"
                     : "PwrSnap keeps this controller outside the recorded region when space allows"}
+            </div>
+            <div className="sr-only" role="status" aria-live="polite">
+              {audio.notice?.announce === true ? audio.notice.text : null}
             </div>
           </div>
         )}

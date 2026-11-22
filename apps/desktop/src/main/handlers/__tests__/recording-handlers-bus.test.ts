@@ -466,7 +466,7 @@ describe("recording:* command-bus surface", () => {
     expect(mocks.stop).not.toHaveBeenCalled();
   });
 
-  test("recording:muteAudio remains gated while the HUD control is unavailable", async () => {
+  test("recording:muteAudio addresses only a supported armed source in the named take", async () => {
     const request = { sessionId: "rec-1", source: "microphone", muted: true } as const;
     const send = () => bus.dispatch("recording:muteAudio", request, { principal: "ipc" });
     const state = {
@@ -477,8 +477,16 @@ describe("recording:* command-bus surface", () => {
     setRecordingState(state);
     expect(await send()).toMatchObject({ ok: false, error: { code: "control_unavailable" } });
     Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
-    expect(await send()).toMatchObject({ ok: false, error: { code: "control_unavailable" } });
+    for (const invalid of [
+      { ...request, sessionId: "retired" },
+      { ...request, source: "systemAudio" as const }
+    ]) {
+      const result = await bus.dispatch("recording:muteAudio", invalid, { principal: "ipc" });
+      expect(result).toMatchObject({ ok: false, error: { code: "control_unavailable" } });
+    }
     expect(mocks.muteAudio).not.toHaveBeenCalled();
+    expect(await send()).toEqual({ ok: true, value: undefined });
+    expect(mocks.muteAudio).toHaveBeenCalledExactlyOnceWith(request);
   });
 
   test("recording:cancel cannot interrupt Stop-owned finalization", async () => {

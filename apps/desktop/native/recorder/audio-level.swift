@@ -15,6 +15,7 @@ let audioSilenceFloor: Float = 0.001
 struct AudioSampleTelemetry {
     private var lastInput: UInt64?
     private var lastSample: UInt64?
+    private var lastClip: UInt64?
     private var window = AudioLevels()
     private(set) var heardSound = false
     private(set) var muted = false
@@ -23,6 +24,7 @@ struct AudioSampleTelemetry {
         guard self.muted != muted else { return }
         self.muted = muted
         window = AudioLevels()
+        lastClip = nil
     }
 
     func bufferForWriting(_ sample: CMSampleBuffer) -> CMSampleBuffer? {
@@ -43,8 +45,11 @@ struct AudioSampleTelemetry {
     }
 
     mutating func report(at now: UInt64) -> [String: Any] {
+        // -1 dBFS. Hold the indicator for 1.5s from the measured window.
+        if window.peak >= 0.8912509 { lastClip = now }
         let reading: [String: Any] = [
             "muted": muted,
+            "clipping": lastClip.map { now - $0 <= 1_500_000_000 } ?? false,
             "rms": window.rms.map { $0 as Any } ?? NSNull(),
             "lastSampleAgeMs": lastSample.map { Double(now - $0) / 1_000_000 as Any } ?? NSNull(),
             "lastInputAgeMs": lastInput.map { Double(now - $0) / 1_000_000 as Any } ?? NSNull()

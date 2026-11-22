@@ -175,6 +175,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private var startedAtWallClock: Date = Date()
     private var outputURL: URL?
     private var firstSampleWritten = false
+    private var firstSampleAt: UInt64?
     private let writeQueue = DispatchQueue(label: "pwrsnap.recorder.write")
     /// Sample counters for end-of-recording diagnostics. The
     /// "popover shows nothing / file is 0 bytes" failure mode is
@@ -188,7 +189,6 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private var audioSamplesAppended: Int = 0
     private var systemAudioTelemetry = AudioSampleTelemetry()
     private var audioTelemetryTimer: DispatchSourceTimer?
-    private var audioTelemetryStart: DispatchTime?
     /// SCStream's `.microphone` output (macOS 14+). Unused by today's
     /// recorder — mic capture runs through AVCaptureSession — but
     /// counted so a stray sample shows up in the stop() diag totals
@@ -827,6 +827,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             diag("first sample: type=\(type) startWriting()->\(ok) writer.status=\(writer.status.rawValue) error=\(writer.error?.localizedDescription ?? "nil")")
             writer.startSession(atSourceTime: startedAtCMTime)
             firstSampleWritten = true
+            firstSampleAt = DispatchTime.now().uptimeNanoseconds
         }
 
         switch type {
@@ -921,13 +922,11 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 "physicalRect": ["x": rect.x, "y": rect.y, "w": rect.w, "h": rect.h]
             ])
             guard audioInput != nil || micForwarder != nil else { return }
-            let start = DispatchTime.now()
             let timer = DispatchSource.makeTimerSource(queue: writeQueue)
             // A clock independent of the sample callbacks also reports gaps
             // when every armed source has stopped delivering buffers.
-            timer.schedule(deadline: start + .milliseconds(125), repeating: .milliseconds(125), leeway: .milliseconds(20))
-            timer.setEventHandler { [weak self] in self?.reportAudio(since: start) }
-            audioTelemetryStart = start
+            timer.schedule(deadline: .now() + .milliseconds(100), repeating: .milliseconds(100), leeway: .milliseconds(10))
+            timer.setEventHandler { [weak self] in self?.reportAudio() }
             audioTelemetryTimer = timer
             timer.resume()
         }
@@ -936,7 +935,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     func muteAudio(_ request: MuteAudioRequest) {
         writeQueue.sync {
             var applied = false
-            if let start = audioTelemetryStart {
+            if audioTelemetryTimer != nil {
                 switch request.source {
                 case .systemAudio:
                     if audioInput != nil {
@@ -949,20 +948,24 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
                         applied = true
                     }
                 }
-                if applied { reportAudio(since: start) }
+                if applied { reportAudio(source: request.source) }
             }
             emit(["event": "audioMuteResult", "requestId": request.requestId, "applied": applied])
         }
     }
 
-    private func reportAudio(since start: DispatchTime) {
+    private func reportAudio(source: MuteAudioRequest.Source? = nil) {
         let now = DispatchTime.now().uptimeNanoseconds
         var payload: [String: Any] = [
             "event": "audioTelemetry",
-            "elapsedMs": Double(now - start.uptimeNanoseconds) / 1_000_000
+            "elapsedMs": Double(now - (firstSampleAt ?? now)) / 1_000_000
         ]
-        if audioInput != nil { payload["systemAudio"] = systemAudioTelemetry.report(at: now) }
-        if let micForwarder { payload["microphone"] = micForwarder.reportAudio(at: now) }
+        if audioInput != nil && (source == nil || source == .systemAudio) {
+            payload["systemAudio"] = systemAudioTelemetry.report(at: now)
+        }
+        if let micForwarder, source == nil || source == .microphone {
+            payload["microphone"] = micForwarder.reportAudio(at: now)
+        }
         emit(payload)
     }
 
@@ -979,7 +982,6 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         writeQueue.sync {
             audioTelemetryTimer?.cancel()
             audioTelemetryTimer = nil
-            audioTelemetryStart = nil
         }
         do {
             try await s.stopCapture()

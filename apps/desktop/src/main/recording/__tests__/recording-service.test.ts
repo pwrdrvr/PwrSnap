@@ -412,6 +412,10 @@ test("mute requests go only to the armed source in the current take and settle o
     }
   }), { numRuns: 25 });
 
+  const timedOut = expect(adjust(false)).rejects.toThrow("recorder_mute_timeout");
+  await vi.advanceTimersByTimeAsync(1_500);
+  await timedOut;
+
   const inFlight = expect(adjust(true)).rejects.toThrow("cancelled");
   const cancelled = service.cancel();
   child.emitLine({ event: "stopped" });

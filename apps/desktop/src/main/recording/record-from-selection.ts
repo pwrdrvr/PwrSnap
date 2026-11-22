@@ -271,6 +271,12 @@ export async function startRecordingFromSelection(
     tornDown = true;
     hideSelector(selection.selectorInvocationId);
     void releaseSnapshot(screenSnapshotId);
+    // A recording never spans displays (main drops Record from any
+    // commit that does), but ownership of every snapshot transfers with
+    // the selection, so release them all.
+    for (const extra of selection.extraSnapshots ?? []) {
+      void releaseSnapshot(extra.screenSnapshotId);
+    }
     // Unconditional, matching the snap path's `tearDownSelector`. The
     // two reclaims further down are both branch-local: one needs
     // overlapping windows, the other a previous app to fall back to —

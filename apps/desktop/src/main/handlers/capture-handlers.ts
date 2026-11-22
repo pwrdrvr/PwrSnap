@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { screen } from "electron";
-import sharp from "sharp";
+import sharp, { type OverlayOptions } from "sharp";
 import {
   ok,
   err,
@@ -51,9 +51,18 @@ import {
   WAYLAND_SELECTOR_MESSAGE
 } from "../capture/linux-session";
 import { showWaylandRefusalNotice } from "../capture/wayland-refusal-notice";
-import { captureRegion, captureScreen, captureWindow } from "../capture/screencapture";
+import {
+  captureRegion,
+  captureScreen,
+  captureWindow,
+  type CaptureRegionResult
+} from "../capture/screencapture";
 import { displayScaleFactorForId } from "../capture/display-density";
 import { planExtentMask } from "../capture/extent-mask";
+import {
+  planMultiDisplayComposite,
+  type CompositeSource
+} from "../capture/multi-display-selection";
 import { guardScreenCapture } from "../capture/screen-permission-gate";
 import { resolveQuickCaptureAction } from "../capture/quick-capture-action";
 import {
@@ -594,6 +603,13 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
     // We own the screen snapshot now and MUST release it; the try/finally
     // is a safety net (both teardown + release are idempotent).
     const { screenSnapshotId } = selection;
+    // A selection reaching onto other displays also owns their frozen
+    // snapshots (see `extraSnapshots`); every release below covers them.
+    const extraSnapshots = selection.extraSnapshots ?? [];
+    const releaseSelectionSnapshots = (): void => {
+      void releaseSnapshot(screenSnapshotId);
+      for (const extra of extraSnapshots) void releaseSnapshot(extra.screenSnapshotId);
+    };
     let teardownDone = false;
     const tearDownSelector = async (): Promise<void> => {
       if (teardownDone) return;
@@ -660,11 +676,25 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       // and therefore performs no extra lookup.
       const liveWindowsPromise =
         selection.snappedWindowId === undefined ? null : listWindows();
-      const captureResult =
+      const fullWindowCapture =
         selection.fullWindow === true &&
         selection.snappedWindowId !== undefined &&
-        !maskToExtents
-          ? await captureWindow(selection.snappedWindowId)
+        !maskToExtents;
+      // Fourth path: the selection reaches onto other displays (a window
+      // straddling two monitors, picks on several, whole displays). Same
+      // crop and mask, drawn from every display's frozen snapshot.
+      const crossDisplay = !fullWindowCapture && extraSnapshots.length > 0;
+      const captureResult: CropResult = fullWindowCapture
+        ? await captureWindow(selection.snappedWindowId!)
+        : crossDisplay
+          ? await cropAcrossDisplaySnapshots(
+              [
+                { displayId: selection.displayId, screenSnapshotId },
+                ...extraSnapshots
+              ],
+              selection.rect,
+              maskToExtents ? pickedExtents : undefined
+            )
           : maskToExtents
             ? await cropScreenSnapshotExtents(
                 screenSnapshotId,
@@ -680,7 +710,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       // Snapshot pixels are now in `captureResult.tempPath` — release the
       // frozen snapshot immediately (idempotent; finally re-calls as a
       // safety net).
-      void releaseSnapshot(screenSnapshotId);
+      releaseSelectionSnapshots();
       // Source-app resolution is the same on both capture branches —
       // the choice of pixel-fetch path (full-window vs. cropped
       // snapshot) doesn't change WHO owned the window. Single shared
@@ -727,7 +757,31 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       // position is meaningless there (computing via the window frame
       // is a possible follow-up for the frontmost-window case).
       let cursorLayer: CursorLayerPlacement | undefined;
-      if (
+      const compositeScale =
+        captureResult.ok && "scaleFactor" in captureResult ? captureResult.scaleFactor : null;
+      if (cursorSamplePromise !== null && crossDisplay && compositeScale !== null) {
+        // The cross-display canvas starts at the union box's own origin
+        // (no clamp to one display) at the composite's scale — the same
+        // mapping `capture:allScreens` stitched places the cursor with.
+        const cursorPoint = await cursorSamplePromise;
+        const cursorInKeptPixels =
+          !maskToExtents ||
+          cursorPoint === null ||
+          pickedExtents.some(
+            (e) =>
+              cursorPoint.posX >= e.x &&
+              cursorPoint.posX <= e.x + e.w &&
+              cursorPoint.posY >= e.y &&
+              cursorPoint.posY <= e.y + e.h
+          );
+        if (cursorInKeptPixels) {
+          cursorLayer = await resolveCursorLayerForRect(
+            cursorSamplePromise,
+            selection.rect,
+            compositeScale
+          );
+        }
+      } else if (
         cursorSamplePromise !== null &&
         !(selection.fullWindow === true && selection.snappedWindowId !== undefined)
       ) {
@@ -778,10 +832,9 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
         }
       }
       const persisted = await persistAndBroadcast(captureResult.tempPath, sourceApp, {
-        devicePixelRatio: displayScaleFactorForId(
-          screen.getAllDisplays(),
-          selection.displayId
-        ),
+        devicePixelRatio:
+          compositeScale ??
+          displayScaleFactorForId(screen.getAllDisplays(), selection.displayId),
         cursorLayer,
         sourceWindowTitle
       });
@@ -805,7 +858,7 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
         : persisted;
       } finally {
         // Safety net for an unexpected throw before the explicit teardown.
-        void releaseSnapshot(screenSnapshotId);
+        releaseSelectionSnapshots();
         await tearDownSelector();
       }
     } catch (cause) {
@@ -1539,6 +1592,134 @@ function sharpForSnapshotRaster(source: SnapshotRasterLease["source"]) {
  * Returns the same {ok, tempPath, displayId} | error envelope shape
  * as captureRegion so the caller path stays identical.
  */
+type CropResult =
+  | { ok: true; tempPath: string; displayId: number; scaleFactor?: number }
+  | Extract<CaptureRegionResult, { ok: false }>;
+
+/**
+ * Crop a selection that reaches across several displays' frozen
+ * snapshots, as one image: the union box at the sharpest contributing
+ * scale factor, each display's piece resized to it, transparent where no
+ * display is, and — given `extents` — transparent outside the picks.
+ *
+ * Geometry lives in `planMultiDisplayComposite`
+ * (capture/multi-display-selection.ts); this is the I/O around it.
+ */
+async function cropAcrossDisplaySnapshots(
+  parts: readonly { displayId: number; screenSnapshotId: string }[],
+  rect: Rect,
+  extents: readonly Rect[] | undefined
+): Promise<
+  | { ok: true; tempPath: string; displayId: number; scaleFactor: number }
+  | { ok: false; reason: "validation" | "error"; message: string }
+> {
+  if (rect.w <= 0 || rect.h <= 0) {
+    return { ok: false, reason: "validation", message: "rect.w and rect.h must be positive" };
+  }
+  const displays = screen.getAllDisplays();
+  const leases: SnapshotRasterLease[] = [];
+  try {
+    // Every requested display must still be there with its snapshot: a
+    // part that vanished would leave a transparent hole where the user
+    // saw pixels, so fail the way the one-display crop does instead.
+    const acquired = await Promise.all(
+      parts.map(async (part) => {
+        const display = displays.find((d) => d.id === part.displayId);
+        const lease =
+          display === undefined ? null : await acquireSnapshotRaster(part.screenSnapshotId, "crop");
+        if (lease !== null) leases.push(lease);
+        return { display, lease };
+      })
+    );
+    const sources: Array<CompositeSource & { lease: SnapshotRasterLease }> = [];
+    for (const { display, lease } of acquired) {
+      if (display === undefined || lease === null) {
+        return { ok: false, reason: "error", message: "screen snapshot is no longer available" };
+      }
+      sources.push({
+        displayId: display.id,
+        bounds: display.bounds,
+        scaleFactor: display.scaleFactor,
+        snapshot: await snapshotRasterDimensions(lease.source),
+        lease
+      });
+    }
+    const homeDisplayId = parts[0]?.displayId ?? 0;
+    const plan = planMultiDisplayComposite({
+      rect,
+      ...(extents !== undefined ? { extents } : {}),
+      sources
+    });
+    if (plan === null) {
+      return {
+        ok: false,
+        reason: "validation",
+        message: "selection does not overlap any captured display"
+      };
+    }
+    // Independent decodes; run them together on the commit path.
+    const composites: OverlayOptions[] = await Promise.all(
+      plan.layers.map(async (layer) => {
+        const source = sources.find((candidate) => candidate.displayId === layer.displayId)!;
+        const piece = await sharpForSnapshotRaster(source.lease.source)
+          .extract(layer.extract)
+          .resize(layer.resize.width, layer.resize.height, { fit: "fill" })
+          .ensureAlpha()
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+        return {
+          input: piece.data,
+          raw: { width: piece.info.width, height: piece.info.height, channels: 4 as const },
+          left: layer.left,
+          top: layer.top
+        };
+      })
+    );
+    if (plan.mask !== null) {
+      // Same union-shaped alpha mask the one-display extent crop uses.
+      const mask = Buffer.alloc(plan.width * plan.height * 4, 0);
+      for (const box of plan.mask) {
+        for (let row = 0; row < box.height; row += 1) {
+          const start = ((box.top + row) * plan.width + box.left) * 4;
+          mask.fill(255, start, start + box.width * 4);
+        }
+      }
+      composites.push({
+        input: mask,
+        raw: { width: plan.width, height: plan.height, channels: 4 },
+        blend: "dest-in"
+      });
+    }
+    const dir = await mkdtemp(join(tmpdir(), "pwrsnap-crop-"));
+    const tempPath = join(dir, `${Date.now()}.png`);
+    await sharp({
+      create: {
+        width: plan.width,
+        height: plan.height,
+        channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0 }
+      }
+    })
+      .composite(composites)
+      .png({ palette: false })
+      .toFile(tempPath);
+    return { ok: true, tempPath, displayId: homeDisplayId, scaleFactor: plan.scale };
+  } catch (cause) {
+    log.warn("cross-display snapshot crop failed", {
+      message: cause instanceof Error ? cause.message : String(cause),
+      rect,
+      displays: parts.map((part) => part.displayId)
+    });
+    return {
+      ok: false,
+      reason: "error",
+      message: cause instanceof Error ? cause.message : String(cause)
+    };
+  } finally {
+    for (const lease of leases) await lease.release();
+  }
+}
+
 async function cropScreenSnapshot(
   snapshotId: string,
   rect: Rect,

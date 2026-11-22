@@ -33,6 +33,15 @@ The shortest goal it is measured against is unchanged: **⌘⇧C → screenshot 
 clipboard → paste into Slack.** Everything else is layered on top of that
 path staying instant.
 
+**The selector covers every display.** With more than one display, a
+still's selector freezes and shows all of them at once — the display under
+the cursor first, so its time-to-first-paint does not grow with the number
+of monitors. A pick is any window on any display, a window straddling two,
+or a whole display; picks on several displays make one capture, their union
+box transparent outside the picks, composed from each display's frozen
+snapshot at the sharpest contributing scale. A recording is still one
+rectangle on one display.
+
 Two things it is **not**:
 
 - **Not an image editor.** PwrSnap is an annotator. The layer model is

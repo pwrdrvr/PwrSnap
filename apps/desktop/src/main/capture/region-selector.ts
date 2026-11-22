@@ -50,6 +50,14 @@ import {
   type ScreenSnapshot
 } from "./screen-snapshot";
 import { isExtentRect, MAX_SELECTOR_EXTENTS } from "./extent-mask";
+import {
+  mergeSessionPicks,
+  planSessionCommit,
+  sessionPickFromRenderer,
+  unionRects,
+  type LogicalRect,
+  type SessionPick
+} from "./multi-display-selection";
 import { hideTrayPopoverIfVisible } from "../tray";
 import { setFloatOverState, ensureFloatOverTopmost } from "../float-over";
 import { hotkeyRecorderSuspension } from "../hotkeys/hotkey-recorder-suspension-instance";
@@ -82,6 +90,60 @@ type SelectorInvocation = {
   windowListSnapshot: readonly WindowInfo[];
   releaseProtection: () => void;
   resolve: (result: SelectorResult) => void;
+  /** Multi-display session state. `null` for a one-display show, which
+   *  then behaves exactly as the selector always has. */
+  multi: MultiDisplaySession | null;
+};
+
+/**
+ * One selector per display, all on screen at once, so a window on any
+ * monitor — or one straddling two — can be picked, and picks on several
+ * monitors make one capture.
+ *
+ * The display under the cursor is the PRIMARY: it owns the latency
+ * trace, the keyboard, the float-over pre-show and the Snap/Record
+ * chooser, exactly as the lone selector always did. Every other display
+ * gets a SECONDARY surface: its own frozen snapshot and window list, a
+ * snap-only HUD, and no focus until the user clicks it.
+ *
+ * Picks live in each renderer (that is where the hit-testing and the
+ * pick set's whole interaction model are); each renderer reports its set
+ * here on every change, and main sends every renderer the picks made on
+ * the OTHER displays so it can draw them and fold them into ↵.
+ */
+type MultiDisplaySession = {
+  secondaries: Map<number, SecondarySurface>;
+  /** Last pick set each display's renderer reported, GLOBAL logical px. */
+  picksByDisplay: Map<number, SessionPick[]>;
+  /** First-seen order of pick keys across the session. */
+  pickOrder: string[];
+  outputMode: "windows" | "rectangle";
+  /** Last outputMode each renderer reported, so a renderer that merely
+   *  re-reports its default cannot undo another display's `T`. */
+  reportedOutputMode: Map<number, "windows" | "rectangle">;
+  /** The primary surface's snapshot URL, for addressing it after its
+   *  snapshot has been handed to a consumer. */
+  primaryScreenUrl: string | null;
+  /** The window list, normalized to Electron DIPs, once it arrives —
+   *  secondaries prepare their own candidate list from it. */
+  windowList: {
+    windows: WindowInfo[];
+    frontmostPid: number | null;
+    frontmostBundleId: string | null;
+  } | null;
+};
+
+type SecondarySurface = {
+  displayId: number;
+  window: BrowserWindow;
+  /** webContents id, captured up front: a destroyed window's
+   *  webContents can no longer be read. */
+  senderId: number;
+  snapshot: ScreenSnapshot | null;
+  screenUrl: string | null;
+  visible: boolean;
+  windowListPayload: SelectorWindowListPayload | null;
+  paintWait: ((outcome: SnapshotPaintOutcome) => void) | null;
 };
 let activeInvocation: SelectorInvocation | null = null;
 let nextSelectorInvocationId = 0;
@@ -107,6 +169,63 @@ function settleSelector(invocation: SelectorInvocation, result: SelectorOutcome)
   }
   invocation.resolve({ ...result, selectorInvocationId: invocation.id });
 }
+
+/** Release every secondary display's frozen snapshot that has not been
+ *  handed to a consumer, and end any paint wait still pending. */
+function releaseSecondarySurfaces(invocation: SelectorInvocation): void {
+  const multi = invocation.multi;
+  if (multi === null) return;
+  for (const surface of multi.secondaries.values()) {
+    surface.paintWait?.("superseded");
+    surface.paintWait = null;
+    if (surface.snapshot !== null) {
+      const stale = surface.snapshot;
+      surface.snapshot = null;
+      void releaseSnapshot(stale.id);
+    }
+  }
+}
+
+type SelectorSurface = {
+  displayId: number;
+  window: BrowserWindow;
+  snapshot: ScreenSnapshot | null;
+  secondary: SecondarySurface | null;
+};
+
+/** The selector surface (primary or secondary) a renderer message came
+ *  from, or null when the sender is not part of this session. */
+function surfaceForSender(
+  invocation: SelectorInvocation,
+  senderId: number
+): SelectorSurface | null {
+  const primary = invocation.window;
+  if (
+    primary !== null &&
+    !primary.isDestroyed() &&
+    invocation.displayId !== null &&
+    primary.webContents.id === senderId
+  ) {
+    return {
+      displayId: invocation.displayId,
+      window: primary,
+      snapshot: invocation.snapshot,
+      secondary: null
+    };
+  }
+  for (const surface of invocation.multi?.secondaries.values() ?? []) {
+    if (surface.senderId === senderId && !surface.window.isDestroyed()) {
+      return {
+        displayId: surface.displayId,
+        window: surface.window,
+        snapshot: surface.snapshot,
+        secondary: surface
+      };
+    }
+  }
+  return null;
+}
+
 let resultListenerAttached = false;
 let displayListenersAttached = false;
 /** The listeners `preWarmRegionSelector` attached, so dispose can take
@@ -179,7 +298,10 @@ function abortActiveSelector(
   invocation = activeInvocation
 ): void {
   if (invocation === null || !ownsSelector(invocation)) return;
-  if (invocation.window?.webContents.id !== senderId) return;
+  const fromSecondary = [...(invocation.multi?.secondaries.values() ?? [])].some(
+    (surface) => surface.senderId === senderId
+  );
+  if (!fromSecondary && invocation.window?.webContents.id !== senderId) return;
   finishPendingPresentation("destroy", reason, senderId);
   settleSelector(invocation, { ok: false, reason: "destroyed" });
   if (invocation.snapshot !== null) {
@@ -187,6 +309,7 @@ function abortActiveSelector(
     invocation.snapshot = null;
     void releaseSnapshot(stale.id);
   }
+  releaseSecondarySurfaces(invocation);
   invocation.previousAppPid = null;
 }
 
@@ -325,7 +448,8 @@ type SelectorWindowListPayload = {
     rawRect: { x: number; y: number; w: number; h: number };
   }[];
   displayBounds: { width: number; height: number };
-  cursor: { x: number; y: number };
+  /** Omitted for a display the pointer is not on. */
+  cursor?: { x: number; y: number };
 };
 
 export type SelectorResult = SelectorOutcome & {
@@ -406,6 +530,13 @@ type SelectorOutcome =
        *  whole box, which is what the picker has always produced.
        *  Only meaningful alongside `extents`. */
       outputMode?: "windows" | "rectangle";
+      /** Multi-display selection: the OTHER displays' frozen snapshots
+       *  the crop needs, because `rect` / `extents` reach onto them.
+       *  Ownership transfers with `screenSnapshotId` — the consumer must
+       *  release every one of these too. Absent whenever the selection
+       *  lies on `displayId` alone, which keeps a one-display capture on
+       *  its old single-snapshot path. */
+      extraSnapshots?: { displayId: number; screenSnapshotId: string }[];
     }
   | {
       ok: false;
@@ -448,6 +579,18 @@ const SELECTOR_SNAPSHOT_READ_CHANNEL = "region-selector:snapshot-read";
 // unlike SELECTOR_PAINTED_CHANNEL, this never gates selector lifecycle.
 const SELECTOR_PRESENTATION_REQUEST_CHANNEL = "region-selector:presentation-request";
 const SELECTOR_PRESENTED_CHANNEL = "region-selector:presented";
+// Multi-display sessions only. Renderer → main: this display's pick set
+// (window-local logical px) whenever it changes, plus requests to drop a
+// pick another display owns (`unpick`) or the whole session's set
+// (`clearAll`). Main → renderer: the picks made on the OTHER displays,
+// localized to the receiver, and any of its own picks to drop.
+const SELECTOR_PICKS_CHANNEL = "region-selector:picks";
+const SELECTOR_PEER_PICKS_CHANNEL = "region-selector:peer-picks";
+// Multi-display only. Renderer → main: the pointer is on this display's
+// selector but its window is not key. Main gives it the keyboard, so
+// ↵ / Esc / T act on the display the user is looking at — not on the
+// display that happened to be under the cursor at hotkey time.
+const SELECTOR_FOCUS_CHANNEL = "region-selector:focus";
 
 /** How long to wait for the renderer's "snapshot painted" ack before
  *  showing the selector anyway. Decode of a full-screen PNG is well
@@ -522,15 +665,25 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
         typeof payload === "object" && payload !== null && "id" in payload
           ? (payload as { id?: unknown }).id
           : null;
+      // The primary reads its own snapshot; in a multi-display session
+      // each secondary may read ITS snapshot and nothing else.
+      const secondary =
+        invocation === null
+          ? undefined
+          : [...(invocation.multi?.secondaries.values() ?? [])].find(
+              (surface) => surface.senderId === event.sender.id
+            );
+      const readable =
+        secondary !== undefined ? secondary.snapshot : invocation?.snapshot ?? null;
       if (
-        event.sender.id !== activeSelectorSenderId ||
+        (secondary === undefined && event.sender.id !== activeSelectorSenderId) ||
         !isTopLevelSelectorFrame(event) ||
         typeof snapshotId !== "string" ||
         !/^[A-Za-z0-9_-]{1,64}$/.test(snapshotId) ||
         invocation === null ||
         !ownsSelector(invocation) ||
-        invocation.snapshot?.id !== snapshotId ||
-        invocation.snapshot.selectorDescriptor === undefined
+        readable?.id !== snapshotId ||
+        readable.selectorDescriptor === undefined
       ) {
         log.warn("selector raw snapshot read rejected", {
           senderMatches: event.sender.id === activeSelectorSenderId,
@@ -552,6 +705,25 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
       return result;
     });
     ipcMain.on(SELECTOR_PAINTED_CHANNEL, (event, payload: unknown) => {
+      // A secondary display's paint gates only that display's reveal.
+      const secondary = [...(activeInvocation?.multi?.secondaries.values() ?? [])].find(
+        (surface) => surface.senderId === event.sender.id
+      );
+      if (secondary !== undefined) {
+        if (typeof payload !== "object" || payload === null) return;
+        const painted = payload as Record<string, unknown>;
+        if (painted.screenUrl !== secondary.screenUrl) return;
+        if (
+          painted.transport === "raw-rgba" &&
+          secondary.snapshot !== null &&
+          Number.isSafeInteger(painted.canvasUploadBytes) &&
+          (painted.canvasUploadBytes as number) >= 0
+        ) {
+          recordSnapshotCanvasUpload(secondary.snapshot.id, painted.canvasUploadBytes as number);
+        }
+        secondary.paintWait?.("loaded");
+        return;
+      }
       // Renderer acked that the frozen snapshot finished painting.
       // Only satisfy the current wait if the sender and URL match (a stale
       // ack from a superseded capture must not reveal the selector early).
@@ -684,14 +856,16 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
       // reveals an already-painted toast — no post-hoc show race.
       const invocation = activeInvocation;
       if (invocation === null || invocation.phase !== "selecting") return;
+      // The primary, or — in a multi-display session — any secondary.
+      const surface = surfaceForSender(invocation, event.sender.id);
       if (
-        event.sender.id !== invocation.window?.webContents.id ||
+        surface === null ||
         !isTopLevelSelectorFrame(event) ||
         typeof payload !== "object" || payload === null ||
         !("screenUrl" in payload) ||
-        payload.screenUrl !== `pwrsnap-screen://r/${invocation.snapshot?.id}`
+        payload.screenUrl !== `pwrsnap-screen://r/${surface.snapshot?.id}`
       ) return;
-      if ("displayId" in payload && payload.displayId !== invocation.displayId) return;
+      if ("displayId" in payload && payload.displayId !== surface.displayId) return;
       const resolver = (result: SelectorOutcome): void => settleSelector(invocation, result);
       if (isSelectorPayload(payload) && payload.ok) {
         // Renderer ships rects in WINDOW-LOCAL display logical
@@ -708,7 +882,7 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
         // raced ahead of the result event), fall back to a
         // cancelled outcome — the capture handler can't do its
         // job without it.
-        if (invocation.snapshot === null) {
+        if (surface.snapshot === null) {
           const prevPid = invocation.previousAppPid;
           invocation.previousAppPid = null;
           resolver({ ok: false, reason: "cancelled", previousAppPid: prevPid });
@@ -717,8 +891,9 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
           // hideAllSelectors skips the cleanup. The consumer (the
           // capture handler) calls releaseSnapshot(id) after it
           // finishes cropping.
-          const snapshot = invocation.snapshot;
-          invocation.snapshot = null;
+          const snapshot = surface.snapshot;
+          if (surface.secondary === null) invocation.snapshot = null;
+          else surface.secondary.snapshot = null;
           // Snapshot previousAppPid into the result then null the
           // module-scope reference so a follow-up cancel doesn't
           // re-activate. The capture handler is responsible for
@@ -726,7 +901,7 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
           // populated (lifecycle reorder).
           const prevPid = invocation.previousAppPid;
           invocation.previousAppPid = null;
-          const result: SelectorOutcome = {
+          const result: Extract<SelectorOutcome, { ok: true }> = {
             ok: true,
             rect: {
               x: payload.rect.x + offsetX,
@@ -782,6 +957,16 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
           // degradation: the still honors every extent, so the user gets
           // a picture of exactly what they picked instead of a video of
           // something they did not.
+          if (invocation.multi !== null) {
+            const planned = planMultiDisplayCommit(invocation, surface, snapshot, payload, result);
+            if (planned === null) {
+              const prevPid = result.previousAppPid;
+              void releaseSnapshot(snapshot.id);
+              releaseUnclaimedSessionSnapshots(invocation);
+              resolver({ ok: false, reason: "cancelled", previousAppPid: prevPid });
+              return;
+            }
+          }
           if (
             (result.action === "record" || result.action === "burst") &&
             (result.extents?.length ?? 0) > 1
@@ -799,6 +984,45 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
         resolver({ ok: false, reason: "cancelled", previousAppPid: prevPid });
       }
       // (intentionally no hideAllSelectors here — caller owns it)
+    });
+    ipcMain.on(SELECTOR_FOCUS_CHANNEL, (event, payload: unknown) => {
+      const invocation = activeInvocation;
+      if (invocation === null || invocation.phase !== "selecting" || invocation.multi === null) {
+        return;
+      }
+      const surface = surfaceForSender(invocation, event.sender.id);
+      if (surface === null || !isTopLevelSelectorFrame(event)) return;
+      const screenUrl =
+        typeof payload === "object" && payload !== null && "screenUrl" in payload
+          ? (payload as { screenUrl?: unknown }).screenUrl
+          : null;
+      const expectedUrl =
+        surface.secondary === null
+          ? invocation.multi.primaryScreenUrl
+          : surface.secondary.screenUrl;
+      if (screenUrl !== expectedUrl) return;
+      if (surface.secondary !== null && !surface.secondary.visible) return;
+      if (surface.window.isFocused()) return;
+      surface.window.focus();
+      surface.window.webContents.focus();
+    });
+    ipcMain.on(SELECTOR_PICKS_CHANNEL, (event, payload: unknown) => {
+      const invocation = activeInvocation;
+      if (invocation === null || invocation.phase !== "selecting" || invocation.multi === null) {
+        return;
+      }
+      const surface = surfaceForSender(invocation, event.sender.id);
+      if (surface === null || !isTopLevelSelectorFrame(event)) return;
+      const report = parsePicksReport(payload);
+      const expectedUrl =
+        surface.secondary === null
+          ? invocation.multi.primaryScreenUrl
+          : surface.secondary.screenUrl;
+      if (report === null || report.screenUrl !== expectedUrl) return;
+      const display = screen.getAllDisplays().find((d) => d.id === surface.displayId);
+      if (display === undefined) return;
+      const drops = applyPicksReport(invocation.multi, display, report);
+      sendPeerPicks(invocation, null, drops);
     });
     resultListenerAttached = true;
   }
@@ -924,7 +1148,8 @@ export function pickRegion(opts: SelectorOptions = {}): Promise<SelectorResult> 
     previousAppPid: null,
     windowListSnapshot: [],
     releaseProtection: () => undefined,
-    resolve: resolveResult
+    resolve: resolveResult,
+    multi: null
   };
   activeInvocation = invocation;
   lastSnapshot = [];
@@ -1014,6 +1239,20 @@ async function prepareRegion(
   }
   invocation.window = targetWindow;
   invocation.displayId = targetDisplay.id;
+  // Every display gets a selector for a still. A recording is one
+  // rectangle on one display, so the video selector stays on the display
+  // under the cursor, exactly as before.
+  if (intent !== "video" && screen.getAllDisplays().length > 1) {
+    invocation.multi = {
+      secondaries: new Map(),
+      picksByDisplay: new Map(),
+      pickOrder: [],
+      outputMode: "windows",
+      reportedOutputMode: new Map(),
+      primaryScreenUrl: null,
+      windowList: null
+    };
+  }
   const targetReady = await waitForSelectorWindowLoad(targetDisplay.id, targetWindow);
   if (!ownsSelector(invocation)) return;
   if (prewarmStage !== undefined) {
@@ -1119,6 +1358,31 @@ async function prepareRegion(
       win.webContents.send(SELECTOR_WINDOW_LIST_CHANNEL, payload);
     }, 50);
   };
+  // A secondary display's candidate list: same enumeration, filtered to
+  // and localized for that display. Sent only once the surface is on
+  // screen and the enumeration has landed, whichever comes second.
+  const deliverSecondaryWindowList = (surface: SecondarySurface): void => {
+    const list = invocation.multi?.windowList ?? null;
+    if (list === null || !surface.visible || !ownsSelector(invocation)) return;
+    if (surface.window.isDestroyed()) return;
+    const display = screen.getAllDisplays().find((d) => d.id === surface.displayId);
+    if (display === undefined) return;
+    if (surface.windowListPayload === null) {
+      surface.windowListPayload = prepareWindowListPayload({
+        rawSnapshot: list.windows,
+        targetDisplay: display,
+        // The pointer is on the primary, so this display has no cursor to
+        // seed from; `null` leaves its crosshair where the renderer puts it.
+        displayCursor: null,
+        ourPids,
+        excludeWindowBounds,
+        selectorWindow: surface.window,
+        frontmostPid: list.frontmostPid,
+        frontmostBundleId: list.frontmostBundleId
+      }).payload;
+    }
+    surface.window.webContents.send(SELECTOR_WINDOW_LIST_CHANNEL, surface.windowListPayload);
+  };
   void listWindowsSnapshot()
     .then((snapshot) => {
       if (!acceptingWindowList || !ownsSelector(invocation)) return;
@@ -1150,6 +1414,16 @@ async function prepareRegion(
       invocation.previousAppPid = prepared.previousAppPid;
       windowListPayload = prepared.payload;
       deliverWindowListPayload(prepared.payload);
+      if (invocation.multi !== null) {
+        invocation.multi.windowList = {
+          windows: normalizedWindows,
+          frontmostPid: snapshot.frontmostPid,
+          frontmostBundleId: snapshot.frontmostBundleId
+        };
+        for (const surface of invocation.multi.secondaries.values()) {
+          deliverSecondaryWindowList(surface);
+        }
+      }
       if (windowEnumerationStage !== undefined) {
         latencyTrace?.end(windowEnumerationStage, {
           outcome: "completed",
@@ -1239,7 +1513,11 @@ async function prepareRegion(
     // the function returns). The frozen snapshot already excludes the
     // protected windows; holding protection any longer would leave them
     // stuck uncapturable. No-op when protectWindowIds is empty.
-    invocation.releaseProtection();
+    //
+    // A multi-display session holds it until the OTHER displays have been
+    // frozen too (prepareSecondaries' finally), or a protected Library on
+    // the second monitor would land in that monitor's snapshot.
+    if (invocation.multi === null) invocation.releaseProtection();
   }
   if (!ownsSelector(invocation)) return;
 
@@ -1281,6 +1559,7 @@ async function prepareRegion(
           burstOffered: opts.burstOffered === true,
           quickCaptureAction,
           ...(hudStyle !== undefined ? { hudStyle } : {}),
+          ...(invocation.multi !== null ? { multiDisplay: true } : {}),
           ...(latencyTrace !== undefined && presentationGeneration !== undefined
             ? {
                 invocationId: latencyTrace.invocation.id,
@@ -1292,6 +1571,38 @@ async function prepareRegion(
   const presentationScreenUrl = modePayload?.screenUrl;
   if (!win.isDestroyed() && modePayload !== null) {
     win.webContents.send(SELECTOR_MODE_CHANNEL, modePayload);
+  }
+  if (invocation.multi !== null) {
+    invocation.multi.primaryScreenUrl = modePayload?.screenUrl ?? null;
+    // Freeze and show the other displays while the primary paints. They
+    // are captured AFTER the primary so the display the user is looking
+    // at keeps its time-to-first-paint; the cost is that the other
+    // monitors are frozen a few tens of ms later, on a screen the user
+    // is not looking at.
+    void prepareSecondaries(invocation, {
+      primaryDisplayId: targetDisplay.id,
+      cursor,
+      deliverWindowList: deliverSecondaryWindowList,
+      modePayload: (snapshot) => ({
+        mode,
+        screenUrl: `pwrsnap-screen://r/${snapshot.id}`,
+        ...(snapshot.selectorDescriptor !== undefined
+          ? { snapshot: snapshot.selectorDescriptor }
+          : {}),
+        // Secondary displays are snap-only. The Snap/Record chooser, its
+        // microphone meter and camera preview belong to ONE renderer —
+        // N of them would open N microphone streams — and a recording
+        // cannot span displays anyway.
+        intent: "snap",
+        quickCaptureAction: "snap",
+        ...(hudStyle !== undefined ? { hudStyle } : {}),
+        multiDisplay: true
+      })
+    }).catch((error: unknown) => {
+      log.warn("secondary selector preparation failed", {
+        message: error instanceof Error ? error.message : String(error)
+      });
+    });
   }
   const displayRequestedAt = Date.now();
   log.info("capture selector display requested", {
@@ -1414,6 +1725,419 @@ async function prepareRegion(
   }
 }
 
+type CommittedPayload = {
+  extents?: { x: number; y: number; w: number; h: number }[];
+  extentIds?: number[];
+  mergePeers?: boolean;
+};
+
+/** Release every frozen snapshot this session still holds. */
+function releaseUnclaimedSessionSnapshots(invocation: SelectorInvocation): void {
+  if (invocation.snapshot !== null) {
+    const stale = invocation.snapshot;
+    invocation.snapshot = null;
+    void releaseSnapshot(stale.id);
+  }
+  releaseSecondarySurfaces(invocation);
+}
+
+/**
+ * Rewrite a commit from a multi-display session into the selection the
+ * capture handler crops: fold in the other displays' picks when the
+ * renderer asked for it, file the result under the right display, and
+ * hand over exactly the snapshots the crop needs. Every snapshot the
+ * session holds is either transferred on `result` or released here.
+ *
+ * Returns null when there is nothing left to capture.
+ */
+function planMultiDisplayCommit(
+  invocation: SelectorInvocation,
+  surface: SelectorSurface,
+  committedSnapshot: ScreenSnapshot,
+  payload: CommittedPayload,
+  result: Extract<SelectorOutcome, { ok: true }>
+): true | null {
+  const multi = invocation.multi!;
+  const displays = screen.getAllDisplays();
+  const committing = displays.find((d) => d.id === surface.displayId);
+  const snapshots = new Map<number, ScreenSnapshot>([[surface.displayId, committedSnapshot]]);
+  if (invocation.snapshot !== null && invocation.displayId !== null) {
+    snapshots.set(invocation.displayId, invocation.snapshot);
+  }
+  for (const secondary of multi.secondaries.values()) {
+    if (secondary.snapshot !== null) snapshots.set(secondary.displayId, secondary.snapshot);
+  }
+  const mergePeers = payload.mergePeers === true;
+  const localPicks =
+    mergePeers && committing !== undefined
+      ? (payload.extents ?? []).map((extent, i) =>
+          sessionPickFromRenderer(payload.extentIds?.[i] ?? -1, extent, committing)
+        )
+      : [];
+  const peerPicks = new Map(multi.picksByDisplay);
+  peerPicks.delete(surface.displayId);
+  const plan = planSessionCommit({
+    committingDisplayId: surface.displayId,
+    rect: result.rect,
+    ...(result.extents !== undefined ? { extents: result.extents } : {}),
+    ...(result.outputMode !== undefined ? { outputMode: result.outputMode } : {}),
+    ...(result.snappedWindowId !== undefined ? { snappedWindowId: result.snappedWindowId } : {}),
+    mergePeers,
+    localPicks,
+    peerPicks,
+    pickOrder: multi.pickOrder,
+    sessionOutputMode: multi.outputMode,
+    displays: displays.map((d) => ({ id: d.id, bounds: d.bounds, scaleFactor: d.scaleFactor })),
+    snapshotDisplayIds: new Set(snapshots.keys())
+  });
+  if (plan === null) return null;
+  result.rect = plan.rect;
+  result.displayId = plan.displayId;
+  if (plan.extents !== undefined) {
+    result.extents = plan.extents;
+    result.outputMode = plan.outputMode ?? "windows";
+  } else {
+    delete result.extents;
+    delete result.outputMode;
+  }
+  if (plan.snappedWindowId !== undefined) result.snappedWindowId = plan.snappedWindowId;
+  else delete result.snappedWindowId;
+  if (mergePeers) {
+    // A merged set is always a crop of the frozen screens: the renderer
+    // never offers full-window or Record against picks on another
+    // display, and a stale flag must not route it to either.
+    delete result.fullWindow;
+    delete result.action;
+  }
+  const home = snapshots.get(plan.displayId) ?? committedSnapshot;
+  const extras = plan.extraDisplayIds
+    .map((id) => snapshots.get(id))
+    .filter((snapshot): snapshot is ScreenSnapshot => snapshot !== undefined && snapshot !== home);
+  result.screenSnapshotId = home.id;
+  if (extras.length > 0) {
+    result.extraSnapshots = extras.map((snapshot) => ({
+      displayId: snapshot.displayId,
+      screenSnapshotId: snapshot.id
+    }));
+    // A recording is one display's stream.
+    delete result.action;
+  }
+  const transferred = new Set([home.id, ...extras.map((snapshot) => snapshot.id)]);
+  if (!transferred.has(committedSnapshot.id)) void releaseSnapshot(committedSnapshot.id);
+  if (invocation.snapshot !== null && transferred.has(invocation.snapshot.id)) {
+    invocation.snapshot = null;
+  }
+  for (const secondary of multi.secondaries.values()) {
+    if (secondary.snapshot !== null && transferred.has(secondary.snapshot.id)) {
+      secondary.snapshot = null;
+    }
+  }
+  releaseUnclaimedSessionSnapshots(invocation);
+  log.info("multi-display selection committed", {
+    committingDisplayId: surface.displayId,
+    displayId: plan.displayId,
+    extraDisplayIds: extras.map((snapshot) => snapshot.displayId),
+    extents: result.extents?.length ?? 0,
+    merged: mergePeers
+  });
+  return true;
+}
+
+type SecondaryPrepContext = {
+  primaryDisplayId: number;
+  cursor: { x: number; y: number };
+  deliverWindowList: (surface: SecondarySurface) => void;
+  modePayload: (snapshot: ScreenSnapshot) => Record<string, unknown>;
+};
+
+/**
+ * Freeze, paint and show every display other than the primary, one at a
+ * time (screencapture races itself when run concurrently).
+ *
+ * A secondary is shown INACTIVE: the primary keeps the keyboard until
+ * the user clicks another display. Every step re-checks ownership, and a
+ * snapshot taken for a session that has meanwhile ended is released
+ * here, because nothing else will ever see it.
+ */
+async function prepareSecondaries(
+  invocation: SelectorInvocation,
+  ctx: SecondaryPrepContext
+): Promise<void> {
+  const multi = invocation.multi;
+  if (multi === null) return;
+  try {
+    const distance = (d: Display): number => {
+      const cx = d.bounds.x + d.bounds.width / 2;
+      const cy = d.bounds.y + d.bounds.height / 2;
+      return Math.hypot(cx - ctx.cursor.x, cy - ctx.cursor.y);
+    };
+    const others = screen
+      .getAllDisplays()
+      .filter((d) => d.id !== ctx.primaryDisplayId)
+      .sort((a, b) => distance(a) - distance(b));
+    for (const display of others) {
+      if (!ownsSelector(invocation)) return;
+      let win = selectorWindows.get(display.id);
+      if (win === undefined || win.isDestroyed()) {
+        rebuildSelectorForDisplay(display.id);
+        win = selectorWindows.get(display.id);
+      }
+      if (win === undefined) continue;
+      const ready = await waitForSelectorWindowLoad(display.id, win);
+      if (!ownsSelector(invocation)) return;
+      if (!ready || win.isDestroyed()) continue;
+      const surface: SecondarySurface = {
+        displayId: display.id,
+        window: win,
+        senderId: win.webContents.id,
+        snapshot: null,
+        screenUrl: null,
+        visible: false,
+        windowListPayload: null,
+        paintWait: null
+      };
+      multi.secondaries.set(display.id, surface);
+      let snapshot: ScreenSnapshot;
+      try {
+        snapshot = await captureAndRegister(display.id);
+      } catch (error) {
+        multi.secondaries.delete(display.id);
+        log.warn("secondary display snapshot failed; that display stays live", {
+          displayId: display.id,
+          message: error instanceof Error ? error.message : String(error)
+        });
+        continue;
+      }
+      if (!ownsSelector(invocation) || win.isDestroyed()) {
+        await releaseSnapshot(snapshot.id);
+        multi.secondaries.delete(display.id);
+        if (!ownsSelector(invocation)) return;
+        continue;
+      }
+      surface.snapshot = snapshot;
+      surface.screenUrl = `pwrsnap-screen://r/${snapshot.id}`;
+      win.webContents.send(SELECTOR_MODE_CHANNEL, ctx.modePayload(snapshot));
+      // Reveal on paint WITHOUT holding up the next display's capture:
+      // only the captures must run one at a time.
+      void revealSecondaryWhenPainted(invocation, surface, display, ctx);
+    }
+  } finally {
+    // Every display is frozen by now; the protected windows can go back.
+    invocation.releaseProtection();
+  }
+}
+
+async function revealSecondaryWhenPainted(
+  invocation: SelectorInvocation,
+  surface: SecondarySurface,
+  display: Display,
+  ctx: SecondaryPrepContext
+): Promise<void> {
+  const win = surface.window;
+  const outcome = await new Promise<SnapshotPaintOutcome>((resolve) => {
+    const timer = setTimeout(() => {
+      surface.paintWait = null;
+      resolve("timeout");
+    }, SHOW_AFTER_PAINT_TIMEOUT_MS);
+    surface.paintWait = (result) => {
+      clearTimeout(timer);
+      surface.paintWait = null;
+      resolve(result);
+    };
+  });
+  if (outcome === "superseded" || !ownsSelector(invocation) || win.isDestroyed()) return;
+  enterMenuBarOverlayMode(win);
+  win.showInactive();
+  win.moveTop();
+  surface.visible = true;
+  selectorDisplaysNeedingFreshPanel.add(display.id);
+  scheduleStandbySelectorWarm(display, invocation);
+  log.info("secondary capture selector displayed", {
+    displayId: display.id,
+    paint: outcome
+  });
+  ctx.deliverWindowList(surface);
+  sendPeerPicks(invocation, surface.displayId, null);
+}
+
+/** Every surface of a multi-display session that a renderer message can
+ *  be addressed to, keyed by display. */
+function visibleSurfaces(
+  invocation: SelectorInvocation
+): { displayId: number; window: BrowserWindow; screenUrl: string }[] {
+  const multi = invocation.multi;
+  if (multi === null) return [];
+  const out: { displayId: number; window: BrowserWindow; screenUrl: string }[] = [];
+  if (
+    invocation.window !== null &&
+    !invocation.window.isDestroyed() &&
+    invocation.displayId !== null &&
+    multi.primaryScreenUrl !== null
+  ) {
+    out.push({
+      displayId: invocation.displayId,
+      window: invocation.window,
+      screenUrl: multi.primaryScreenUrl
+    });
+  }
+  for (const surface of multi.secondaries.values()) {
+    if (!surface.visible || surface.window.isDestroyed() || surface.screenUrl === null) continue;
+    out.push({ displayId: surface.displayId, window: surface.window, screenUrl: surface.screenUrl });
+  }
+  return out;
+}
+
+type PeerPicksPayload = {
+  screenUrl: string;
+  /** Picks made on OTHER displays, in the receiver's window-local
+   *  logical px. `id` is the native window id, or a negative synthetic
+   *  id for a whole-display pick. */
+  picks: { id: number; rect: LogicalRect }[];
+  /** Union box of the whole session's picks, receiver-local; null when
+   *  nothing is picked anywhere. */
+  union: LogicalRect | null;
+  /** Session-wide pick count (each window once). */
+  total: number;
+  outputMode: "windows" | "rectangle";
+  /** The receiver's display width in logical px, so it can convert to
+   *  CSS px before its window list (which also carries it) arrives. */
+  displayWidth: number;
+  /** Window ids the receiver must drop from its OWN pick set (another
+   *  display asked to unpick a window both list). */
+  drop?: number[];
+  /** The receiver must drop its whole pick set. */
+  dropAll?: true;
+};
+
+function sendPeerPicks(
+  invocation: SelectorInvocation,
+  onlyDisplayId: number | null,
+  drops: ReadonlyMap<number, number[] | "all"> | null
+): void {
+  const multi = invocation.multi;
+  if (multi === null || !ownsSelector(invocation)) return;
+  const displays = screen.getAllDisplays();
+  const merged = mergeSessionPicks(multi.picksByDisplay, multi.pickOrder);
+  const union = unionRects(merged.map((p) => p.rect));
+  for (const surface of visibleSurfaces(invocation)) {
+    if (onlyDisplayId !== null && surface.displayId !== onlyDisplayId) continue;
+    const display = displays.find((d) => d.id === surface.displayId);
+    if (display === undefined) continue;
+    const own = new Set((multi.picksByDisplay.get(surface.displayId) ?? []).map((p) => p.key));
+    const localize = (r: LogicalRect): LogicalRect => ({
+      x: r.x - display.bounds.x,
+      y: r.y - display.bounds.y,
+      w: r.w,
+      h: r.h
+    });
+    const payload: PeerPicksPayload = {
+      screenUrl: surface.screenUrl,
+      picks: merged
+        .filter((p) => !own.has(p.key))
+        .map((p) => ({
+          id:
+            p.windowId ??
+            // Whole-display picks: a stable negative id per display,
+            // never -1 (the receiver's own display pick).
+            -2 - Math.max(0, displays.findIndex((d) => `d:${d.id}` === p.key)),
+          rect: localize(p.rect)
+        })),
+      union: union === null ? null : localize(union),
+      total: merged.length,
+      outputMode: multi.outputMode,
+      displayWidth: display.bounds.width
+    };
+    const drop = drops?.get(surface.displayId);
+    if (drop === "all") payload.dropAll = true;
+    else if (drop !== undefined && drop.length > 0) payload.drop = drop;
+    surface.window.webContents.send(SELECTOR_PEER_PICKS_CHANNEL, payload);
+  }
+}
+
+type PicksReport = {
+  screenUrl: string;
+  picks: { id: number; rect: LogicalRect }[];
+  outputMode: "windows" | "rectangle";
+  unpick?: number[];
+  clearAll?: boolean;
+};
+
+function parsePicksReport(value: unknown): PicksReport | null {
+  if (value === null || typeof value !== "object") return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.screenUrl !== "string") return null;
+  if (v.outputMode !== "windows" && v.outputMode !== "rectangle") return null;
+  if (!Array.isArray(v.picks) || v.picks.length > MAX_SELECTOR_EXTENTS) return null;
+  const picks: PicksReport["picks"] = [];
+  for (let i = 0; i < v.picks.length; i += 1) {
+    const entry = v.picks[i] as Record<string, unknown> | undefined;
+    if (entry === undefined || entry === null || typeof entry !== "object") return null;
+    if (typeof entry.id !== "number" || !Number.isSafeInteger(entry.id)) return null;
+    if (!isExtentRect(entry.rect)) return null;
+    picks.push({ id: entry.id, rect: entry.rect });
+  }
+  const report: PicksReport = { screenUrl: v.screenUrl, picks, outputMode: v.outputMode };
+  if (v.unpick !== undefined) {
+    if (!Array.isArray(v.unpick) || v.unpick.length > MAX_SELECTOR_EXTENTS) return null;
+    if (!v.unpick.every((id) => typeof id === "number" && Number.isSafeInteger(id))) return null;
+    report.unpick = v.unpick as number[];
+  }
+  if (v.clearAll !== undefined) {
+    if (typeof v.clearAll !== "boolean") return null;
+    report.clearAll = v.clearAll;
+  }
+  return report;
+}
+
+/**
+ * Fold one renderer's pick report into the session and say which OTHER
+ * renderers must drop which of their own picks. Pure over the session
+ * object.
+ */
+function applyPicksReport(
+  multi: Pick<MultiDisplaySession, "picksByDisplay" | "pickOrder" | "outputMode" | "reportedOutputMode">,
+  display: { id: number; bounds: { x: number; y: number } },
+  report: PicksReport
+): Map<number, number[] | "all"> {
+  const drops = new Map<number, number[] | "all">();
+  if (report.clearAll === true) {
+    for (const [displayId, picks] of multi.picksByDisplay) {
+      if (displayId !== display.id && picks.length > 0) drops.set(displayId, "all");
+    }
+    multi.picksByDisplay.clear();
+  }
+  for (const id of report.unpick ?? []) {
+    if (id < 0) continue;
+    const key = `w:${id}`;
+    for (const [displayId, picks] of multi.picksByDisplay) {
+      if (displayId === display.id || !picks.some((p) => p.key === key)) continue;
+      multi.picksByDisplay.set(
+        displayId,
+        picks.filter((p) => p.key !== key)
+      );
+      const existing = drops.get(displayId);
+      if (existing !== "all") drops.set(displayId, [...(existing ?? []), id]);
+    }
+  }
+  multi.picksByDisplay.set(
+    display.id,
+    report.picks.map((p) => sessionPickFromRenderer(p.id, p.rect, display))
+  );
+  const live = new Set<string>();
+  for (const picks of multi.picksByDisplay.values()) for (const p of picks) live.add(p.key);
+  multi.pickOrder = multi.pickOrder.filter((key) => live.has(key));
+  for (const p of multi.picksByDisplay.get(display.id) ?? []) {
+    if (!multi.pickOrder.includes(p.key)) multi.pickOrder.push(p.key);
+  }
+  const previous = multi.reportedOutputMode.get(display.id);
+  if (previous !== undefined && previous !== report.outputMode) {
+    multi.outputMode = report.outputMode;
+  }
+  multi.reportedOutputMode.set(display.id, report.outputMode);
+  if (live.size < 2) multi.outputMode = "windows";
+  return drops;
+}
+
 /**
  * Decide which app pid (if any) the capture flow should re-activate
  * after a commit or cancel. Pure function, exported for unit testing.
@@ -1502,7 +2226,8 @@ function matchesExcludedBounds(b: BoundsLike, excluded: readonly BoundsLike[]): 
 export function prepareWindowListPayload(args: {
   rawSnapshot: WindowInfo[];
   targetDisplay: Display;
-  displayCursor: { x: number; y: number };
+  /** null for a display the pointer is not on. */
+  displayCursor: { x: number; y: number } | null;
   ourPids: Set<number>;
   /** Bounds of windows excluded from the snapshot via content
    *  protection — dropped from the snap-candidate list too. */
@@ -1707,7 +2432,7 @@ export function prepareWindowListPayload(args: {
         width: displayBounds.width,
         height: displayBounds.height
       },
-      cursor: displayCursor
+      ...(displayCursor !== null ? { cursor: displayCursor } : {})
     }
   };
 }
@@ -1755,7 +2480,7 @@ function armSelectorGlobalShortcuts(): void {
     if (ownedSelectorShortcuts.has(accelerator)) continue;
     try {
       const registered = globalShortcut.register(accelerator, () => {
-        const win = selectorShortcutWindow;
+        const win = shortcutTargetWindow();
         if (selectorShortcutsSuspended || win === null || win.isDestroyed()) return;
         win.webContents.send(SELECTOR_KEY_CHANNEL, {
           key: accelerator === "Escape" ? "Escape" : "Enter"
@@ -1773,6 +2498,27 @@ function armSelectorGlobalShortcuts(): void {
       });
     }
   }
+}
+
+/**
+ * Which selector a forwarded Esc / ↵ belongs to. One display: the
+ * selector. Several: the one the user is working in — the focused
+ * secondary (they clicked it), else the one under the pointer — so ↵
+ * commits what that display shows, and an Esc that steps back there
+ * cannot instead cancel the whole session from another display.
+ */
+function shortcutTargetWindow(): BrowserWindow | null {
+  const primary = selectorShortcutWindow;
+  const multi = activeInvocation?.multi ?? null;
+  if (multi === null || primary === null) return primary;
+  const visible = [...multi.secondaries.values()].filter(
+    (surface) => surface.visible && !surface.window.isDestroyed()
+  );
+  if (!primary.isDestroyed() && primary.isFocused()) return primary;
+  const focused = visible.find((surface) => surface.window.isFocused());
+  if (focused !== undefined) return focused.window;
+  const under = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  return visible.find((surface) => surface.displayId === under.id)?.window ?? primary;
 }
 
 function installSelectorGlobalShortcuts(win: BrowserWindow): void {
@@ -1853,6 +2599,7 @@ function hideAllSelectors(): void {
     invocation.snapshot = null;
     void releaseSnapshot(stale.id);
   }
+  if (invocation !== null) releaseSecondarySurfaces(invocation);
   const rebuildAfterHide: { displayId: number; staleWindow: BrowserWindow }[] = [];
   for (const [displayId, win] of selectorWindows) {
     if (win.isDestroyed()) continue;
@@ -2080,6 +2827,10 @@ function createSelectorWindow(
     alwaysOnTop: true,
     hasShadow: false,
     focusable: true,
+    // With a selector on every display, the first click on a display
+    // whose selector is not key must land as a press, not just make
+    // that panel key. macOS-only option; ignored elsewhere.
+    acceptFirstMouse: true,
     backgroundColor: "#00000000",
     webPreferences: {
       preload: getPreloadPath(),
@@ -2365,7 +3116,9 @@ function isSelectorPayload(value: unknown): value is {
   sources?: RecordingCapabilities;
   action?: SelectorTerminalAction;
   extents?: { x: number; y: number; w: number; h: number }[];
+  extentIds?: number[];
   outputMode?: "windows" | "rectangle";
+  mergePeers?: boolean;
 } {
   if (value === null || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
@@ -2427,6 +3180,20 @@ function isSelectorPayload(value: unknown): value is {
   ) {
     return false;
   }
+  if (v.mergePeers !== undefined && typeof v.mergePeers !== "boolean") return false;
+  if (v.extentIds !== undefined) {
+    // One id per extent, or the merge cannot tell which local pick is
+    // which window.
+    if (!Array.isArray(v.extentIds) || !Array.isArray(v.extents)) return false;
+    if (v.extentIds.length !== v.extents.length) return false;
+    for (let i = 0; i < v.extentIds.length; i += 1) {
+      const id: unknown = v.extentIds[i];
+      if (typeof id !== "number" || !Number.isSafeInteger(id)) return false;
+    }
+  }
+  if (v.mergePeers === true && v.extents !== undefined && v.extentIds === undefined) {
+    return false;
+  }
   return true;
 }
 
@@ -2440,6 +3207,7 @@ export function disposeRegionSelector(): void {
       void releaseSnapshot(invocation.snapshot.id);
       invocation.snapshot = null;
     }
+    releaseSecondarySurfaces(invocation);
   }
   activeInvocation = null;
   activeSelectorSenderId = null;
@@ -2464,6 +3232,8 @@ export function disposeRegionSelector(): void {
     ipcMain.removeAllListeners(SELECTOR_RESULT_CHANNEL);
     ipcMain.removeAllListeners(SELECTOR_PAINTED_CHANNEL);
     ipcMain.removeAllListeners(SELECTOR_PRESENTED_CHANNEL);
+    ipcMain.removeAllListeners(SELECTOR_PICKS_CHANNEL);
+    ipcMain.removeAllListeners(SELECTOR_FOCUS_CHANNEL);
     ipcMain.removeHandler(SELECTOR_SNAPSHOT_READ_CHANNEL);
     resultListenerAttached = false;
   }

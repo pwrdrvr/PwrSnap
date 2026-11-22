@@ -304,9 +304,6 @@ export class AppleFmEnrichmentBackend implements EnrichmentBackend {
         );
       }
       if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") {
-        if (this.nativeRun !== undefined) {
-          throw new AppleFmError("not-ready", "the bundled Apple captions helper couldn't be found.");
-        }
         throw new AppleFmError(
           "not-ready",
           `the on-device model needs macOS 27 or later; its command-line tool isn't on this Mac. ${SETTINGS_HINT}`

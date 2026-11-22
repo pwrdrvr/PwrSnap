@@ -2,7 +2,13 @@ import { app } from "electron";
 import { access, constants } from "node:fs/promises";
 import { join } from "node:path";
 import type { AppleFmStatus } from "@pwrsnap/shared";
-import { createAppleCaptionProcessRunner, type FmRunner } from "./fm-cli";
+import { AppleFmError } from "./enrichment";
+import {
+  AppleFmOutputLimitError,
+  AppleFmTimeoutError,
+  createAppleCaptionProcessRunner,
+  type FmRunner
+} from "./fm-cli";
 import { APPLE_FM_PROBE_TIMEOUT_MS } from "./status";
 
 const PACKAGED_HELPER = "PwrSnapAppleCaption";
@@ -14,8 +20,42 @@ function assertNativeCaptionArgs(args: readonly string[]): void {
   }
 }
 
-export function createNativeCaptionRunner(binary: string): FmRunner {
-  return createAppleCaptionProcessRunner(binary, assertNativeCaptionArgs);
+/** Electron's product version ("27.2") on macOS, or null under plain Node. */
+export function readMacosVersion(): string | null {
+  if (process.platform !== "darwin") return null;
+  const read = (process as { getSystemVersion?: () => string }).getSystemVersion;
+  return typeof read === "function" ? read.call(process) : null;
+}
+
+function needsNewerMacos(version: string | null): boolean {
+  return version !== null && Number.parseInt(version, 10) < 27;
+}
+
+export function createNativeCaptionRunner(binary: string, macosVersion = readMacosVersion()): FmRunner {
+  const run = createAppleCaptionProcessRunner(binary, assertNativeCaptionArgs);
+  return async (args, options) => {
+    // The helper can fail at dynamic linking on older macOS, before Swift can
+    // check availability. Let the process runner handle an existing abort.
+    if (!options.signal?.aborted && needsNewerMacos(macosVersion)) {
+      throw new AppleFmError("not-ready", "the bundled Apple captions helper requires macOS 27 or later.");
+    }
+    try {
+      return await run(args, options);
+    } catch (error) {
+      if (
+        error instanceof AppleFmTimeoutError ||
+        error instanceof AppleFmOutputLimitError ||
+        (error instanceof DOMException && error.name === "AbortError")
+      ) {
+        throw error;
+      }
+      // Node's launch errors include the executable's absolute path.
+      if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") {
+        throw new AppleFmError("not-ready", "the bundled Apple captions helper couldn't be found.");
+      }
+      throw new AppleFmError("failed", "the bundled Apple captions helper couldn't be started.");
+    }
+  };
 }
 
 /** An installed app always expects its signed helper. A dev checkout with an
@@ -44,7 +84,7 @@ export async function probeNativeCaptionStatus(
     state: "probe-failed", transport: "native", macosVersion,
     modelLabel: null, detail: null, checkedAt: Date.now()
   };
-  if (macosVersion !== null && Number.parseInt(macosVersion, 10) < 27) {
+  if (needsNewerMacos(macosVersion)) {
     return { ...status, state: "needs-macos" };
   }
   try {

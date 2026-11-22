@@ -19,7 +19,7 @@ jobs:
       (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'build-preview'))
     uses: ./.github/workflows/build-apple-caption.yml
     with:
-      ref: ${{ github.ref }}
+      ref: ${{ github.sha }}
 
   preview:
     name: Build preview DMG
@@ -35,8 +35,10 @@ jobs:
     env:
       PWRSNAP_PREBUILT_APPLE_CAPTION: "1"
     steps:
-      - name: Checkout PR branch
+      - name: Checkout preview revision
         uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
 
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@d416c1c78119b25fe03ee3ef78b75af0d69b10a7 # v1.7.1

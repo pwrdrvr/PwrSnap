@@ -63,7 +63,11 @@ beforeEach(async () => {
   sourceDocumentId = `history_doc_${++documentCounter}`.padEnd(20, "_");
   liveWindow = Object.assign(new EventEmitter(), {
     id: 7, isDestroyed: () => destroyed,
-    webContents: Object.assign(new EventEmitter(), { id: 70, isDestroyed: () => destroyed })
+    webContents: Object.assign(new EventEmitter(), {
+      id: 70,
+      isDestroyed: () => destroyed,
+      getOSProcessId: () => 1234
+    })
   });
   const { allowNextHotkeyRecorderDocument } = await import("../../hotkeys/hotkey-recorder-document");
   allowNextHotkeyRecorderDocument(70);

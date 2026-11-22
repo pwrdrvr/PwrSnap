@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.3.7 - 2026-11-22
+
+- Burst Capture - Added a macOS capture mode that takes full-resolution stills
+  as the screen changes. Review the burst and keep the moments you want as
+  snaps, with an optional removable pointer layer.
+- Video Frames - Added the ability to copy the frame under the playhead as a
+  PNG, save it as a snap, or copy its timestamp from the Library.
+- Sizzle Reel and MCP - Fixed an issue where reading a large render through
+  MCP could freeze the connected client. PwrSnap now reports when a file is too
+  large to read through MCP and tells you where the full render was saved.
+
 ## v1.3.6 - 2026-11-21
 
 - Credential Storage - Improved how PwrSnap reads and saves API keys and other

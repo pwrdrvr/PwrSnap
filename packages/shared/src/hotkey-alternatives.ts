@@ -27,6 +27,16 @@ const RESERVED: Record<ShortcutPlatform, string[]> = {
   linux: []
 };
 
+// These local accelerators can be shadowed by a global registration even when
+// native registration succeeds. Keep Sizzle and the application menu usable.
+const PWR_SNAP_SHORTCUTS = [
+  "CommandOrControl+Shift+L", // Sizzle Reels browser
+  "CommandOrControl+Shift+D", // Duplicate Snap
+  "CommandOrControl+Shift+Z", // Redo
+  "CommandOrControl+Shift+R", // Force Reload in Developer Mode
+  "Control+Shift+I" // Developer Tools on Windows and Linux
+];
+
 /** Candidates to try. Native availability is checked when the user applies one. */
 export function suggestHotkeyAlternatives(
   platform: ShortcutPlatform,
@@ -48,7 +58,7 @@ export function suggestHotkeyAlternatives(
       ]
     : [`Control+Shift+${key}`, `Alt+Shift+${key}`, "Control+Shift+F9", "Control+Shift+F10", "Control+Shift+F11", "Control+Shift+F12"];
   const excluded = new Set(
-    [attempted, ...Object.values(saved), ...rejected, ...RESERVED[platform]]
+    [attempted, ...Object.values(saved), ...rejected, ...RESERVED[platform], ...PWR_SNAP_SHORTCUTS]
       .map((chord) => physicalAcceleratorIdentity(chord, platform))
   );
   return candidates.filter((candidate) => {

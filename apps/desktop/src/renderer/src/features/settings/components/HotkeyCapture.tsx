@@ -364,7 +364,8 @@ export function HotkeyCapture({
     if (pendingLeaseSession.current === sessionId) pendingLeaseSession.current = null;
     void dispatch("settings:endHotkeyRecording", { sessionId, generation })
       .then((result) => {
-        if (result.ok && result.value.ended) return onLeaseEnded?.();
+        // Main may have expired the lease before our save reply arrived.
+        if (result.ok) return onLeaseEnded?.();
       })
       .catch(() => undefined);
   }, [onLeaseEnded]);

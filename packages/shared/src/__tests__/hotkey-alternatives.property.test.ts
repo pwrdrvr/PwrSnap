@@ -36,3 +36,23 @@ test("the macOS ladder leaves screenshot-to-clipboard shortcuts out", () => {
     "darwin", "quickCapture", "Command+Shift+4", defaultHotkeysForPlatform("darwin"), []
   )).toEqual(["Command+Alt+Shift+4", "Command+Control+Alt+4", "Control+Alt+Shift+4"]);
 });
+
+test("alternatives preserve built-in PwrSnap commands", () => {
+  fc.assert(fc.property(
+    fc.constantFrom("win32", "linux"),
+    fc.constantFrom("L", "D", "Z", "I", "R"),
+    (platform, key) => {
+      const candidates = suggestHotkeyAlternatives(
+        platform, "openLibrary", `Ctrl+Alt+${key}`, defaultHotkeysForPlatform(platform), []
+      );
+      expect(candidates).toHaveLength(3);
+      expect(candidates.some((chord) => acceleratorsAreEquivalent(chord, `Ctrl+Shift+${key}`, platform))).toBe(false);
+    }
+  ));
+});
+
+test("recovering Open Library leaves Ctrl+Shift+L available for Sizzle Reels", () => {
+  expect(suggestHotkeyAlternatives(
+    "win32", "openLibrary", "Control+Alt+L", defaultHotkeysForPlatform("win32"), []
+  )).toEqual(["Alt+Shift+L", "Control+Shift+F9", "Control+Shift+F10"]);
+});

@@ -244,6 +244,47 @@ describe("HotkeysPage recorder ownership", () => {
     ).toBe(false);
   });
 
+  test.each([false, true])("duplicate recovery follows saved ownership after Clear (another earlier row: %s)", async (anotherOwner) => {
+    const chord = "Control+Shift+K";
+    const blocked = anotherOwner ? "window" : "region";
+    const label = anotherOwner ? "Window" : "Region";
+    const initial = settingsWith({
+      ...defaultHotkeysForPlatform("win32"), quickCapture: chord,
+      region: "CommandOrControl+Shift+K", window: chord
+    });
+    const cleared = settingsWith({ ...initial.hotkeys, quickCapture: "" });
+    const boot = activeStatus(initial.hotkeys);
+    const duplicate = {
+      code: "duplicate", conflictsWith: "quickCapture", message: "Duplicates Quick Capture."
+    } as const;
+    boot.region = { ...boot.region, state: "inactive", failure: duplicate };
+    boot.window = { ...boot.window, state: "inactive", failure: duplicate };
+    const recovered = activeStatus(cleared.hotkeys);
+    recovered.window = { ...boot.window, failure: { ...duplicate, conflictsWith: "region" } };
+    const view = await renderPage(initial, { hotkeyStatus: boot, retryStatus: recovered });
+    const row = buttonByName(`Change ${label} hotkey`).closest(".pss__row")!;
+    const retry = () => row.querySelector<HTMLButtonElement>(`[aria-label='Retry ${label} hotkey']`);
+    expect(row.textContent).toContain("Quick Capture also uses");
+    expect(retry()).toBeNull();
+
+    patchMock.mockImplementationOnce(async () => {
+      contextValue = { ...contextValue, settings: cleared };
+      root?.render(createElement(HotkeysPage));
+    });
+    await act(async () => buttonByName("Clear Quick Capture hotkey").click());
+    expect(row.querySelector(".pss__hk-recovery")?.textContent).not.toContain("Quick Capture");
+    if (anotherOwner) {
+      expect(row.textContent).toContain("Region also uses");
+      expect(retry()).toBeNull();
+    } else {
+      expect(retry()).not.toBeNull();
+      await act(async () => retry()?.click());
+      expect(dispatchMock).toHaveBeenCalledWith("settings:retryHotkey", { key: blocked });
+      expect(row.querySelector(".pss__hk-recovery")).toBeNull();
+      expect(view.textContent).toContain("Windows registered it for PwrSnap.");
+    }
+  });
+
   test("does not show a stale failure for a newly persisted accelerator", async () => {
     const settings = settingsWith({
       ...defaultHotkeysForPlatform("win32"),
@@ -364,6 +405,46 @@ describe("HotkeysPage recorder ownership", () => {
     expect(view.querySelector(".pss__hk-confirm")?.textContent).toContain("Windows registered it for PwrSnap.");
     expect(document.activeElement).toBe(buttonByName("Change Quick Capture"));
   });
+
+  test.each(["renderer releases", "main expires"] as const)(
+    "refreshes the old binding after a save rejection when %s the lease",
+    async (releasedBy) => {
+      const settings = settingsWith();
+      const active = activeStatus(settings.hotkeys);
+      const suspended = {
+        ...active, quickCapture: { ...active.quickCapture, state: "suspended" as const }
+      };
+      const view = await renderPage(settings);
+      const originalDispatch = dispatchMock.getMockImplementation()!;
+      let leased = false;
+      dispatchMock.mockImplementation(async (name: string, req: Record<string, unknown>) => {
+        if (name === "settings:beginHotkeyRecording") leased = true;
+        if (name === "settings:endHotkeyRecording") {
+          const ended = leased;
+          leased = false;
+          return { ok: true, value: { ended } };
+        }
+        if (name === "settings:hotkeyStatus") {
+          return { ok: true, value: leased ? suspended : active };
+        }
+        return originalDispatch(name, req);
+      });
+      const reply = deferredSignal();
+      patchMock.mockImplementationOnce(async () => {
+        await reply.promise;
+        throw new SettingsPatchError("hotkey_unavailable", "Could not register shortcut.");
+      });
+
+      await act(async () => buttonByName("Change Quick Capture").click());
+      await pressChord("r", "KeyR");
+      expect(leased).toBe(true);
+      if (releasedBy === "main expires") leased = false;
+      await act(async () => reply.resolve());
+
+      expect(view.querySelector(".pss__hk-status")?.textContent).toBe("Active");
+      expect(leased).toBe(false);
+    }
+  );
 
   test.each(["save", "cancel"] as const)(
     "shows a native re-registration failure after recorder %s",

@@ -55,7 +55,7 @@ const HOTKEY_LABELS: Record<HotkeyKey, string> = {
   openLibrary: "Open Library"
 };
 
-const HOTKEY_KEYS = Object.keys(HOTKEY_LABELS) as HotkeyKey[];
+const HOTKEY_KEYS = Object.keys(DEFAULT_HOTKEYS) as HotkeyKey[];
 const triggerId = (key: HotkeyKey): string => `settings-hotkey-${key}`;
 
 function rejectedKind(error: unknown): "duplicate" | "unsupported" | "failed" | null {
@@ -166,9 +166,9 @@ export function HotkeysPage(): ReactElement {
     setRecordingKey((current) => (current === key ? null : current));
   };
   const onUnbind = (key: HotkeyKey) => (): Promise<void> => writeOne(key, "");
-  function findConflict(key: HotkeyKey, accelerator: string): HotkeyKey | undefined {
+  function findConflict(key: HotkeyKey, accelerator: string, candidates = HOTKEY_KEYS): HotkeyKey | undefined {
     if (hk === null || accelerator === "") return undefined;
-    return HOTKEY_KEYS.find((other) => other !== key && acceleratorsAreEquivalent(accelerator, hk[other], platform));
+    return candidates.find((other) => other !== key && acceleratorsAreEquivalent(accelerator, hk[other], platform));
   }
 
   const rememberFailure = (
@@ -298,12 +298,21 @@ export function HotkeysPage(): ReactElement {
     const failure = inactive ? status.failure : null;
     const label = HOTKEY_LABELS[key];
     const edit = failedEdit?.key === key ? failedEdit : null;
-    const kind = edit?.kind ?? (inactive ? (failure?.code === "duplicate" ? "duplicate" : "inactive") : null);
+    // A duplicate failure describes the last attempt. Retry gives the first
+    // configured row priority, so look for a current owner in that same order.
+    const savedDuplicate = failure?.code === "duplicate" && failure.conflictsWith !== undefined;
+    const savedConflict = savedDuplicate
+      ? findConflict(key, value, HOTKEY_KEYS.slice(0, HOTKEY_KEYS.indexOf(key)))
+      : undefined;
+    const duplicateCleared = savedDuplicate && savedConflict === undefined;
+    const kind = edit?.kind ?? (inactive
+      ? (failure?.code === "duplicate" && !duplicateCleared ? "duplicate" : "inactive")
+      : null);
     const attempted = edit?.attempted ?? value;
     const attemptedText = acceleratorToDisplayText(attempted, platform);
     const conflictKey = edit?.kind === "duplicate"
       ? findConflict(key, attempted)
-      : failure?.conflictsWith;
+      : edit === null ? savedConflict : undefined;
     const conflictLabel = conflictKey === undefined ? undefined : HOTKEY_LABELS[conflictKey];
     const title = edit?.kind === "unsupported"
       ? `${attemptedText} can’t be a global shortcut on ${platformName}`
@@ -312,7 +321,9 @@ export function HotkeysPage(): ReactElement {
         : edit !== null ? `Couldn’t use ${attemptedText} for ${label}` : `${label} isn’t active`;
     const retried = lastRetry?.key === key && lastRetry.accelerator === value;
     let detail = edit?.detail ?? failure?.message ?? "Choose another combination.";
-    if (kind === "duplicate" && conflictLabel !== undefined) {
+    if (edit === null && duplicateCleared) {
+      detail = "The other shortcut has changed. Retry to activate this shortcut.";
+    } else if (kind === "duplicate" && conflictLabel !== undefined) {
       detail = edit === null
         ? "Both rows are saved with the same combination. Change one of them."
         : `Pick a different combination here, or change ${conflictLabel} first.`;
@@ -326,7 +337,7 @@ export function HotkeysPage(): ReactElement {
     const alternatives = kind === null || hk === null
       ? []
       : edit?.options ?? suggestHotkeyAlternatives(platform, key, attempted, hk, rejected);
-    const canRetry = failure?.code === "unavailable" || failure?.code === "registration_error";
+    const canRetry = duplicateCleared || failure?.code === "unavailable" || failure?.code === "registration_error";
     const showConfirmation = confirmation?.key === key &&
       status?.state === "active" && acceleratorsAreEquivalent(value, confirmation.accelerator, platform);
     return (

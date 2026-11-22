@@ -158,8 +158,23 @@ type SnapTarget =
 
 type SelectorMode = "auto" | "region" | "window";
 
-/** Output shape for a multi-window pick. See the `outputMode` state. */
-type OutputMode = "windows" | "rectangle";
+/** Output shape for a multi-window pick. See the `outputMode` state.
+ *  `set` ("Separate") saves one capture per pick instead of one image. */
+type OutputMode = "windows" | "rectangle" | "set";
+
+/** `T` steps through the shapes in the order the HUD shows them. */
+const NEXT_OUTPUT_MODE: Record<OutputMode, OutputMode> = {
+  windows: "rectangle",
+  rectangle: "set",
+  set: "windows"
+};
+
+/** The hint bar's label for `T`: what the NEXT press switches to. */
+const NEXT_OUTPUT_MODE_HINT: Record<OutputMode, string> = {
+  windows: "keep whole box",
+  rectangle: "separate images",
+  set: "one image"
+};
 
 type Interaction =
   | { kind: "snap" } // live-snap; rect tracks cursor
@@ -1685,7 +1700,10 @@ export function RegionSelector() {
         // the record gets no source app at all. (A whole-display pick
         // names none; the first WINDOW pick does.)
         ...(firstWindowPick !== undefined ? { snappedWindowId: firstWindowPick.windowId } : {}),
-        ...(multiDisplayRef.current
+        // Ids ride along when main needs them: to merge picks across
+        // displays, and for a set, where each capture names its own
+        // source window.
+        ...(multiDisplayRef.current || outputModeRef.current === "set"
           ? { extentIds: activePicks.map((p) => p.windowId) }
           : {})
       });
@@ -1994,7 +2012,7 @@ export function RegionSelector() {
         // same pixels and the key would be a no-op the user could not
         // explain.
         event.preventDefault();
-        setOutputMode((prev) => (prev === "windows" ? "rectangle" : "windows"));
+        setOutputMode((prev) => NEXT_OUTPUT_MODE[prev]);
         return;
       }
       if (
@@ -2709,9 +2727,9 @@ export function RegionSelector() {
   // black over black is still black.
   const holes: Rect[] = !setLive
     ? []
-    : outputMode === "windows"
-      ? [...picks, ...peerPicks].map((p) => p.rawRect)
-      : [maskBox];
+    : outputMode === "rectangle"
+      ? [maskBox]
+      : [...picks, ...peerPicks].map((p) => p.rawRect);
   // Hovering an un-picked window while a set is live: show where the
   // next click would land. The main rect is pinned to the union, so
   // without this there is no feedback that the click does anything.
@@ -2886,7 +2904,7 @@ export function RegionSelector() {
               <span className="region-hint-sep">·</span>
               <span>
                 <kbd>T</kbd>
-                {outputMode === "windows" ? "keep whole box" : "transparent gaps"}
+                {NEXT_OUTPUT_MODE_HINT[outputMode]}
               </span>
             </>
           )}
@@ -3462,6 +3480,20 @@ export function RegionSelector() {
               >
                 <HudGlyph kind="rectangle" />
               </button>
+              <button
+                type="button"
+                className="region-hud__seg-btn"
+                data-active={outputMode === "set"}
+                data-testid="region-hud-mode-set"
+                aria-pressed={outputMode === "set"}
+                aria-label="Separate"
+                data-tip="Separate images"
+                data-tip-detail="One capture per picked window or display"
+                data-tip-keys="T"
+                onClick={() => setOutputMode("set")}
+              >
+                <HudGlyph kind="set" />
+              </button>
             </div>
           )}
           {hasPicks && (
@@ -3703,7 +3735,11 @@ export function RegionSelector() {
 const COMPACT_PICK_CHIPS_FROM = 3;
 
 /** The HUD's own icons: the mode rocker and the output shape. */
-function HudGlyph({ kind }: { readonly kind: "still" | "rec" | "windows" | "rectangle" }): ReactNode {
+function HudGlyph({
+  kind
+}: {
+  readonly kind: "still" | "rec" | "windows" | "rectangle" | "set";
+}): ReactNode {
   const common = {
     width: 15,
     height: 15,
@@ -3743,6 +3779,15 @@ function HudGlyph({ kind }: { readonly kind: "still" | "rec" | "windows" | "rect
           <rect x="1.6" y="2.6" width="12.8" height="10.8" rx="1.4" strokeDasharray="2.2 1.8" />
           <rect x="3.6" y="4.6" width="4.4" height="3.4" rx="0.8" />
           <rect x="8" y="8" width="4.4" height="3.4" rx="0.8" />
+        </svg>
+      );
+    case "set":
+      // Two separate frames, apart: no shared box.
+      return (
+        <svg {...common}>
+          <rect x="1.2" y="2.2" width="6" height="5" rx="1.1" />
+          <rect x="8.8" y="8.8" width="6" height="5" rx="1.1" />
+          <path d="M5.2 10.6h-2.4M12.6 5.4h-2.4" strokeDasharray="0.1 2" />
         </svg>
       );
   }

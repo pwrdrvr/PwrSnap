@@ -1550,6 +1550,59 @@ describe("U5 — multi-window pick set", () => {
     expect(submitRegion.mock.calls[0]?.[0]).toMatchObject({ outputMode: "rectangle" });
   });
 
+  test("T cycles Windows → Box → Separate → Windows, in HUD order", async () => {
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN_B);
+    const seen: (string | undefined)[] = [document.body.dataset.outputMode];
+    for (let i = 0; i < 3; i += 1) {
+      await keyDown("T");
+      seen.push(document.body.dataset.outputMode);
+    }
+    expect(seen).toEqual(["windows", "rectangle", "set", "windows"]);
+    // The HUD offers the same three shapes, and the active one is pressed.
+    await clickEl(hudButton("region-hud-mode-set"));
+    expect(document.body.dataset.outputMode).toBe("set");
+    expect(hudButton("region-hud-mode-set").getAttribute("aria-pressed")).toBe("true");
+    expect(hudButton("region-hud-mode-windows").getAttribute("aria-pressed")).toBe("false");
+  });
+
+  test("a Separate commit names the window behind every extent", async () => {
+    // Each capture in a set takes its source app and title from its own
+    // pick, so the ids must ride along even on a one-display machine.
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN_B);
+    await keyDown("T");
+    await keyDown("T");
+    await keyDown("Enter");
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion.mock.calls[0]?.[0]).toEqual({
+      ok: true,
+      rect: { x: 200, y: 100, w: 700, h: 350 },
+      displayId: 0,
+      extents: [
+        { x: 200, y: 150, w: 400, h: 300 },
+        { x: 700, y: 100, w: 200, h: 150 }
+      ],
+      outputMode: "set",
+      snappedWindowId: WIN.windowId,
+      extentIds: [WIN.windowId, WIN_B.windowId]
+    });
+  });
+
+  test("Separate previews each pick alone: one hole per pick, no checker", async () => {
+    await mountScene();
+    await clickWindow(WIN, { metaKey: true });
+    await clickWindow(WIN_B);
+    await clickWindow(WIN_C);
+    await clickEl(hudButton("region-hud-mode-set"));
+    expect(maskHoles()).toBe(3);
+    // Nothing between the picks is captured at all, transparent or not.
+    expect(container?.querySelector(".region-mask__alpha")).toBeNull();
+    expect(container?.querySelector(".region-rect--union-set")).not.toBeNull();
+  });
+
   test("the output toggle is absent below two picks — both modes are the same pixels", async () => {
     await mountScene();
     await keyDown("T");
@@ -1952,8 +2005,11 @@ describe("U5 — multi-window pick set", () => {
     expect(regionHintText()).not.toContain("keep whole box");
     await clickWindow(WIN_B);
     expect(regionHintText()).toContain("keep whole box");
+    // The legend names what the NEXT press of T switches to.
     await keyDown("T");
-    expect(regionHintText()).toContain("transparent gaps");
+    expect(regionHintText()).toContain("separate images");
+    await keyDown("T");
+    expect(regionHintText()).toContain("one image");
   });
 });
 

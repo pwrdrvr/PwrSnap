@@ -2868,7 +2868,15 @@ export type SelectorTerminalAction = "snap" | "record";
  * video) surfaces on the `events:recording:*` broadcasts instead.
  */
 export type InteractiveCaptureOutcome =
-  | { kind: "snap"; record: CaptureRecord }
+  | {
+      kind: "snap";
+      record: CaptureRecord;
+      /** A capture SET (the selector's "Separate" output shape): every
+       *  capture the commit saved, in pick order. `record` is the first
+       *  of them — the one the float-over opens on. Absent for an
+       *  ordinary single-image capture. */
+      set?: CaptureRecord[];
+    }
   | { kind: "recording" };
 
 export type Settings = {

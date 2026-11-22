@@ -44,7 +44,7 @@ export type SelectorPeerPicks = {
   picks: { id: number; rect: { x: number; y: number; w: number; h: number } }[];
   union: { x: number; y: number; w: number; h: number } | null;
   total: number;
-  outputMode: "windows" | "rectangle";
+  outputMode: "windows" | "rectangle" | "set";
   displayWidth: number;
   drop?: number[];
   dropAll?: true;
@@ -95,10 +95,10 @@ declare global {
         extents?: { x: number; y: number; w: number; h: number }[];
         /** `"windows"` keeps only the pixels inside `extents` and makes
          *  the rest of the union box transparent; `"rectangle"` keeps
-         *  the whole box opaque. */
-        outputMode?: "windows" | "rectangle";
-        /** Multi-display session: the window id behind each extent
-         *  (negative = this whole display). */
+         *  the whole box opaque; `"set"` saves one capture per extent. */
+        outputMode?: "windows" | "rectangle" | "set";
+        /** The window id behind each extent (negative = this whole
+         *  display). Multi-display sessions and `"set"` commits. */
         extentIds?: number[];
         /** Multi-display session: fold in the other displays' picks. */
         mergePeers?: boolean;
@@ -106,7 +106,7 @@ declare global {
       reportSelectorPicks(payload: {
         screenUrl: string;
         picks: { id: number; rect: { x: number; y: number; w: number; h: number } }[];
-        outputMode: "windows" | "rectangle";
+        outputMode: "windows" | "rectangle" | "set";
         unpick?: number[];
         clearAll?: boolean;
       }): void;

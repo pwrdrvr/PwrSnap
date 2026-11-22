@@ -1374,6 +1374,50 @@ describe("region-selector — Snap-vs-Record commit payload (issue #75)", () => 
     expect((result as { extents?: unknown[] }).extents).toHaveLength(2);
   });
 
+  test("accepts a Separate (set) commit and carries the window behind each extent", async () => {
+    // A set names each capture's source window from its own pick, so the
+    // ids survive the trip through main; a negative renderer id is a
+    // whole-display pick and names none. Record is still a single-rect
+    // action and is stripped.
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ quickCaptureAction: "ask" });
+    await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
+
+    emitSelectorResult({
+      ok: true,
+      rect: { x: 0, y: 0, w: 800, h: 600 },
+      displayId: 1,
+      action: "record",
+      extents: [
+        { x: 0, y: 0, w: 200, h: 200 },
+        { x: 600, y: 400, w: 200, h: 200 }
+      ],
+      extentIds: [77, -1],
+      outputMode: "set"
+    });
+    const result = await pick;
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty("action");
+    expect(result).toMatchObject({ outputMode: "set", extentWindowIds: [77, null] });
+  });
+
+  test("rejects an unknown output shape as a cancel", async () => {
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({ quickCaptureAction: "ask" });
+    await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
+    emitSelectorResult({
+      ok: true,
+      rect: { x: 0, y: 0, w: 800, h: 600 },
+      displayId: 1,
+      extents: [
+        { x: 0, y: 0, w: 200, h: 200 },
+        { x: 600, y: 400, w: 200, h: 200 }
+      ],
+      outputMode: "collage"
+    });
+    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+  });
+
   test("a single-extent commit may still record", async () => {
     // One pick is one rectangle — the union box IS the extent, so there
     // is nothing for a recording to misrepresent. (The renderer never

@@ -189,7 +189,7 @@ export type SelectorPeerPicks = {
   picks: { id: number; rect: { x: number; y: number; w: number; h: number } }[];
   union: { x: number; y: number; w: number; h: number } | null;
   total: number;
-  outputMode: "windows" | "rectangle";
+  outputMode: "windows" | "rectangle" | "set";
   displayWidth: number;
   drop?: number[];
   dropAll?: true;
@@ -344,11 +344,14 @@ const pwrsnapApi = {
      *                      else in the box goes transparent.
      *    - `"rectangle"` — the whole box, opaque (what the picker has
      *                      always produced).
+     *    - `"set"`       — no box: one capture per extent ("Separate").
      *  Only meaningful alongside `extents`. */
-    outputMode?: "windows" | "rectangle";
-    /** Multi-display session: the window id behind each `extents`
-     *  entry (negative = this whole display), so main can merge picks
-     *  made on several displays without counting a window twice. */
+    outputMode?: "windows" | "rectangle" | "set";
+    /** The window id behind each `extents` entry (negative = this
+     *  whole display). Sent in a multi-display session, so main can
+     *  merge picks made on several displays without counting a window
+     *  twice, and on every `"set"` commit, so each capture names its
+     *  own source window. */
     extentIds?: number[];
     /** Multi-display session: fold in the picks made on the OTHER
      *  displays. Main recomputes `rect` from the merged set. */
@@ -365,7 +368,7 @@ const pwrsnapApi = {
   reportSelectorPicks(payload: {
     screenUrl: string;
     picks: { id: number; rect: { x: number; y: number; w: number; h: number } }[];
-    outputMode: "windows" | "rectangle";
+    outputMode: "windows" | "rectangle" | "set";
     unpick?: number[];
     clearAll?: boolean;
   }): void {

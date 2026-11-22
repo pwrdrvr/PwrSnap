@@ -55,6 +55,7 @@ import {
   sessionPickFromRenderer,
   unionRects,
   type LogicalRect,
+  type SelectorOutputMode,
   type SessionPick
 } from "./multi-display-selection";
 import { hideTrayPopoverIfVisible } from "../tray";
@@ -116,10 +117,10 @@ type MultiDisplaySession = {
   picksByDisplay: Map<number, SessionPick[]>;
   /** First-seen order of pick keys across the session. */
   pickOrder: string[];
-  outputMode: "windows" | "rectangle";
+  outputMode: SelectorOutputMode;
   /** Last outputMode each renderer reported, so a renderer that merely
    *  re-reports its default cannot undo another display's `T`. */
-  reportedOutputMode: Map<number, "windows" | "rectangle">;
+  reportedOutputMode: Map<number, SelectorOutputMode>;
   /** The primary surface's snapshot URL, for addressing it after its
    *  snapshot has been handed to a consumer. */
   primaryScreenUrl: string | null;
@@ -525,9 +526,15 @@ type SelectorOutcome =
       extents?: { x: number; y: number; w: number; h: number }[];
       /** What to keep inside the union box. `"windows"` masks it down
        *  to `extents` (transparent elsewhere); `"rectangle"` keeps the
-       *  whole box, which is what the picker has always produced.
+       *  whole box, which is what the picker has always produced;
+       *  `"set"` saves one capture per extent instead of one image.
        *  Only meaningful alongside `extents`. */
-      outputMode?: "windows" | "rectangle";
+      outputMode?: SelectorOutputMode;
+      /** The native window id behind each extent, index-aligned with
+       *  `extents`; null for a whole-display pick. Present when the
+       *  renderer sent ids (every set commit, every multi-display
+       *  commit). A set names each item's source window from it. */
+      extentWindowIds?: (number | null)[];
       /** Multi-display selection: the OTHER displays' frozen snapshots
        *  the crop needs, because `rect` / `extents` reach onto them.
        *  Ownership transfers with `screenSnapshotId` — the consumer must
@@ -938,6 +945,10 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
               h: e.h
             }));
             result.outputMode = payload.outputMode ?? "windows";
+            if (payload.extentIds !== undefined) {
+              // Renderer ids below zero are whole-display picks.
+              result.extentWindowIds = payload.extentIds.map((id) => (id < 0 ? null : id));
+            }
           }
           // A recording is one rectangular stream, and `rect` on a
           // multi-pick commit is the union BOUNDING BOX — recording it
@@ -1743,6 +1754,7 @@ function planMultiDisplayCommit(
     committingDisplayId: surface.displayId,
     rect: result.rect,
     ...(result.extents !== undefined ? { extents: result.extents } : {}),
+    ...(result.extentWindowIds !== undefined ? { extentWindowIds: result.extentWindowIds } : {}),
     ...(result.outputMode !== undefined ? { outputMode: result.outputMode } : {}),
     ...(result.snappedWindowId !== undefined ? { snappedWindowId: result.snappedWindowId } : {}),
     mergePeers,
@@ -1759,8 +1771,11 @@ function planMultiDisplayCommit(
   if (plan.extents !== undefined) {
     result.extents = plan.extents;
     result.outputMode = plan.outputMode ?? "windows";
+    if (plan.extentWindowIds !== undefined) result.extentWindowIds = plan.extentWindowIds;
+    else delete result.extentWindowIds;
   } else {
     delete result.extents;
+    delete result.extentWindowIds;
     delete result.outputMode;
   }
   if (plan.snappedWindowId !== undefined) result.snappedWindowId = plan.snappedWindowId;
@@ -1951,7 +1966,7 @@ type PeerPicksPayload = {
   union: LogicalRect | null;
   /** Session-wide pick count (each window once). */
   total: number;
-  outputMode: "windows" | "rectangle";
+  outputMode: SelectorOutputMode;
   /** The receiver's display width in logical px, so it can convert to
    *  CSS px before its window list (which also carries it) arrives. */
   displayWidth: number;
@@ -2010,16 +2025,20 @@ function sendPeerPicks(
 type PicksReport = {
   screenUrl: string;
   picks: { id: number; rect: LogicalRect }[];
-  outputMode: "windows" | "rectangle";
+  outputMode: SelectorOutputMode;
   unpick?: number[];
   clearAll?: boolean;
 };
+
+function isSelectorOutputMode(value: unknown): value is SelectorOutputMode {
+  return value === "windows" || value === "rectangle" || value === "set";
+}
 
 function parsePicksReport(value: unknown): PicksReport | null {
   if (value === null || typeof value !== "object") return null;
   const v = value as Record<string, unknown>;
   if (typeof v.screenUrl !== "string") return null;
-  if (v.outputMode !== "windows" && v.outputMode !== "rectangle") return null;
+  if (!isSelectorOutputMode(v.outputMode)) return null;
   if (!Array.isArray(v.picks) || v.picks.length > MAX_SELECTOR_EXTENTS) return null;
   const picks: PicksReport["picks"] = [];
   for (let i = 0; i < v.picks.length; i += 1) {
@@ -3069,7 +3088,7 @@ function isSelectorPayload(value: unknown): value is {
   action?: "snap" | "record";
   extents?: { x: number; y: number; w: number; h: number }[];
   extentIds?: number[];
-  outputMode?: "windows" | "rectangle";
+  outputMode?: SelectorOutputMode;
   mergePeers?: boolean;
 } {
   if (value === null || typeof value !== "object") return false;
@@ -3125,11 +3144,7 @@ function isSelectorPayload(value: unknown): value is {
       if (!isExtentRect(v.extents[i])) return false;
     }
   }
-  if (
-    v.outputMode !== undefined &&
-    v.outputMode !== "windows" &&
-    v.outputMode !== "rectangle"
-  ) {
+  if (v.outputMode !== undefined && !isSelectorOutputMode(v.outputMode)) {
     return false;
   }
   if (v.mergePeers !== undefined && typeof v.mergePeers !== "boolean") return false;

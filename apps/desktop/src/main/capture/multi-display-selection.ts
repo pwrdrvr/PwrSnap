@@ -23,6 +23,12 @@
 
 export type LogicalRect = { x: number; y: number; w: number; h: number };
 
+/** What a multi-pick commit produces:
+ *  - `windows`   — one image, the union box, transparent outside the picks;
+ *  - `rectangle` — one image, the whole union box opaque;
+ *  - `set`       — one capture per pick (see capture-set.ts). */
+export type SelectorOutputMode = "windows" | "rectangle" | "set";
+
 export type DisplayGeometry = {
   id: number;
   bounds: { x: number; y: number; width: number; height: number };
@@ -173,7 +179,10 @@ export type SessionCommitInput = {
   /** The renderer's selection, already translated to GLOBAL logical px. */
   rect: LogicalRect;
   extents?: readonly LogicalRect[];
-  outputMode?: "windows" | "rectangle";
+  /** The native window id behind each extent (null = a whole-display
+   *  pick), index-aligned with `extents`, when the renderer sent them. */
+  extentWindowIds?: readonly (number | null)[];
+  outputMode?: SelectorOutputMode;
   snappedWindowId?: number;
   /** True when the renderer asked main to fold in the picks made on the
    *  OTHER displays (it had some on screen). Its own picks arrive in
@@ -183,7 +192,7 @@ export type SessionCommitInput = {
   /** Picks last reported by every OTHER display. */
   peerPicks: ReadonlyMap<number, readonly SessionPick[]>;
   pickOrder: readonly string[];
-  sessionOutputMode: "windows" | "rectangle";
+  sessionOutputMode: SelectorOutputMode;
   displays: readonly DisplayGeometry[];
   /** Displays that have a frozen snapshot this commit may draw from. */
   snapshotDisplayIds: ReadonlySet<number>;
@@ -192,7 +201,11 @@ export type SessionCommitInput = {
 export type SessionCommitPlan = {
   rect: LogicalRect;
   extents?: LogicalRect[];
-  outputMode?: "windows" | "rectangle";
+  /** Index-aligned with `extents`; present whenever the window ids are
+   *  known (always after a merge). A `set` capture names each item's
+   *  source window from it. */
+  extentWindowIds?: (number | null)[];
+  outputMode?: SelectorOutputMode;
   snappedWindowId?: number;
   /** The display the selection is filed under; its snapshot becomes
    *  `screenSnapshotId`. */
@@ -217,6 +230,12 @@ export function planSessionCommit(input: SessionCommitInput): SessionCommitPlan 
   let extents: LogicalRect[] | undefined =
     input.extents === undefined || input.extents.length === 0 ? undefined : [...input.extents];
   let outputMode = extents === undefined ? undefined : input.outputMode;
+  let extentWindowIds: (number | null)[] | undefined =
+    extents !== undefined &&
+    input.extentWindowIds !== undefined &&
+    input.extentWindowIds.length === extents.length
+      ? [...input.extentWindowIds]
+      : undefined;
   let snappedWindowId = input.snappedWindowId;
 
   if (input.mergePeers) {
@@ -241,9 +260,11 @@ export function planSessionCommit(input: SessionCommitInput): SessionCommitPlan 
     snappedWindowId = firstWindow?.windowId ?? undefined;
     if (merged.length === 1) {
       extents = undefined;
+      extentWindowIds = undefined;
       outputMode = undefined;
     } else {
       extents = merged.map((p) => p.rect);
+      extentWindowIds = merged.map((p) => p.windowId);
       outputMode = input.outputMode ?? input.sessionOutputMode;
     }
   }
@@ -251,7 +272,8 @@ export function planSessionCommit(input: SessionCommitInput): SessionCommitPlan 
   // Which displays' pixels end up in the output. In WINDOWS mode only the
   // extents are kept, so a display the union box merely crosses (the
   // gap between a window on the left monitor and one on the right
-  // monitor) contributes nothing and needs no snapshot.
+  // monitor) contributes nothing and needs no snapshot. A SET keeps
+  // exactly the extents too, one capture each.
   const kept = extents !== undefined && outputMode !== "rectangle" ? extents : [rect];
   const touched = displaysTouched(kept, input.displays).filter((id) =>
     input.snapshotDisplayIds.has(id)
@@ -271,6 +293,7 @@ export function planSessionCommit(input: SessionCommitInput): SessionCommitPlan 
   if (extents !== undefined) {
     plan.extents = extents;
     plan.outputMode = outputMode ?? "windows";
+    if (extentWindowIds !== undefined) plan.extentWindowIds = extentWindowIds;
   }
   if (snappedWindowId !== undefined && snappedWindowId >= 0) {
     plan.snappedWindowId = snappedWindowId;

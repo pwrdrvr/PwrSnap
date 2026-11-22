@@ -40,12 +40,25 @@ const mocks = vi.hoisted(() => {
       title: unknown;
     }>,
     removedRecordingDirs: [] as string[],
+    openBurstSession: vi.fn((_input: Record<string, unknown>): string => "burst-session-1"),
+    openBurstReviewWindow: vi.fn((_burstId: string): void => undefined),
+    discardBurst: vi.fn(async (_burstId: string): Promise<void> => undefined),
     warningLogs: [] as Array<{
       message: string;
       fields: Record<string, unknown> | undefined;
     }>
   };
 });
+
+vi.mock("../../burst/burst-session", () => ({
+  BURST_TEMP_PREFIX: "pwrsnap-burst-",
+  openBurstSession: mocks.openBurstSession,
+  discardBurst: mocks.discardBurst
+}));
+
+vi.mock("../../burst/burst-review-window", () => ({
+  openBurstReviewWindow: mocks.openBurstReviewWindow
+}));
 
 vi.mock("../camera-recording", () => ({
   beginCameraRecording: mocks.beginCamera,
@@ -102,7 +115,10 @@ vi.mock("node:fs", () => ({
 }));
 
 vi.mock("node:fs/promises", () => ({
-  mkdtemp: vi.fn(async () => "/tmp/pwrsnap-recording-fake"),
+  mkdtemp: vi.fn(async (prefix: string) =>
+    prefix.includes("pwrsnap-burst-") ? "/tmp/pwrsnap-burst-fake" : "/tmp/pwrsnap-recording-fake"
+  ),
+  mkdir: vi.fn(async () => undefined),
   rm: vi.fn(async (path: string) => {
     mocks.removedRecordingDirs.push(path);
   })
@@ -2369,3 +2385,143 @@ describe("Windows FFmpeg recorder", () => {
     expect(mocks.removedRecordingDirs).toEqual([]);
   });
 });
+
+// A burst rides the take lifecycle, then hands its temp directory to a
+// review session at Stop. Rules: the native start asks for stills at the
+// display's pixel scale into the burst's own frames dir; progress shows up
+// in the published state; on Stop the session takes the directory (the
+// retiring attempt must not delete it) and the review opens; a hand-off
+// that fails keeps the stills on disk for recovery.
+describe("RecordingService burst on darwin", () => {
+  async function loadService() {
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    const { __setRecordingServiceForTests, getRecordingService } = await import("../recording-service");
+    __setRecordingServiceForTests(null);
+    return getRecordingService();
+  }
+
+  async function burstTake(
+    service: import("../recording-service").RecordingService,
+    extra: { captureCursor?: boolean } = {}
+  ) {
+    const start = service.start({ subject: SUBJECT, capabilities: CAPS, countdownSeconds: 0, output: "burst", ...extra });
+    void start.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(0);
+    const child = mocks.spawnedChildren.at(-1)!;
+    child.emitLine({ event: "started" });
+    await start;
+    return child;
+  }
+
+  const stoppedBurst = {
+    event: "stopped",
+    durationSec: 2,
+    containerFormat: "burst",
+    burst: {
+      written: 3,
+      dropped: 1,
+      failed: 0,
+      evicted: 0,
+      frames: [{ index: 0, path: "/tmp/pwrsnap-burst-fake/frames/frame-000000.png", utcMs: 1, width: 200, height: 200 }]
+    }
+  };
+
+  // The pointer is never painted into a burst's stills — moving it must not
+  // read as a change. With the cursor on it is tracked beside them instead;
+  // with it off there is no pointer at all. "Unset" means on, as for video.
+  test.each([
+    { label: "on", captureCursor: true as boolean | undefined, tracked: true },
+    { label: "unset", captureCursor: undefined, tracked: true },
+    { label: "off", captureCursor: false, tracked: false }
+  ])("cursor $label: no pointer in the pixels; tracked beside them only when on", async ({ captureCursor, tracked }) => {
+    const service = await loadService();
+    const child = await burstTake(service, captureCursor === undefined ? {} : { captureCursor });
+    const startCmd = JSON.parse(child.stdin.write.mock.calls[0]![0].trim()) as Record<string, unknown>;
+    expect(startCmd.showsCursor).toBe(false);
+    if (tracked) expect(startCmd.burstPointerDir).toBe(join("/tmp/pwrsnap-burst-fake", "pointer"));
+    else expect("burstPointerDir" in startCmd).toBe(false);
+
+    const sprites = [{ id: 0, path: "/tmp/pwrsnap-burst-fake/pointer/pointer-0.png" }];
+    const stop = service.stop();
+    child.emitLine({ ...stoppedBurst, burst: { ...stoppedBurst.burst, pointerSprites: sprites } });
+    await vi.advanceTimersByTimeAsync(600);
+    await stop;
+    const input = mocks.openBurstSession.mock.calls.at(-1)![0];
+    if (tracked) {
+      expect(input).toMatchObject({ pointerDir: join("/tmp/pwrsnap-burst-fake", "pointer"), pointerSprites: sprites });
+    } else {
+      expect(input).not.toHaveProperty("pointerDir");
+      expect(input).not.toHaveProperty("pointerSprites");
+    }
+  });
+
+  test("stills at pixel scale, progress in state, and the directory handed to the review", async () => {
+    const service = await loadService();
+    const child = await burstTake(service);
+    const startCmd = JSON.parse(child.stdin.write.mock.calls[0]![0].trim()) as Record<string, unknown>;
+    expect(startCmd).toMatchObject({
+      mode: "burst",
+      burstDir: join("/tmp/pwrsnap-burst-fake", "frames"),
+      burstFps: 10,
+      burstMaxFrames: 300,
+      pixelScale: 2
+    });
+    expect(mocks.currentState).toMatchObject({ phase: "recording", output: "burst", burstFrames: 0 });
+    child.emitLine({ event: "burstProgress", kept: 7, written: 9 });
+    expect(mocks.currentState).toMatchObject({ phase: "recording", output: "burst", burstFrames: 7 });
+
+    const stop = service.stop();
+    child.emitLine(stoppedBurst);
+    await vi.advanceTimersByTimeAsync(600);
+    expect(await stop).toEqual({ captureId: "", burstId: "burst-session-1" });
+    expect(mocks.openBurstSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rootDir: "/tmp/pwrsnap-burst-fake",
+        framesDir: join("/tmp/pwrsnap-burst-fake", "frames"),
+        frames: stoppedBurst.burst.frames,
+        droppedFrames: 1,
+        devicePixelRatio: 2
+      })
+    );
+    expect(mocks.openBurstReviewWindow).toHaveBeenCalledWith("burst-session-1");
+    // Ownership moved: the attempt's retirement left the stills alone.
+    expect(mocks.removedRecordingDirs).not.toContain("/tmp/pwrsnap-burst-fake");
+    expect(mocks.currentState.phase).toBe("idle");
+    // Admission is free for the next take.
+    expect(service.isActive()).toBe(false);
+  });
+
+  test("a hand-off that fails keeps the stills for recovery", async () => {
+    mocks.openBurstSession.mockImplementationOnce(() => {
+      throw new Error("burst root is not a burst temp directory");
+    });
+    const service = await loadService();
+    const child = await burstTake(service);
+    const stop = service.stop();
+    void stop.catch(() => undefined);
+    child.emitLine(stoppedBurst);
+    await vi.advanceTimersByTimeAsync(600);
+    await expect(stop).rejects.toThrow("burst root");
+    expect(mocks.openBurstReviewWindow).not.toHaveBeenCalled();
+    expect(mocks.removedRecordingDirs).not.toContain("/tmp/pwrsnap-burst-fake");
+    expect(mocks.currentState.phase).toBe("failed");
+  });
+
+  test("a review window that cannot open discards the session instead of stranding it", async () => {
+    mocks.openBurstReviewWindow.mockImplementationOnce(() => {
+      throw new Error("no display");
+    });
+    const service = await loadService();
+    const child = await burstTake(service);
+    const stop = service.stop();
+    void stop.catch(() => undefined);
+    child.emitLine(stoppedBurst);
+    await vi.advanceTimersByTimeAsync(600);
+    await expect(stop).rejects.toThrow("no display");
+    expect(mocks.discardBurst).toHaveBeenCalledWith("burst-session-1");
+    // The take itself had already ended cleanly.
+    expect(mocks.currentState.phase).toBe("idle");
+    expect(service.isActive()).toBe(false);
+  });
+});
+

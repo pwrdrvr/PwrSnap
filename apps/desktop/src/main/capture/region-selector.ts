@@ -1,4 +1,4 @@
-import { RecordingCameraSchema, RecordingMicrophoneSchema } from "@pwrsnap/shared";
+import { isSelectorTerminalAction, RecordingCameraSchema, RecordingMicrophoneSchema } from "@pwrsnap/shared";
 // Pre-warmed per-display region-selector windows. Cold BrowserWindow
 // creation is 150–400ms; the ⌘⇧P → first-paint budget is 120ms. So
 // we create one window per display at boot (`show: false`), rebuild
@@ -30,7 +30,8 @@ import type {
   QuickCaptureAction,
   RecordingCapabilities,
   RecordingDeviceDefaults,
-  SelectorHudStyle
+  SelectorHudStyle,
+  SelectorTerminalAction
 } from "@pwrsnap/shared";
 import { linuxSquareCorners } from "../linux-window-corners";
 import { getMainLogger } from "../log";
@@ -448,7 +449,8 @@ type SelectorWindowListPayload = {
     rawRect: { x: number; y: number; w: number; h: number };
   }[];
   displayBounds: { width: number; height: number };
-  cursor: { x: number; y: number };
+  /** Omitted for a display the pointer is not on. */
+  cursor?: { x: number; y: number };
 };
 
 export type SelectorResult = SelectorOutcome & {
@@ -505,7 +507,7 @@ type SelectorOutcome =
        *  always explicit about both sources. */
       sources?: RecordingCapabilities;
       /** The terminal action the user chose at commit (issue #75).
-       *  Present ONLY for `"record"`; a snap commit omits it and every
+       *  Present ONLY for `"record"` and `"burst"`; a snap commit omits it and every
        *  reader treats a missing value as `"snap"`, so a pre-chooser
        *  call site's payload is unchanged.
        *
@@ -513,7 +515,7 @@ type SelectorOutcome =
        *  affordance the user reached for. `resolveQuickCaptureAction`
        *  re-derives the actual action against the persisted policy, so a
        *  `"record"` main never offered cannot take effect. */
-      action?: "snap" | "record";
+      action?: SelectorTerminalAction;
       /** Multi-window pick. One entry per picked window's EXTENT, in
        *  the same GLOBAL logical-px space as `rect` (the display offset
        *  is applied to both together, below).
@@ -591,6 +593,11 @@ const SELECTOR_PRESENTED_CHANNEL = "region-selector:presented";
 // localized to the receiver, and any of its own picks to drop.
 const SELECTOR_PICKS_CHANNEL = "region-selector:picks";
 const SELECTOR_PEER_PICKS_CHANNEL = "region-selector:peer-picks";
+// Multi-display only. Renderer → main: the pointer is on this display's
+// selector but its window is not key. Main gives it the keyboard, so
+// ↵ / Esc / T act on the display the user is looking at — not on the
+// display that happened to be under the cursor at hotkey time.
+const SELECTOR_FOCUS_CHANNEL = "region-selector:focus";
 
 /** How long to wait for the renderer's "snapshot painted" ack before
  *  showing the selector anyway. Decode of a full-screen PNG is well
@@ -930,8 +937,8 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
               ...(payload.sources.camera ? { camera: payload.sources.camera } : {})
             };
           }
-          if (payload.action === "record") {
-            result.action = "record";
+          if (payload.action === "record" || payload.action === "burst") {
+            result.action = payload.action;
           }
           if (payload.extents !== undefined && payload.extents.length > 0) {
             // Same display → global translation the union rect above
@@ -971,7 +978,10 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
               return;
             }
           }
-          if (result.action === "record" && (result.extents?.length ?? 0) > 1) {
+          if (
+            (result.action === "record" || result.action === "burst") &&
+            (result.extents?.length ?? 0) > 1
+          ) {
             log.warn("selector commit asked to record a multi-window pick — snapping instead", {
               extents: result.extents?.length ?? 0
             });
@@ -985,6 +995,27 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
         resolver({ ok: false, reason: "cancelled", previousAppPid: prevPid });
       }
       // (intentionally no hideAllSelectors here — caller owns it)
+    });
+    ipcMain.on(SELECTOR_FOCUS_CHANNEL, (event, payload: unknown) => {
+      const invocation = activeInvocation;
+      if (invocation === null || invocation.phase !== "selecting" || invocation.multi === null) {
+        return;
+      }
+      const surface = surfaceForSender(invocation, event.sender.id);
+      if (surface === null || !isTopLevelSelectorFrame(event)) return;
+      const screenUrl =
+        typeof payload === "object" && payload !== null && "screenUrl" in payload
+          ? (payload as { screenUrl?: unknown }).screenUrl
+          : null;
+      const expectedUrl =
+        surface.secondary === null
+          ? invocation.multi.primaryScreenUrl
+          : surface.secondary.screenUrl;
+      if (screenUrl !== expectedUrl) return;
+      if (surface.secondary !== null && !surface.secondary.visible) return;
+      if (surface.window.isFocused()) return;
+      surface.window.focus();
+      surface.window.webContents.focus();
     });
     ipcMain.on(SELECTOR_PICKS_CHANNEL, (event, payload: unknown) => {
       const invocation = activeInvocation;
@@ -1085,6 +1116,9 @@ type SelectorOptions = {
    *  Omitted means "no saved choice", the same as two nulls. */
   devicesDefault?: RecordingDeviceDefaults;
   cameraOffered?: boolean;
+  /** Offer Burst beside Snap / Record (the backend writes stills). Only
+   *  meaningful with a `quickCaptureAction` that offers Record. */
+  burstOffered?: boolean;
   /** Selector-based image-capture diagnostics. Omitted by video flows. */
   latencyTrace?: CaptureLatencyTrace;
   /** Snap-vs-Record policy for this show (issue #75), from
@@ -1348,7 +1382,9 @@ async function prepareRegion(
       surface.windowListPayload = prepareWindowListPayload({
         rawSnapshot: list.windows,
         targetDisplay: display,
-        displayCursor: { x: cursor.x - display.bounds.x, y: cursor.y - display.bounds.y },
+        // The pointer is on the primary, so this display has no cursor to
+        // seed from; `null` leaves its crosshair where the renderer puts it.
+        displayCursor: null,
         ourPids,
         excludeWindowBounds,
         selectorWindow: surface.window,
@@ -1531,6 +1567,7 @@ async function prepareRegion(
           ...(sourcesDefault !== undefined ? { sources: sourcesDefault } : {}),
           ...(devicesDefault !== undefined ? { devices: devicesDefault } : {}),
           cameraOffered: opts.cameraOffered === true,
+          burstOffered: opts.burstOffered === true,
           quickCaptureAction,
           ...(hudStyle !== undefined ? { hudStyle } : {}),
           ...(invocation.multi !== null ? { multiDisplay: true } : {}),
@@ -1895,37 +1932,47 @@ async function prepareSecondaries(
       surface.snapshot = snapshot;
       surface.screenUrl = `pwrsnap-screen://r/${snapshot.id}`;
       win.webContents.send(SELECTOR_MODE_CHANNEL, ctx.modePayload(snapshot));
-      const outcome = await new Promise<SnapshotPaintOutcome>((resolve) => {
-        const timer = setTimeout(() => {
-          surface.paintWait = null;
-          resolve("timeout");
-        }, SHOW_AFTER_PAINT_TIMEOUT_MS);
-        surface.paintWait = (result) => {
-          clearTimeout(timer);
-          surface.paintWait = null;
-          resolve(result);
-        };
-      });
-      if (outcome === "superseded" || !ownsSelector(invocation) || win.isDestroyed()) {
-        if (!ownsSelector(invocation)) return;
-        continue;
-      }
-      enterMenuBarOverlayMode(win);
-      win.showInactive();
-      win.moveTop();
-      surface.visible = true;
-      selectorDisplaysNeedingFreshPanel.add(display.id);
-      scheduleStandbySelectorWarm(display, invocation);
-      log.info("secondary capture selector displayed", {
-        displayId: display.id,
-        paint: outcome
-      });
-      ctx.deliverWindowList(surface);
-      sendPeerPicks(invocation, surface.displayId, null);
+      // Reveal on paint WITHOUT holding up the next display's capture:
+      // only the captures must run one at a time.
+      void revealSecondaryWhenPainted(invocation, surface, display, ctx);
     }
   } finally {
+    // Every display is frozen by now; the protected windows can go back.
     invocation.releaseProtection();
   }
+}
+
+async function revealSecondaryWhenPainted(
+  invocation: SelectorInvocation,
+  surface: SecondarySurface,
+  display: Display,
+  ctx: SecondaryPrepContext
+): Promise<void> {
+  const win = surface.window;
+  const outcome = await new Promise<SnapshotPaintOutcome>((resolve) => {
+    const timer = setTimeout(() => {
+      surface.paintWait = null;
+      resolve("timeout");
+    }, SHOW_AFTER_PAINT_TIMEOUT_MS);
+    surface.paintWait = (result) => {
+      clearTimeout(timer);
+      surface.paintWait = null;
+      resolve(result);
+    };
+  });
+  if (outcome === "superseded" || !ownsSelector(invocation) || win.isDestroyed()) return;
+  enterMenuBarOverlayMode(win);
+  win.showInactive();
+  win.moveTop();
+  surface.visible = true;
+  selectorDisplaysNeedingFreshPanel.add(display.id);
+  scheduleStandbySelectorWarm(display, invocation);
+  log.info("secondary capture selector displayed", {
+    displayId: display.id,
+    paint: outcome
+  });
+  ctx.deliverWindowList(surface);
+  sendPeerPicks(invocation, surface.displayId, null);
 }
 
 /** Every surface of a multi-display session that a renderer message can
@@ -2198,7 +2245,8 @@ function matchesExcludedBounds(b: BoundsLike, excluded: readonly BoundsLike[]): 
 export function prepareWindowListPayload(args: {
   rawSnapshot: WindowInfo[];
   targetDisplay: Display;
-  displayCursor: { x: number; y: number };
+  /** null for a display the pointer is not on. */
+  displayCursor: { x: number; y: number } | null;
   ourPids: Set<number>;
   /** Bounds of windows excluded from the snapshot via content
    *  protection — dropped from the snap-candidate list too. */
@@ -2403,7 +2451,7 @@ export function prepareWindowListPayload(args: {
         width: displayBounds.width,
         height: displayBounds.height
       },
-      cursor: displayCursor
+      ...(displayCursor !== null ? { cursor: displayCursor } : {})
     }
   };
 }
@@ -3085,7 +3133,7 @@ function isSelectorPayload(value: unknown): value is {
   fullWindow?: boolean;
   captureCursor?: boolean;
   sources?: RecordingCapabilities;
-  action?: "snap" | "record";
+  action?: SelectorTerminalAction;
   extents?: { x: number; y: number; w: number; h: number }[];
   extentIds?: number[];
   outputMode?: SelectorOutputMode;
@@ -3132,7 +3180,7 @@ function isSelectorPayload(value: unknown): value is {
       return false;
     }
   }
-  if (v.action !== undefined && v.action !== "snap" && v.action !== "record") {
+  if (v.action !== undefined && !isSelectorTerminalAction(v.action)) {
     return false;
   }
   if (v.extents !== undefined) {
@@ -3200,6 +3248,7 @@ export function disposeRegionSelector(): void {
     ipcMain.removeAllListeners(SELECTOR_PAINTED_CHANNEL);
     ipcMain.removeAllListeners(SELECTOR_PRESENTED_CHANNEL);
     ipcMain.removeAllListeners(SELECTOR_PICKS_CHANNEL);
+    ipcMain.removeAllListeners(SELECTOR_FOCUS_CHANNEL);
     ipcMain.removeHandler(SELECTOR_SNAPSHOT_READ_CHANNEL);
     resultListenerAttached = false;
   }

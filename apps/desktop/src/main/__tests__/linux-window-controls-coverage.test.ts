@@ -58,7 +58,8 @@ const FRAMELESS_SURFACES = [
   { factory: "createSizzleWindow", file: "features/sizzle/SizzleApp.tsx" },
   { factory: "showAppDocumentWindow", file: "features/documents/AppDocumentWindow.tsx" },
   { factory: "showLogsWindow", file: "features/logs/LogsWindow.tsx" },
-  { factory: "createLocalAgentConsentWindow", file: "features/local-agents/LocalAgentConsentWindow.tsx" }
+  { factory: "createLocalAgentConsentWindow", file: "features/local-agents/LocalAgentConsentWindow.tsx" },
+  { factory: "showBurstReviewWindow", file: "features/burst/BurstReview.tsx" }
 ] as const;
 
 describe("Linux caption-button coverage", () => {

@@ -28,17 +28,12 @@ const log = getMainLogger("pwrsnap:cursor-sample");
 const MAX_SAMPLE_JSON_BYTES = 4 * 1024 * 1024;
 const SAMPLE_TIMEOUT_MS = 2_000;
 
-/** The persist-side cursor-layer contract: sprite bytes + placement in
- *  CANVAS PIXELS. One named type shared by the capture handlers and
- *  `persistCaptureFromTempV2` (imported type-only there) so the shape
- *  can't drift between the three sites that used to inline it. */
-export type CursorLayerPlacement = {
-  pngBytes: Buffer;
-  xPx: number;
-  yPx: number;
-  drawWidthPx: number;
-  drawHeightPx: number;
-};
+import { computeCursorPlacement, type CursorLayerPlacement } from "./cursor-placement";
+
+// The placement math lives in cursor-placement.ts (pure); re-exported so
+// existing importers keep one entry point for cursor capture.
+export { computeCursorPlacement };
+export type { CursorLayerPlacement };
 
 export type CursorSample = {
   /** Decoded sprite PNG bytes (RGBA, alpha preserved). */
@@ -159,46 +154,3 @@ export async function resolveCursorLayerForRect(
   return { pngBytes: sample.pngBytes, ...placement };
 }
 
-/**
- * Compute the cursor layer's placement for a captured region, or null
- * when the cursor isn't inside the region (R6 in the plan — a cursor
- * on another display or outside the selection gets no layer).
- *
- * All rect inputs are LOGICAL points; `regionOrigin` is the captured
- * rect's origin in GLOBAL points (display.bounds origin + selection
- * rect origin). `scaleFactor` maps points → the capture's physical px.
- *
- * Returns the sprite's top-left position + on-canvas draw size in
- * CANVAS PIXELS: position = (pos − hotspot − regionOrigin) · scale;
- * draw size = pointSize · scale (the raster layer's transform scale is
- * then drawSize / naturalPx, handling Retina/XL-cursor sprites whose
- * PNG raster exceeds the point size).
- */
-export function computeCursorPlacement(args: {
-  sample: Pick<
-    CursorSample,
-    "posX" | "posY" | "hotspotX" | "hotspotY" | "pointWidth" | "pointHeight"
-  >;
-  regionOriginX: number;
-  regionOriginY: number;
-  regionWidth: number;
-  regionHeight: number;
-  scaleFactor: number;
-}): { xPx: number; yPx: number; drawWidthPx: number; drawHeightPx: number } | null {
-  const { sample, regionOriginX, regionOriginY, regionWidth, regionHeight, scaleFactor } =
-    args;
-  const localX = sample.posX - regionOriginX;
-  const localY = sample.posY - regionOriginY;
-  // R6: the HOTSPOT (the pixel the user "points" with) must be inside
-  // the captured region. Sprite overhang past the edge is fine — it
-  // clips at the canvas like any raster.
-  if (localX < 0 || localY < 0 || localX >= regionWidth || localY >= regionHeight) {
-    return null;
-  }
-  return {
-    xPx: (localX - sample.hotspotX) * scaleFactor,
-    yPx: (localY - sample.hotspotY) * scaleFactor,
-    drawWidthPx: sample.pointWidth * scaleFactor,
-    drawHeightPx: sample.pointHeight * scaleFactor
-  };
-}

@@ -15,6 +15,11 @@ import { setVideoAvatar, setVideoAvatarSpans } from "../persistence/video-repo";
 
 import { copyFile, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { mkdtemp } from "node:fs/promises";
+import { ensureVideoFrameStill } from "../recording/video-frame-still";
+import { persistStillCapture } from "../capture/persist-still-capture";
+import { frameStillCapturedAt } from "../recording/video-frame-time";
 import { ok, err, recordingFailureSummary,
   describeVideoEdit,
   normalizeVideoSegments,
@@ -300,9 +305,13 @@ export function validateRecordingStartRequest(
       "subject",
       "capabilities",
       "countdownSeconds",
-      "captureCursor"
+      "captureCursor",
+      "output"
     ])
   ) {
+    return invalid();
+  }
+  if (value.output !== undefined && value.output !== "video" && value.output !== "burst") {
     return invalid();
   }
 
@@ -379,6 +388,20 @@ export function validateRecordingStartRequest(
   if (
     value.captureCursor !== undefined &&
     typeof value.captureCursor !== "boolean"
+  ) {
+    return invalid();
+  }
+  // A burst is stills of one rectangle: no sound, no camera, and never a
+  // whole-display subject (the recorder sizes its stills from the rect).
+  // A burst request carrying any of those meant something else; refuse it
+  // rather than quietly drop half of it.
+  if (
+    value.output === "burst" &&
+    (subject.kind === "display" ||
+      capabilities.systemAudio !== false ||
+      capabilities.microphone !== false ||
+      capabilities.camera !== undefined ||
+      capabilities.microphoneDevice !== undefined)
   ) {
     return invalid();
   }
@@ -878,6 +901,11 @@ export function registerRecordingHandlers(): void {
     // interactive callers surface the rejection with recovery
     // instructions. The selector's source chips make this rare: they
     // show the grant state, and offer it, before the user commits.
+    if (request.output === "burst" && !recordingBackendCapabilities().outputs.burst) {
+      return err(
+        recordingError("burst_unsupported", "Burst capture is not available on this platform yet.")
+      );
+    }
     const blocked = await guardRecordingAttempt(request.capabilities);
     if (blocked) return blocked;
     try {
@@ -885,7 +913,8 @@ export function registerRecordingHandlers(): void {
         subject: request.subject,
         capabilities: request.capabilities,
         captureCursor: request.captureCursor,
-        countdownSeconds: request.countdownSeconds ?? 3
+        countdownSeconds: request.countdownSeconds ?? (request.output === "burst" ? 0 : 3),
+        ...(request.output === "burst" ? { output: "burst" as const } : {})
       });
       return ok({ sessionId: session.sessionId });
     } catch (cause) {
@@ -930,8 +959,9 @@ export function registerRecordingHandlers(): void {
       );
     }
     try {
-      const { captureId } = await getService().stop();
-      return ok({ captureId });
+      const { captureId, burstId } = await getService().stop();
+      // A burst makes no capture at Stop; it names the review it opened.
+      return ok(burstId === undefined ? { captureId } : { captureId, burstId });
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       log.error("recording:stop failed", { message });
@@ -1286,6 +1316,50 @@ export function registerRecordingHandlers(): void {
   // cache live in `recording/video-frames.ts`; the renderer displays
   // the returned `pwrsnap-cache://v/…` URL through the serve-only
   // protocol arm.
+  // A frame of a recording kept as an ordinary snap. The still is copied
+  // out of the derived cache first: persistence consumes (unlinks) its
+  // input, and the cache file belongs to the cache.
+  bus.register("video:saveFrameAsSnap", async (req) => {
+    if (typeof req.captureId !== "string" || req.captureId.length === 0 || !Number.isFinite(req.timeSec)) {
+      return err(validationError("invalid_request", "video:saveFrameAsSnap: captureId and a finite timeSec are required"));
+    }
+    const record = getCaptureById(req.captureId);
+    if (record === null || record.deleted_at !== null || record.kind !== "video" || !record.video) {
+      return err(validationError("not_found", `video:saveFrameAsSnap: video capture not found: ${req.captureId}`));
+    }
+    const storageBlocked = await ensureCapturesDirReady();
+    if (storageBlocked !== null) return storageBlocked;
+    let tempDir: string | null = null;
+    try {
+      const still = await ensureVideoFrameStill(record, req.timeSec);
+      tempDir = await mkdtemp(join(tmpdir(), "pwrsnap-frame-"));
+      const tempPath = join(tempDir, "frame.png");
+      await copyFile(still.path, tempPath);
+      const persisted = await persistStillCapture(
+        tempPath,
+        { bundleId: record.source_app_bundle_id, appName: record.source_app_name },
+        {
+          devicePixelRatio: record.device_pixel_ratio,
+          sourceWindowTitle: record.source_window_title ?? null,
+          capturedAt: frameStillCapturedAt(record.captured_at, record.video.durationSec, still.timeSec)
+        }
+      );
+      if (!persisted.ok) return persisted;
+      log.info("video frame saved as snap", { captureId: record.id, snapId: persisted.value.id, timeSec: still.timeSec });
+      return ok({ widthPx: still.widthPx, heightPx: still.heightPx, timeSec: still.timeSec, snapId: persisted.value.id });
+    } catch {
+      // ffmpeg's stderr carries absolute source paths: stable codes only.
+      log.error("video:saveFrameAsSnap failed", { captureId: record.id, code: "frame_extract_failed" });
+      return err({
+        kind: "render",
+        code: "frame_extract_failed",
+        message: "The frame could not be extracted from this recording."
+      });
+    } finally {
+      if (tempDir !== null) await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
   bus.register("video:frames", async (req) => {
     if (typeof req.captureId !== "string" || req.captureId.length === 0) {
       return err(validationError("invalid_capture_id", "video:frames: captureId must be a non-empty string"));

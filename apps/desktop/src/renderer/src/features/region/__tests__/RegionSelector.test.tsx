@@ -41,6 +41,7 @@ type ModePayload = {
   };
   quickCaptureAction?: "ask" | "snap" | "record";
   hudStyle?: "shutter" | "clapperboard";
+  burstOffered?: boolean;
   invocationId?: string;
   generation?: number;
   multiDisplay?: boolean;
@@ -66,6 +67,7 @@ let presentationHandler: ((p: PresentationPayload) => void) | null = null;
 let peerPicksHandler: ((p: SelectorPeerPicks) => void) | null = null;
 const submitRegion = vi.fn();
 const reportSelectorPicks = vi.fn();
+const requestSelectorFocus = vi.fn();
 const notifySelectorSnapshotPainted = vi.fn();
 const notifySelectorPresented = vi.fn();
 const readSelectorSnapshot = vi.fn();
@@ -78,6 +80,7 @@ function installSelectorApi(): void {
   peerPicksHandler = null;
   submitRegion.mockReset();
   reportSelectorPicks.mockReset();
+  requestSelectorFocus.mockReset();
   notifySelectorSnapshotPainted.mockReset();
   notifySelectorPresented.mockReset();
   readSelectorSnapshot.mockReset();
@@ -108,6 +111,7 @@ function installSelectorApi(): void {
       return () => undefined;
     },
     reportSelectorPicks,
+    requestSelectorFocus,
     onSelectorPeerPicks: (h: (p: SelectorPeerPicks) => void) => {
       peerPicksHandler = h;
       return () => undefined;
@@ -3086,6 +3090,125 @@ describe("U7 — recording source chips", () => {
 });
 
 
+describe("U8 — Burst", () => {
+  // Burst is the chooser's third mode: a run of stills, no sound. It rides
+  // Record's rules (offered only where the chooser is, one rectangle only)
+  // and adds one of its own: it is offered only where main says the
+  // backend can take one. It must never open the microphone.
+  const getUserMedia = vi.fn();
+
+  beforeEach(() => {
+    getUserMedia.mockReset();
+    getUserMedia.mockResolvedValue({ getTracks: () => [], getAudioTracks: () => [] });
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia, enumerateDevices: vi.fn(async () => []) }
+    });
+  });
+
+  afterEach(() => {
+    Reflect.deleteProperty(navigator, "mediaDevices");
+  });
+
+  function burstModeButton(): HTMLElement | null {
+    const el = container?.querySelector('[data-testid="region-hud-mode-burst"]');
+    return el instanceof HTMLElement ? el : null;
+  }
+
+  test("not offered: no Burst button, B unbound, and no B in the legend", async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "ask" });
+    await drawRect();
+    expect(burstModeButton()).toBeNull();
+    await keyDown("b");
+    expect(hudButton("region-hud-capture").dataset.action).toBe("snap");
+    expect(container?.querySelector('[data-testid="region-hint-burst"]')).toBeNull();
+    const payload = await commitAndRead();
+    expect(payload).not.toHaveProperty("action");
+  });
+
+  test("the snap-only policy offers no Burst even where the backend could", async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "snap", burstOffered: true });
+    await drawRect();
+    expect(burstModeButton()).toBeNull();
+    await keyDown("b");
+    const payload = await commitAndRead();
+    expect(payload).not.toHaveProperty("action");
+  });
+
+  test("B chooses Burst without committing; ↵ bursts with the cursor and no sources", async () => {
+    await mountScene({
+      mode: "auto",
+      quickCaptureAction: "ask",
+      burstOffered: true,
+      sources: { microphone: true, systemAudio: true }
+    });
+    await drawRect();
+    const modes = [...(container?.querySelectorAll(".region-hud__mode-btn") ?? [])].map(
+      (b) => (b as HTMLElement).dataset.testid
+    );
+    expect(modes).toEqual(["region-hud-mode-snap", "region-hud-mode-burst", "region-hud-mode-record"]);
+    await keyDown("b");
+    expect(submitRegion).not.toHaveBeenCalled();
+    expect(burstModeButton()?.getAttribute("aria-pressed")).toBe("true");
+    expect(hudButton("region-hud-capture").dataset.action).toBe("burst");
+    expect(hudButton("region-hud-capture").getAttribute("aria-label")).toContain("burst");
+    // The cursor chip is there; sound is not.
+    expect(container?.querySelector('[data-testid="region-hud-cursor"]')).not.toBeNull();
+    expect(container?.querySelector('[data-testid="region-hud-mic"]')).toBeNull();
+    expect(container?.querySelector('[data-testid="region-hud-system-audio"]')).toBeNull();
+    await keyDown("m");
+    await keyDown("c");
+    const payload = await commitAndRead();
+    expect(payload.action).toBe("burst");
+    expect(payload.captureCursor).toBe(false);
+    expect(payload).not.toHaveProperty("sources");
+    expect(payload.rect).toEqual({ x: 100, y: 100, w: 200, h: 200 });
+    // Burst never earned the microphone.
+    expect(getUserMedia).not.toHaveBeenCalled();
+  });
+
+  test("S goes back to Snap, R on to Record", async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "ask", burstOffered: true });
+    await drawRect();
+    await keyDown("b");
+    await keyDown("s");
+    expect(hudButton("region-hud-capture").dataset.action).toBe("snap");
+    await keyDown("b");
+    await keyDown("r");
+    expect(hudButton("region-hud-capture").dataset.action).toBe("record");
+    await keyDown("b");
+    expect(hudButton("region-hud-capture").dataset.action).toBe("burst");
+  });
+
+  test("two picks refuse Burst, like Record: ↵ snaps the pick set", async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "ask", burstOffered: true });
+    await clickWindow(WIN);
+    await clickWindow(WIN_B, { metaKey: true });
+    expect(document.body.dataset.pickCount).toBe("2");
+    expect(burstModeButton()?.getAttribute("aria-disabled")).toBe("true");
+    await keyDown("b");
+    await clickEl(burstModeButton() as HTMLElement);
+    expect(hudButton("region-hud-capture").dataset.action).toBe("snap");
+    const payload = await commitAndRead();
+    expect(payload).not.toHaveProperty("action");
+  });
+
+  test("a Burst chosen in one show does not carry into the next", async () => {
+    await mountScene({ mode: "auto", quickCaptureAction: "ask", burstOffered: true });
+    await drawRect();
+    await keyDown("b");
+    await keyDown("Enter");
+    expect(submitRegion.mock.calls[0]?.[0].action).toBe("burst");
+    submitRegion.mockClear();
+    // Next show on the same pre-warmed window, from a backend with no burst.
+    await emitMode({ mode: "auto", quickCaptureAction: "ask", burstOffered: false });
+    await drawRect();
+    expect(burstModeButton()).toBeNull();
+    const payload = await commitAndRead();
+    expect(payload).not.toHaveProperty("action");
+  });
+});
+
 describe("selector result invocation identity", () => {
   test("echoes the per-show frozen URL on cancel and resets it before a reused selector commits", async () => {
     await mount();
@@ -3247,6 +3370,41 @@ describe("multi-display session", () => {
     await emitPeerPicks({ picks: [], union: null, total: 1, outputMode: "windows", drop: [WIN.windowId] });
     expect(pickBoxes()).toHaveLength(1);
     expect(lastPicksReport().picks.map((p) => p.id)).toEqual([WIN_B.windowId]);
+  });
+
+  test("the pointer arriving on an unfocused display asks main for the keyboard", async () => {
+    await mountMultiDisplayScene();
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    await mouseMove(40, 40);
+    await mouseMove(41, 41);
+    // Throttled: one request for a burst of moves.
+    expect(requestSelectorFocus).toHaveBeenCalledTimes(1);
+    expect(requestSelectorFocus).toHaveBeenCalledWith({ screenUrl: MULTI_URL });
+    hasFocus.mockReturnValue(true);
+    await delay(250);
+    await mouseMove(42, 42);
+    expect(requestSelectorFocus).toHaveBeenCalledTimes(1);
+  });
+
+  test("a one-display selector never asks for focus", async () => {
+    await mountScene({ mode: "auto", screenUrl: MULTI_URL });
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    await mouseMove(40, 40);
+    expect(requestSelectorFocus).not.toHaveBeenCalled();
+  });
+
+  test("a nudged whole-display pick commits as a plain rect, never a window", async () => {
+    await mountMultiDisplayScene();
+    await mouseMove(20, 20);
+    await mouseDown(20, 20);
+    await mouseUp(20, 20);
+    // The arrow promotes the lone pick to an adjustable rect.
+    await keyDown("ArrowDown");
+    await keyDown("Enter", { shiftKey: true });
+    const payload = submitRegion.mock.calls.at(-1)![0];
+    expect(payload.ok).toBe(true);
+    expect(payload.snappedWindowId).toBeUndefined();
+    expect(payload.fullWindow).toBeUndefined();
   });
 
   test("Record is refused while another display holds picks", async () => {

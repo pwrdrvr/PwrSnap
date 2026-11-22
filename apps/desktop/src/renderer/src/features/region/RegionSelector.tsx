@@ -54,7 +54,13 @@ import { MicrophoneChip } from "./MicrophoneChip";
 // display, so two (or N) full screens are just two (or N) picks.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { acceleratorToDisplayKeys, MAX_SELECTOR_EXTENTS, SELECTOR_HUD_STYLE_DEFAULT } from "@pwrsnap/shared";
+import {
+  acceleratorToDisplayKeys,
+  BURST_FPS,
+  BURST_MAX_FRAMES,
+  MAX_SELECTOR_EXTENTS,
+  SELECTOR_HUD_STYLE_DEFAULT
+} from "@pwrsnap/shared";
 import type {
   QuickCaptureAction,
   RecordingCapabilities,
@@ -427,6 +433,11 @@ export function RegionSelector() {
   // existed. Defaulting to "ask" made that comment a lie and put a live
   // `R` in front of a caller that never opted in.
   const [quickAction, setQuickAction] = useState<QuickCaptureAction>("snap");
+  // Whether this show offers Burst — a 10-per-second run of stills the
+  // user picks from afterwards. Rides the chooser exactly like Record
+  // (same policy gate, same one-rectangle rule) and additionally needs a
+  // backend that can take one; main says so per show.
+  const [burstOffered, setBurstOffered] = useState(false);
   // Which bar draws the controls (`settings.recording.selectorHud`).
   const [hudStyle, setHudStyle] = useState<SelectorHudStyle>(SELECTOR_HUD_STYLE_DEFAULT);
   // ⇧ in snap mode opts into full-window capture: the rect expands
@@ -489,6 +500,7 @@ export function RegionSelector() {
   const shiftRef = useRef(false);
   const picksRef = useRef<readonly WindowSnapEntry[]>([]);
   const multiDisplayRef = useRef(false);
+  const lastFocusRequestRef = useRef(-Infinity);
   const peerPicksRef = useRef<readonly WindowSnapEntry[]>([]);
   // The window under the current mousedown, if that press could still
   // turn out to be a pick. Set on mousedown, cleared the moment the
@@ -514,6 +526,7 @@ export function RegionSelector() {
   const sourcesRef = useRef<RecordingCapabilities | null>(null);
   const quickActionRef = useRef<QuickCaptureAction>("snap");
   const terminalRef = useRef<SelectorTerminalAction>("snap");
+  const burstOfferedRef = useRef(false);
   /** Whether the HUD — and so the source chips — is on screen this render. */
   const hudShownRef = useRef(false);
   // Cursor-tracking crosshair guide-lines (auto/region modes). Rendered
@@ -743,6 +756,7 @@ export function RegionSelector() {
   audioOfferedRef.current = audioOffered;
   quickActionRef.current = quickAction;
   terminalRef.current = terminal;
+  burstOfferedRef.current = burstOffered;
   picksRef.current = picks;
   outputModeRef.current = outputMode;
   multiDisplayRef.current = multiDisplay;
@@ -754,8 +768,14 @@ export function RegionSelector() {
   // when a pick lands or the policy arrives.
   const recordOffered = intent !== "video" && quickAction !== "snap";
   const recordUsable = recordOffered && picks.length <= 1 && peerPicks.length === 0;
+  const burstShown = recordOffered && burstOffered;
+  const burstUsable = burstShown && picks.length <= 1 && peerPicks.length === 0;
   const primary: SelectorTerminalAction =
-    terminal === "record" && recordUsable ? "record" : "snap";
+    terminal === "record" && recordUsable
+      ? "record"
+      : terminal === "burst" && burstUsable
+        ? "burst"
+        : "snap";
   // What ↵ actually PRODUCES, which is not the same question as which
   // action the chooser picked. In the dedicated video selector there is
   // no choice — `commit()` reads `intent` and ships the recording-only
@@ -763,14 +783,18 @@ export function RegionSelector() {
   // `data-action` keeps reporting the wire shape, while the button has
   // to read "Record" or it lies about what the click does.
   const commitsRecording = intent === "video" || primary === "record";
+  // Burst is a take too (it runs the recorder, so the cursor bake
+  // applies), but it records no sound and no camera: the chips for those
+  // stay away in Burst mode, and so do their keys.
+  const commitsBurst = intent !== "video" && primary === "burst";
   // Recording controls — the cursor bake and the source chips — belong
   // exactly where ↵ makes a recording: the dedicated video selector, and
   // a chooser show in Record mode. In Snap mode there is nothing for them
   // to configure, so they are not drawn and their keys are not bound.
-  const recordingControls = commitsRecording;
+  const recordingControls = commitsRecording || commitsBurst;
   // The chips additionally need main's per-show seed; without one there
   // is no answer to render and none to commit.
-  const sourcesOffered = recordingControls && sources !== null;
+  const sourcesOffered = commitsRecording && sources !== null;
   // The microphone opens with the chips: Record mode is the explicit act
   // that earns the stream (see `terminal`), and `resetToSnap` leaving it
   // is what closes it again on a pre-warmed window.
@@ -835,7 +859,7 @@ export function RegionSelector() {
   //
   // Record mode is the same: its sources have to be reachable before ↵,
   // so choosing Record raises the HUD even in live snap.
-  const sourceBar = commitsRecording;
+  const sourceBar = commitsRecording || commitsBurst;
   const showHud = picks.length > 0 || peerPicks.length > 0 || chooserBar || sourceBar;
   // Synced here rather than with the refs above because `showHud` is not
   // known until this point — and before the return, so the hint legend's
@@ -954,6 +978,9 @@ export function RegionSelector() {
       // keydown handler reads the REF, so between this IPC callback and
       // React's commit it would otherwise still be arbitrating keys
       // under the previous show's policy.
+      const nextBurstOffered = payload.burstOffered === true;
+      burstOfferedRef.current = nextBurstOffered;
+      setBurstOffered(nextBurstOffered);
       const nextQuickAction = payload.quickCaptureAction ?? "snap";
       quickActionRef.current = nextQuickAction;
       setQuickAction(nextQuickAction);
@@ -1318,9 +1345,26 @@ export function RegionSelector() {
     );
   }
 
+  /**
+   * True when Burst can run against the CURRENT selection: the chooser
+   * offers it (Record's policy gate, plus a backend main said can take a
+   * burst) and the selection is one rectangle — a burst is a recording
+   * underneath, with the same single-stream rule.
+   */
+  function burstAvailable(): boolean {
+    return burstOfferedRef.current && recordAvailable();
+  }
+
   /** Which action a bare ↵ (or the shutter) commits. */
   function primaryAction(): SelectorTerminalAction {
-    return terminalRef.current === "record" && recordAvailable() ? "record" : "snap";
+    if (terminalRef.current === "record" && recordAvailable()) return "record";
+    if (terminalRef.current === "burst" && burstAvailable()) return "burst";
+    return "snap";
+  }
+
+  /** True when ↵ starts the recorder at all — a recording or a burst. */
+  function commitsTakeNow(): boolean {
+    return commitsRecordingNow() || (intentRef.current !== "video" && primaryAction() === "burst");
   }
 
   /** True when ↵ makes a recording: the video selector, or Record mode. */
@@ -1336,6 +1380,7 @@ export function RegionSelector() {
    */
   function chooseTerminal(next: SelectorTerminalAction): void {
     if (next === "record" && !recordAvailable()) return;
+    if (next === "burst" && !burstAvailable()) return;
     if (next === "snap" && !recordOfferedByPolicy()) return;
     terminalRef.current = next;
     setTerminal(next);
@@ -1350,7 +1395,7 @@ export function RegionSelector() {
    * and ↵ already snaps, so `S` has nothing to do there.
    */
   function snapKeyBound(): boolean {
-    return primaryAction() === "record";
+    return primaryAction() !== "snap";
   }
 
   /**
@@ -1579,6 +1624,11 @@ export function RegionSelector() {
     // the user can see — it must never fall through to a snap they did
     // not ask for, nor to a recording of the gaps.
     if (action === "record" && !recordAvailable()) return;
+    if (action === "burst" && !burstAvailable()) return;
+    // A burst bakes the cursor like a recording does, and ships no
+    // sources: it records no sound, and main refuses a burst that asks
+    // for any.
+    const isBurst = intentRef.current !== "video" && action === "burst";
     // Video-only fields (the cursor bake) ride along for BOTH ways a
     // commit can become a recording: the dedicated video selector, and
     // the chooser's Record.
@@ -1672,8 +1722,8 @@ export function RegionSelector() {
           rect: toLogical(only.rawRect),
           displayId,
           ...(isWindow ? { snappedWindowId: only.windowId } : {}),
-          ...(action === "record" ? { action } : {}),
-          ...(isRecording ? { captureCursor: captureCursorRef.current } : {}),
+          ...(action === "record" || isBurst ? { action } : {}),
+          ...(isRecording || isBurst ? { captureCursor: captureCursorRef.current } : {}),
           ...(isRecording && sourcesRef.current !== null
             ? { sources: committedSources(sourcesRef.current) }
             : {}),
@@ -1723,7 +1773,9 @@ export function RegionSelector() {
     // when we have a window snap target — not just live `snap`. In
     // window-mode the user clicks once, the pending → adjusting flow
     // commits with snap=window even after the brief mouseup.
-    const fromWindowSnap = snap.kind === "window";
+    // A promoted whole-display pick rides a `window` snap target but has
+    // no window behind it (negative id): no tag, no full-window path.
+    const fromWindowSnap = snap.kind === "window" && snap.entry.windowId >= 0;
     // `screencapture -l` captures the window's own backing buffer and
     // NEVER reads `rect`, so opting into it is only honest while the
     // rect still IS the window. Once the user has nudged or resized it
@@ -1760,12 +1812,12 @@ export function RegionSelector() {
       ...(wantFull ? { fullWindow: true } : {}),
       // The chooser's Record. Absent for a snap, so a still capture's
       // payload is unchanged from before the chooser existed.
-      ...(action === "record" ? { action } : {}),
+      ...(action === "record" || isBurst ? { action } : {}),
       // Recording-only: the cursor choice for this recording. Read from
       // the ref (not state) because this commit closure is captured once
       // at mount by the global keydown listener. Omitted for image
       // captures, which don't consume it yet (Phase 3).
-      ...(isRecording ? { captureCursor: captureCursorRef.current } : {}),
+      ...(isRecording || isBurst ? { captureCursor: captureCursorRef.current } : {}),
       // Recording-only: the audio sources armed on the chips. Same ref
       // read, same reason. Omitted when main never seeded them, which
       // leaves main on the persisted defaults rather than letting a
@@ -1993,6 +2045,18 @@ export function RegionSelector() {
         return;
       }
       if (
+        (event.key === "b" || event.key === "B") &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        burstAvailable()
+      ) {
+        // Burst mode: same rules as `R` — choosing, not committing.
+        event.preventDefault();
+        chooseTerminal("burst");
+        return;
+      }
+      if (
         (event.key === "s" || event.key === "S") &&
         !event.metaKey &&
         !event.ctrlKey &&
@@ -2020,7 +2084,7 @@ export function RegionSelector() {
         !event.metaKey &&
         !event.ctrlKey &&
         !event.altKey &&
-        commitsRecordingNow()
+        commitsTakeNow()
       ) {
         // Recording-only: toggle whether the recording bakes in the
         // mouse cursor. The HUD reflects the current state; the value
@@ -2388,6 +2452,18 @@ export function RegionSelector() {
     }
 
     function onMouseMove(event: MouseEvent): void {
+      // Multi-display: the keyboard follows the pointer. Without this the
+      // selector on the hotkey's display keeps it until the user clicks
+      // elsewhere, and ↵ over another display commits the first one's
+      // stale selection. Throttled: main ignores repeats anyway.
+      if (multiDisplayRef.current && !document.hasFocus()) {
+        const now = performance.now();
+        const screen = resultScreenUrlRef.current;
+        if (screen !== null && now - lastFocusRequestRef.current > 200) {
+          lastFocusRequestRef.current = now;
+          window.pwrsnapApi?.requestSelectorFocus?.({ screenUrl: screen });
+        }
+      }
       // Over the HUD there is nothing to aim at — the bar covers
       // whatever is behind it. Freeze the highlight rather than
       // snapping to a window the user can't see under the toolbar, and
@@ -2767,7 +2843,7 @@ export function RegionSelector() {
   // `record` policy ↵ starts a recording, and a legend that still said
   // "capture" would be telling the user the wrong thing about the one
   // key they are most likely to press.
-  const commitVerb = primary === "record" ? "record" : null;
+  const commitVerb = primary === "record" ? "record" : primary === "burst" ? "start burst" : null;
 
   // The keyboard legend's "?". It sits at the end of the HUD when there is
   // one, and above where the HUD would be when there is not; the legend it
@@ -2855,7 +2931,7 @@ export function RegionSelector() {
             />
           ]
         : [];
-    const cameraChip = cameraOffered ? (
+    const cameraChip = cameraOffered && commitsRecording ? (
       <CameraChip
         key={`camera-${cameraSession}`}
         variant={density}
@@ -3426,7 +3502,7 @@ export function RegionSelector() {
               : `region-hud region-hud--${hudStyle} region-hud--chooser-only`
           }
           data-hud-style={hudStyle}
-          data-mode={commitsRecording ? "record" : "snap"}
+          data-mode={commitsRecording ? "record" : commitsBurst ? "burst" : "snap"}
           data-region-hud
           data-testid="region-hud"
           // A HUD press deliberately skips preventDefault so the button
@@ -3542,8 +3618,9 @@ export function RegionSelector() {
             <div
               className="region-hud__mode"
               role="group"
-              aria-label="Snap or record"
+              aria-label={burstShown ? "Snap, burst or record" : "Snap or record"}
               data-mode={primary}
+              data-burst={burstShown}
             >
               <button
                 type="button"
@@ -3557,6 +3634,29 @@ export function RegionSelector() {
               >
                 {hudStyle === "shutter" ? <HudGlyph kind="still" /> : "SNAP"}
               </button>
+              {burstShown && (
+                <button
+                  type="button"
+                  className="region-hud__mode-btn region-hud__mode-btn--burst"
+                  data-testid="region-hud-mode-burst"
+                  aria-pressed={primary === "burst"}
+                  aria-disabled={!burstUsable}
+                  aria-label={burstUsable ? "Burst" : "Burst unavailable"}
+                  data-tip={burstUsable ? "Burst" : "Burst unavailable"}
+                  {...(burstUsable
+                    ? {
+                        "data-tip-keys": "B",
+                        "data-tip-detail": `${BURST_FPS} stills a second until you stop, then pick the ones to keep`
+                      }
+                    : {
+                        "data-tip-detail":
+                          "A burst is one rectangle. Remove picks or drag a region."
+                      })}
+                  onClick={() => chooseTerminal("burst")}
+                >
+                  {hudStyle === "shutter" ? <HudGlyph kind="burst" /> : "BURST"}
+                </button>
+              )}
               <button
                 type="button"
                 className="region-hud__mode-btn region-hud__mode-btn--rec"
@@ -3593,9 +3693,14 @@ export function RegionSelector() {
             data-testid="region-hud-capture"
             data-action={primary}
             disabled={commitsRecording && !cameraReady}
-            aria-label={commitsRecording ? "Record (Return)" : "Capture (Return)"}
+            aria-label={
+              commitsRecording ? "Record (Return)" : commitsBurst ? "Start burst (Return)" : "Capture (Return)"
+            }
             {...(hudStyle === "shutter"
-              ? { "data-tip": commitsRecording ? "Record" : "Capture", "data-tip-keys": "↵" }
+              ? {
+                  "data-tip": commitsRecording ? "Record" : commitsBurst ? "Start burst" : "Capture",
+                  "data-tip-keys": "↵"
+                }
               : {})}
             onClick={() => commit(primary)}
           >
@@ -3603,20 +3708,28 @@ export function RegionSelector() {
               <i aria-hidden="true" />
             ) : (
               <>
-                {commitsRecording ? "Record" : "Capture"}
+                {commitsRecording ? "Record" : commitsBurst ? "Burst" : "Capture"}
                 <kbd>↵</kbd>
               </>
             )}
           </button>
           {hudStyle === "shutter" && recordingControls && (
-            <div className="region-hud__wing" role="group" aria-label="Recording sources">
+            <div
+              className="region-hud__wing"
+              role="group"
+              aria-label={commitsBurst ? "Burst options" : "Recording sources"}
+            >
               {recordingSources("orb")}
             </div>
           )}
           {hintToggle("region-hud__help")}
           </div>
           {hudStyle === "clapperboard" && recordingControls && (
-            <div className="region-hud__slate" role="group" aria-label="Recording sources">
+            <div
+              className="region-hud__slate"
+              role="group"
+              aria-label={commitsBurst ? "Burst options" : "Recording sources"}
+            >
               {recordingSources("cell")}
             </div>
           )}
@@ -3669,15 +3782,40 @@ export function RegionSelector() {
         {recordOffered && (
           <>
             <span className="region-hint-sep">·</span>
-            {primary === "record" ? (
+            {primary !== "snap" && (
               <span>
                 <kbd>S</kbd>switch to snap
               </span>
-            ) : (
-              <span data-testid="region-hint-record" data-available={recordUsable}>
-                <kbd>R</kbd>
-                {recordUsable ? "switch to record" : "record (one rectangle only)"}
-              </span>
+            )}
+            {burstShown && primary !== "burst" && (
+              <>
+                {primary !== "snap" && <span className="region-hint-sep">·</span>}
+                <span data-testid="region-hint-burst" data-available={burstUsable}>
+                  <kbd>B</kbd>
+                  {burstUsable ? "burst" : "burst (one rectangle only)"}
+                </span>
+              </>
+            )}
+            {primary !== "record" && (
+              <>
+                {(primary !== "snap" || burstShown) && <span className="region-hint-sep">·</span>}
+                <span data-testid="region-hint-record" data-available={recordUsable}>
+                  <kbd>R</kbd>
+                  {recordUsable ? "switch to record" : "record (one rectangle only)"}
+                </span>
+              </>
+            )}
+            {primary === "burst" && (
+              <>
+                <span className="region-hint-sep">·</span>
+                <span>
+                  <kbd>C</kbd>cursor: {captureCursor ? "on" : "off"}
+                </span>
+                <span className="region-hint-sep">·</span>
+                <span>
+                  {BURST_FPS}/s · keeps the last {Math.round(BURST_MAX_FRAMES / BURST_FPS)} s
+                </span>
+              </>
             )}
             {primary === "record" && (
               <>
@@ -3738,7 +3876,7 @@ const COMPACT_PICK_CHIPS_FROM = 3;
 function HudGlyph({
   kind
 }: {
-  readonly kind: "still" | "rec" | "windows" | "rectangle" | "set";
+  readonly kind: "still" | "burst" | "rec" | "windows" | "rectangle" | "set";
 }): ReactNode {
   const common = {
     width: 15,
@@ -3757,6 +3895,15 @@ function HudGlyph({
         <svg {...common}>
           <path d="M2.2 5.4a1.4 1.4 0 0 1 1.4-1.4h1.6l1.2-1.6h3.2L10.8 4h1.6a1.4 1.4 0 0 1 1.4 1.4v6.2a1.4 1.4 0 0 1-1.4 1.4H3.6a1.4 1.4 0 0 1-1.4-1.4z" />
           <circle cx="8" cy="8.4" r="2.4" />
+        </svg>
+      );
+    case "burst":
+      // Three stacked frames: a run of stills.
+      return (
+        <svg {...common}>
+          <rect x="1.6" y="5.4" width="8.6" height="7" rx="1.2" />
+          <path d="M4.4 3.4h7.4a1.2 1.2 0 0 1 1.2 1.2v5.8" />
+          <path d="M7 1.6h6.2a1.2 1.2 0 0 1 1.2 1.2v5" />
         </svg>
       );
     case "rec":

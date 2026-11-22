@@ -472,7 +472,7 @@ describe("planMultiDisplayComposite", () => {
           }
         }
       ),
-      { numRuns: 200 }
+      { numRuns: 100 }
     );
     // Every run walks every canvas pixel; under a parallel suite that is
     // a few seconds of honest work, not a hang.

@@ -748,7 +748,7 @@ export type WindowFrameState = { maximized: boolean };
 
 /**
  * The renderer stages that are a WINDOW rather than a popover surface — the
- * six that `platformWindowChrome()` builds, and the only ones that paint a
+ * seven that `platformWindowChrome()` builds, and the only ones that paint a
  * title bar, caption buttons, or a window edge of their own.
  *
  * Shared because three places need the same answer and must not drift: the
@@ -764,7 +764,8 @@ export const WINDOW_CHROME_STAGES = [
   "sizzle",
   "logs",
   "document",
-  "local-agent-consent"
+  "local-agent-consent",
+  "burst-review"
 ] as const;
 
 export type WindowChromeStage = (typeof WINDOW_CHROME_STAGES)[number];

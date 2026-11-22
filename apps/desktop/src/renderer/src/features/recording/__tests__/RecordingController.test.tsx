@@ -57,6 +57,7 @@ const macCapabilities: RecordingBackendCapabilities = {
     liveDisconnectDetection: false,
     midRecordingToggles: false
   },
+  outputs: { burst: true },
   controllerExcludedFromCapture: true
 };
 

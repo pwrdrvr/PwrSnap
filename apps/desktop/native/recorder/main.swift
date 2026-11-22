@@ -67,6 +67,19 @@ struct StartRequest: Decodable {
     /// Camera preview is excluded by window identity, never by the Electron
     /// main PID (which would also remove the user's Library window).
     let cameraPreview: CameraPreviewIdentity?
+    /// "burst" writes lossless PNG stills into `burstDir` (a ring of at most
+    /// `burstMaxFrames`) instead of an MP4. Nil / "video" is the recorder as
+    /// it always was. See burst.swift.
+    let mode: String?
+    let burstDir: String?
+    let burstFps: Double?
+    let burstMaxFrames: Int?
+    /// Burst only: record the stills WITHOUT the pointer and track it beside
+    /// them, writing its sprites here (pointer.swift). Absent = no pointer.
+    let burstPointerDir: String?
+    /// Backing pixels per point of the recorded display. Burst captures at
+    /// full resolution; video keeps its historical point-sized output.
+    let pixelScale: Double?
 }
 
 struct CameraPreviewIdentity: Decodable {
@@ -180,6 +193,9 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     /// window. openStream polls this after startCapture returns to
     /// detect post-success daemon rejections (the -3805 case).
     private var streamStartError: Error?
+    /// Set for a burst take; the asset writer is never created then.
+    private var burst: BurstSink?
+    private var burstPointer: PointerTracker?
 
     func start(req: StartRequest) async {
         diag("start() called displayId=\(req.displayId) rect=\(req.rect.x),\(req.rect.y) \(req.rect.w)x\(req.rect.h) captureAtMs=\(req.captureAtMs ?? -1) excludePids=\(req.excludePids ?? [])")
@@ -232,11 +248,59 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             width: CGFloat(req.rect.w),
             height: CGFloat(req.rect.h)
         )
-        if req.systemAudio {
+        if req.systemAudio && req.mode != "burst" {
             cfg.capturesAudio = true
             cfg.sampleRate = 48_000
             cfg.channelCount = 2
             cfg.excludesCurrentProcessAudio = true
+        }
+
+        let isBurst = req.mode == "burst"
+        if isBurst {
+            guard let dirPath = req.burstDir, !dirPath.isEmpty else {
+                emitError("burst_dir_missing", "A burst needs a directory to write stills into.")
+                return
+            }
+            // Full resolution: the source rect is in points, the output in
+            // pixels. A burst exists to catch detail a point-sized video loses.
+            let scale = min(max(req.pixelScale ?? 1.0, 1.0), 4.0)
+            cfg.width = max(1, Int((Double(req.rect.w) * scale).rounded()))
+            cfg.height = max(1, Int((Double(req.rect.h) * scale).rounded()))
+            let fps = min(max(req.burstFps ?? 10, 1), 30)
+            cfg.minimumFrameInterval = CMTime(seconds: 1.0 / fps, preferredTimescale: 6000)
+            // Frames are copied out of the pool immediately, but give the
+            // encoder slots some headroom before ScreenCaptureKit runs dry.
+            cfg.queueDepth = 8
+            cfg.colorSpaceName = CGColorSpace.sRGB
+            let maxFrames = min(max(req.burstMaxFrames ?? 300, 1), 3000)
+            let changeFloor = burstChangeFloor(pixelScale: scale)
+            diag("burst mode dir=\(dirPath) fps=\(fps) maxFrames=\(maxFrames) out=\(cfg.width)x\(cfg.height) changeFloor=\(changeFloor)")
+            var lastProgressEmit = Date.distantPast
+            var pointerSource: (() -> PointerAt?)?
+            if let pointerDir = req.burstPointerDir, !pointerDir.isEmpty {
+                // The pointer is tracked, not painted: moving it must not
+                // read as a change, and it comes back as a removable layer.
+                cfg.showsCursor = false
+                let displayOrigin = CGDisplayBounds(CGDirectDisplayID(req.displayId)).origin
+                let tracker = PointerTracker(
+                    dir: URL(fileURLWithPath: pointerDir),
+                    origin: CGPoint(x: displayOrigin.x + CGFloat(req.rect.x), y: displayOrigin.y + CGFloat(req.rect.y))
+                )
+                tracker.start()
+                burstPointer = tracker
+                pointerSource = { tracker.now() }
+                diag("burst pointer tracked origin=\(displayOrigin.x + CGFloat(req.rect.x)),\(displayOrigin.y + CGFloat(req.rect.y))")
+            }
+            burst = BurstSink(
+                dir: URL(fileURLWithPath: dirPath), fps: fps, maxFrames: maxFrames, changeFloor: changeFloor,
+                pointer: pointerSource
+            ) { kept, written in
+                // At most ~4 progress lines a second; the HUD only shows a count.
+                let now = Date()
+                guard now.timeIntervalSince(lastProgressEmit) >= 0.25 else { return }
+                lastProgressEmit = now
+                emit(["event": "burstProgress", "kept": kept, "written": written])
+            }
         }
 
         // NOTE: SCStream construction + addStreamOutput is DEFERRED
@@ -250,75 +314,77 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         // the stream right before startCapture avoids the idle
         // window.
 
-        // AVAssetWriter — H.264 video, AAC audio.
-        let writer: AVAssetWriter
-        do {
-            writer = try AVAssetWriter(outputURL: outputURL!, fileType: .mp4)
-        } catch {
-            emitError("writer_init_failed", "\(error)")
-            return
-        }
-        // shouldOptimizeForNetworkUse → write the moov atom at the
-        // START of the file (the AVFoundation equivalent of ffmpeg's
-        // `-movflags +faststart`). Without this, the moov lands at
-        // the END of the file and `<video src=pwrsnap-capture://…>`
-        // can't initialize playback without a full file scan — the
-        // float-over and Library Focus pane both stay stuck on the
-        // loading spinner.
-        writer.shouldOptimizeForNetworkUse = true
-        assetWriter = writer
-
-        let videoSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: req.rect.w,
-            AVVideoHeightKey: req.rect.h,
-            AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: 8_000_000,
-                AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
-                AVVideoMaxKeyFrameIntervalKey: 60
-            ]
-        ]
-        let vi = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-        vi.expectsMediaDataInRealTime = true
-        if writer.canAdd(vi) { writer.add(vi) }
-        videoInput = vi
-
-        if req.systemAudio {
-            let audioSettings: [String: Any] = [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVNumberOfChannelsKey: 2,
-                AVSampleRateKey: 48_000,
-                AVEncoderBitRateKey: 192_000
-            ]
-            let ai = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
-            ai.expectsMediaDataInRealTime = true
-            guard writer.canAdd(ai) else {
-                emitError("audio_input_failed", "The recorder could not add system audio to the output file.")
+        if !isBurst {
+            // AVAssetWriter — H.264 video, AAC audio.
+            let writer: AVAssetWriter
+            do {
+                writer = try AVAssetWriter(outputURL: outputURL!, fileType: .mp4)
+            } catch {
+                emitError("writer_init_failed", "\(error)")
                 return
             }
-            writer.add(ai)
-            audioInput = ai
-        }
+            // shouldOptimizeForNetworkUse → write the moov atom at the
+            // START of the file (the AVFoundation equivalent of ffmpeg's
+            // `-movflags +faststart`). Without this, the moov lands at
+            // the END of the file and `<video src=pwrsnap-capture://…>`
+            // can't initialize playback without a full file scan — the
+            // float-over and Library Focus pane both stay stuck on the
+            // loading spinner.
+            writer.shouldOptimizeForNetworkUse = true
+            assetWriter = writer
 
-        if req.microphone {
-            // Microphone capture goes through AVCaptureSession; the
-            // samples land in the same AVAssetWriter as a second audio
-            // track if the user wants both.
-            let micSettings: [String: Any] = [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVNumberOfChannelsKey: 1,
-                AVSampleRateKey: 48_000,
-                AVEncoderBitRateKey: 128_000
+            let videoSettings: [String: Any] = [
+                AVVideoCodecKey: AVVideoCodecType.h264,
+                AVVideoWidthKey: req.rect.w,
+                AVVideoHeightKey: req.rect.h,
+                AVVideoCompressionPropertiesKey: [
+                    AVVideoAverageBitRateKey: 8_000_000,
+                    AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+                    AVVideoMaxKeyFrameIntervalKey: 60
+                ]
             ]
-            let mi = AVAssetWriterInput(mediaType: .audio, outputSettings: micSettings)
-            mi.expectsMediaDataInRealTime = true
-            guard writer.canAdd(mi) else {
-                emitError("microphone_unavailable", "The recorder could not add microphone audio to the output file.")
-                return
+            let vi = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+            vi.expectsMediaDataInRealTime = true
+            if writer.canAdd(vi) { writer.add(vi) }
+            videoInput = vi
+
+            if req.systemAudio {
+                let audioSettings: [String: Any] = [
+                    AVFormatIDKey: kAudioFormatMPEG4AAC,
+                    AVNumberOfChannelsKey: 2,
+                    AVSampleRateKey: 48_000,
+                    AVEncoderBitRateKey: 192_000
+                ]
+                let ai = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+                ai.expectsMediaDataInRealTime = true
+                guard writer.canAdd(ai) else {
+                    emitError("audio_input_failed", "The recorder could not add system audio to the output file.")
+                    return
+                }
+                writer.add(ai)
+                audioInput = ai
             }
-            writer.add(mi)
-            micInput = mi
-            guard setUpMicrophoneCapture(into: mi, writer: writer, named: req.microphoneDevice) else { return }
+
+            if req.microphone {
+                // Microphone capture goes through AVCaptureSession; the
+                // samples land in the same AVAssetWriter as a second audio
+                // track if the user wants both.
+                let micSettings: [String: Any] = [
+                    AVFormatIDKey: kAudioFormatMPEG4AAC,
+                    AVNumberOfChannelsKey: 1,
+                    AVSampleRateKey: 48_000,
+                    AVEncoderBitRateKey: 128_000
+                ]
+                let mi = AVAssetWriterInput(mediaType: .audio, outputSettings: micSettings)
+                mi.expectsMediaDataInRealTime = true
+                guard writer.canAdd(mi) else {
+                    emitError("microphone_unavailable", "The recorder could not add microphone audio to the output file.")
+                    return
+                }
+                writer.add(mi)
+                micInput = mi
+                guard setUpMicrophoneCapture(into: mi, writer: writer, named: req.microphoneDevice) else { return }
+            }
         }
 
         // Sleep until the requested wall-clock capture time. The TS
@@ -697,6 +763,14 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         @unknown default: break
         }
         guard CMSampleBufferDataIsReady(buf) else { return }
+        if let sink = burst {
+            // A burst keeps only real screen frames; there is no audio and
+            // no writer session to start.
+            guard type == .screen, isCompleteScreenFrame(buf) else { return }
+            videoSamplesAppended += 1
+            sink.consume(buf)
+            return
+        }
         guard let writer = assetWriter else { return }
 
         // SCStream emits FOUR kinds of screen samples and we only
@@ -791,7 +865,62 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
+    private func isCompleteScreenFrame(_ buf: CMSampleBuffer) -> Bool {
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(
+            buf, createIfNecessary: false
+        ) as? [[SCStreamFrameInfo: Any]],
+              let attachment = attachments.first,
+              let statusRaw = attachment[.status] as? Int,
+              let frameStatus = SCFrameStatus(rawValue: statusRaw) else { return false }
+        return frameStatus == .complete
+    }
+
+    private func stopBurst(_ sink: BurstSink) async {
+        if let s = stream {
+            do { try await s.stopCapture() } catch { diag("burst stopCapture() threw: \(error)") }
+        }
+        writeQueue.sync { }
+        let result = sink.finish()
+        burstPointer?.stop()
+        let sprites = burstPointer?.sprites() ?? []
+        diag("burst finished pointerSprites=\(sprites.count)  kept=\(result.frames.count) written=\(result.written) dropped=\(result.dropped) failed=\(result.failed) evicted=\(result.evicted) unchanged=\(result.unchanged)")
+        emit([
+            "event": "stopped",
+            "durationSec": Date().timeIntervalSince(startedAtWallClock),
+            "containerFormat": "burst",
+            "hasSystemAudio": false,
+            "hasMicrophoneAudio": false,
+            "outputPath": "",
+            "burst": [
+                "written": result.written,
+                "dropped": result.dropped,
+                "failed": result.failed,
+                "evicted": result.evicted,
+                "frames": result.frames.map { f in
+                    var frame: [String: Any] = ["index": f.index, "path": f.path, "utcMs": f.utcMs, "width": f.width, "height": f.height]
+                    if let p = f.pointer {
+                        var pointer: [String: Any] = ["x": p.x, "y": p.y]
+                        if let sprite = p.sprite { pointer["sprite"] = sprite }
+                        frame["pointer"] = pointer
+                    }
+                    return frame
+                },
+                "pointerSprites": sprites.map { sp in
+                    [
+                        "id": sp.id, "path": sp.path, "pixelWidth": sp.pixelWidth, "pixelHeight": sp.pixelHeight,
+                        "pointWidth": sp.pointWidth, "pointHeight": sp.pointHeight,
+                        "hotspotX": sp.hotspotX, "hotspotY": sp.hotspotY
+                    ] as [String: Any]
+                }
+            ] as [String: Any]
+        ])
+    }
+
     func stop() async {
+        if let sink = burst {
+            await stopBurst(sink)
+            return
+        }
         diag("stop() entered videoSamples=\(videoSamplesReceived)/\(videoSamplesAppended) audioSamples=\(audioSamplesReceived)/\(audioSamplesAppended) scMicrophoneSamples=\(screenCaptureKitMicrophoneSamplesReceived) firstSampleWritten=\(firstSampleWritten)")
         guard let s = stream, let writer = assetWriter else {
             diag("stop() guard failed: stream=\(stream != nil) writer=\(assetWriter != nil)")

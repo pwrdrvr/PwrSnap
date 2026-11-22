@@ -3,8 +3,13 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
 import fc from "fast-check";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getVideoFrameSamples, prepareEnrichmentImage } from "../enrichment-image";
+
+vi.mock("sharp", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("sharp")>();
+  return { ...actual, default: vi.fn(actual.default) };
+});
 
 let tempRoot: string;
 
@@ -115,6 +120,8 @@ describe("prepareEnrichmentImage", () => {
           .png().withMetadata({ orientation }).toFile(sourcePath);
         const prepared = await prepareEnrichmentImage(sourcePath, { format: "webp", tempRoot });
         try {
+          // Reopening a scratch file through libvips can prevent unlink on Windows.
+          expect(vi.mocked(sharp).mock.calls.some(([input]) => input === prepared.path)).toBe(false);
           const bytes = await readFile(prepared.path);
           const encoded = await sharp(bytes).metadata();
           const longest = Math.max(width, height);

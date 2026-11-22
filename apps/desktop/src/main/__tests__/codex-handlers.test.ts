@@ -1,7 +1,8 @@
 import Database from "better-sqlite3";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdir, readFile, rm } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join } from "node:path";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -15,6 +16,9 @@ import { ENRICHMENT_QUEUE_MAX_AGE_MS } from "../ai/direct-api/enrichment-queue";
 import * as appleFmCli from "../ai/apple-fm/fm-cli";
 import * as appleFmNative from "../ai/apple-fm/native";
 import { getAppleFmStatusService } from "../ai/apple-fm/service";
+import { buildInitialV2Tree, packBundleV2 } from "../persistence/bundle-store";
+import { getCacheSourcePath } from "../persistence/paths";
+import { purgeCacheForCapture } from "../persistence/source-store";
 
 let testDb: Database.Database;
 let tempRoot: string;
@@ -880,6 +884,120 @@ describe("Codex handlers", () => {
     const settle = async (runId: string): Promise<void> => {
       await waitFor(() => ["completed", "failed"].includes(getAiRun(runId)?.status ?? ""));
     };
+
+    test("Apple can caption a bundle still after its source cache is evicted during Codex", async () => {
+      vi.stubEnv("PWRSNAP_DATA_ROOT", tempRoot);
+      try {
+        const captureId = "bundle-cache-fixture";
+        await seedCapture(captureId);
+        const source = await readFile(join(tempRoot, `${captureId}.png`));
+        const sha256 = createHash("sha256").update(source).digest("hex");
+        const { manifest, layers } = buildInitialV2Tree({
+          captureId,
+          createdAt: "2026-05-12T12:00:00.000Z",
+          sha256,
+          widthPx: 640,
+          heightPx: 360,
+          pairedPngFilename: "fixture.png"
+        });
+        const bundlePath = join(tempRoot, "fixture.pwrsnap");
+        await writeFile(bundlePath, await packBundleV2({
+          manifest,
+          document: { document_format_version: 1, edits_version: 0, layers, tags: [],
+            description: null, ai_runs: [] },
+          sources: new Map([[sha256, source]]),
+          layerBytes: new Map()
+        }));
+        testDb.prepare("UPDATE captures SET bundle_path = ?, sha256 = ?, legacy_src_path = NULL WHERE id = ?")
+          .run(bundlePath, sha256, captureId);
+        const cachedSource = getCacheSourcePath(captureId);
+        await mkdir(dirname(cachedSource), { recursive: true });
+        await writeFile(cachedSource, source);
+
+        await withApple(async (respondCalls) => {
+          const codex = {
+            stillImageFormat: "webp" as const,
+            enrichCapture: vi.fn(async ({ imagePaths }: CaptureEnrichmentRequest) => {
+              expect(await sharp(imagePaths[0]!).metadata()).toMatchObject({ format: "webp" });
+              await purgeCacheForCapture(captureId);
+              await expect(readFile(cachedSource)).rejects.toMatchObject({ code: "ENOENT" });
+              throw offline("httpConnectionFailed");
+            }),
+            close: async () => undefined
+          };
+          registerCodexHandlers({ clientFactory: () => codex,
+            settingsReader: async () => lunaSettings({ provider: "apple:system" }), budget: new AiEnrichmentBudget() });
+          const started = await bus.dispatch("codex:enrich", { captureId }, { principal: "ipc" });
+          if (!started.ok) throw new Error(started.error.message);
+          await settle(started.value.runId);
+          expect(getAiRun(started.value.runId)).toMatchObject({ status: "completed", fallbackFrom: "codex" });
+          expect(respondCalls()).toBe(1);
+          expect(await readFile(cachedSource)).toEqual(source);
+        });
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    test.each(["encoding", "accounting"])("a local %s failure preserves a concurrent Codex outage", async (failure) => {
+      await withApple(async (respondCalls) => {
+        await seedCapture("offline");
+        await seedCapture("next");
+        if (failure === "encoding") {
+          await writeFile(join(tempRoot, "cap_1.png"), "invalid fixture image");
+        } else {
+          testDb.exec(`
+            CREATE TRIGGER reject_fixture_media BEFORE INSERT ON ai_run_media_inputs
+            WHEN (SELECT capture_id FROM ai_runs WHERE id = NEW.ai_run_id) = 'cap_1'
+            BEGIN SELECT RAISE(ABORT, 'fixture media accounting failed'); END
+          `);
+        }
+        const enteredFactory = deferred<void>();
+        const releaseFactory = deferred<void>();
+        let first = true;
+        const codex = {
+          stillImageFormat: "webp" as const,
+          enrichCapture: vi.fn(async () => { throw offline("httpConnectionFailed"); }),
+          close: async () => undefined
+        };
+        registerCodexHandlers({
+          clientFactory: async () => {
+            if (first) {
+              first = false;
+              enteredFactory.resolve();
+              await releaseFactory.promise;
+            }
+            return codex;
+          },
+          settingsReader: async () => lunaSettings({ provider: "apple:system" }),
+          budget: new AiEnrichmentBudget(),
+          primaryHealth: new EnrichmentPrimaryHealth(() => 0, 60_000)
+        });
+        const start = async (captureId: string): Promise<string> => {
+          const started = await bus.dispatch("codex:enrich", { captureId }, { principal: "ipc" });
+          if (!started.ok) throw new Error(started.error.message);
+          return started.value.runId;
+        };
+
+        const localRun = await start("cap_1");
+        try {
+          await enteredFactory.promise;
+          const offlineRun = await start("offline");
+          await settle(offlineRun);
+          expect(getAiRun(offlineRun)).toMatchObject({ status: "completed", fallbackFrom: "codex" });
+        } finally {
+          releaseFactory.resolve();
+          await settle(localRun);
+        }
+        expect(getAiRun(localRun)).toMatchObject({ status: "failed", fallbackFrom: null,
+          error: expect.stringMatching(failure === "encoding" ? /unsupported image format/i : /fixture media accounting failed/) });
+        const nextRun = await start("next");
+        await settle(nextRun);
+        expect(getAiRun(nextRun)).toMatchObject({ status: "completed", fallbackFrom: "codex" });
+        expect(codex.enrichCapture).toHaveBeenCalledTimes(1);
+        expect(respondCalls()).toBe(2);
+      });
+    });
 
     test.each([
       { scenario: "connection failed, no HTTP status", error: offline("httpConnectionFailed"), expected: "fallback" },

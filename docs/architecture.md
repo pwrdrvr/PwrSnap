@@ -387,8 +387,8 @@ token, through the same path as an API-key connection. Like every direct
 connection, it has no tools, and no agent, app-server or subprocess serves it;
 the Codex and ACP harnesses are unchanged. The token goes only to that exact
 address. The registration and rotating tokens stay in DesktopSecretStore, and
-the agent process alone refreshes them (a bridge-only command serves the split
-Library main process). `ai.chatgptPlan` holds only a label and booleans, and is
+the agent process alone refreshes them. In split mode the agent executes
+Library chat requests and returns response text and usage over the bridge. `ai.chatgptPlan` holds only a label and booleans, and is
 main-owned. Automatic post-capture use on the plan needs its own consent on top
 of the general AI consent. See [Sign in with ChatGPT](sign-in-with-chatgpt.md)
 for the request shape, errors and operator steps.

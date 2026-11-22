@@ -1,3 +1,4 @@
+import { clearTimeout, setTimeout } from "node:timers";
 import { planErrorMessage } from "../chatgpt-plan/errors";
 import { customProtocolPath, isLoopbackApiUrl, type AiUsageTokenBreakdown, type CustomConnection, type CustomEnrichmentReasoning, type CustomModelDiscovery, type ResolvedCustomModel } from "@pwrsnap/shared";
 
@@ -57,21 +58,41 @@ export function apiEndpoint(endpoint: Pick<CustomConnection, "baseUrl">, path: s
 /** `error.code` from an error body, if it is a plain identifier. The rest of
  *  the body is server-controlled text and never leaves this function. */
 async function errorCode(response: Response): Promise<string | undefined> {
+  const reader = response.body?.getReader();
+  if (!reader) return undefined;
+  const decoder = new TextDecoder();
+  let stopDeadline = (): void => {};
+  const deadline = new Promise<undefined>((resolve) => {
+    const timer = setTimeout(resolve, 250);
+    stopDeadline = () => clearTimeout(timer);
+  });
   try {
     let text = "";
-    for await (const chunk of chunks(response)) {
-      text += chunk;
-      if (text.length > 64 * 1024) return undefined;
+    let bytes = 0;
+    for (;;) {
+      const item = await Promise.race([reader.read(), deadline]);
+      if (item === undefined) return undefined;
+      if (item.done) break;
+      bytes += item.value.byteLength;
+      if (bytes > 64 * 1024) return undefined;
+      text += decoder.decode(item.value, { stream: true });
     }
-    const code = record(record(JSON.parse(text)).error).code;
+    const body = record(JSON.parse(text + decoder.decode()));
+    const code = record(body.error).code ?? record(body.detail).code ?? body.detail;
     return typeof code === "string" && /^[a-z0-9_.]{1,100}$/.test(code) ? code : undefined;
   } catch { return undefined; }
+  finally {
+    stopDeadline();
+    void reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
 }
-export async function safeFetch(url: string, init: RequestInit): Promise<Response> {
+export async function safeFetch(url: string, init: RequestInit, chatgptPlan = false): Promise<Response> {
   try {
     const response = await fetch(url, { ...init, redirect: "error" });
     if (!response.ok) {
-      const code = await errorCode(response);
+      const code = chatgptPlan ? await errorCode(response) : undefined;
+      if (!chatgptPlan) void response.body?.cancel().catch(() => undefined);
       throw new DirectApiError(planErrorMessage(code)
         ?? `Model endpoint returned HTTP ${response.status}. Check the endpoint, model and authentication.`, response.status, code);
     }
@@ -190,7 +211,7 @@ export async function invokeApi(input: {
         ...(model.protocol === "anthropic-messages" ? { "anthropic-version": "2023-06-01" } : {}) },
       body: JSON.stringify(requestBody(model, input.system, input.messages,
         model.protocol === "openai-chat" && isLoopbackApiUrl(model.baseUrl) ? input.reasoningMode : undefined)), signal
-    });
+    }, model.auth.type === "chatgpt");
     let text = "";
     let tokens: AiUsageTokenBreakdown | null = null;
     const append = (delta: string): void => { text += delta; if (delta) input.onDelta?.(delta); };
@@ -206,7 +227,7 @@ export async function invokeApi(input: {
       for await (const e of events(response)) {
         if (e.error || ["error", "response.failed", "response.incomplete"].includes(string(e.type))) {
           const raw = record(record(e.response).error).code ?? record(e.error).code ?? e.code;
-          const code = typeof raw === "string" && /^[a-z0-9_.]{1,100}$/.test(raw) ? raw : undefined;
+          const code = model.auth.type === "chatgpt" && typeof raw === "string" && /^[a-z0-9_.]{1,100}$/.test(raw) ? raw : undefined;
           throw new DirectApiError(planErrorMessage(code) ?? "Model stream reported an error. Check server status and configuration.", undefined, code);
         }
         if (model.protocol === "openai-responses") {
@@ -233,12 +254,12 @@ export async function invokeApi(input: {
 }
 
 /** Explicit user request only. Never infers capabilities from model names. */
-export async function discoverApi(endpoint: Pick<CustomConnection, "baseUrl" | "protocol">, headers: Record<string, string>): Promise<CustomModelDiscovery> {
+export async function discoverApi(endpoint: Pick<CustomConnection, "baseUrl" | "protocol"> & Partial<Pick<CustomConnection, "auth">>, headers: Record<string, string>): Promise<CustomModelDiscovery> {
   const init = { headers: { ...headers, ...(endpoint.protocol === "anthropic-messages" ? { "anthropic-version": "2023-06-01" } : {}) },
     signal: AbortSignal.timeout(10_000) };
   // Anthropic pages its list at 20 by default.
   const listing = endpoint.protocol === "anthropic-messages" ? "models?limit=1000" : "models";
-  const body = await boundedJson(await safeFetch(apiEndpoint(endpoint, listing), init));
+  const body = await boundedJson(await safeFetch(apiEndpoint(endpoint, listing), init, endpoint.auth?.type === "chatgpt"));
   const seen = new Set<string>();
   const models: CustomModelDiscovery["models"] = [];
   // The account catalog Sign in with ChatGPT serves: `models[]` of

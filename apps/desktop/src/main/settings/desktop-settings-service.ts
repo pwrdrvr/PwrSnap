@@ -2188,6 +2188,7 @@ function parseChatgptPlan(raw: unknown): ChatgptPlanSettings {
     accountLabel: pickString(plan.accountLabel, "").slice(0, 200),
     planGranted: pickBoolean(plan.planGranted, false),
     backgroundConsent: pickBoolean(plan.backgroundConsent, false),
+    ...(plan.usagePaused === true ? { usagePaused: true } : {}),
     welcomeSeen: pickBoolean(plan.welcomeSeen, false)
   };
 }

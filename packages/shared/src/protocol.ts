@@ -5252,13 +5252,15 @@ export type Commands = {
   "chatgptPlan:status": { req: Record<string, never>; res: ChatgptPlanStatus };
   /** Signs in (browser OAuth), then makes sure the ChatGPT Direct API
    *  connection exists, so the status names it. */
-  "chatgptPlan:login": { req: Record<string, never>; res: ChatgptPlanStatus };
+  "chatgptPlan:login": { req: { replaceAccount?: boolean }; res: ChatgptPlanStatus };
   "chatgptPlan:logout": { req: Record<string, never>; res: { revocationConfirmed: boolean } };
-  "chatgptPlan:configure": { req: { backgroundConsent?: boolean; welcomeSeen?: boolean }; res: ChatgptPlanStatus };
-  /** Main-to-main bridge only; every renderer/RPC/MCP request is denied.
-   *  The agent process owns refresh, so a split-mode Library asks it. */
-  "chatgptPlan:runtime": { req: Record<string, never>; res: { accessToken: string } };
-  "chatgptPlan:invalidate": { req: Record<string, never>; res: undefined };
+  "chatgptPlan:configure": { req: { backgroundConsent?: boolean; welcomeSeen?: boolean; resumeAutomatic?: boolean }; res: ChatgptPlanStatus };
+  /** Split Library chat only. The agent owns credentials and sends only inference output. */
+  "chatgptPlan:chat": {
+    req: { requestId: string; modelId: string; providerId: string;
+      messages: Array<{ role: "user" | "assistant"; text: string; images?: string[] }> };
+    res: { text: string; tokens: AiUsageTokenBreakdown | null };
+  };
   "customModels:saveConnection": { req: { connection: CustomConnectionInput }; res: CustomConnection };
   "customModels:removeConnection": { req: { connectionId: string }; res: undefined };
   "customModels:setKey": { req: { connectionId: string; value: string }; res: undefined };
@@ -6424,6 +6426,8 @@ export type ChatgptPlanSettings = {
   /** Automatic post-capture enrichment may use the plan. Off by default;
    *  a clicked action never needs it. */
   backgroundConsent: boolean;
+  /** Automatic use awaits explicit resumption after a plan limit. */
+  usagePaused?: boolean;
   /** The one-time "You're using your ChatGPT plan" welcome was dismissed. */
   welcomeSeen: boolean;
 };

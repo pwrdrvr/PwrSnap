@@ -647,10 +647,19 @@ describe("Codex handlers", () => {
       invalidate.mockRestore();
     }
   }, 10_000);
-  async function checkPlanConsentPath(fallback: boolean, consent: boolean, automatic: boolean): Promise<void> {
+  async function checkPlanConsentPath(fallback: boolean, consent: boolean, automatic: boolean, change: "none" | "revoke" | "switch" | "limit" = "none"): Promise<void> {
     let requests = 0;
+    let current: Settings;
+    const revokeConsent = (): void => {
+      const plan = current.ai.chatgptPlan!;
+      current = { ...current, ai: { ...current.ai, chatgptPlan: { ...plan, backgroundConsent: false } } };
+    };
     const http = await server(async (req, res) => {
-      if (req.url?.startsWith("/unavailable")) { res.writeHead(503).end(); return; }
+      if (req.url?.startsWith("/unavailable")) {
+        if (change === "revoke") revokeConsent();
+        res.writeHead(503).end();
+        return;
+      }
       requests++; await body(req);
       stream(res, [{ type: "response.output_text.delta", delta: JSON.stringify({
         title: "Fixture", description: "Fixture", ocrText: "", filenameStem: "fixture", textAnchors: [], tags: []
@@ -666,19 +675,35 @@ describe("Codex handlers", () => {
     settings.ai.customConnections = [plan, primary].map(m => ({ id: m.connectionId, name: m.id,
       baseUrl: m.baseUrl, protocol: m.protocol, auth: m.auth }));
     settings.ai.defaults.enrichment = { provider: `custom:${fallback ? primary.id : plan.id}` };
+    if (change === "limit") settings.ai.chatgptPlan.usagePaused = true;
     settings.ai.enrichmentFallback = fallback ? { provider: `custom:${plan.id}` } : null;
-    const service = new CustomModelService({ read: async () => settings,
+    current = change === "switch" ? { ...settings, ai: { ...settings.ai,
+      defaults: { ...settings.ai.defaults, enrichment: {} } } } : settings;
+    const service = new CustomModelService({ read: async () => current,
       write: async () => { throw new Error("Unexpected settings write"); } },
-      { headers: async () => ({}), noteFailure: async () => undefined } as unknown as CustomCredentials, async () => undefined);
+      { headers: async () => {
+        if (change === "revoke" && !fallback) revokeConsent();
+        return {};
+      }, noteFailure: async () => undefined } as unknown as CustomCredentials, async () => undefined);
     const spy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
+    const modelLister = vi.fn(async () => {
+      current = settings;
+      return fakeCodexModels();
+    });
     try {
-      registerCodexHandlers({ settingsReader: async () => settings, budget: new AiEnrichmentBudget(),
+      registerCodexHandlers({ settingsReader: async () => current,
+        ...(change === "switch" ? { modelLister, modelDefaultsReconciler: async () => current } : {}),
+        budget: new AiEnrichmentBudget(),
         primaryHealth: new EnrichmentPrimaryHealth(), clientFactory: () => { throw new Error("Unexpected Codex call"); } });
       const result = await bus.dispatch("codex:enrich", { captureId: "cap_1",
         triggerSource: automatic ? "auto-enrichment" : "library-regenerate" }, { principal: "ipc" });
       if (result.ok) await waitFor(() => ["completed", "failed"].includes(getAiRun(result.value.runId)?.status ?? ""));
+      if (change === "switch") {
+        expect(modelLister).toHaveBeenCalledOnce();
+        expect(result).toMatchObject({ ok: false, error: { code: "chatgpt_background_consent_required" } });
+      }
       // Oracle: observe the actual HTTP boundary, independent of selection and run status.
-      expect(requests).toBe(automatic && !consent ? 0 : 1);
+      expect(requests).toBe(automatic && (!consent || change === "revoke" || change === "limit") ? 0 : 1);
     } finally {
       unregisterCodexHandlers(); spy.mockRestore(); await http.close();
     }
@@ -689,7 +714,21 @@ describe("Codex handlers", () => {
   });
 
   test("generated provider paths never spend ChatGPT plan usage automatically without consent", async () => {
-    await fc.assert(fc.asyncProperty(fc.boolean(), fc.boolean(), fc.boolean(), checkPlanConsentPath), { numRuns: 30 });
+    await fc.assert(fc.asyncProperty(fc.boolean(), fc.boolean(), fc.boolean(),
+      (fallback, consent, automatic) => checkPlanConsentPath(fallback, consent, automatic)), { numRuns: 30 });
+  });
+
+  test.each([false, true])("withdrawn consent prevents sending on a waiting plan attempt (fallback=%s)", async (fallback) => {
+    await checkPlanConsentPath(fallback, true, true, "revoke");
+  });
+
+  test("a plan limit blocks an automatic attempt but leaves an explicit action available", async () => {
+    await checkPlanConsentPath(false, true, true, "limit");
+    await checkPlanConsentPath(false, true, false, "limit");
+  });
+
+  test("switching to the ChatGPT plan during catalog discovery still requires consent", async () => {
+    await checkPlanConsentPath(false, false, true, "switch");
   });
 
   test("automatic enrichment on the ChatGPT plan waits for its own consent; a clicked action does not", async () => {

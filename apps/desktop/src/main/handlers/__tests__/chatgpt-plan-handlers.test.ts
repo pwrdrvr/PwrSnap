@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { DirectApiError } from "../../ai/direct-api/transport";
 import type { CommandContext } from "../../command-bus";
 
 const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (req: unknown, ctx: CommandContext) => Promise<unknown>>(),
-  status: vi.fn(), signIn: vi.fn(), signOut: vi.fn(), token: vi.fn(), invalidate: vi.fn(), write: vi.fn(),
+  status: vi.fn(), signIn: vi.fn(), signOut: vi.fn(), selected: vi.fn(), invoke: vi.fn(), relay: vi.fn(), write: vi.fn(),
   ensure: vi.fn(), discover: vi.fn(), setModels: vi.fn(), savedModels: [] as unknown[]
 }));
 vi.mock("electron", () => ({ shell: { openExternal: vi.fn() } }));
@@ -15,13 +16,14 @@ vi.mock("../settings-handlers", () => ({
   broadcastSettingsChanged: vi.fn()
 }));
 vi.mock("../custom-model-handlers", () => ({ getCustomModelService: () => ({
-  ensureChatgptConnection: mocks.ensure, discover: mocks.discover, setModels: mocks.setModels
+  ensureChatgptConnection: mocks.ensure, discover: mocks.discover, setModels: mocks.setModels, selected: mocks.selected
 }) }));
 vi.mock("../../ai/chatgpt-plan/session", () => ({
   serializeSession: (task: () => Promise<unknown>) => task(),
-  publicStatus: mocks.status, signIn: mocks.signIn, signOut: mocks.signOut,
-  planAccessToken: mocks.token, invalidatePlanSession: mocks.invalidate
+  publicStatus: mocks.status, signIn: mocks.signIn, signOut: mocks.signOut
 }));
+vi.mock("../../ai/direct-api/chat-backend", () => ({ invokeDirectChat: mocks.invoke }));
+vi.mock("../../process-split/event-relay", () => ({ CHATGPT_CHAT_DELTA_CHANNEL: "fixture-delta", relayRendererEventToPeer: mocks.relay }));
 import { registerChatgptPlanHandlers } from "../chatgpt-plan-handlers";
 
 const context = (principal: CommandContext["principal"]): CommandContext => ({ principal, signal: new AbortController().signal });
@@ -32,7 +34,7 @@ beforeEach(() => {
   vi.clearAllMocks(); mocks.handlers.clear(); mocks.savedModels = [];
   registerChatgptPlanHandlers();
   mocks.status.mockResolvedValue(STATUS);
-  mocks.token.mockResolvedValue("fixture-access");
+  mocks.selected.mockResolvedValue({ auth: { type: "chatgpt" } });
   mocks.ensure.mockResolvedValue({ id: "fixture-conn" });
   mocks.discover.mockResolvedValue({ models: [
     { id: "fixture-cereal-1", displayName: "Cereal One", vision: true },
@@ -41,15 +43,37 @@ beforeEach(() => {
 });
 
 describe("SIWC verbs", () => {
-  test("only the bridge can read the access token", async () => {
+  test("only the bridge can invoke split chat and it receives output, never credentials", async () => {
+    const uuid = "12345678-1234-4234-8234-123456789001";
+    const request = { requestId: uuid, providerId: uuid, modelId: "fixture", messages: [{ role: "user", text: "hi" }] };
+    expect(mocks.handlers.has("chatgptPlan:runtime")).toBe(false);
+    expect(mocks.handlers.has("chatgptPlan:invalidate")).toBe(false);
     for (const principal of ["ipc", "rpc", "mcp", "seeder"] as const) {
-      const result = await handler("runtime")({}, context(principal));
-      expect(result).toMatchObject({ ok: false });
-      expect(JSON.stringify(result)).not.toContain("fixture-access");
+      expect(await handler("chat")(request, context(principal))).toMatchObject({ ok: false });
     }
-    expect(mocks.token).not.toHaveBeenCalled();
-    expect(await handler("invalidate")({}, context("ipc"))).toMatchObject({ ok: false });
-    expect(await handler("runtime")({}, context("bridge"))).toEqual({ ok: true, value: { accessToken: "fixture-access" } });
+    expect(await handler("chat")({ ...request, accessToken: "injected" }, context("bridge"))).toMatchObject({ ok: false });
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    mocks.invoke.mockImplementationOnce(async (_service, _model, _messages, _signal, onDelta: (text: string) => void) => {
+      onDelta("fixture output"); return { text: "fixture output", tokens: null };
+    });
+    expect(await handler("chat")(request, context("bridge"))).toEqual({ ok: true, value: { text: "fixture output", tokens: null } });
+    expect(mocks.relay).toHaveBeenCalledWith("fixture-delta", { requestId: uuid, delta: "fixture output" });
+    mocks.selected.mockResolvedValueOnce({ auth: { type: "api-key" } });
+    expect(await handler("chat")(request, context("bridge"))).toMatchObject({ ok: false });
+    expect(mocks.invoke).toHaveBeenCalledOnce();
+  });
+
+  test("login at capacity never starts OAuth or commits a session", async () => {
+    mocks.ensure.mockRejectedValueOnce(new DirectApiError("At most 20 connections can be saved."));
+    expect(await handler("login")({}, context("ipc"))).toMatchObject({ ok: false, error: { message: "At most 20 connections can be saved." } });
+    expect(mocks.signIn).not.toHaveBeenCalled();
+  });
+
+  test("account replacement must be explicit and reserves capacity before OAuth", async () => {
+    expect(await handler("login")({ replaceAccount: "yes" }, context("ipc"))).toMatchObject({ ok: false });
+    expect(await handler("login")({ replaceAccount: true }, context("ipc"))).toMatchObject({ ok: true });
+    expect(mocks.ensure).toHaveBeenCalledBefore(mocks.signIn);
+    expect(mocks.signIn).toHaveBeenCalledWith(expect.any(Function), true);
   });
 
   test("RPC and MCP cannot sign in, sign out, change consent or read status", async () => {
@@ -81,7 +105,7 @@ describe("SIWC verbs", () => {
     expect(mocks.setModels).not.toHaveBeenCalled();
   });
 
-  test("configure accepts only the two booleans", async () => {
+  test("configure accepts only consent, resume and welcome booleans", async () => {
     for (const input of [{ accessToken: "fixture" }, { backgroundConsent: "yes" }, { planGranted: true }, { accountLabel: "x" }])
       expect(await handler("configure")(input, context("ipc"))).toMatchObject({ ok: false });
     expect(mocks.write).not.toHaveBeenCalled();

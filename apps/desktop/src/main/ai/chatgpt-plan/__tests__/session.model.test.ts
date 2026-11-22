@@ -28,7 +28,7 @@ vi.mock("../../../handlers/settings-handlers", () => ({ getDesktopSettingsServic
 }), broadcastSettingsChanged: vi.fn() }));
 vi.mock("../../../process-role", () => ({ getRuntimeProcessRole: () => fixture.role }));
 vi.mock("../../../command-bus", () => ({ bus: { dispatch: fixture.dispatch } }));
-import { invalidatePlanSession, planAccessToken, publicStatus, signOut } from "../session";
+import { notePlanFailure, planCredential, planCredentialGeneration, publicStatus, signOut } from "../session";
 
 beforeEach(() => {
   fixture.settings.ai = { chatgptPlan: signedInPlan(), customConnections: [] };
@@ -46,7 +46,7 @@ beforeEach(() => {
 // Generated state transitions use a disk oracle: the token presented to the
 // fake rotating endpoint must be the latest persisted refresh token.
 test("session command sequences preserve registration and rotate exactly once per concurrent batch", async () => {
-  await fc.assert(fc.asyncProperty(fc.array(fc.constantFrom("read", "expire", "offline", "invalidate", "signOut"), { minLength: 1, maxLength: 20 }), async commands => {
+  await fc.assert(fc.asyncProperty(fc.array(fc.constantFrom("read", "expire", "offline", "invalidate", "delayedFailure", "signOut"), { minLength: 1, maxLength: 20 }), async commands => {
     const dir = await mkdtemp(join(tmpdir(), "pwrsnap-siwc-model-"));
     const file = join(dir, "registration.json");
     const initial = { hostId: "urn:uuid:model", clientId: "oaiapp_model", accessToken: "access-0",
@@ -58,6 +58,8 @@ test("session command sequences preserve registration and rotate exactly once pe
     let expired = false;
     let rotation = 0;
     let offline = false;
+    let generation = planCredentialGeneration(initial);
+    let previousGeneration = "earlier-session";
     fixture.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
       if (offline) throw new Error("offline");
       if (!url.endsWith("/token")) return new Response(JSON.stringify(DISCOVERY));
@@ -72,15 +74,24 @@ test("session command sequences preserve registration and rotate exactly once pe
           const record = JSON.parse(await readFile(file, "utf8"));
           record.expiresAt = 1; await writeFile(file, JSON.stringify(record)); expired = true;
         } else if (command === "invalidate" || command === "signOut") {
-          if (command === "invalidate") await invalidatePlanSession();
+          if (command === "invalidate") await notePlanFailure(generation, "subscription_sharing_invalid_user");
           else await signOut();
           signedIn = false;
+        } else if (command === "delayedFailure") {
+          // The old request was already sent when a newer token took over.
+          await notePlanFailure(previousGeneration, "subscription_sharing_invalid_user");
         } else {
           offline = command === "offline";
           const before = rotation;
-          const batch = await Promise.allSettled(Array.from({ length: 3 }, () => planAccessToken()));
+          const batch = await Promise.allSettled(Array.from({ length: 3 }, () => planCredential()));
           expect(batch.every(r => r.status === (signedIn && !(expired && offline) ? "fulfilled" : "rejected"))).toBe(true);
           expect(rotation - before).toBe(signedIn && expired && !offline ? 1 : 0);
+          if (signedIn && expired && !offline) {
+            const first = batch[0];
+            if (first?.status !== "fulfilled") throw new Error("Expected refreshed credential");
+            previousGeneration = generation;
+            generation = first.value.generation;
+          }
           if (signedIn && !offline) expired = false;
           offline = false;
         }
@@ -91,5 +102,5 @@ test("session command sequences preserve registration and rotate exactly once pe
         expect(JSON.stringify(status)).not.toMatch(/access-|refresh-/);
       }
     } finally { await rm(dir, { recursive: true, force: true }); }
-  }), { numRuns: 100 });
+  }), { numRuns: 100, examples: [[["expire", "read", "delayedFailure"]]] });
 });

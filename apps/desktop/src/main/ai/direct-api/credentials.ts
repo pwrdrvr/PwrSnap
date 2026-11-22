@@ -1,6 +1,5 @@
 import { CHATGPT_PLAN_BASE_URL, customCredentialSecretName, type CustomConnection, type DesktopSettingsSecretName } from "@pwrsnap/shared";
 import type { DesktopSecretStore } from "../../settings/desktop-secret-store";
-import { requiresPlanSignIn } from "../chatgpt-plan/errors";
 import { authorizeOAuth, exchangeTokens, type OAuthTokens } from "./oauth";
 import { DirectApiError, safeFetch } from "./transport";
 
@@ -14,11 +13,11 @@ export function endpointOf(connection: CustomConnection): CustomEndpoint {
 /** The Sign in with ChatGPT session, which lives outside this store: one
  *  registration per install, refreshed by the agent process alone. */
 export type ChatgptPlanSession = {
-  accessToken(): Promise<string>;
+  credential(): Promise<{ accessToken: string; generation: string }>;
   signedIn(): Promise<boolean>;
   signOut(): Promise<unknown>;
-  /** Drops the local tokens after OpenAI says only a new sign-in will do. */
-  invalidate(): Promise<void>;
+  /** Apply the error only to the credential that authorized the request. */
+  noteFailure(generation: string, code: string | undefined): Promise<void>;
 };
 /** A stored credential is only ever sent to the endpoint it was saved for.
  *  Repointing a connection changes its binding, and the old key stops reading. */
@@ -31,6 +30,7 @@ export function credentialName(connectionId: string): DesktopSettingsSecretName 
 /** One instance per main process; refreshes coalesce per credential, not per model. */
 export class CustomCredentials {
   private readonly queues = new Map<string, Promise<unknown>>();
+  private readonly planGenerations = new WeakMap<Record<string, string>, string>();
   private readonly logins = new Map<string, AbortController>();
   constructor(private readonly secrets: Pick<DesktopSecretStore, "getValue" | "replace" | "clear" | "getStatus">,
     private readonly openBrowser: (url: string) => Promise<void>,
@@ -57,9 +57,10 @@ export class CustomCredentials {
   }
   /** Call with any failed request's error. A ChatGPT session that OpenAI
    *  will no longer accept is cleared, so Settings shows it signed out. */
-  async noteFailure(model: CustomEndpoint, error: unknown): Promise<void> {
-    if (model.auth.type !== "chatgpt" || !(error instanceof DirectApiError) || !requiresPlanSignIn(error.code)) return;
-    await this.chatgpt?.invalidate().catch(() => undefined);
+  async noteFailure(model: CustomEndpoint, error: unknown, headers?: Record<string, string>): Promise<void> {
+    if (model.auth.type !== "chatgpt" || !(error instanceof DirectApiError) || !headers) return;
+    const generation = this.planGenerations.get(headers);
+    if (generation !== undefined) await this.chatgpt?.noteFailure(generation, error.code).catch(() => undefined);
   }
   async setKey(model: CustomEndpoint, key: string): Promise<void> {
     if (model.auth.type !== "api-key") throw new DirectApiError("Select API key authentication first.");
@@ -76,9 +77,11 @@ export class CustomCredentials {
       // file says the connection's address is.
       if (model.baseUrl.replace(/\/+$/, "") !== CHATGPT_PLAN_BASE_URL) throw new DirectApiError("A ChatGPT connection can only call api.openai.com.");
       if (!this.chatgpt) throw new DirectApiError("Sign in with ChatGPT is unavailable in this process.");
-      const token = await this.chatgpt.accessToken();
+      const { accessToken, generation } = await this.chatgpt.credential();
       if (signal?.aborted) throw new DirectApiError("Model request cancelled.");
-      return { Authorization: `Bearer ${token}` };
+      const headers = { Authorization: `Bearer ${accessToken}` };
+      this.planGenerations.set(headers, generation);
+      return headers;
     }
     const auth = model.auth;
     const id = model.connectionId;

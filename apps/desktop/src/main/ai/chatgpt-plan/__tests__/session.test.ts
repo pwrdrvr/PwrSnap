@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { PLAN_SCOPE } from "../oauth-client";
+import { PLAN_SCOPE, SiwcOAuthClient } from "../oauth-client";
 
 const DISCOVERY = { issuer: "https://auth.openai.com", authorization_endpoint: "https://auth.openai.com/authorize",
   token_endpoint: "https://auth.openai.com/token", jwks_uri: "https://auth.openai.com/jwks", revocation_endpoint: "https://auth.openai.com/revoke" };
@@ -24,7 +24,9 @@ vi.mock("../../../handlers/settings-handlers", () => ({ getDesktopSettingsServic
 }), broadcastSettingsChanged: vi.fn() }));
 vi.mock("../../../process-role", () => ({ getRuntimeProcessRole: () => fixture.role }));
 vi.mock("../../../command-bus", () => ({ bus: { dispatch: fixture.dispatch } }));
-import { invalidatePlanSession, planAccessToken, publicStatus, serializeSession, signOut } from "../session";
+import { notePlanFailure, planCredential, planCredentialGeneration, publicStatus, serializeSession, signIn, signOut, updateProjection } from "../session";
+
+const planAccessToken = async (): Promise<string> => (await planCredential()).accessToken;
 
 beforeEach(() => {
   fixture.settings.ai = { chatgptPlan: signedInPlan(), customConnections: [] };
@@ -84,11 +86,10 @@ describe("SIWC session (direct API)", () => {
     expect(fixture.fetch).not.toHaveBeenCalled();
   });
 
-  test("the library process asks the agent over the bridge and never reads the secret", async () => {
+  test("the library process cannot read or request the secret", async () => {
     fixture.role = "library";
-    fixture.dispatch.mockResolvedValue({ ok: true, value: { accessToken: "fixture-bridged" } });
-    expect(await planAccessToken()).toBe("fixture-bridged");
-    expect(fixture.dispatch).toHaveBeenCalledWith("chatgptPlan:runtime", {}, { principal: "bridge" });
+    await expect(planAccessToken()).rejects.toThrow("only available to the agent process");
+    expect(fixture.dispatch).not.toHaveBeenCalled();
     expect(fixture.getValue).not.toHaveBeenCalled();
   });
 
@@ -111,8 +112,45 @@ describe("SIWC session (direct API)", () => {
   });
 
   test("invalidate drops the tokens so the next request asks for sign-in", async () => {
-    await invalidatePlanSession();
+    await notePlanFailure(planCredentialGeneration({ hostId: "fixture", accessToken: "fixture-expired" }), "subscription_sharing_invalid_user");
     expect(fixture.record.accessToken).toBeUndefined();
     await expect(planAccessToken()).rejects.toThrow("Sign in to ChatGPT");
   });
+});
+
+test("a plan limit pauses automatic use while keeping its grant and consent", async () => {
+  fixture.settings.ai.chatgptPlan.backgroundConsent = true;
+  await notePlanFailure("stale-token", "subscription_sharing_usage_limit_exceeded");
+  expect((await publicStatus()).usagePaused).toBeUndefined();
+  await notePlanFailure(planCredentialGeneration({ hostId: "fixture", accessToken: "fixture-expired" }), "subscription_sharing_usage_limit_exceeded");
+  expect(await publicStatus()).toMatchObject({ usagePaused: true, backgroundConsent: true, planGranted: true });
+  expect(fixture.save).not.toHaveBeenCalled();
+});
+
+test("an identity session without offline access remains signed in but cannot send", async () => {
+  delete fixture.record.refreshToken;
+  await updateProjection({ ...fixture.record, hostId: "urn:uuid:fixture" });
+  expect(await publicStatus()).toMatchObject({ signedIn: true, planGranted: false });
+  await expect(planAccessToken()).rejects.toThrow("permission to use your ChatGPT plan");
+  expect(fixture.fetch).not.toHaveBeenCalled();
+});
+
+test("replacing an account keeps the installation id, preserves a cancelled sign-in, and resets consent after success", async () => {
+  fixture.settings.ai.chatgptPlan.backgroundConsent = true;
+  const original = { ...fixture.record };
+  const oauthSignIn = vi.spyOn(SiwcOAuthClient.prototype, "signIn");
+  try {
+    oauthSignIn.mockRejectedValueOnce(new Error("cancelled"));
+    await expect(signIn(async () => undefined, true)).rejects.toThrow("cancelled");
+    expect(fixture.record).toEqual(original);
+    oauthSignIn.mockResolvedValueOnce({ hostId: "urn:uuid:fixture", clientId: "oaiapp_other",
+      subject: "other", accessToken: "fixture-expired", refreshToken: "new-refresh",
+      credentialGeneration: "new-generation", expiresAt: Date.now() + 3600000, scope: PLAN_SCOPE });
+    await signIn(async () => undefined, true);
+    expect(oauthSignIn).toHaveBeenLastCalledWith({ hostId: "urn:uuid:fixture" }, expect.any(Function), undefined);
+    expect(await publicStatus()).toMatchObject({ planGranted: true, backgroundConsent: false });
+    // Even a repeated access-token string does not identify the new grant.
+    await notePlanFailure(planCredentialGeneration({ hostId: "fixture", accessToken: "fixture-expired" }), "subscription_sharing_invalid_user");
+    expect(fixture.record).toMatchObject({ clientId: "oaiapp_other", refreshToken: "new-refresh" });
+  } finally { oauthSignIn.mockRestore(); }
 });

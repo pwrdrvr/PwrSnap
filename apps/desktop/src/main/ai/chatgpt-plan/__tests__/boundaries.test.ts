@@ -4,6 +4,7 @@ import { CHATGPT_PLAN_BASE_URL, CHATGPT_USAGE_LIMIT_MESSAGE, type ResolvedCustom
 import { CustomCredentials } from "../../direct-api/credentials";
 import { DirectApiError, discoverApi, invokeApi } from "../../direct-api/transport";
 import { body, json, model, server, stream } from "../../direct-api/__tests__/fixtures";
+import { isEnrichmentBackendUnavailable } from "../../enrichment-fallback";
 import { planErrorMessage, requiresPlanSignIn } from "../errors";
 
 // Sign in with ChatGPT is a Direct API connection: PwrSnap calls
@@ -17,7 +18,7 @@ function planModel(baseUrl: string): ResolvedCustomModel {
   return { ...model(baseUrl, "openai-responses"), auth: { type: "chatgpt" }, capabilities: { vision: true, streaming: false } };
 }
 function session(token = "fixture-plan-token") {
-  return { accessToken: vi.fn(async () => token), signedIn: vi.fn(async () => true), signOut: vi.fn(), invalidate: vi.fn(async () => undefined) };
+  return { credential: vi.fn(async () => ({ accessToken: token, generation: "fixture-generation" })), signedIn: vi.fn(async () => true), signOut: vi.fn(), noteFailure: vi.fn(async () => undefined) };
 }
 const noSecrets = { getValue: vi.fn(), replace: vi.fn(), clear: vi.fn(), getStatus: vi.fn() };
 
@@ -78,19 +79,19 @@ describe("SIWC direct API boundary", () => {
     expect(await credentials.headers({ ...endpoint, baseUrl: CHATGPT_PLAN_BASE_URL })).toEqual({ Authorization: "Bearer fixture-plan-token" });
     for (const baseUrl of ["http://127.0.0.1:1/v1", "https://api.openai.com.fixture.test/v1", "https://api.openai.com/v2"])
       await expect(credentials.headers({ ...endpoint, baseUrl })).rejects.toThrow("can only call api.openai.com");
-    expect(plan.accessToken).toHaveBeenCalledOnce();
+    expect(plan.credential).toHaveBeenCalledOnce();
     expect(noSecrets.getValue).not.toHaveBeenCalled();
   });
 
-  test("only a revoked-grant code clears the session", async () => {
+  test("failure handling receives only the credential of the actual plan request", async () => {
     const plan = session();
     const credentials = new CustomCredentials(noSecrets, async () => undefined, plan);
     const endpoint = { connectionId: "fixture-conn", baseUrl: CHATGPT_PLAN_BASE_URL, protocol: "openai-responses" as const, auth: { type: "chatgpt" as const } };
-    await credentials.noteFailure(endpoint, new DirectApiError("x", 429, "subscription_sharing_usage_limit_exceeded"));
-    await credentials.noteFailure(endpoint, new Error("subscription_sharing_invalid_user"));
-    expect(plan.invalidate).not.toHaveBeenCalled();
     await credentials.noteFailure(endpoint, new DirectApiError("x", 401, "subscription_sharing_invalid_user"));
-    expect(plan.invalidate).toHaveBeenCalledOnce();
+    expect(plan.noteFailure).not.toHaveBeenCalled();
+    const headers = await credentials.headers(endpoint);
+    await credentials.noteFailure(endpoint, new DirectApiError("x", 401, "subscription_sharing_invalid_user"), headers);
+    expect(plan.noteFailure).toHaveBeenCalledExactlyOnceWith("fixture-generation", "subscription_sharing_invalid_user");
   });
 
   test("error codes map to sentences; unknown codes do not", () => {
@@ -112,4 +113,26 @@ describe("SIWC direct API boundary", () => {
     expect(validators).toContain('value !== "chatgptPlanRegistration"');
     expect(validators).toContain("chatgpt_plan_main_owned");
   });
+});
+
+test.each(["subscription_sharing_usage_unavailable", "subscription_sharing_user_unavailable"])(
+  "structured plan 503 %s is not an unreachable backend", async (code) => {
+    const http = await server((_req, res) => {
+      res.statusCode = 503; json(res, { detail: { code } });
+    });
+    cleanup.push(http.close);
+    const error: unknown = await invokeApi({ model: planModel(http.url), headers: {}, system: "", messages: [{ role: "user", text: "fixture" }] }).catch((error: unknown) => error);
+    expect(error).toMatchObject({ status: 503, code, message: planErrorMessage(code) });
+    expect(isEnrichmentBackendUnavailable(error)).toBe(false);
+  }
+);
+
+test.each([false, true])("a stalled 503 body does not consume the inference timeout (plan=%s)", async (plan) => {
+  const http = await server((_req, res) => {
+    res.writeHead(503, { "content-type": "application/json" });
+    res.write('{"error":');
+  });
+  cleanup.push(http.close);
+  await expect(invokeApi({ model: plan ? planModel(http.url) : model(http.url), headers: {}, system: "",
+    messages: [{ role: "user", text: "fixture" }], timeoutMs: 1500 })).rejects.toMatchObject({ status: 503 });
 });

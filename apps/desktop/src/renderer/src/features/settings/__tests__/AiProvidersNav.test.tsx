@@ -1047,6 +1047,17 @@ describe("Sign in with ChatGPT", () => {
     expect(page.textContent).not.toMatch(/Codex|app-server|subscription_sharing/);
   });
 
+  test("plan limits provide explicit resume and account replacement requests", async () => {
+    customAnswers["chatgptPlan:login"] = { ok: true, value: { ...READY, signedIn: true, connectionId: PLAN } };
+    const page = await render(createElement(AIProvidersPage, { sub: `connection:${PLAN}` }),
+      planSettings({ ...READY, backgroundConsent: true, usagePaused: true }));
+    expect(page.textContent).toContain("Automatic captions paused");
+    await click(button(page, "Resume automatic captions"));
+    expect(callsTo("chatgptPlan:configure")).toEqual([{ resumeAutomatic: true }]);
+    await click(button(page, "Use a different account"));
+    expect(callsTo("chatgptPlan:login")).toEqual([{ replaceAccount: true }]);
+  });
+
   test("sign out reports an unconfirmed revocation instead of claiming it", async () => {
     customAnswers["chatgptPlan:logout"] = { ok: true, value: { revocationConfirmed: false } };
     await render(createElement(AIProvidersPage, { sub: `connection:${PLAN}` }), planSettings(READY));

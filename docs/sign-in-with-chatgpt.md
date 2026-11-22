@@ -105,17 +105,21 @@ JWKS signature, issuer, audience, expiry, nonce and returning identity.
   `chatgptPlanRegistration`. It has no plaintext fallback, and no renderer or
   MCP caller can read it.
 - `ai.chatgptPlan` in settings holds only the account label and the
-  `planGranted` / `backgroundConsent` / `welcomeSeen` booleans. It is
-  main-owned: `settings:write` refuses it, and `chatgptPlan:configure` takes
-  only the two user booleans. Status reads never decrypt.
+  plan, background consent, usage pause, and welcome flags. Main owns these
+  settings, and status reads never decrypt.
 - Refresh tokens rotate, so the agent process alone refreshes, serialized.
-  In split mode the Library main process gets a token over the bridge-only
-  `chatgptPlan:runtime` verb.
+  In split mode the agent process sends ChatGPT chat requests and relays
+  response text and usage to the Library. Credentials stay in the agent.
 - A token within 60 s of expiry is refreshed before the request. A rejected
   refresh clears the tokens but keeps the registration and host id. A network
   failure keeps everything.
 - Sign-out revokes the refresh token at the discovered endpoint. If OpenAI
   doesn't confirm, the local tokens are still removed and the UI says so.
+  Use **Use a different account** to start with a fresh registration. The
+  previous session stays in place until the new sign-in succeeds. The new
+  account starts with automatic use off.
+- A plan limit pauses automatic captions. Check **Manage usage**, then select
+  **Resume automatic captions** when you want PwrSnap to try again.
 
 ## Operator steps before distribution
 

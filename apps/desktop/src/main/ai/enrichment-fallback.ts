@@ -1,3 +1,4 @@
+import { planErrorMessage } from "./chatgpt-plan/errors";
 // Capture enrichment's second choice: `ai.enrichmentFallback`.
 //
 // A primary can stop answering underneath us: a local model server the
@@ -42,6 +43,7 @@ const UNAVAILABLE_HTTP_STATUSES: ReadonlySet<number> = new Set([404, 502, 503]);
 export function isEnrichmentBackendUnavailable(error: unknown): boolean {
   if (error instanceof AcpAgentUnavailableError) return true;
   if (error instanceof DirectApiError) {
+    if (planErrorMessage(error.code) !== undefined) return false;
     return error.unreachable || (error.status !== undefined && UNAVAILABLE_HTTP_STATUSES.has(error.status));
   }
   if (error instanceof CodexTurnFailedError) return isCodexNetworkUnavailable(error.codexErrorInfo);

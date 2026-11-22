@@ -12,13 +12,14 @@ export type Registration = {
   subject?: string;
   label?: string;
   accessToken?: string;
+  credentialGeneration?: string;
   refreshToken?: string;
   idToken?: string;
   expiresAt?: number;
   scope?: string;
 };
 export type TokenReply = {
-  access_token: string; refresh_token: string; id_token?: string;
+  access_token: string; refresh_token?: string; id_token?: string;
   expires_in: number; scope?: string;
 };
 export type Discovery = {
@@ -34,6 +35,14 @@ export const needsSignIn = (code: string): boolean => [
 ].includes(code);
 export const hasPlanScope = (scope: string | undefined): boolean =>
   scope?.split(/\s+/).includes(PLAN_SCOPE) === true;
+export const canUsePlan = (record: Registration): boolean =>
+  !!record.accessToken && !!record.refreshToken && hasPlanScope(record.scope);
+
+export function callbackRequestUrl(method: string | undefined, target: string | undefined, redirectUri: string): URL | null {
+  if (method !== "GET" || target?.split("?")[0] !== "/auth/callback") return null;
+  try { return new URL(target, redirectUri); } catch { return null; }
+}
+
 export function newAttempt() {
   const verifier = randomBytes(32).toString("base64url");
   return { verifier, challenge: createHash("sha256").update(verifier).digest("base64url"),
@@ -48,7 +57,7 @@ export function authorizationUrl(discovery: Discovery, record: Registration,
     code_challenge_method: "S256", ext_agent_host_id: record.hostId });
   if (!record.clientId) params.set("agent_name_hint", "PwrSnap");
   if (record.idToken) params.set("id_token_hint", record.idToken);
-  if (record.clientId && !hasPlanScope(record.scope)) params.set("prompt", "consent");
+  if (record.clientId && !canUsePlan(record)) params.set("prompt", "consent");
   url.search = params.toString();
   return url.toString();
 }
@@ -91,7 +100,8 @@ export class SiwcOAuthClient {
     if (!/^oaiapp_[\w-]+$/.test(fields["client_id"] ?? "")) throw new OAuthFailure("invalid_client");
     const result = await this.json(trustedEndpoint(discovery.token_endpoint), { method: "POST",
       body: new URLSearchParams({ ...fields, resource: RESOURCE }) }) as TokenReply;
-    if (typeof result.access_token !== "string" || !result.access_token || typeof result.refresh_token !== "string" || !result.refresh_token ||
+    if (typeof result.access_token !== "string" || !result.access_token || ((fields.grant_type === "refresh_token" || result.refresh_token !== undefined) &&
+        (typeof result.refresh_token !== "string" || !result.refresh_token)) ||
       !Number.isFinite(result.expires_in) || result.expires_in <= 0) throw new OAuthFailure("invalid_token_response");
     return result;
   }
@@ -124,8 +134,8 @@ export class SiwcOAuthClient {
         timeout = setTimeout(() => reject(new OAuthFailure("sign_in_timeout")), 5 * 60_000);
         timeout.unref();
         server.on("request", (request, response) => {
-          const url = new URL(request.url ?? "/", redirectUri);
-          if (request.method !== "GET" || request.url?.split("?")[0] !== "/auth/callback" || url.pathname !== "/auth/callback") { response.writeHead(404).end(); return; }
+          const url = callbackRequestUrl(request.method, request.url, redirectUri);
+          if (!url) { response.writeHead(404).end(); return; }
           if (url.searchParams.get("state") !== attempt.state) { response.writeHead(400).end("Invalid sign-in state"); return; }
           clearTimeout(timeout);
           try { const parsed = parseCallback(url, attempt.state, record.clientId); response.writeHead(200, { "Content-Type": "text/plain", "Cache-Control": "no-store" }).end("Return to PwrSnap."); resolve(parsed); }
@@ -142,7 +152,8 @@ export class SiwcOAuthClient {
       if (!tokens.id_token) throw new OAuthFailure("missing_id_token");
       const identity = await this.identity(discovery, tokens.id_token, clientId, attempt.nonce);
       if (record.subject && identity.subject !== record.subject) throw new OAuthFailure("account_mismatch");
-      return { ...record, clientId, ...identity, accessToken: tokens.access_token, refreshToken: tokens.refresh_token,
+      return { hostId: record.hostId, clientId, ...identity, accessToken: tokens.access_token, credentialGeneration: randomUUID(),
+        ...(tokens.refresh_token ? { refreshToken: tokens.refresh_token } : {}),
         idToken: tokens.id_token, expiresAt: Date.now() + tokens.expires_in * 1000, scope: tokens.scope ?? "" };
     } finally { clearTimeout(timeout); server.closeAllConnections(); server.close(); }
   }
@@ -158,6 +169,6 @@ export class SiwcOAuthClient {
 }
 export function emptyRegistration(): Registration { return { hostId: `urn:uuid:${randomUUID()}` }; }
 export function withoutTokens(record: Registration): Registration {
-  const { accessToken: _a, refreshToken: _r, idToken: _i, expiresAt: _e, scope: _s, ...retained } = record;
+  const { accessToken: _a, credentialGeneration: _g, refreshToken: _r, idToken: _i, expiresAt: _e, scope: _s, ...retained } = record;
   return retained;
 }

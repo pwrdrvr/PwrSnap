@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 // Sign in with ChatGPT session: the one SIWC registration this install holds,
 // its rotating tokens, and the public projection Settings shows. PwrSnap
 // uses the plan through the Direct API path (a `chatgpt` connection calling
@@ -6,9 +7,9 @@ import { isChatgptConnection, type ChatgptPlanSettings, type ChatgptPlanStatus }
 import { getDesktopSettingsStore } from "../../settings/desktop-settings-store";
 import { getDesktopSettingsServices, broadcastSettingsChanged } from "../../handlers/settings-handlers";
 import { getRuntimeProcessRole } from "../../process-role";
-import { bus } from "../../command-bus";
+import { CHATGPT_USAGE_LIMIT_CODE, requiresPlanSignIn } from "./errors";
 import { DirectApiError } from "../direct-api/transport";
-import { SiwcOAuthClient, OAuthFailure, emptyRegistration, hasPlanScope, needsSignIn, withoutTokens, type Registration } from "./oauth-client";
+import { SiwcOAuthClient, OAuthFailure, emptyRegistration, canUsePlan, needsSignIn, withoutTokens, type Registration } from "./oauth-client";
 
 // The agent process alone owns writes and refresh, including in split mode:
 // refresh tokens rotate, so two processes refreshing at once would lose one.
@@ -37,25 +38,36 @@ export async function publicStatus(): Promise<ChatgptPlanStatus> {
   const connection = (settings.ai.customConnections ?? []).find(isChatgptConnection);
   return { ...plan, signedIn: plan.accountLabel !== "", connectionId: connection?.id ?? null };
 }
-export async function updateProjection(record: Registration): Promise<void> {
+export async function updateProjection(record: Registration, reset: { backgroundConsent?: boolean; usagePaused?: boolean } = {}): Promise<void> {
   const { service, secrets } = getDesktopSettingsServices();
-  const signedIn = record.accessToken !== undefined;
+  const signedIn = record.idToken !== undefined || record.accessToken !== undefined;
   await service.write({ ai: { chatgptPlan: {
     accountLabel: signedIn ? record.label ?? "ChatGPT account" : "",
-    planGranted: signedIn && hasPlanScope(record.scope)
+    planGranted: canUsePlan(record),
+    ...reset
   } } });
   await broadcastSettingsChanged(service, secrets);
 }
 
 /** Browser OAuth. Persists the installation host id before the browser
  *  opens, and the issued client id as soon as it is known. */
-export async function signIn(openExternal: (url: string) => Promise<void>): Promise<void> {
+export async function signIn(openExternal: (url: string) => Promise<void>, replaceAccount = false): Promise<void> {
   await serializeSession(async () => {
     const record = await readRegistration();
     await saveRegistration(record);
-    const connected = await oauth.signIn(record, openExternal, (clientId) => saveRegistration({ ...record, clientId }));
+    const registration = replaceAccount ? { hostId: record.hostId } : record;
+    const connected = await oauth.signIn(registration, openExternal,
+      replaceAccount ? undefined : (clientId) => saveRegistration({ ...record, clientId }));
+    if (replaceAccount) {
+      // Revoke the old account's consent before committing the replacement
+      // credential. A partial write must never let it authorize the new account.
+      await updateProjection(record, { backgroundConsent: false, usagePaused: false });
+    }
     await saveRegistration(connected);
     await updateProjection(connected);
+    if (replaceAccount && record.refreshToken && record.clientId !== connected.clientId) {
+      try { await oauth.revoke(await oauth.discovery(), record); } catch { /* Old credentials were replaced locally. */ }
+    }
   });
 }
 
@@ -67,31 +79,34 @@ export async function signOut(): Promise<{ revocationConfirmed: boolean }> {
     let revocationConfirmed = false;
     try { revocationConfirmed = await oauth.revoke(await oauth.discovery(), record); } catch { /* still clear local tokens */ }
     await saveRegistration(withoutTokens(record));
-    await updateProjection(withoutTokens(record));
+    await updateProjection(withoutTokens(record), { usagePaused: false });
     return { revocationConfirmed };
   });
 }
 
-/** A current plan access token, refreshed when it is about to expire. */
-export async function planAccessToken(): Promise<string> {
+/** Legacy records have no generation. Their token supplies a stable, local-only identity. */
+export function planCredentialGeneration(record: Registration): string {
+  return record.credentialGeneration ?? createHash("sha256").update(record.accessToken ?? "").digest("hex");
+}
+
+/** A current plan credential, refreshed when it is about to expire. */
+export async function planCredential(): Promise<{ accessToken: string; generation: string }> {
   if (getRuntimeProcessRole() === "library") {
-    const result = await bus.dispatch("chatgptPlan:runtime", {}, { principal: "bridge" });
-    if (!result.ok) throw new DirectApiError(result.error.message);
-    return result.value.accessToken;
+    throw new DirectApiError("The ChatGPT credential is only available to the agent process.");
   }
   return serializeSession(async () => {
     let record = await readRegistration();
-    if (!record.accessToken || !record.refreshToken || !record.clientId) {
+    if (!record.accessToken || !record.clientId) {
       throw new DirectApiError("Sign in to ChatGPT in Settings → AI Providers → ChatGPT.");
     }
-    if (!hasPlanScope(record.scope)) {
+    if (!canUsePlan(record)) {
       throw new DirectApiError("PwrSnap doesn't have permission to use your ChatGPT plan. Continue with ChatGPT in Settings → AI Providers → ChatGPT to grant it.");
     }
     if ((record.expiresAt ?? 0) < Date.now() + 60_000) {
       try {
         const tokens = await oauth.tokens(await oauth.discovery(), { grant_type: "refresh_token",
-          client_id: record.clientId, refresh_token: record.refreshToken });
-        record = { ...record, accessToken: tokens.access_token, refreshToken: tokens.refresh_token,
+          client_id: record.clientId, refresh_token: record.refreshToken! });
+        record = { ...record, accessToken: tokens.access_token, credentialGeneration: randomUUID(), refreshToken: tokens.refresh_token!,
           expiresAt: Date.now() + tokens.expires_in * 1000, scope: tokens.scope ?? record.scope! };
         await saveRegistration(record);
         await updateProjection(record);
@@ -103,23 +118,27 @@ export async function planAccessToken(): Promise<string> {
         }
         throw new DirectApiError("Couldn't renew the ChatGPT sign-in. Check your connection and try again.");
       }
-      if (!hasPlanScope(record.scope)) {
+      if (!canUsePlan(record)) {
         throw new DirectApiError("PwrSnap doesn't have permission to use your ChatGPT plan. Continue with ChatGPT in Settings → AI Providers → ChatGPT to grant it.");
       }
     }
-    return record.accessToken!;
+    return { accessToken: record.accessToken!, generation: planCredentialGeneration(record) };
   });
 }
 
-/** Called only by the local main processes on an explicit revoked-grant signal. */
-export async function invalidatePlanSession(): Promise<void> {
-  if (getRuntimeProcessRole() === "library") {
-    await bus.dispatch("chatgptPlan:invalidate", {}, { principal: "bridge" });
-    return;
-  }
+/** Apply a provider failure only to the credential that actually sent the request. */
+export async function notePlanFailure(generation: string, code: string | undefined): Promise<void> {
+  if (getRuntimeProcessRole() === "library" ||
+      (!requiresPlanSignIn(code) && code !== CHATGPT_USAGE_LIMIT_CODE)) return;
   await serializeSession(async () => {
-    const record = withoutTokens(await readRegistration());
-    await saveRegistration(record);
-    await updateProjection(record);
+    const record = await readRegistration();
+    if (!record.accessToken || planCredentialGeneration(record) !== generation) return;
+    if (code === CHATGPT_USAGE_LIMIT_CODE) {
+      await updateProjection(record, { usagePaused: true });
+      return;
+    }
+    const cleared = withoutTokens(record);
+    await saveRegistration(cleared);
+    await updateProjection(cleared);
   });
 }

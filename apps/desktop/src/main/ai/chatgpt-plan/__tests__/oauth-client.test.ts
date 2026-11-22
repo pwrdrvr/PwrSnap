@@ -1,6 +1,7 @@
+import fc from "fast-check";
 import { describe, expect, test, vi } from "vitest";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { SiwcOAuthClient, OAuthFailure, authorizationUrl, newAttempt, parseCallback, emptyRegistration, hasPlanScope, PLAN_SCOPE, SCOPES, RESOURCE, withoutTokens, needsSignIn, type Discovery } from "../oauth-client";
+import { SiwcOAuthClient, OAuthFailure, callbackRequestUrl, canUsePlan, authorizationUrl, newAttempt, parseCallback, emptyRegistration, hasPlanScope, PLAN_SCOPE, SCOPES, RESOURCE, withoutTokens, needsSignIn, type Discovery } from "../oauth-client";
 const discovery: Discovery = { issuer: "https://auth.openai.com", authorization_endpoint: "https://auth.openai.com/oauth/authorize",
   token_endpoint: "https://auth.openai.com/api/accounts/oauth/token", jwks_uri: "https://auth.openai.com/jwks", revocation_endpoint: "https://auth.openai.com/oauth/revoke" };
 const redirect = "http://127.0.0.1:12345/auth/callback";
@@ -87,4 +88,35 @@ describe("SIWC public native protocol", () => {
     await expect(client.identity(discovery, jwt({}, "none"), fixture.clientId, claims.nonce)).rejects.toThrow(OAuthFailure);
     const token = jwt(); await expect(client.identity(discovery, token.slice(0, -8) + "invalid", fixture.clientId, claims.nonce)).rejects.toThrow(OAuthFailure);
   });
+});
+
+test("only the exact origin-form callback path is parsed, even with malformed request targets", () => {
+  fc.assert(fc.property(fc.string(), fc.constantFrom("GET", "POST", undefined), (target, method) => {
+    const result = callbackRequestUrl(method, target, redirect);
+    if (result !== null) {
+      expect(method).toBe("GET");
+      expect(target.split("?")[0]).toBe("/auth/callback");
+      expect(result.origin).toBe("http://127.0.0.1:12345");
+    }
+  }), { examples: [["http://[broken", "GET"], ["/auth/./callback", "GET"]] });
+  expect(callbackRequestUrl("GET", "/auth/callback?state=fixture", redirect)?.pathname).toBe("/auth/callback");
+});
+
+test("code exchange can retain identity without a refresh token, but refresh must rotate", async () => {
+  await fc.assert(fc.asyncProperty(fc.boolean(), fc.boolean(), async (scopeGranted, hasRefresh) => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({
+      access_token: "fixture-access", expires_in: 3600, id_token: "fixture-id",
+      ...(scopeGranted ? { scope: PLAN_SCOPE } : {}),
+      ...(hasRefresh ? { refresh_token: "fixture-refresh" } : {})
+    })));
+    const client = new SiwcOAuthClient(fetcher as typeof fetch);
+    const result = await client.tokens(discovery, { grant_type: "authorization_code", client_id: fixture.clientId });
+    expect(result.id_token).toBe("fixture-id");
+    expect(canUsePlan({ hostId: fixture.hostId, accessToken: result.access_token,
+      ...(result.scope ? { scope: result.scope } : {}),
+      ...(result.refresh_token ? { refreshToken: result.refresh_token } : {}) })).toBe(scopeGranted && hasRefresh);
+    const refresh = client.tokens(discovery, { grant_type: "refresh_token", client_id: fixture.clientId });
+    if (hasRefresh) await expect(refresh).resolves.toMatchObject({ refresh_token: "fixture-refresh" });
+    else await expect(refresh).rejects.toThrow("invalid_token_response");
+  }), { numRuns: 20 });
 });

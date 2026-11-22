@@ -43,8 +43,8 @@ function openExternal(url: string): void {
 }
 
 /** Signs in, then lands on the ChatGPT connection page. */
-async function continueWithChatgpt(): Promise<string | null> {
-  const r = await dispatch("chatgptPlan:login", {});
+async function continueWithChatgpt(replaceAccount = false): Promise<string | null> {
+  const r = await dispatch("chatgptPlan:login", replaceAccount ? { replaceAccount: true } : {});
   if (!r.ok) return r.error.message;
   if (r.value.connectionId !== null) setActivePage("ai", connectionSettingsSub(r.value.connectionId));
   return null;
@@ -129,14 +129,14 @@ export function ChatgptConnectionPage({ status }: { status: ConnectionStatus }):
 
   const routed = settings === null ? [] : (["enrichment", "libraryChat", "sizzleChat"] as const).filter((surface) =>
     models.some((m) => settings.ai.defaults[surface].provider === customProviderId(m.id)));
-  const configure = async (patch: { backgroundConsent?: boolean; welcomeSeen?: boolean }): Promise<void> => {
+  const configure = async (patch: { backgroundConsent?: boolean; welcomeSeen?: boolean; resumeAutomatic?: boolean }): Promise<void> => {
     const r = await dispatch("chatgptPlan:configure", patch);
     if (!r.ok) setNote({ bad: true, text: r.error.message });
   };
-  const login = async (): Promise<void> => {
+  const login = async (replaceAccount = false): Promise<void> => {
     setBusy("login"); setNote(null);
     try {
-      const error = await continueWithChatgpt();
+      const error = await continueWithChatgpt(replaceAccount);
       if (error !== null) setNote({ bad: true, text: error });
     } finally { setBusy(null); }
   };
@@ -194,6 +194,18 @@ export function ChatgptConnectionPage({ status }: { status: ConnectionStatus }):
             )}
           </Row>
         )}
+        <Row label="Use a different ChatGPT account"
+          sub="Starts a fresh sign-in and asks for automatic-use permission again.">
+          <button type="button" className="pss__key-btn" disabled={busy !== null}
+            onClick={() => { void login(true); }}>Use a different account</button>
+        </Row>
+        {ready && plan.usagePaused ? (
+          <Row label="Automatic captions paused"
+            sub="Your ChatGPT plan reached its usage limit. Check usage before resuming automatic captions.">
+            <button type="button" className="pss__key-btn is-primary" onClick={() => openExternal(CHATGPT_USAGE_URL)}>Manage usage ↗</button>
+            <button type="button" className="pss__key-btn" onClick={() => { void configure({ resumeAutomatic: true }); }}>Resume automatic captions</button>
+          </Row>
+        ) : null}
         {ready ? (
           <Row label="Automatic use for new captures"
             sub="Captions run in the background on every new capture. They use your plan only after you allow it here. Actions you click always run.">

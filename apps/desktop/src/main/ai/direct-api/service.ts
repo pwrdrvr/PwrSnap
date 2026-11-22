@@ -168,16 +168,18 @@ export class CustomModelService {
    *  that the key works — no model turn, no tokens. */
   async discover(connectionId: string, signal?: AbortSignal): Promise<CustomModelDiscovery> {
     const endpoint = endpointOf(await this.connection(connectionId));
-    try { return await discoverApi(endpoint, await this.credentials.headers(endpoint, signal)); }
-    catch (e) { await this.credentials.noteFailure(endpoint, e); throw e; }
+    const headers = await this.credentials.headers(endpoint, signal);
+    try { return await discoverApi(endpoint, headers); }
+    catch (e) { await this.credentials.noteFailure(endpoint, e, headers); throw e; }
   }
   async test(id: string, signal: AbortSignal): Promise<{ message: string; ms: number }> {
     const model = await this.model(id);
     const started = performance.now();
+    const headers = await this.credentials.headers(model, signal);
     try {
-      await invokeApi({ model, headers: await this.credentials.headers(model, signal), system: "This is a connection test.",
+      await invokeApi({ model, headers, system: "This is a connection test.",
         messages: [{ role: "user", text: "Reply with OK." }], signal });
-    } catch (e) { await this.credentials.noteFailure(model, e); throw e; }
+    } catch (e) { await this.credentials.noteFailure(model, e, headers); throw e; }
     return { message: "The model replied.", ms: Math.round(performance.now() - started) };
   }
   async selected(provider: string, modelId?: string): Promise<ResolvedCustomModel> {

@@ -30,6 +30,9 @@ export const LIBRARY_WINDOW_READY_CHANNEL = "pwrsnap:internal:library-window-rea
 export const SETTINGS_DISCOVERY_PUBLICATION_CHANNEL =
   "pwrsnap:internal:settings-discovery-publication";
 
+/** Private output for the split Library's pending ChatGPT turn. */
+export const CHATGPT_CHAT_DELTA_CHANNEL = "pwrsnap:internal:chatgpt-chat-delta";
+
 export function installRendererEventForwarder(next: RendererEventForwarder): void {
   if (forwarder !== null) {
     throw new Error("event-relay: renderer event forwarder already installed");
@@ -59,7 +62,7 @@ export function deliverRelayedProcessEvent(
   payload: unknown,
   broadcastToLocalWindows: RendererEventForwarder
 ): void {
-  if (channel !== SETTINGS_DISCOVERY_PUBLICATION_CHANNEL) {
+  if (channel !== SETTINGS_DISCOVERY_PUBLICATION_CHANNEL && channel !== CHATGPT_CHAT_DELTA_CHANNEL) {
     broadcastToLocalWindows(channel, payload);
   }
   deliverRelayedRendererEventToMain(channel, payload);

@@ -1,3 +1,4 @@
+import { automaticPlanBlock } from "../ai/chatgpt-plan/errors";
 import { DirectEnrichmentBackend } from "../ai/direct-api/enrichment";
 import { resolveNativeCaptionRunner } from "../ai/apple-fm/native";
 import {
@@ -28,7 +29,6 @@ import {
   codexEffortForModel,
   hasObsoleteCodexDefaults,
   resolveManagedCodexEnrichmentModel,
-  isCustomProvider,
   resolveCustomModel,
   err,
   ok,
@@ -763,18 +763,6 @@ export function registerCodexHandlers(params?: {
     }
 
     const enrichmentProvider = settings.ai.defaults.enrichment.provider;
-    // Sign in with ChatGPT: automatic post-capture work on the user's plan
-    // needs its own consent. A clicked action (regenerate) is the user's own
-    // request and runs without it.
-    if (triggerSource === "auto-enrichment" && isCustomProvider(enrichmentProvider) &&
-        settings.ai.chatgptPlan?.backgroundConsent !== true) {
-      const model = resolveCustomModel(settings.ai.customConnections, settings.ai.customModels,
-        enrichmentProvider!.slice("custom:".length));
-      if (model?.auth.type === "chatgpt") {
-        return validationError("chatgpt_background_consent_required",
-          "Allow automatic use for new captures in Settings → AI Providers → ChatGPT first.");
-      }
-    }
     if (refreshDefaultsBeforeEnrichment && (!enrichmentProvider || enrichmentProvider === "codex") &&
         !managedEnrichmentByCatalog.has(codexCatalogKey(settings)) &&
         (!settings.ai.defaults.enrichment.model || hasObsoleteCodexDefaults(settings, ["enrichment"]))) {
@@ -789,6 +777,15 @@ export function registerCodexHandlers(params?: {
           settings.ai.budgetSafetyDisabledAt !== null) {
         return validationError("ai_disabled", "AI enrichment is disabled");
       }
+    }
+
+    if (triggerSource === "auto-enrichment") {
+      const provider = settings.ai.defaults.enrichment.provider;
+      const model = provider?.startsWith("custom:")
+        ? resolveCustomModel(settings.ai.customConnections, settings.ai.customModels, provider.slice("custom:".length))
+        : null;
+      const blocked = model?.auth.type === "chatgpt" ? automaticPlanBlock(settings) : null;
+      if (blocked) return validationError(blocked.code, blocked.message);
     }
 
     const managedEnrichment = managedEnrichmentByCatalog.get(codexCatalogKey(settings)) ?? undefined;
@@ -890,17 +887,6 @@ export function registerCodexHandlers(params?: {
     const resolveFallback = fallbackSettings === null
       ? undefined
       : async (): Promise<EnrichmentBackendPlan> => {
-        // A fallback spends the same user's plan as a primary. Consent is
-        // checked at the hop so a healthy non-plan primary can still run.
-        const fallbackProvider = fallbackSettings.ai.defaults.enrichment.provider;
-        if (triggerSource === "auto-enrichment" && settings.ai.chatgptPlan?.backgroundConsent !== true &&
-            fallbackProvider?.startsWith("custom:")) {
-          const model = resolveCustomModel(settings.ai.customConnections, settings.ai.customModels,
-            fallbackProvider.slice("custom:".length));
-          if (model?.auth.type === "chatgpt") {
-            throw new Error("Allow automatic use for new captures in Settings → AI Providers → ChatGPT first.");
-          }
-        }
         const catalogKey = codexCatalogKey(fallbackSettings);
         const { provider, model } = fallbackSettings.ai.defaults.enrichment;
         const codexBacked = enrichmentAcpAgentId(fallbackSettings) === undefined &&
@@ -1496,7 +1482,12 @@ async function runCaptureEnrichment(params: {
             || JSON.stringify(selected.auth) !== JSON.stringify(plan.customModel.auth))) {
             throw new DirectApiError("The connection changed while enrichment was queued. Regenerate to use its new configuration.");
           }
-          client = new DirectEnrichmentBackend(selected, service);
+          client = new DirectEnrichmentBackend(selected, service,
+            selected.auth.type === "chatgpt" && params.triggerSource === "auto-enrichment"
+              ? async () => {
+                const blocked = automaticPlanBlock(await params.settingsReader());
+                if (blocked) throw new DirectApiError(blocked.message);
+              } : undefined);
         } else if (acpAgentId !== undefined) {
           const acpClient = await buildAcpEnrichmentClient(
             acpAgentId,

@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.3.8 - 2026-11-22
+
+- Screenshots - Added multi-display selection. Pick windows or displays across
+  monitors in one pass, then combine the picks into one snap or save each
+  pick as its own snap with Separate.
+- Float-Over - Improved dismissal after you copy or drag out a snap. The
+  float-over closes when you move the pointer away.
+- Apple Intelligence Captions - Improved still-image captions by reading
+  on-screen text with Apple's Vision framework. On supported Macs, you can
+  also choose Apple Intelligence as the offline fallback for Codex captions.
+
 ## v1.3.7 - 2026-11-22
 
 - Burst Capture - Added a macOS capture mode that takes full-resolution stills

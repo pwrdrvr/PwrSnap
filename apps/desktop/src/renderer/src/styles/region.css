@@ -475,6 +475,13 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
   border-style: solid;
   box-shadow: 0 0 0 1px rgba(255, 138, 31, 0.4) inset;
 }
+/* `set` output: there is no box — each pick becomes its own capture —
+   so the union frame is not drawn at all. The picks' own outlines and
+   numbered badges are the whole preview. */
+.region-rect--union-set {
+  border-color: transparent;
+  box-shadow: none;
+}
 
 /* --- HUD ------------------------------------------------------------ */
 

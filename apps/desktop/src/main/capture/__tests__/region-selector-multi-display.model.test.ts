@@ -19,6 +19,9 @@ type Action = {
   target: number;
   merge: boolean;
   ids: number[];
+  /** Output shape the renderer reports/commits; absent = the original
+   *  windows/rectangle choice keyed on `merge`. */
+  mode?: "windows" | "rectangle" | "set" | undefined;
 };
 
 const DISPLAYS = [
@@ -179,6 +182,19 @@ async function exercise(scheduler: fc.Scheduler, actions: readonly Action[]): Pr
     // Every extra is a different display from the home one.
     const displays = [result.displayId, ...(result.extraSnapshots ?? []).map((e) => e.displayId)];
     expect(new Set(displays).size).toBe(displays.length);
+    // Every multi-pick commit here sends ids, so each extent keeps the
+    // window behind it — a set names each capture's source from it.
+    // Display picks (negative renderer ids) name no window.
+    if (result.extents !== undefined) {
+      expect(result.extentWindowIds, "window ids stay index-aligned").toHaveLength(
+        result.extents.length
+      );
+      for (const id of result.extentWindowIds ?? []) {
+        expect(id === null || id >= 0).toBe(true);
+      }
+    } else {
+      expect(result.extentWindowIds).toBeUndefined();
+    }
   };
   try {
     selector.preWarmRegionSelector();
@@ -203,7 +219,7 @@ async function exercise(scheduler: fc.Scheduler, actions: readonly Action[]): Pr
         h.listeners.get("region-selector:picks")?.(event(win), {
           screenUrl: win.mode!.screenUrl,
           picks: action.ids.map((id) => ({ id, rect: { x: 10 + id, y: 10, w: 100, h: 80 } })),
-          outputMode: action.merge ? "rectangle" : "windows",
+          outputMode: action.mode ?? (action.merge ? "rectangle" : "windows"),
           ...(action.ids.length === 0 && action.merge ? { clearAll: true } : {}),
           ...(action.ids.length === 1 ? { unpick: [3] } : {})
         });
@@ -216,7 +232,12 @@ async function exercise(scheduler: fc.Scheduler, actions: readonly Action[]): Pr
           // A window straddling the seam, from either side.
           rect: win.mode!.displayId === 1 ? { x: 1300, y: 100, w: 400, h: 300 } : { x: -140, y: 200, w: 400, h: 300 },
           ...(action.merge || extents.length > 1
-            ? { extents, extentIds: action.ids, mergePeers: action.merge, outputMode: "windows" }
+            ? {
+                extents,
+                extentIds: action.ids,
+                mergePeers: action.merge,
+                outputMode: action.mode ?? "windows"
+              }
             : {})
         });
       } else if (action.kind === "cancel" && win !== undefined) {
@@ -252,7 +273,10 @@ const action = fc.record({
   ),
   target: fc.nat(10),
   merge: fc.boolean(),
-  ids: fc.uniqueArray(fc.constantFrom(-1, 3, 4, 5), { maxLength: 3 })
+  ids: fc.uniqueArray(fc.constantFrom(-1, 3, 4, 5), { maxLength: 3 }),
+  mode: fc.option(fc.constantFrom<"windows" | "rectangle" | "set">("windows", "rectangle", "set"), {
+    nil: undefined
+  })
 });
 
 const platform = process.platform;

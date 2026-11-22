@@ -154,11 +154,64 @@ describe("planSessionCommit", () => {
         { x: 1500, y: -100, w: 1000, h: 800 },
         { x: 10, y: 10, w: 100, h: 100 }
       ],
+      extentWindowIds: [9, 3],
       outputMode: "windows",
       snappedWindowId: 9,
       displayId: LAPTOP.id,
       extraDisplayIds: [EXTERNAL.id]
     });
+  });
+
+  it("merges a Separate set with the window behind each extent", () => {
+    // Window on the laptop, whole external display, window on a third
+    // display the union box crosses but no pick touches.
+    const BELOW: DisplayGeometry = {
+      id: 3,
+      bounds: { x: 0, y: 900, width: 1280, height: 720 },
+      scaleFactor: 1
+    };
+    const plan = planSessionCommit(
+      commitInput({
+        mergePeers: true,
+        outputMode: "set",
+        localPicks: [windowPick(3, { x: 10, y: 10, w: 100, h: 100 })],
+        peerPicks: new Map([
+          [EXTERNAL.id, [{ key: "d:2", windowId: null, rect: { x: 1440, y: -200, w: 1920, h: 1080 } }]]
+        ]),
+        pickOrder: ["w:3", "d:2"],
+        displays: [...DESK, BELOW],
+        snapshotDisplayIds: new Set([LAPTOP.id, EXTERNAL.id, BELOW.id])
+      })
+    );
+    expect(plan).toEqual({
+      rect: { x: 10, y: -200, w: 3350, h: 1080 },
+      extents: [
+        { x: 10, y: 10, w: 100, h: 100 },
+        { x: 1440, y: -200, w: 1920, h: 1080 }
+      ],
+      extentWindowIds: [3, null],
+      outputMode: "set",
+      snappedWindowId: 3,
+      displayId: LAPTOP.id,
+      // Not BELOW: a set keeps only the picks, like Windows.
+      extraDisplayIds: [EXTERNAL.id]
+    });
+  });
+
+  it("keeps the renderer's extent ids on a one-display set commit, or none if misaligned", () => {
+    const extents = [
+      { x: 10, y: 10, w: 100, h: 100 },
+      { x: 300, y: 10, w: 100, h: 100 }
+    ];
+    const rect = { x: 10, y: 10, w: 390, h: 100 };
+    expect(
+      planSessionCommit(
+        commitInput({ rect, extents, extentWindowIds: [4, null], outputMode: "set" })
+      )?.extentWindowIds
+    ).toEqual([4, null]);
+    expect(
+      planSessionCommit(commitInput({ rect, extents, extentWindowIds: [4], outputMode: "set" }))
+    ).not.toHaveProperty("extentWindowIds");
   });
 
   it("captures two whole displays as one box with both extents", () => {
@@ -214,7 +267,7 @@ describe("planSessionCommit", () => {
     fc.assert(
       fc.property(
         fc.array(rectArb, { minLength: 1, maxLength: 5 }),
-        fc.constantFrom<"windows" | "rectangle">("windows", "rectangle"),
+        fc.constantFrom<"windows" | "rectangle" | "set">("windows", "rectangle", "set"),
         fc.subarray([1, 2]),
         (rects, outputMode, withSnapshots) => {
           const snapshots = new Set<number>([LAPTOP.id, ...withSnapshots]);
@@ -233,7 +286,7 @@ describe("planSessionCommit", () => {
               snapshotDisplayIds: snapshots
             })
           )!;
-          const kept = rects.length > 1 && outputMode === "windows" ? rects : [union];
+          const kept = rects.length > 1 && outputMode !== "rectangle" ? rects : [union];
           const touched = DESK.filter(
             (d) =>
               snapshots.has(d.id) &&

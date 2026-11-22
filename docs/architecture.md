@@ -42,6 +42,18 @@ box transparent outside the picks, composed from each display's frozen
 snapshot at the sharpest contributing scale. A recording is still one
 rectangle on one display.
 
+**A multi-pick can be a set instead of one image.** The selector's output
+shape has three answers: Windows (the union box, transparent between the
+picks), Box (the union box, opaque), and Separate, which saves one
+ordinary capture per pick. A set has no record kind and no bundle concept
+of its own: each item is a normal v2 bundle with its own source app, window
+title, pixel density and (for at most one item) cursor layer, cropped exactly
+as a lone pick of the same rect would be. That keeps the clipboard, editor,
+export and enrichment paths unaware that sets exist. The float-over opens on
+the first pick and the rest wait in its recent-snaps rail. Linking set
+members in the index and manifest (a `set_id` beside `family_id`) is a
+deliberate later step, not a precondition.
+
 Two things it is **not**:
 
 - **Not an image editor.** PwrSnap is an annotator. The layer model is

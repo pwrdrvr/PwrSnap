@@ -41,7 +41,7 @@ platform = "darwin"
 command = '''
 nvm use --silent
 corepack enable
-pnpm dev
+pnpm build:native && pnpm dev
 '''
 
 [[actions]]
@@ -51,7 +51,7 @@ platform = "linux"
 command = '''
 nvm use --silent
 corepack enable
-pnpm dev
+pnpm build:native && pnpm dev
 '''
 
 [[actions]]
@@ -67,6 +67,8 @@ powershell.exe -NoProfile -Command {
   $env:Path = "$nodeDir;$env:Path"
   corepack.cmd enable
   if ($LASTEXITCODE -ne 0) { throw "corepack enable failed" }
+  pnpm.cmd build:native
+  if ($LASTEXITCODE -ne 0) { throw "pnpm build:native failed" }
   pnpm.cmd dev
   exit $LASTEXITCODE
 }

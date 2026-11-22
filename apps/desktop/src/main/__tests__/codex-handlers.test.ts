@@ -717,7 +717,7 @@ describe("Codex handlers", () => {
     const serviceSpy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
     const clientFactory = vi.fn(() => { throw new Error("Custom selection reached Codex"); });
     try {
-      registerCodexHandlers({ clientFactory, settingsReader: async () => settings });
+      registerCodexHandlers({ clientFactory, settingsReader: async () => settings, budget: new AiEnrichmentBudget() });
       const refused = await bus.dispatch("codex:enrich", { captureId: "cap_1", triggerSource: "auto-enrichment" }, { principal: "ipc" });
       expect(refused).toMatchObject({ ok: false, error: { code: "chatgpt_background_consent_required" } });
       expect(requests).toBe(0);

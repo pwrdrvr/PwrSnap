@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
 import type { TraceConfig } from "electron";
-import { onChromiumTraceReleased, tryAcquireChromiumTrace } from "./chromium-trace-lease";
+import { isManualChromiumTraceWaiting, onChromiumTraceLeaseChanged, tryAcquireChromiumTrace } from "./chromium-trace-lease";
 
 const TRACE_CATEGORIES = ["devtools.timeline", "blink.user_timing", "cc", "viz"];
 const TRACE_BUFFER_KB = 32 * 1024;
@@ -26,11 +26,12 @@ type TraceBackend = {
   startRecording: (config: RollingConfig) => Promise<void>;
 };
 
-type NativeTrace = {
+type NativeLease = {
   backend: TraceBackend;
   release: () => void;
 };
 
+type NativeTrace = NativeLease & { rawPath: string; cleanup: () => Promise<void> };
 type Recording = NativeTrace & { wallMs: number; monotonicMs: number };
 type CaptureResult =
   | { status: "written"; recordingStartedAtMs: number; recordingStoppedAtMs: number; rawBytes: number }
@@ -73,7 +74,7 @@ export class ChromiumTrace {
   private readonly quit = new AbortController();
   private shuttingDown = false;
   private captureJob: { controller: AbortController; done: Promise<CaptureResult> } | null = null;
-  private readonly unlisten = onChromiumTraceReleased(() => this.reconcile());
+  private readonly unlisten = onChromiumTraceLeaseChanged(() => this.reconcile());
 
   constructor(
     private readonly backend: () => TraceBackend,
@@ -114,7 +115,7 @@ export class ChromiumTrace {
 
   capture(filePath: string, triggerMonotonicMs: number, profileWritten: Promise<boolean>, durationMs: number): Promise<CaptureResult> {
     const recording = this.recording;
-    if (!this.desired || !recording || this.captureJob) {
+    if (!this.shouldRecord() || !recording || this.captureJob) {
       return Promise.resolve({ status: "skipped", reason: "not-recording" });
     }
     if (triggerMonotonicMs <= recording.monotonicMs) {
@@ -134,10 +135,15 @@ export class ChromiumTrace {
     return done;
   }
 
+  private shouldRecord(): boolean {
+    return this.desired && !isManualChromiumTraceWaiting();
+  }
+
   private reconcile(): void {
-    if (this.transition || this.captureJob || (this.desired === (this.recording !== null))) return;
+    const shouldRecord = this.shouldRecord();
+    if (this.transition || this.captureJob || (shouldRecord === (this.recording !== null))) return;
     let operation: Promise<void>;
-    if (this.desired) {
+    if (shouldRecord) {
       if (this.retry) return;
       const release = tryAcquireChromiumTrace();
       if (!release) return;
@@ -153,7 +159,30 @@ export class ChromiumTrace {
     });
   }
 
-  private async start(native: NativeTrace): Promise<void> {
+  private retryArm(): void {
+    if (!this.desired) return;
+    this.retry = setTimeout(() => {
+      this.retry = undefined;
+      this.reconcile();
+    }, RETRY_MS).unref();
+  }
+
+  private async start(lease: NativeLease): Promise<void> {
+    let native: NativeTrace;
+    try {
+      native = await this.reserveStaging(lease);
+    } catch {
+      this.warn("Could not reserve private Chromium trace staging");
+      this.retryArm();
+      lease.release();
+      return;
+    }
+    if (!this.shouldRecord()) {
+      native.release();
+      await native.cleanup();
+      return;
+    }
+
     let startSettled = false;
     const start = Promise.resolve().then(() => native.backend.startRecording({
       record_mode: "record-continuously",
@@ -170,30 +199,27 @@ export class ChromiumTrace {
       };
     } catch {
       this.warn("Could not arm Chromium trace");
-      if (this.desired) {
-        this.retry = setTimeout(() => {
-          this.retry = undefined;
-          this.reconcile();
-        }, RETRY_MS).unref();
-      }
-      if (startSettled) {
-        void start.then(() => this.discard(native), native.release);
-      } else {
+      this.retryArm();
+      const releaseUnused = async () => {
+        native.release();
+        await native.cleanup();
+      };
+      if (!startSettled) {
         // Ask Chromium to stop even if start never acknowledges. Keep the
         // lease until both operations settle. A late start can require a
         // second stop if the first ran before Chromium started recording.
-        const discard = this.discard({ ...native, release: () => {} }, false);
-        void Promise.allSettled([start, discard]).then(([started]) => {
-          if (started.status === "fulfilled") return this.discard(native);
-          native.release();
-        });
+        const stop = this.stopNative({ ...native, release: () => {} });
+        void Promise.allSettled([start, stop]).then(([started]) =>
+          started.status === "fulfilled" ? this.discard(native) : releaseUnused());
+      } else {
+        void start.then(() => this.discard(native), releaseUnused);
       }
     }
   }
 
-  private async discard(native: NativeTrace, bounded = true): Promise<void> {
+  private async discard(native: NativeTrace): Promise<void> {
     try {
-      const frozen = await this.freeze(native, bounded);
+      const frozen = await this.freeze(native);
       await frozen.cleanup();
     } catch {
       this.warn("Could not discard Chromium trace");
@@ -230,7 +256,7 @@ export class ChromiumTrace {
     }
   }
 
-  private async freeze(native: NativeTrace, bounded = true): Promise<{ rawPath: string; cleanup: () => Promise<void> }> {
+  private async reserveStaging(lease: NativeLease): Promise<NativeTrace> {
     const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "pwrsnap-chromium-trace-"));
     const rawPath = path.join(scratch, "trace.json");
     const cleanup = async () => {
@@ -238,7 +264,11 @@ export class ChromiumTrace {
         this.warn("Could not remove private Chromium trace staging");
       });
     };
-    const stop = Promise.resolve().then(() => native.backend.stopRecording(rawPath));
+    return { ...lease, rawPath, cleanup };
+  }
+
+  private stopNative(native: NativeTrace): Promise<string> {
+    const stop = Promise.resolve().then(() => native.backend.stopRecording(native.rawPath));
     // After a timeout no later recorder can start until native stop settles.
     void stop.then(native.release, (error: unknown) => {
       // A rejected stop may leave native tracing live. Only a confirmed
@@ -247,16 +277,16 @@ export class ChromiumTrace {
         native.release();
       }
     });
+    return stop;
+  }
+
+  private async freeze(native: NativeTrace): Promise<NativeTrace> {
+    const stop = this.stopNative(native);
     try {
-      if (bounded) {
-        await withDeadline(stop, this.options.stopTimeoutMs ?? STOP_TIMEOUT_MS, this.quit.signal);
-      } else {
-        await stop;
-      }
-      return { rawPath, cleanup };
+      await withDeadline(stop, this.options.stopTimeoutMs ?? STOP_TIMEOUT_MS, this.quit.signal);
+      return native;
     } catch (error) {
-      await cleanup();
-      void stop.then(cleanup, cleanup);
+      void stop.then(native.cleanup, native.cleanup);
       throw error;
     }
   }

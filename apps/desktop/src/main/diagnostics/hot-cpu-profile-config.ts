@@ -86,16 +86,17 @@ type RuleOptions = {
 };
 
 function resolveRules(options: RuleOptions, env: NodeJS.ProcessEnv, target?: HotCpuProfileTarget) {
+  const storedSlowburnThreshold = options.captureRules?.slowburn.thresholdPercent ??
+    clampPercent(options.slowburnThresholdPercent ?? HOT_CPU_PROFILE_SLOWBURN_THRESHOLD_DEFAULT_PERCENT);
   const stored = options.captureRules ?? migrateHotCpuCaptureRules(
     options.triggerMode ?? HOT_CPU_PROFILE_TRIGGER_MODE_DEFAULT,
-    options.slowburnThresholdPercent ?? HOT_CPU_PROFILE_SLOWBURN_THRESHOLD_DEFAULT_PERCENT
+    storedSlowburnThreshold
   );
   const keys: string[] = [];
   const modeEnv = env.PWRSNAP_HOT_CPU_PROFILING_TRIGGER_MODE?.trim().toLowerCase();
   const forcedMode = modeEnv && isHotCpuProfileTriggerMode(modeEnv) ? modeEnv : undefined;
   if (forcedMode) keys.push(PREFIX + "TRIGGER_MODE");
-  const migrateThreshold = stored.slowburn.thresholdPercent;
-  const rules = forcedMode ? migrateHotCpuCaptureRules(forcedMode, migrateThreshold) : stored;
+  const rules = forcedMode ? migrateHotCpuCaptureRules(forcedMode, storedSlowburnThreshold) : stored;
   const nominalCadence = forcedMode ? DEFAULT_INTERVAL_MS : hotCpuRulesCadenceMs(rules);
   const integerOverride = (suffix: string) => {
     const key = PREFIX + suffix;
@@ -117,7 +118,7 @@ function resolveRules(options: RuleOptions, env: NodeJS.ProcessEnv, target?: Hot
     return slowburn ? clampPercent(value) : value;
   }
   const highThreshold = threshold("THRESHOLD_PERCENT", rules[rules.high.mode].thresholdPercent);
-  const slowburnThreshold = threshold("SLOWBURN_THRESHOLD_PERCENT", rules.slowburn.thresholdPercent, true);
+  const slowburnThreshold = threshold("SLOWBURN_THRESHOLD_PERCENT", storedSlowburnThreshold, true);
   const active: HotCpuEffectiveRule[] = [];
   function add(id: HotCpuProfileTriggerMode, thresholdPercent: number) {
     const sampleCount = id === "spike" ? 1 : countOverride ||

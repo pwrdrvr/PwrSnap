@@ -101,6 +101,7 @@ export class HotCpuProfiler {
   private previousRecording: { profile: Profiler.Profile; monotonicMs: number; wallTime: string } | null = null;
   private settleCompanion: ((written: boolean) => void) | undefined;
   private startPromise: Promise<void> | null = null;
+  private armingDeadlineMs = 0;
   private nextSampleAtMs = 0;
   private activeProfileHeapSnapshotCaptures = new Set<Promise<void>>();
   private activeProfileHeapSnapshots: HotCpuProfileHeapSnapshotArtifact[] = [];
@@ -162,6 +163,7 @@ export class HotCpuProfiler {
   }
 
   updateRules(next: Extract<HotCpuProfileConfig, { enabled: true }>): void {
+    if (this.stopped) return;
     const oldCadence = this.config.intervalMs;
     const oldRules = JSON.stringify(this.getRules());
     this.config = next;
@@ -169,9 +171,16 @@ export class HotCpuProfiler {
     if (oldCadence === next.intervalMs && oldRules === JSON.stringify(rules)) return;
     this.detector = new HotCpuRuleDetector(rules, next.intervalMs);
     this.processBreakdown.reset();
+    void this.session.appendEvent({
+      capturedAt: this.now().toISOString(),
+      type: "monitor-config-changed",
+      detail: { intervalMs: next.intervalMs, rules }
+    }).catch((error: unknown) => {
+      this.logger.warn("[pwrsnap:hot-cpu] could not record rule changes", serializeError(error));
+    });
     if (this.intervalTimer !== null) clearTimeout(this.intervalTimer);
     this.intervalTimer = null;
-    this.nextSampleAtMs = this.monotonicNow();
+    this.nextSampleAtMs = Math.max(this.armingDeadlineMs, this.monotonicNow());
     this.scheduleNextSample();
   }
 
@@ -216,7 +225,8 @@ export class HotCpuProfiler {
       slowburnThresholdPercent: this.config.slowburnThresholdPercent,
       profileDurationMs: this.config.profileDurationMs
     });
-    this.nextSampleAtMs = this.monotonicNow() + this.config.startDelayMs;
+    this.armingDeadlineMs = this.monotonicNow() + this.config.startDelayMs;
+    this.nextSampleAtMs = this.armingDeadlineMs;
     await this.ensureRecording();
     this.scheduleNextSample();
   }
@@ -273,7 +283,7 @@ export class HotCpuProfiler {
     if (this.stopped || this.isTargetDestroyed()) return;
     const sampledAtMs = this.monotonicNow();
     // Timers can fire a fraction of a millisecond early.
-    if (sampledAtMs + 1 >= this.nextSampleAtMs) {
+    if (sampledAtMs >= this.armingDeadlineMs && sampledAtMs + 1 >= this.nextSampleAtMs) {
       this.nextSampleAtMs = sampledAtMs + this.config.intervalMs;
       await this.captureSample(sampledAtMs);
     }

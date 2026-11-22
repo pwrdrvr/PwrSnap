@@ -50,6 +50,18 @@ test("Chromium capture requires its own explicit opt-in", () => {
   expect(hotCpuChromiumTraceEnabled({ PWRSNAP_HOT_CPU_PROFILING_CHROMIUM_TRACE: " true " })).toBe(true);
 });
 
+test("legacy fractional thresholds apply exactly until an explicit canonical rule replaces them", () => {
+  for (const env of [baseEnv, { ...baseEnv, PWRSNAP_HOT_CPU_PROFILING_TRIGGER_MODE: "slowburn" }]) {
+    const legacy = { env, triggerMode: "slowburn" as const, slowburnThresholdPercent: 15.5 };
+    expect(resolveHotCpuProfileConfig(legacy)).toMatchObject({
+      slowburnThresholdPercent: 15.5, rules: [{ id: "slowburn", thresholdPercent: 15.5 }]
+    });
+    expect(resolveHotCpuProfileConfig({ ...legacy, captureRules: migrateHotCpuCaptureRules("slowburn", 18) })).toMatchObject({
+      slowburnThresholdPercent: 18, rules: [{ id: "slowburn", thresholdPercent: 18 }]
+    });
+  }
+});
+
 test("scripted legacy mode keeps its window, count and per-target threshold precedence", () => {
   const env = {
     ...baseEnv,

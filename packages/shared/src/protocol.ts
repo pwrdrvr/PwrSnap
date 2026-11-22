@@ -3100,12 +3100,12 @@ export type Settings = {
     /** Delay before hot CPU monitoring starts after the user arms it,
      *  giving them time to set up the scenario they want to capture. */
     hotCpuProfilingStartDelayMs: HotCpuProfileStartDelayMs;
-    /** Capture rules in current settings. Optional for older IPC clients. */
+    /** Capture rules in current settings. Absent until saved on legacy installations. */
     hotCpuProfilingRules?: HotCpuCaptureRules;
     hotCpuProfilingCaptureChromiumTrace?: boolean;
-    /** Downgrade mirror of the enabled high mode, or Slow burn alone. */
+    /** Read-only downgrade mirror of the enabled high mode, or Slow burn alone. */
     hotCpuProfilingTriggerMode: HotCpuProfileTriggerMode;
-    /** Lower threshold used when trigger mode is `slowburn`. */
+    /** Read-only downgrade mirror of the Slow burn threshold. */
     hotCpuProfilingSlowburnThresholdPercent: number;
     /** Capture bounded renderer heap snapshots around the next hot CPU
      *  profile, then auto-disable after the limit is reached. */

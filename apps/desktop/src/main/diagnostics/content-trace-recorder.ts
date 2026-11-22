@@ -25,7 +25,7 @@
 import { basename } from "node:path";
 import { app, contentTracing } from "electron";
 import { getMainLogger } from "../log";
-import { tryAcquireChromiumTrace } from "./chromium-trace-lease";
+import { acquireManualChromiumTrace } from "./chromium-trace-lease";
 import { resolveContentTraceConfig, type ContentTraceConfig } from "./content-trace-config";
 import { contentTraceDiagnosticsRoot } from "./content-trace-paths";
 import {
@@ -35,6 +35,7 @@ import {
 import { ProcessCpuBreakdownTracker } from "./process-cpu-breakdown";
 
 const CPU_SAMPLE_INTERVAL_MS = 1_000;
+const TRACE_LEASE_WAIT_MS = 8_000;
 
 type RecorderState = {
   config: Extract<ContentTraceConfig, { enabled: true }>;
@@ -57,6 +58,7 @@ type RecorderState = {
 
 let state: RecorderState | null = null;
 let shuttingDown = false;
+const cancelLeaseWait = new AbortController();
 let autoStartTimer: NodeJS.Timeout | null = null;
 let starting: Promise<void> | null = null;
 let stopping: Promise<string | null> | null = null;
@@ -137,12 +139,16 @@ async function startContentTraceInner(reason: string): Promise<void> {
     log().info("already recording — ignoring start");
     return;
   }
-  const release = tryAcquireChromiumTrace();
-  if (!release) {
-    log().info("Chromium tracing is already owned by another diagnostic");
+  current.busy = true;
+  const release = await acquireManualChromiumTrace(
+    AbortSignal.any([cancelLeaseWait.signal, AbortSignal.timeout(TRACE_LEASE_WAIT_MS)])
+  );
+  if (!release || shuttingDown) {
+    release?.();
+    current.busy = false;
+    if (!shuttingDown) log().warn("Timed out waiting for the Chromium tracing lease");
     return;
   }
-  current.busy = true;
   current.releaseTrace = release;
 
   let index: number;
@@ -250,6 +256,7 @@ export function isContentTraceArmed(): boolean {
 /** Join an in-flight start/stop and persist the trace before Electron exits. */
 export async function shutdownContentTrace(): Promise<void> {
   shuttingDown = true;
+  cancelLeaseWait.abort();
   if (autoStartTimer !== null) clearTimeout(autoStartTimer);
   process.off("SIGUSR2", handleToggleSignal);
   try {

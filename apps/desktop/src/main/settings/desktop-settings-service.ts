@@ -858,14 +858,9 @@ function parseV1(
   const hotkeys = isRecord(raw.hotkeys) ? raw.hotkeys : {};
   const general = isRecord(raw.general) ? raw.general : {};
   const configuredRules = hotCpuCaptureRulesSchema.safeParse(general.hotCpuProfilingRules);
-  const captureRules = configuredRules.success
-    ? configuredRules.data
-    : general.hotCpuProfilingRules === undefined
-      ? migrateHotCpuCaptureRules(
-        pickHotCpuProfileTriggerMode(general.hotCpuProfilingTriggerMode, HOT_CPU_PROFILE_TRIGGER_MODE_DEFAULT),
-        pickPercent(general.hotCpuProfilingSlowburnThresholdPercent, HOT_CPU_PROFILE_SLOWBURN_THRESHOLD_DEFAULT_PERCENT)
-      )
-      : migrateHotCpuCaptureRules();
+  const captureRules = general.hotCpuProfilingRules === undefined
+    ? undefined
+    : configuredRules.success ? configuredRules.data : migrateHotCpuCaptureRules();
   const experimental = isRecord(raw.experimental) ? raw.experimental : {};
   const appearance = isRecord(raw.appearance) ? raw.appearance : {};
   const updates = isRecord(raw.updates) ? raw.updates : {};
@@ -1017,9 +1012,12 @@ function parseV1(
       ),
       // Absence keeps scripts with legacy settings on their historical
       // cadence/count behavior until the user saves the new rules.
-      ...(general.hotCpuProfilingRules !== undefined ? { hotCpuProfilingRules: captureRules } : {}),
-      hotCpuProfilingTriggerMode: captureRules.high.enabled ? captureRules.high.mode : "slowburn",
-      hotCpuProfilingSlowburnThresholdPercent: captureRules.slowburn.thresholdPercent,
+      ...(captureRules ? { hotCpuProfilingRules: captureRules } : {}),
+      hotCpuProfilingTriggerMode: captureRules
+        ? captureRules.high.enabled ? captureRules.high.mode : "slowburn"
+        : pickHotCpuProfileTriggerMode(general.hotCpuProfilingTriggerMode, HOT_CPU_PROFILE_TRIGGER_MODE_DEFAULT),
+      hotCpuProfilingSlowburnThresholdPercent: captureRules?.slowburn.thresholdPercent ??
+        pickPercent(general.hotCpuProfilingSlowburnThresholdPercent, HOT_CPU_PROFILE_SLOWBURN_THRESHOLD_DEFAULT_PERCENT),
       hotCpuProfilingCaptureChromiumTrace: pickBoolean(general.hotCpuProfilingCaptureChromiumTrace, false),
       hotCpuProfilingCaptureHeapSnapshot: pickBoolean(
         general.hotCpuProfilingCaptureHeapSnapshot,
@@ -2113,9 +2111,7 @@ function preserveUnknownSettingsFields(
 
 export function mergeSettings(current: Settings, patch: SettingsPatch): Settings {
   const general = mergeSection(current.general, patch.general);
-  const rules = general.hotCpuProfilingRules ?? migrateHotCpuCaptureRules(
-    general.hotCpuProfilingTriggerMode, general.hotCpuProfilingSlowburnThresholdPercent
-  );
+  const rules = general.hotCpuProfilingRules;
   return {
     schemaVersion: 1,
     lastDefaultsMigrationVersion:
@@ -2123,11 +2119,11 @@ export function mergeSettings(current: Settings, patch: SettingsPatch): Settings
     codex: mergeSection(current.codex, patch.codex),
     ai: mergeAi(current.ai, patch.ai),
     hotkeys: mergeSection(current.hotkeys, patch.hotkeys),
-    general: {
+    general: rules ? {
       ...general,
       hotCpuProfilingTriggerMode: rules.high.enabled ? rules.high.mode : "slowburn",
       hotCpuProfilingSlowburnThresholdPercent: rules.slowburn.thresholdPercent
-    },
+    } : general,
     experimental: mergeSection(current.experimental, patch.experimental),
     appearance: mergeSection(current.appearance, patch.appearance),
     updates: mergeUpdates(current.updates, patch.updates),

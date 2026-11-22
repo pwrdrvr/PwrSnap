@@ -400,6 +400,67 @@ describe("HotCpuProfiler", () => {
     }
   });
 
+  test.each([5_000, 10_000])("live rule changes preserve the original %d ms arming deadline", async (startDelayMs) => {
+    const { session, events } = fakeSession(directoryPath!, "renderer");
+    const { target } = fakeTarget(4242);
+    const getAppMetrics = vi.fn(hotMetricsFeed(4242));
+    const initial = enabledConfig({ startDelayMs, intervalMs: 2000 });
+    const profiler = new HotCpuProfiler({ config: initial, getAppMetrics, session, target, logger: silentLogger });
+    try {
+      await profiler.start();
+      await vi.advanceTimersByTimeAsync(startDelayMs - 2000);
+      profiler.updateRules({ ...initial, triggerMode: "spike", intervalMs: 1000 });
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(getAppMetrics).not.toHaveBeenCalled();
+      expect(events.some((event) => event.type === "profile-started")).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(getAppMetrics).toHaveBeenCalledOnce();
+    } finally {
+      await profiler.stop();
+    }
+  });
+
+  test("diagnostic events retain the ordered, timestamped effective rule changes for an armed session", async () => {
+    const { target } = fakeTarget(4242);
+    const initial = enabledConfig({ startDelayMs: 10_000, intervalMs: 2000, outputRoot: directoryPath! });
+    const created = await createHotCpuProfileSession({
+      config: initial, target: "renderer",
+      versions: { appVersion: "test", electronVersion: "test", chromeVersion: "test", nodeVersion: "test" }
+    });
+    if (!created.ok) throw new Error(created.message);
+    const { session } = created;
+    const profiler = new HotCpuProfiler({
+      config: initial, getAppMetrics: () => [], session, target, logger: silentLogger
+    });
+    const rules = [
+      { id: "spike" as const, thresholdPercent: 75, durationMs: 1000, sampleCount: 1 },
+      { id: "slowburn" as const, thresholdPercent: 18, durationMs: 4000, sampleCount: 4 }
+    ];
+    const changed = { ...initial, intervalMs: 1000, rules };
+    await profiler.start();
+    await vi.advanceTimersByTimeAsync(80);
+    const changedAt = new Date().toISOString();
+    profiler.updateRules(changed);
+    profiler.updateRules(changed);
+    await vi.advanceTimersByTimeAsync(80);
+    const restoredAt = new Date().toISOString();
+    profiler.updateRules(initial);
+    await profiler.stop();
+    const events: HotCpuProfileEvent[] = (await readFile(session.eventsPath, "utf8")).trim().split("\n")
+      .map((line) => JSON.parse(line));
+    expect(events.map(({ type }) => type)).toEqual([
+      "monitor-started", "monitor-config-changed", "monitor-config-changed", "monitor-stopped"
+    ]);
+    expect(events[1]).toEqual({
+      type: "monitor-config-changed", capturedAt: changedAt, detail: { intervalMs: 1000, rules }
+    });
+    expect(events[2]).toEqual({
+      type: "monitor-config-changed", capturedAt: restoredAt, detail: {
+        intervalMs: 2000, rules: [{ id: "sustained", thresholdPercent: 50, durationMs: 4000, sampleCount: 2 }]
+      }
+    });
+  });
+
   test("profiles the target after consecutive hot samples and reports its target", async () => {
     const run = await runToProfileWritten("renderer");
 

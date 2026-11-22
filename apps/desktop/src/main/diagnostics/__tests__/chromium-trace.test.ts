@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import fc from "fast-check";
@@ -21,6 +22,38 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await rm(directory, { recursive: true, force: true });
+});
+
+test("native tracing starts only after reservation, and opt-out needs no fresh staging", async () => {
+  const allocate = vi.spyOn(fs, "mkdtemp");
+  const start = vi.fn(async () => {});
+  const stop = vi.fn(async (raw: string) => {
+    await writeFile(raw, "private", { mode: 0o600 });
+    return raw;
+  });
+  const trace = new ChromiumTrace(() => ({
+    startRecording: start, stopRecording: stop
+  }), vi.fn(), { workerModule });
+  try {
+    allocate.mockRejectedValue(new Error("ENOSPC"));
+    await trace.setArmed(true);
+    expect(start).not.toHaveBeenCalled();
+    const nextOwner = tryAcquireChromiumTrace();
+    expect(nextOwner).toBeTypeOf("function");
+    nextOwner?.();
+    await trace.setArmed(false);
+
+    allocate.mockRestore();
+    await trace.setArmed(true);
+    expect(start).toHaveBeenCalledOnce();
+    vi.spyOn(fs, "mkdtemp").mockRejectedValue(new Error("ENOSPC"));
+    await trace.setArmed(false);
+    expect(stop).toHaveBeenCalledOnce();
+    await expect(fs.stat(stop.mock.calls[0]![0])).rejects.toHaveProperty("code", "ENOENT");
+  } finally {
+    vi.restoreAllMocks();
+    await trace.shutdown(100);
+  }
 });
 
 test("monotonic eligibility and one native lease govern overlapping triggers even across wall-clock jumps", async () => {
@@ -132,10 +165,14 @@ test("opt-out cancels an in-flight filter without publishing its staged data", a
 
 test("a late native start and flush keep the lease after bounded shutdown until native actually stops", async () => {
   const nativeStart = deferred<void>();
+  const entering = deferred<void>();
   const nativeStop = deferred<void>();
   const stopping = deferred<string>();
   const trace = new ChromiumTrace(() => ({
-    startRecording: () => nativeStart.promise,
+    startRecording: () => {
+      entering.resolve();
+      return nativeStart.promise;
+    },
     stopRecording: async (raw) => {
       stopping.resolve(raw);
       await nativeStop.promise;
@@ -144,6 +181,7 @@ test("a late native start and flush keep the lease after bounded shutdown until 
   }), vi.fn(), { workerModule, startTimeoutMs: 10, stopTimeoutMs: 10 });
 
   trace.setArmed(true);
+  await entering.promise;
   await trace.shutdown(20);
   expect(trace.hasPendingWork).toBe(false);
   expect(tryAcquireChromiumTrace()).toBeUndefined();

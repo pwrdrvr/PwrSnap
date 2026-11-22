@@ -769,6 +769,22 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     );
   });
 
+  test("keeps a legacy fractional Slow burn threshold through unrelated writes until rules are saved", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(filePath, JSON.stringify({ schemaVersion: 1, general: {
+      hotCpuProfilingTriggerMode: "slowburn", hotCpuProfilingSlowburnThresholdPercent: 15.5
+    } }));
+    const svc = makeService();
+    expect((await svc.read()).general.hotCpuProfilingSlowburnThresholdPercent).toBe(15.5);
+    await svc.write({ general: { developerMode: true } });
+    const disk = () => JSON.parse(readFileSync(filePath, "utf8")).general;
+    expect(disk().hotCpuProfilingSlowburnThresholdPercent).toBe(15.5);
+    expect(disk().hotCpuProfilingRules).toBeUndefined();
+    await svc.write({ general: { hotCpuProfilingRules: migrateHotCpuCaptureRules("slowburn", 15.5) } });
+    expect(disk().hotCpuProfilingSlowburnThresholdPercent).toBe(16);
+    expect(disk().hotCpuProfilingRules.slowburn.thresholdPercent).toBe(16);
+  });
+
   test.each(["spike", "sustained", "slowburn"] as const)("migrates legacy %s once and writes the downgrade mirror", async (mode) => {
     const filePath = join(workDir, "settings.json");
     writeFileSync(filePath, JSON.stringify({ schemaVersion: 1, general: {

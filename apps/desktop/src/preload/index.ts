@@ -113,6 +113,7 @@ const REGION_SELECTOR_PRESENTED_CHANNEL = "region-selector:presented";
 // main → renderer picks made on the other displays.
 const REGION_SELECTOR_PICKS_CHANNEL = "region-selector:picks";
 const REGION_SELECTOR_PEER_PICKS_CHANNEL = "region-selector:peer-picks";
+const REGION_SELECTOR_FOCUS_CHANNEL = "region-selector:focus";
 
 // One opaque epoch per preload execution. The renderer cannot choose or reuse
 // it; main binds it to the current top-level WebFrameMain before admitting a
@@ -370,6 +371,11 @@ const pwrsnapApi = {
     clearAll?: boolean;
   }): void {
     ipcRenderer.send(REGION_SELECTOR_PICKS_CHANNEL, payload);
+  },
+  /** Multi-display selector session: the pointer is on this display's
+   *  selector while another display's has the keyboard. */
+  requestSelectorFocus(payload: { screenUrl: string }): void {
+    ipcRenderer.send(REGION_SELECTOR_FOCUS_CHANNEL, payload);
   },
   /** Multi-display selector session: picks made on the other displays. */
   onSelectorPeerPicks(handler: (payload: SelectorPeerPicks) => void): () => void {

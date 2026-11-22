@@ -474,6 +474,7 @@ export function RegionSelector() {
   const shiftRef = useRef(false);
   const picksRef = useRef<readonly WindowSnapEntry[]>([]);
   const multiDisplayRef = useRef(false);
+  const lastFocusRequestRef = useRef(-Infinity);
   const peerPicksRef = useRef<readonly WindowSnapEntry[]>([]);
   // The window under the current mousedown, if that press could still
   // turn out to be a pick. Set on mousedown, cleared the moment the
@@ -1705,7 +1706,9 @@ export function RegionSelector() {
     // when we have a window snap target — not just live `snap`. In
     // window-mode the user clicks once, the pending → adjusting flow
     // commits with snap=window even after the brief mouseup.
-    const fromWindowSnap = snap.kind === "window";
+    // A promoted whole-display pick rides a `window` snap target but has
+    // no window behind it (negative id): no tag, no full-window path.
+    const fromWindowSnap = snap.kind === "window" && snap.entry.windowId >= 0;
     // `screencapture -l` captures the window's own backing buffer and
     // NEVER reads `rect`, so opting into it is only honest while the
     // rect still IS the window. Once the user has nudged or resized it
@@ -2370,6 +2373,18 @@ export function RegionSelector() {
     }
 
     function onMouseMove(event: MouseEvent): void {
+      // Multi-display: the keyboard follows the pointer. Without this the
+      // selector on the hotkey's display keeps it until the user clicks
+      // elsewhere, and ↵ over another display commits the first one's
+      // stale selection. Throttled: main ignores repeats anyway.
+      if (multiDisplayRef.current && !document.hasFocus()) {
+        const now = performance.now();
+        const screen = resultScreenUrlRef.current;
+        if (screen !== null && now - lastFocusRequestRef.current > 200) {
+          lastFocusRequestRef.current = now;
+          window.pwrsnapApi?.requestSelectorFocus?.({ screenUrl: screen });
+        }
+      }
       // Over the HUD there is nothing to aim at — the bar covers
       // whatever is behind it. Freeze the highlight rather than
       // snapping to a window the user can't see under the toolbar, and

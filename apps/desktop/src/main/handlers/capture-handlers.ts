@@ -1616,26 +1616,32 @@ async function cropAcrossDisplaySnapshots(
   const displays = screen.getAllDisplays();
   const leases: SnapshotRasterLease[] = [];
   try {
+    // Every requested display must still be there with its snapshot: a
+    // part that vanished would leave a transparent hole where the user
+    // saw pixels, so fail the way the one-display crop does instead.
+    const acquired = await Promise.all(
+      parts.map(async (part) => {
+        const display = displays.find((d) => d.id === part.displayId);
+        const lease =
+          display === undefined ? null : await acquireSnapshotRaster(part.screenSnapshotId, "crop");
+        if (lease !== null) leases.push(lease);
+        return { display, lease };
+      })
+    );
     const sources: Array<CompositeSource & { lease: SnapshotRasterLease }> = [];
-    for (const part of parts) {
-      const display = displays.find((d) => d.id === part.displayId);
-      if (display === undefined) continue;
-      const lease = await acquireSnapshotRaster(part.screenSnapshotId, "crop");
-      if (lease === null) continue;
-      leases.push(lease);
-      const snapshot = await snapshotRasterDimensions(lease.source);
+    for (const { display, lease } of acquired) {
+      if (display === undefined || lease === null) {
+        return { ok: false, reason: "error", message: "screen snapshot is no longer available" };
+      }
       sources.push({
         displayId: display.id,
         bounds: display.bounds,
         scaleFactor: display.scaleFactor,
-        snapshot,
+        snapshot: await snapshotRasterDimensions(lease.source),
         lease
       });
     }
     const homeDisplayId = parts[0]?.displayId ?? 0;
-    if (sources.length === 0) {
-      return { ok: false, reason: "error", message: "screen snapshot is no longer available" };
-    }
     const plan = planMultiDisplayComposite({
       rect,
       ...(extents !== undefined ? { extents } : {}),
@@ -1648,22 +1654,24 @@ async function cropAcrossDisplaySnapshots(
         message: "selection does not overlap any captured display"
       };
     }
-    const composites: OverlayOptions[] = [];
-    for (const layer of plan.layers) {
-      const source = sources.find((candidate) => candidate.displayId === layer.displayId)!;
-      const piece = await sharpForSnapshotRaster(source.lease.source)
-        .extract(layer.extract)
-        .resize(layer.resize.width, layer.resize.height, { fit: "fill" })
-        .ensureAlpha()
-        .raw()
-        .toBuffer({ resolveWithObject: true });
-      composites.push({
-        input: piece.data,
-        raw: { width: piece.info.width, height: piece.info.height, channels: 4 },
-        left: layer.left,
-        top: layer.top
-      });
-    }
+    // Independent decodes; run them together on the commit path.
+    const composites: OverlayOptions[] = await Promise.all(
+      plan.layers.map(async (layer) => {
+        const source = sources.find((candidate) => candidate.displayId === layer.displayId)!;
+        const piece = await sharpForSnapshotRaster(source.lease.source)
+          .extract(layer.extract)
+          .resize(layer.resize.width, layer.resize.height, { fit: "fill" })
+          .ensureAlpha()
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+        return {
+          input: piece.data,
+          raw: { width: piece.info.width, height: piece.info.height, channels: 4 as const },
+          left: layer.left,
+          top: layer.top
+        };
+      })
+    );
     if (plan.mask !== null) {
       // Same union-shaped alpha mask the one-display extent crop uses.
       const mask = Buffer.alloc(plan.width * plan.height * 4, 0);

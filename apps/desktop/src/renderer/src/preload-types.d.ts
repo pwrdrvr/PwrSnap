@@ -111,6 +111,7 @@ declare global {
         clearAll?: boolean;
       }): void;
       onSelectorPeerPicks(handler: (payload: SelectorPeerPicks) => void): () => void;
+      requestSelectorFocus(payload: { screenUrl: string }): void;
       notifySelectorSnapshotPainted(payload: {
         screenUrl: string;
         transport: "img" | "raw-rgba";

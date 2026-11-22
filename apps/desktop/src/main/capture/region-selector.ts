@@ -447,7 +447,8 @@ type SelectorWindowListPayload = {
     rawRect: { x: number; y: number; w: number; h: number };
   }[];
   displayBounds: { width: number; height: number };
-  cursor: { x: number; y: number };
+  /** Omitted for a display the pointer is not on. */
+  cursor?: { x: number; y: number };
 };
 
 export type SelectorResult = SelectorOutcome & {
@@ -584,6 +585,11 @@ const SELECTOR_PRESENTED_CHANNEL = "region-selector:presented";
 // localized to the receiver, and any of its own picks to drop.
 const SELECTOR_PICKS_CHANNEL = "region-selector:picks";
 const SELECTOR_PEER_PICKS_CHANNEL = "region-selector:peer-picks";
+// Multi-display only. Renderer → main: the pointer is on this display's
+// selector but its window is not key. Main gives it the keyboard, so
+// ↵ / Esc / T act on the display the user is looking at — not on the
+// display that happened to be under the cursor at hotkey time.
+const SELECTOR_FOCUS_CHANNEL = "region-selector:focus";
 
 /** How long to wait for the renderer's "snapshot painted" ack before
  *  showing the selector anyway. Decode of a full-screen PNG is well
@@ -975,6 +981,27 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
       }
       // (intentionally no hideAllSelectors here — caller owns it)
     });
+    ipcMain.on(SELECTOR_FOCUS_CHANNEL, (event, payload: unknown) => {
+      const invocation = activeInvocation;
+      if (invocation === null || invocation.phase !== "selecting" || invocation.multi === null) {
+        return;
+      }
+      const surface = surfaceForSender(invocation, event.sender.id);
+      if (surface === null || !isTopLevelSelectorFrame(event)) return;
+      const screenUrl =
+        typeof payload === "object" && payload !== null && "screenUrl" in payload
+          ? (payload as { screenUrl?: unknown }).screenUrl
+          : null;
+      const expectedUrl =
+        surface.secondary === null
+          ? invocation.multi.primaryScreenUrl
+          : surface.secondary.screenUrl;
+      if (screenUrl !== expectedUrl) return;
+      if (surface.secondary !== null && !surface.secondary.visible) return;
+      if (surface.window.isFocused()) return;
+      surface.window.focus();
+      surface.window.webContents.focus();
+    });
     ipcMain.on(SELECTOR_PICKS_CHANNEL, (event, payload: unknown) => {
       const invocation = activeInvocation;
       if (invocation === null || invocation.phase !== "selecting" || invocation.multi === null) {
@@ -1337,7 +1364,9 @@ async function prepareRegion(
       surface.windowListPayload = prepareWindowListPayload({
         rawSnapshot: list.windows,
         targetDisplay: display,
-        displayCursor: { x: cursor.x - display.bounds.x, y: cursor.y - display.bounds.y },
+        // The pointer is on the primary, so this display has no cursor to
+        // seed from; `null` leaves its crosshair where the renderer puts it.
+        displayCursor: null,
         ourPids,
         excludeWindowBounds,
         selectorWindow: surface.window,
@@ -1880,37 +1909,47 @@ async function prepareSecondaries(
       surface.snapshot = snapshot;
       surface.screenUrl = `pwrsnap-screen://r/${snapshot.id}`;
       win.webContents.send(SELECTOR_MODE_CHANNEL, ctx.modePayload(snapshot));
-      const outcome = await new Promise<SnapshotPaintOutcome>((resolve) => {
-        const timer = setTimeout(() => {
-          surface.paintWait = null;
-          resolve("timeout");
-        }, SHOW_AFTER_PAINT_TIMEOUT_MS);
-        surface.paintWait = (result) => {
-          clearTimeout(timer);
-          surface.paintWait = null;
-          resolve(result);
-        };
-      });
-      if (outcome === "superseded" || !ownsSelector(invocation) || win.isDestroyed()) {
-        if (!ownsSelector(invocation)) return;
-        continue;
-      }
-      enterMenuBarOverlayMode(win);
-      win.showInactive();
-      win.moveTop();
-      surface.visible = true;
-      selectorDisplaysNeedingFreshPanel.add(display.id);
-      scheduleStandbySelectorWarm(display, invocation);
-      log.info("secondary capture selector displayed", {
-        displayId: display.id,
-        paint: outcome
-      });
-      ctx.deliverWindowList(surface);
-      sendPeerPicks(invocation, surface.displayId, null);
+      // Reveal on paint WITHOUT holding up the next display's capture:
+      // only the captures must run one at a time.
+      void revealSecondaryWhenPainted(invocation, surface, display, ctx);
     }
   } finally {
+    // Every display is frozen by now; the protected windows can go back.
     invocation.releaseProtection();
   }
+}
+
+async function revealSecondaryWhenPainted(
+  invocation: SelectorInvocation,
+  surface: SecondarySurface,
+  display: Display,
+  ctx: SecondaryPrepContext
+): Promise<void> {
+  const win = surface.window;
+  const outcome = await new Promise<SnapshotPaintOutcome>((resolve) => {
+    const timer = setTimeout(() => {
+      surface.paintWait = null;
+      resolve("timeout");
+    }, SHOW_AFTER_PAINT_TIMEOUT_MS);
+    surface.paintWait = (result) => {
+      clearTimeout(timer);
+      surface.paintWait = null;
+      resolve(result);
+    };
+  });
+  if (outcome === "superseded" || !ownsSelector(invocation) || win.isDestroyed()) return;
+  enterMenuBarOverlayMode(win);
+  win.showInactive();
+  win.moveTop();
+  surface.visible = true;
+  selectorDisplaysNeedingFreshPanel.add(display.id);
+  scheduleStandbySelectorWarm(display, invocation);
+  log.info("secondary capture selector displayed", {
+    displayId: display.id,
+    paint: outcome
+  });
+  ctx.deliverWindowList(surface);
+  sendPeerPicks(invocation, surface.displayId, null);
 }
 
 /** Every surface of a multi-display session that a renderer message can
@@ -2179,7 +2218,8 @@ function matchesExcludedBounds(b: BoundsLike, excluded: readonly BoundsLike[]): 
 export function prepareWindowListPayload(args: {
   rawSnapshot: WindowInfo[];
   targetDisplay: Display;
-  displayCursor: { x: number; y: number };
+  /** null for a display the pointer is not on. */
+  displayCursor: { x: number; y: number } | null;
   ourPids: Set<number>;
   /** Bounds of windows excluded from the snapshot via content
    *  protection — dropped from the snap-candidate list too. */
@@ -2384,7 +2424,7 @@ export function prepareWindowListPayload(args: {
         width: displayBounds.width,
         height: displayBounds.height
       },
-      cursor: displayCursor
+      ...(displayCursor !== null ? { cursor: displayCursor } : {})
     }
   };
 }
@@ -3185,6 +3225,7 @@ export function disposeRegionSelector(): void {
     ipcMain.removeAllListeners(SELECTOR_PAINTED_CHANNEL);
     ipcMain.removeAllListeners(SELECTOR_PRESENTED_CHANNEL);
     ipcMain.removeAllListeners(SELECTOR_PICKS_CHANNEL);
+    ipcMain.removeAllListeners(SELECTOR_FOCUS_CHANNEL);
     ipcMain.removeHandler(SELECTOR_SNAPSHOT_READ_CHANNEL);
     resultListenerAttached = false;
   }

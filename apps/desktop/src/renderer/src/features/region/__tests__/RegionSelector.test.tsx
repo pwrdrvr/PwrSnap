@@ -66,6 +66,7 @@ let presentationHandler: ((p: PresentationPayload) => void) | null = null;
 let peerPicksHandler: ((p: SelectorPeerPicks) => void) | null = null;
 const submitRegion = vi.fn();
 const reportSelectorPicks = vi.fn();
+const requestSelectorFocus = vi.fn();
 const notifySelectorSnapshotPainted = vi.fn();
 const notifySelectorPresented = vi.fn();
 const readSelectorSnapshot = vi.fn();
@@ -78,6 +79,7 @@ function installSelectorApi(): void {
   peerPicksHandler = null;
   submitRegion.mockReset();
   reportSelectorPicks.mockReset();
+  requestSelectorFocus.mockReset();
   notifySelectorSnapshotPainted.mockReset();
   notifySelectorPresented.mockReset();
   readSelectorSnapshot.mockReset();
@@ -108,6 +110,7 @@ function installSelectorApi(): void {
       return () => undefined;
     },
     reportSelectorPicks,
+    requestSelectorFocus,
     onSelectorPeerPicks: (h: (p: SelectorPeerPicks) => void) => {
       peerPicksHandler = h;
       return () => undefined;
@@ -3191,6 +3194,41 @@ describe("multi-display session", () => {
     await emitPeerPicks({ picks: [], union: null, total: 1, outputMode: "windows", drop: [WIN.windowId] });
     expect(pickBoxes()).toHaveLength(1);
     expect(lastPicksReport().picks.map((p) => p.id)).toEqual([WIN_B.windowId]);
+  });
+
+  test("the pointer arriving on an unfocused display asks main for the keyboard", async () => {
+    await mountMultiDisplayScene();
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    await mouseMove(40, 40);
+    await mouseMove(41, 41);
+    // Throttled: one request for a burst of moves.
+    expect(requestSelectorFocus).toHaveBeenCalledTimes(1);
+    expect(requestSelectorFocus).toHaveBeenCalledWith({ screenUrl: MULTI_URL });
+    hasFocus.mockReturnValue(true);
+    await delay(250);
+    await mouseMove(42, 42);
+    expect(requestSelectorFocus).toHaveBeenCalledTimes(1);
+  });
+
+  test("a one-display selector never asks for focus", async () => {
+    await mountScene({ mode: "auto", screenUrl: MULTI_URL });
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    await mouseMove(40, 40);
+    expect(requestSelectorFocus).not.toHaveBeenCalled();
+  });
+
+  test("a nudged whole-display pick commits as a plain rect, never a window", async () => {
+    await mountMultiDisplayScene();
+    await mouseMove(20, 20);
+    await mouseDown(20, 20);
+    await mouseUp(20, 20);
+    // The arrow promotes the lone pick to an adjustable rect.
+    await keyDown("ArrowDown");
+    await keyDown("Enter", { shiftKey: true });
+    const payload = submitRegion.mock.calls.at(-1)![0];
+    expect(payload.ok).toBe(true);
+    expect(payload.snappedWindowId).toBeUndefined();
+    expect(payload.fullWindow).toBeUndefined();
   });
 
   test("Record is refused while another display holds picks", async () => {

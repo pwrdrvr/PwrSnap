@@ -22,7 +22,8 @@ import {
 } from "./local-agent-search";
 
 const MEDIA_DELIVERY_GUIDANCE =
-  "Returns an attached typed MCP resource link for media delivery. Pass it directly to the client's media handler; use resourceUri only in clients that explicitly support MCP resource reads.";
+  "Returns an attached typed MCP resource link for media delivery. Pass it directly to the client's media handler; use resourceUri only in clients that explicitly support MCP resource reads. " +
+  "Results report byteSize and mcpReadable: one resources/read returns the whole file in one message, so media over maxMcpReadBytes gets no link and an mcpReadRefusal saying what to do instead.";
 
 const supplementalContent = Symbol("local-agent-mcp-supplemental-content");
 
@@ -195,6 +196,9 @@ function successSummary(
 ): string {
   if (supplemental.some((content) => content.type === "resource_link")) {
     return "PwrSnap media is ready in the attached resource link. Pass that link directly to the client media handler.";
+  }
+  if (value !== null && typeof value === "object" && (value as { mcpReadable?: unknown }).mcpReadable === false) {
+    return "PwrSnap made the media, but it is too large to read over MCP, so no resource link is attached. See mcpReadRefusal.";
   }
   if (value !== null && typeof value === "object" && "rows" in value) {
     const rows = (value as { rows?: unknown }).rows;

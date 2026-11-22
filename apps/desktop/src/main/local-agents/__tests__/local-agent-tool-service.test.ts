@@ -5,6 +5,9 @@ import {
   type CommandName,
   type LocalAgentCapability
 } from "@pwrsnap/shared";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { bus, type CommandContext } from "../../command-bus";
 import { LocalAgentToolService } from "../local-agent-tool-service";
@@ -576,9 +579,12 @@ describe("LocalAgentToolService Sizzle workflows", () => {
   });
 
   test("uses client-scoped resource URIs for identical Sizzle renders", async () => {
+    // The tool reports the render's byte size, so the file must exist.
+    const outputPath = join(await mkdtemp(join(tmpdir(), "pwrsnap-reel-")), "reel.mp4");
+    await writeFile(outputPath, "reel");
     register("sizzle:render", async () =>
       ok({
-        outputPath: "/tmp/reel.mp4",
+        outputPath,
         durationSec: 8,
         renderId: "render_1",
         widthPx: 640,

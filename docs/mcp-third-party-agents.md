@@ -255,6 +255,31 @@ access. Surface resource-read errors rather than rendering partial bytes or
 reconnecting with a broader grant. There is no need for a separate HTTP media
 route merely to display an MCP binary resource.
 
+### Media size: one read, one message, at most 6 MiB
+
+A `resources/read` reply is a single JSON-RPC message carrying the whole file
+as base64, which is 4/3 the file's size. The official MCP SDK's stdio client
+refuses any line over 10 MiB (`ReadBuffer exceeded maximum size`), and MCP
+has no ranged or chunked resource read. PwrSnap therefore serves at most
+6 MiB (6,291,456 bytes) per read, which encodes to 8 MiB and leaves room for
+the envelope. It never splits or truncates a file.
+
+- Every media tool reports `byteSize`, `mcpReadable` and `maxMcpReadBytes`.
+  When `mcpReadable` is `false` the result carries no `resource_link` and no
+  `resourceUri`, and `mcpReadRefusal` says what to do instead.
+- A read of a file that is (or has since grown) over the limit fails with an
+  in-band JSON-RPC error, code `-32602`, whose `data` is
+  `{ code: "resource_too_large", uri, mimeType, byteSize, maxByteSize }`. The
+  file is not loaded and the connection stays open.
+- A full Sizzle render also reports `savedTo: { folder, fileName }`: the file
+  name in the PwrSnap folder of the user's videos folder. It never reports an
+  absolute path.
+
+`local-agents/__tests__/mcp-media-size.property.test.ts` checks this against
+the real relay and the SDK's own stdio client: every read either fits the
+client's buffer with exact bytes or is a typed size refusal, and the
+connection survives.
+
 The capture media byte oracles in `local-agents/__tests__/mcp-server.test.ts`
 exercise the real resource links, production handlers and native relay with
 synthetic PNG/JPEG files, including a PNG response larger than 1 MiB. They

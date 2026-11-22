@@ -92,8 +92,11 @@ verify the timeline's audio. The timeline viewer plays its rendered MP4.
 Use `pwrsnap_sizzle_render_full` for delivery. Return its protected typed MCP
 media link to a supported media handler; do not invent resource URIs or expose
 private cache paths. Full output is also saved under the OS videos folder's
-`PwrSnap` directory with timeline/report sidecars. Use the returned output
-location when available. `pwrsnap_sizzle_audio_qa` checks the final mix's
+`PwrSnap` directory with timeline/report sidecars; `savedTo.fileName` names
+the file. A full 1080p reel is usually too large for one MCP read: when a
+result says `mcpReadable: false` it has no link, so do not read it — give the
+user `savedTo` and review with the preview and frames instead (see
+references/timeline.md, "Media size over MCP"). `pwrsnap_sizzle_audio_qa` checks the final mix's
 transcript and loudness and may bill transcription; it cannot judge delivery
 or visual truth. State any checks that could not be completed.
 

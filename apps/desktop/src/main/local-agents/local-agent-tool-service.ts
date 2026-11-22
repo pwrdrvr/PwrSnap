@@ -12,12 +12,16 @@ import {
   type Result
 } from "@pwrsnap/shared";
 import { createHash } from "node:crypto";
+import { stat } from "node:fs/promises";
+import { basename } from "node:path";
 import { duplicateAndAwaitCommit } from "../capture/await-duplicate";
 import { getSizzleAssetsRoot } from "../persistence/paths";
 import { timelineAssetPath } from "../sizzle/timeline-assets";
 import { bus } from "../command-bus";
 import {
   LocalAgentMcpResourceRegistry,
+  mcpMediaSize,
+  mcpTooLargeMessage,
   type LocalAgentMcpResource,
   type LocalAgentResourceReadContext
 } from "./mcp-resource-registry";
@@ -271,28 +275,23 @@ export class LocalAgentToolService {
               }
             }
           : {}),
+        oversizeAdvice: CAPTURE_OVERSIZE_ADVICE,
         refresh: (readContext) => this.refreshExport(
           { captureId: input.captureId, variant, format: "png" },
           toolContextForRead(readContext)
         )
       });
-      const deliveryUri = this.deliveryUri(resource, ctx.clientId);
       return ok(
-        withMcpResourceLink(
+        this.mediaResult(
           {
             variant,
-            resourceUri: resource.uri,
             mimeType: exported.mimeType,
             widthPx: exported.widthPx,
-            heightPx: exported.heightPx,
-            byteSize: exported.byteSize
+            heightPx: exported.heightPx
           },
-          {
-            uri: deliveryUri,
-            name: resource.name,
-            mimeType: resource.mimeType,
-            size: exported.byteSize
-          }
+          resource,
+          exported.byteSize,
+          ctx.clientId
         )
       );
     } catch (cause) {
@@ -342,29 +341,24 @@ export class LocalAgentToolService {
               }
             }
           : {}),
+        oversizeAdvice: CAPTURE_OVERSIZE_ADVICE,
         refresh: (readContext) =>
           this.refreshExport(request, toolContextForRead(readContext))
       });
-      const deliveryUri = this.deliveryUri(resource, ctx.clientId);
       return ok(
-        withMcpResourceLink(
+        this.mediaResult(
           {
-            resourceUri: resource.uri,
             variant: exported.variant,
             format: exported.format,
             preset: exported.preset ?? preset,
             mimeType: exported.mimeType,
             widthPx: exported.widthPx,
             heightPx: exported.heightPx,
-            byteSize: exported.byteSize,
             fromCache: exported.fromCache
           },
-          {
-            uri: deliveryUri,
-            name: resource.name,
-            mimeType: resource.mimeType,
-            size: exported.byteSize
-          }
+          resource,
+          exported.byteSize,
+          ctx.clientId
         )
       );
     } catch (cause) {
@@ -717,14 +711,18 @@ export class LocalAgentToolService {
     if (!result.ok) return result;
     const { project: saved, ...prepared } = result.value;
     const { outputPath, ...project } = saved;
+    const narrationPath = timelineAssetPath(getSizzleAssetsRoot(), prepared.asset);
     const resource = this.resources.register({
       uri: `pwrsnap://sizzle/${encodeURIComponent(input.projectId)}/narration/${clientScopedId(prepared.asset.id, ctx.clientId)}`,
       name: "Prepared Sizzle narration", mimeType: "audio/wav", ownerClientId: ctx.clientId,
       requiredCapabilities: ["sizzle.preview.read"],
-      resolvePath: async () => timelineAssetPath(getSizzleAssetsRoot(), prepared.asset)
+      oversizeAdvice: "Check the take with the returned word timings, or audition it in PwrSnap.",
+      resolvePath: async () => narrationPath
     });
-    return ok(withMcpResourceLink({ ...project, hasOutput: outputPath !== null, ...prepared },
-      { uri: this.deliveryUri(resource, ctx.clientId), name: resource.name, mimeType: resource.mimeType }));
+    const byteSize = await fileByteSize(narrationPath);
+    if (!byteSize.ok) return byteSize;
+    return ok(this.mediaResult({ ...project, hasOutput: outputPath !== null, ...prepared },
+      resource, byteSize.value, ctx.clientId, { exposeResourceUri: false }));
   }
 
   async sizzleAlignNarration(input: { projectId: string; cues: SizzleNarrationCueInput[]; tailFrames?: number; expectedModifiedAt: string }, ctx: LocalAgentToolContext): Promise<Result<unknown, PwrSnapError>> {
@@ -770,9 +768,12 @@ export class LocalAgentToolService {
     const resource = this.resources.register({
       uri: `pwrsnap://sizzle/${encodeURIComponent(input.projectId)}/frames/${clientScopedId(rendered.value.renderId, ctx.clientId)}`,
       name: "Sizzle frames", mimeType: "image/png", requiredCapabilities: ["sizzle.preview.read"], ownerClientId: ctx.clientId,
+      oversizeAdvice: "Inspect fewer frames per call.",
       resolvePath: async () => rendered.value.outputPath
     });
-    return ok(withMcpResourceLink({ resourceUri: resource.uri, widthPx: rendered.value.widthPx, heightPx: rendered.value.heightPx, mimeType: "image/png" }, { uri: this.deliveryUri(resource, ctx.clientId), name: resource.name, mimeType: resource.mimeType }));
+    const byteSize = await fileByteSize(rendered.value.outputPath);
+    if (!byteSize.ok) return byteSize;
+    return ok(this.mediaResult({ widthPx: rendered.value.widthPx, heightPx: rendered.value.heightPx, mimeType: "image/png" }, resource, byteSize.value, ctx.clientId));
   }
 
   async sizzleBindings(input: { projectId: string; bindings: Record<string, string | number>; expectedModifiedAt: string }, ctx: LocalAgentToolContext): Promise<Result<unknown, PwrSnapError>> {
@@ -798,31 +799,74 @@ export class LocalAgentToolService {
       `${mode}/${encodeURIComponent(
         clientScopedId(rendered.value.renderId, ctx.clientId)
       )}`;
+    // A full render lands in the user's own videos folder, which the skill
+    // already names; say which file, never the absolute path. Previews live
+    // in the private cache and get no location at all.
+    const savedTo = mode === "full"
+      ? { folder: SIZZLE_OUTPUT_FOLDER, fileName: basename(rendered.value.outputPath) }
+      : undefined;
     const resource = this.resources.register({
       uri,
       name: `${mode} Sizzle render`,
       mimeType: "video/mp4",
       requiredCapabilities: [capability],
       ownerClientId: ctx.clientId,
+      oversizeAdvice: savedTo === undefined
+        ? "Review it with pwrsnap_sizzle_inspect_frames, or play it in PwrSnap's Sizzle viewer."
+        : `The full render is saved as ${savedTo.fileName} in the ${savedTo.folder} and plays in PwrSnap's Sizzle viewer. ` +
+          "Review it over MCP with pwrsnap_sizzle_render_preview or pwrsnap_sizzle_inspect_frames.",
       resolvePath: async () => rendered.value.outputPath
     });
-    const deliveryUri = this.deliveryUri(resource, ctx.clientId);
+    const byteSize = await fileByteSize(rendered.value.outputPath);
+    if (!byteSize.ok) return byteSize;
     return ok(
-      withMcpResourceLink(
+      this.mediaResult(
         {
-          resourceUri: resource.uri,
           durationSec: rendered.value.durationSec,
           widthPx: rendered.value.widthPx,
           heightPx: rendered.value.heightPx,
           mimeType: "video/mp4",
+          ...(savedTo === undefined ? {} : { savedTo }),
           ...(rendered.value.cachedScenes === undefined ? {} : { cachedScenes: rendered.value.cachedScenes, renderedScenes: rendered.value.renderedScenes, audioReports: rendered.value.audioReports })
         },
-        {
-          uri: deliveryUri,
-          name: resource.name,
-          mimeType: resource.mimeType
-        }
+        resource,
+        byteSize.value,
+        ctx.clientId
       )
+    );
+  }
+
+  /** Every media tool reports the file's size and whether one MCP read can
+   *  return it. Readable media gets its typed link; oversize media gets the
+   *  reason and what to do instead, and no link, so a client never fetches a
+   *  message it cannot hold. The read itself refuses again in the registry. */
+  private mediaResult<T extends Record<string, unknown>>(
+    value: T,
+    resource: LocalAgentMcpResource,
+    byteSize: number,
+    clientId: string,
+    options: { exposeResourceUri?: boolean } = {}
+  ): Record<string, unknown> {
+    const size = mcpMediaSize(byteSize);
+    if (!size.mcpReadable) {
+      return {
+        ...value,
+        ...size,
+        mcpReadRefusal: `${mcpTooLargeMessage(byteSize)} ${resource.oversizeAdvice ?? ""}`.trim()
+      };
+    }
+    return withMcpResourceLink(
+      {
+        ...(options.exposeResourceUri === false ? {} : { resourceUri: resource.uri }),
+        ...value,
+        ...size
+      },
+      {
+        uri: this.deliveryUri(resource, clientId),
+        name: resource.name,
+        mimeType: resource.mimeType,
+        size: byteSize
+      }
     );
   }
 
@@ -846,6 +890,7 @@ export class LocalAgentToolService {
     requiredCapabilities: readonly LocalAgentCapability[];
     captureId: string;
     ownerClientId?: string;
+    oversizeAdvice?: string;
     audit?: LocalAgentMcpResource["audit"];
     refresh: (context: LocalAgentResourceReadContext) => Promise<string>;
   }): LocalAgentMcpResource {
@@ -859,6 +904,7 @@ export class LocalAgentToolService {
         ? { ownerClientId: args.ownerClientId }
         : {}),
       ...(args.audit !== undefined ? { audit: args.audit } : {}),
+      ...(args.oversizeAdvice !== undefined ? { oversizeAdvice: args.oversizeAdvice } : {}),
       resolvePath: args.refresh
     });
   }
@@ -875,6 +921,25 @@ export class LocalAgentToolService {
       clientId
     });
     return signed.url;
+  }
+}
+
+const CAPTURE_OVERSIZE_ADVICE =
+  "Export a smaller preset (low) or a compressed format (jpeg or webp) with pwrsnap_capture_export.";
+
+/** Where full Sizzle renders land, as the user sees it — not a path. */
+const SIZZLE_OUTPUT_FOLDER = "PwrSnap folder of the user's videos folder";
+
+async function fileByteSize(path: string): Promise<Result<number, PwrSnapError>> {
+  try {
+    return ok((await stat(path)).size);
+  } catch {
+    // The fs error names the private path; the agent gets the fact only.
+    return err({
+      kind: "persistence",
+      code: "media_unavailable",
+      message: "the media file is missing; run the tool again"
+    });
   }
 }
 

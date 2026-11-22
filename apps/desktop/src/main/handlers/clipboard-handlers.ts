@@ -84,7 +84,12 @@ import { composeV2 } from "../render/compose-tree";
 import { mapVideoResolveError, resolveVideoExport } from "../recording/video-export-resolver";
 import { validateVideoExportRequest } from "../recording/video-export-validation";
 import { getMainLogger } from "../log";
-import { resolveImagePresetFile, targetWidthForImagePreset } from "../render/image-presets";
+import {
+  imagePresetRung,
+  resolveImagePresetFile,
+  targetWidthForImagePreset
+} from "../render/image-presets";
+import { pngWithDensity } from "../image/png-density";
 import { getActiveExportStrategy } from "./settings-handlers";
 import { prepareRenderedFileAlias } from "../render/file-alias";
 import {
@@ -94,7 +99,10 @@ import {
 } from "../render/export-filename";
 import { ensureVideoFrameStill } from "../recording/video-frame-still";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
-import { writeNamedPngToPasteboard } from "../clipboard/named-image-pasteboard";
+import {
+  resolvePasteboardWriterPath,
+  writeNamedPngToPasteboard
+} from "../clipboard/named-image-pasteboard";
 import { PasteboardTimeoutError } from "../clipboard/pasteboard-timeout";
 import { writeFileToClipboard } from "../clipboard/file-clipboard";
 import {
@@ -216,9 +224,18 @@ async function writeNamedImageToPasteboard(args: {
   displayName: string;
   captureId: string;
   preset: string;
+  pngDensity?: { bytes: Buffer; dpi: number };
 }): Promise<boolean> {
   try {
-    const aliasPath = await prepareRenderedFileAlias(args.pngPath, args.displayName);
+    if (resolvePasteboardWriterPath() === null) return false;
+    const tagged = args.pngDensity !== undefined
+      ? pngWithDensity(args.pngDensity.bytes, args.pngDensity.dpi)
+      : undefined;
+    const aliasPath = await prepareRenderedFileAlias(
+      args.pngPath,
+      args.displayName,
+      tagged === args.pngDensity?.bytes ? undefined : tagged
+    );
     clipMetaSeq += 1;
     // Private `com.pwrdrvr.pwrsnap.clip-meta` flavor: NSPasteboard doesn't
     // record the writing app, so PbScope badges any `com.pwrdrvr.*` flavor
@@ -233,7 +250,7 @@ async function writeNamedImageToPasteboard(args: {
       pid: process.pid
     });
     return await writeNamedPngToPasteboard({
-      pngPath: args.pngPath,
+      pngPath: aliasPath,
       fileUrlPath: aliasPath,
       metaJson
     });
@@ -314,7 +331,13 @@ export function registerClipboardHandlers(): void {
     }
 
     const strategy = await getActiveExportStrategy();
-    const targetWidth = targetWidthForImagePreset(req.preset, record, strategy);
+    const rung = imagePresetRung(req.preset, record, strategy);
+    const targetWidth = rung?.widthPx ?? Math.max(1, record.width_px);
+    // Use the selected output scale (including aliased rungs). A smaller
+    // image at or under logical resolution is a standalone 1× image. The
+    // paste heuristic rounds density to an integer, so require a full 2×
+    // before tagging Retina and keep the existing 3× ceiling.
+    const outputDpr = Math.min(3, Math.max(1, Math.floor((rung?.onScreenMultiple ?? 1) + 1e-6)));
 
     try {
       const result = await resolveImagePresetFile(record, req.preset, strategy);
@@ -336,9 +359,12 @@ export function registerClipboardHandlers(): void {
         pngPath: result.path,
         displayName,
         captureId: record.id,
-        preset: req.preset
+        preset: req.preset,
+        pngDensity: { bytes: buf, dpi: 72 * outputDpr }
       });
       if (!namedPasteboardWritten) {
+        // Electron's image writer re-encodes the PNG and can discard its
+        // density. The lossless DPI guarantee is for the native PNG path.
         await writeClipboardImage(image);
       }
       // Issue #139 — the "File > New > Paste from Clipboard" menu item

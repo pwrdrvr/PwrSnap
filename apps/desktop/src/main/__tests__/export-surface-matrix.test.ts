@@ -37,19 +37,22 @@
 // THIS file makes sure the regression class can't come back invisibly.
 
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import sharp from "sharp";
+import fc from "fast-check";
 import { afterAll, beforeAll, beforeEach, afterEach, describe, expect, test, vi } from "vitest";
 
 import type {
   BundleDocumentV2,
   BundleLayerNode,
   BundleManifestV2,
+  ExportStrategy,
   Overlay
 } from "@pwrsnap/shared";
+import { ingestImageBufferToTempPng } from "../clipboard-image-buffer";
 
 // These integration tests do real sharp rasterization (compose → PNG →
 // pixel assertions), which can exceed the 5s default on constrained CI
@@ -77,6 +80,12 @@ const namedPasteboardCalls: Array<{ pngPath: string; fileUrlPath: string; metaJs
 // We'll set this from the test setup once the temp dir exists.
 let testDataRoot: string;
 let testDocumentsRoot: string;
+let exportStrategy: ExportStrategy = "legacy";
+
+vi.mock("../handlers/settings-handlers", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../handlers/settings-handlers")>(),
+  getActiveExportStrategy: async () => exportStrategy
+}));
 
 vi.mock("electron", () => {
   return {
@@ -136,6 +145,7 @@ vi.mock("../clipboard/system-clipboard", () => ({
 }));
 
 vi.mock("../clipboard/named-image-pasteboard", () => ({
+  resolvePasteboardWriterPath: () => "/test/pasteboard-writer",
   writeNamedPngToPasteboard: vi.fn(
     async (args: { pngPath: string; fileUrlPath: string; metaJson?: string }) => {
       namedPasteboardCalls.push(args);
@@ -207,6 +217,7 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
+  exportStrategy = "legacy";
   clipboardCaptured.length = 0;
   fileClipboardCaptured.length = 0;
   namedPasteboardCalls.length = 0;
@@ -222,17 +233,17 @@ afterEach(() => {
 });
 
 // Build a 400×300 all-white source PNG.
-async function makeSourcePng(): Promise<Buffer> {
-  return await sharp({
+async function makeSourcePng(density?: number): Promise<Buffer> {
+  const image = sharp({
     create: {
       width: SOURCE_WIDTH,
       height: SOURCE_HEIGHT,
       channels: 3,
       background: { r: 255, g: 255, b: 255 }
     }
-  })
-    .png()
-    .toBuffer();
+  });
+  if (density !== undefined) image.withMetadata({ density, orientation: 6 });
+  return await image.png().toBuffer();
 }
 
 function annotatedOverlay(): Overlay {
@@ -253,10 +264,11 @@ function annotatedOverlay(): Overlay {
 interface SeedArgs {
   id: string;
   annotated: boolean;
+  sourceDensity?: number | undefined;
 }
 
 async function seedV2Capture(args: SeedArgs): Promise<void> {
-  const sourcePng = await makeSourcePng();
+  const sourcePng = await makeSourcePng(args.sourceDensity);
   const sourceSha = createHash("sha256").update(sourcePng).digest("hex");
   const bundlePath = join(workDir, "captures", `${args.id}.pwrsnap`);
   // See `seedV1Capture` for why flat_png_path is populated even
@@ -280,9 +292,10 @@ async function seedV2Capture(args: SeedArgs): Promise<void> {
   //
   // Layer ids are 16-char nanoid-style (NanoId16 schema). Transform
   // is the affine matrix tuple [a, b, c, d, tx, ty] — identity here.
-  const rootGroupId = "grp_root_test_x0";
-  const rasterId = "ras_source_test0";
-  const overlayId = "vec_rect_test_x0";
+  const layerId = (kind: string) => createHash("sha256").update(`${args.id}:${kind}`).digest("hex").slice(0, 16);
+  const rootGroupId = layerId("root");
+  const rasterId = layerId("raster");
+  const overlayId = layerId("overlay");
   const common = {
     name: "",
     visible: true,
@@ -696,6 +709,80 @@ describe("clipboard:copy pasted image filename", () => {
 });
 
 // ---------------------------------------------------------------------
+// A named PNG lets both AppKit clients and file-URL clients see the same
+// density. Test the bytes we hand each one using sharp and the real paste
+// ingestion as independent readers.
+function pngWithoutDensityMetadata(png: Buffer): Buffer {
+  const chunks = [png.subarray(0, 8)];
+  for (let offset = 8; offset < png.length; ) {
+    const end = offset + 12 + png.readUInt32BE(offset);
+    const type = png.toString("ascii", offset + 4, offset + 8);
+    if (type !== "pHYs" && type !== "eXIf") {
+      chunks.push(png.subarray(offset, end));
+    }
+    offset = end;
+  }
+  return Buffer.concat(chunks);
+}
+
+async function checkNamedCopyDensity(
+  captureId: string,
+  strategy: ExportStrategy,
+  preset: "low" | "med" | "high",
+  expectedDpr: number
+): Promise<void> {
+  exportStrategy = strategy;
+  const width = strategy === "scaleLogical" ? SOURCE_WIDTH / 2 : SOURCE_WIDTH;
+  const result = await bus.dispatch("clipboard:copy", { captureId, preset }, { principal: "ipc" });
+  expect(result).toMatchObject({ ok: true });
+  const write = namedPasteboardCalls.at(-1)!;
+  const png = await readFile(write.pngPath);
+  const file = await readFile(write.fileUrlPath);
+  expect(file.equals(png)).toBe(true);
+
+  const rendered = await renderViaCoordinator({ captureId, width, format: "png" });
+  // Unedited full-size copies use the original source. Resized and edited
+  // copies use the rendered cache. Neither source's compressed bytes change.
+  const originalPath = captureId.startsWith("dpi_baked") || width !== SOURCE_WIDTH
+    ? rendered.cachePath
+    : join(workDir, "captures", `${captureId}.png`);
+  const original = await readFile(originalPath);
+  expect(pngWithoutDensityMetadata(png).equals(pngWithoutDensityMetadata(original))).toBe(true);
+  const metadata = await sharp(png).metadata();
+  expect(metadata.width).toBe(width);
+  expect(metadata.orientation).toBe((await sharp(original).metadata()).orientation);
+  const pastePath = join(workDir, "paste-density-test.png");
+  const ingested = await ingestImageBufferToTempPng(file, async () => pastePath);
+  expect((await readFile(pastePath)).equals(png)).toBe(true);
+  expect(ingested.devicePixelRatio).toBe(expectedDpr);
+}
+
+describe("clipboard:copy PNG density round trip", () => {
+  test("full-size annotated Retina copy pastes back at 2×", async () => {
+    const id = "dpi_baked_full";
+    await seedV2Capture({ id, annotated: true });
+    await checkNamedCopyDensity(id, "legacy", "high", 2);
+  });
+
+  test("paste recovers the output density from source reuse, bakes and the Actual fallback", async () => {
+    const sources = ["dpi_reused_plain", "dpi_reused_tagged", "dpi_baked_tagged"] as const;
+    await seedV2Capture({ id: sources[0], annotated: false });
+    await seedV2Capture({ id: sources[1], annotated: false, sourceDensity: 216 });
+    await seedV2Capture({ id: sources[2], annotated: true, sourceDensity: 216 });
+
+    await fc.assert(fc.asyncProperty(
+      fc.constantFrom(...sources),
+      fc.constantFrom("legacy", "scalePhysical", "scaleLogical" as const),
+      fc.constantFrom("low", "med", "high" as const),
+      async (id, strategy, preset) => {
+        // At these fixture dimensions, every shortcut resolves to Actual
+        // in the two DPI-aware modes. Logical Actual is explicitly 1×.
+        await checkNamedCopyDensity(id, strategy, preset, strategy === "scaleLogical" ? 1 : 2);
+      }
+    ), { numRuns: 25 });
+  });
+});
+
 // Additional pin for `clipboard:copyLayerFragment`'s private-UTI
 // fragment payload. Off the native helper (which Vitest never runs), the
 // verb writes ONE Electron clipboard item carrying the fragment and the

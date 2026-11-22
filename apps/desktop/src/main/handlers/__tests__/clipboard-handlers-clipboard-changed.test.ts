@@ -141,6 +141,7 @@ vi.mock("../../log", () => ({
 }));
 
 vi.mock("../../clipboard/named-image-pasteboard", () => ({
+  resolvePasteboardWriterPath: () => "/test/pasteboard-writer",
   writeNamedPngToPasteboard: vi.fn(async () => false)
 }));
 

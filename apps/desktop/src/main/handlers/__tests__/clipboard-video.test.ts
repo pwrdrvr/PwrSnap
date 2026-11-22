@@ -121,6 +121,7 @@ vi.mock("../../render/file-alias", () => ({
 }));
 
 vi.mock("../../clipboard/named-image-pasteboard", () => ({
+  resolvePasteboardWriterPath: () => null,
   writeNamedPngToPasteboard: async () => false
 }));
 

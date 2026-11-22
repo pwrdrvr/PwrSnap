@@ -180,3 +180,36 @@ and
 - **Headless E2E cannot see any of this.** Placement, content protection
   and the park are window-server behavior. Check a change on a real
   display, and on Windows and Linux as well as macOS.
+
+## A copy click, then a leave, closes the toast; a close onto the tabs folds
+
+**A successful click on one of the toast's own copy cards (or a card's
+FILE chip) arms it. From then on, every stretch with the pointer outside
+the window drains the bar over `COPY_LEAVE_CLOSE_MS` (400ms) and closes
+the toast the way the countdown does, onto the edge tabs. Nothing else
+arms it, and every hold on the countdown still holds the close.** Owner:
+the countdown effect and `armingCopy` in
+[FloatOver.tsx](../../apps/desktop/src/renderer/src/features/float-over/FloatOver.tsx).
+Pinned by
+[FloatOver-copy-close.property.test.tsx](../../apps/desktop/src/renderer/src/features/float-over/__tests__/FloatOver-copy-close.property.test.tsx),
+a model of enter / leave / copy / shortcut / wait sequences. Design:
+the "Float-Over Copy Close" page of the PwrSnap design canvas.
+
+- **Not Esc.** The toast never takes keyboard focus from the app the user
+  is in. The pointer leaving is the signal it already has.
+- **Not the ⌘1–3 shortcuts.** They fire from another app with the pointer
+  usually off the toast, so arming them would close it right after the
+  key. A failed copy does not arm either.
+- **"Outside" is the window, not the toast.** Moving onto the rail is
+  still inside (`externalHover`). The see-through strip under a short
+  rail counts as outside.
+- **It is a timeout, not a dismiss.** It goes through `onTimeout`, so the
+  snap stays on the edge tabs until explicitly dismissed.
+- **Every close onto visible tabs folds into the edge** (`is-tucking`, the
+  `fo-tuck` keyframes in float-over-dock.css): the countdown, Tuck, and
+  copy-then-leave. A dismiss, Edit, Discard, a close with Recent captures
+  off, tabs on the left, no dock (native Wayland) and reduced motion keep
+  the plain fade. The fold is a transform on `.fo-shell`, never on
+  `.fo-host__measure`: the host measures that wrapper's own box, so main
+  does not resize the window mid-fold, and the fold needs nothing from
+  the window server on any platform.

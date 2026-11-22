@@ -27,6 +27,7 @@ function makeNativeHarness(options: { timeoutMs?: number } = {}) {
   const ignoredMenuShortcutWindows = new Set<number>();
   const unavailable = new Set<string>();
   const registrar: GlobalShortcutRegistrar = {
+    isRegistered: (accelerator) => live.has(accelerator),
     register: vi.fn((accelerator: string, callback: () => void) => {
       if (unavailable.has(accelerator) || live.has(accelerator)) return false;
       live.set(accelerator, callback);

@@ -961,6 +961,9 @@ function armCopyShortcuts(captureId: string): void {
 
     for (const { accelerator, format, preset } of shortcuts) {
       try {
+        // Electron's Wayland backend can replace a callback in this process.
+        // A transient copy shortcut must leave a managed binding in place.
+        if (globalShortcut.isRegistered(accelerator)) continue;
         const registered = globalShortcut.register(
           accelerator,
           () => {

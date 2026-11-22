@@ -106,7 +106,7 @@ vi.mock("electron", () => {
       getAllWindows: vi.fn(() => []),
       getFocusedWindow: vi.fn(() => null)
     }),
-    globalShortcut: { register: vi.fn(() => true), unregister: vi.fn() },
+    globalShortcut: { isRegistered: vi.fn(() => false), register: vi.fn(() => true), unregister: vi.fn() },
     ipcMain: mocks.ipcMain,
     Menu: {
       buildFromTemplate: vi.fn((template: unknown[]) => {

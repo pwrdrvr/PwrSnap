@@ -22,6 +22,7 @@ function makeRegistrar() {
   const unavailable = new Set<string>();
   const throws = new Set<string>();
   const registrar: GlobalShortcutRegistrar = {
+    isRegistered: (accelerator) => live.has(accelerator),
     register: vi.fn((accelerator: string, callback: () => void) => {
       if (throws.has(accelerator)) throw new Error("native registration exploded");
       if (unavailable.has(accelerator) || live.has(accelerator)) return false;
@@ -190,7 +191,8 @@ describe("HotkeyRegistrationManager", () => {
         code: "hotkey_unavailable"
       })
     );
-    expect((failure as Error).message).toContain("Windows or another app");
+    expect((failure as Error).message).toContain("PwrSnap could not register Ctrl+Alt+C");
+    expect((failure as Error).message).not.toMatch(/another app|reserve|owner/i);
     expect((failure as Error).message).not.toContain("win32");
     expect([...fake.live.keys()]).toEqual(["Control+Shift+C"]);
     expect(manager.snapshot().get("quickCapture")).toBe("Control+Shift+C");
@@ -271,6 +273,30 @@ describe("HotkeyRegistrationManager", () => {
     );
     expect(vi.mocked(fake.registrar.register)).toHaveBeenCalledTimes(callsBefore);
     expect([...fake.live.keys()]).toEqual(["Control+Shift+C"]);
+  });
+
+  test("Ctrl+Alt+A keeps its original callback when AltGr+A is saved in a different row", () => {
+    const { registrar, live } = makeRegistrar();
+    const manager = makeManager(registrar);
+    const current = blankHotkeys({ quickCapture: "Control+Alt+A" });
+    manager.initialize(current);
+    const originalCallback = live.get("Control+Alt+A");
+
+    expect(() => manager.prepare(current, { ...current, region: "AltGr+A" }))
+      .toThrowError(expect.objectContaining({ code: "hotkey_duplicate" }));
+    expect(live.get("Control+Alt+A")).toBe(originalCallback);
+  });
+
+  test("a Ctrl+A callback owned by another PwrSnap surface survives startup and Retry", () => {
+    const { registrar, live } = makeRegistrar();
+    const originalCallback = vi.fn();
+    live.set("Control+A", originalCallback);
+    const manager = makeManager(registrar);
+    manager.initialize(blankHotkeys({ region: "Control+A" }));
+
+    expect(manager.retry("region").region.failure?.code).toBe("duplicate");
+    expect(registrar.register).not.toHaveBeenCalled();
+    expect(live.get("Control+A")).toBe(originalCallback);
   });
 
   test("rejects a Command-only Windows accelerator before registration", () => {

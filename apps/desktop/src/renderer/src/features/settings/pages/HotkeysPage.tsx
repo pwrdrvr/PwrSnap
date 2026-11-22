@@ -10,7 +10,7 @@
 // (V / A / S / H / B / T / C). Those are hardcoded in the editor and
 // aren't rebindable — the card documents them so they're discoverable.
 
-import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import {
   Card,
   Hk,
@@ -66,9 +66,12 @@ export function HotkeysPage(): ReactElement {
   const [statusError, setStatusError] = useState<string | null>(null);
   const [hotkeyMutationCount, setHotkeyMutationCount] = useState<number>(0);
   const hotkeyMutationBusy = hotkeyMutationCount > 0;
+  const statusRequest = useRef(0);
 
   const refreshRegistrationStatus = useCallback(async (): Promise<void> => {
+    const request = ++statusRequest.current;
     const result = await dispatch("settings:hotkeyStatus", {});
+    if (request !== statusRequest.current) return;
     if (!result.ok) {
       setStatusError(result.error.message);
       return;
@@ -121,6 +124,7 @@ export function HotkeysPage(): ReactElement {
     onStart: (): void => setRecordingKey(key),
     onCancel: (): void => setRecordingKey((current) => (current === key ? null : current)),
     onPreparingChange: onPreparingChange(key),
+    onLeaseEnded: refreshRegistrationStatus,
     onCommit: onCommit(key),
     onUnbind: onUnbind(key)
   });
@@ -130,7 +134,9 @@ export function HotkeysPage(): ReactElement {
     setRetryingKey(key);
     try {
       await runHotkeyMutation(async () => {
+        const request = ++statusRequest.current;
         const result = await dispatch("settings:retryHotkey", { key });
+        if (request !== statusRequest.current) return;
         if (!result.ok) {
           setStatusError(result.error.message);
           return;

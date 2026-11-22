@@ -66,11 +66,11 @@ export function HotkeyResetModal({
       await onConfirm();
     } catch (confirmError) {
       if (mountedRef.current) {
-        const detail =
+        setError(
           confirmError instanceof Error && confirmError.message.trim() !== ""
-            ? `${confirmError.message} `
-            : "";
-        setError(`${detail}Your existing shortcuts are still active.`);
+            ? confirmError.message
+            : "PwrSnap could not reset these shortcuts. Your saved shortcuts are unchanged."
+        );
       }
     } finally {
       if (mountedRef.current) setSubmitting(false);

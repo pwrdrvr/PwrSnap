@@ -77,7 +77,7 @@ const mocks = vi.hoisted(() => {
 vi.mock("electron", () => ({
   app: { on: vi.fn(), removeListener: vi.fn() },
   BrowserWindow: Object.assign(vi.fn(), { getFocusedWindow: vi.fn(() => null) }),
-  globalShortcut: { register: vi.fn(() => true), unregister: vi.fn() },
+  globalShortcut: { isRegistered: vi.fn(() => false), register: vi.fn(() => true), unregister: vi.fn() },
   ipcMain: mocks.ipcMain,
   screen: {
     getAllDisplays: vi.fn(() => []),

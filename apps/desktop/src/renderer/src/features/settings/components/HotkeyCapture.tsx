@@ -35,7 +35,9 @@ export type HotkeyCaptureProps = {
   onCancel: () => void;
   /** Lets the page block modal actions while the native lease is arming. */
   onPreparingChange?: (preparing: boolean) => void;
-  /** Resolves only after main has accepted and activated the binding. */
+  /** Refresh runtime status after main has restored native shortcuts. */
+  onLeaseEnded?: () => void;
+  /** Resolves after main has persisted the binding. */
   onCommit: (next: string) => void | Promise<void>;
   /** Explicit Clear action. Keyboard input never calls this callback. */
   onUnbind?: () => void | Promise<void>;
@@ -234,9 +236,7 @@ export function accelFromKeyboardEvent(
 
 function messageFromError(error: unknown, verb: "save" | "clear"): string {
   const detail = error instanceof Error && error.message.trim() !== "" ? error.message : null;
-  return detail === null
-    ? `PwrSnap could not ${verb} this shortcut. The previous binding is still active.`
-    : `${detail} The previous binding is still active.`;
+  return detail ?? `PwrSnap could not ${verb} this shortcut. The saved shortcut is unchanged.`;
 }
 
 function swallowKeyboardEvent(event: KeyboardEvent): void {
@@ -295,6 +295,7 @@ export function HotkeyCapture({
   onStart,
   onCancel,
   onPreparingChange,
+  onLeaseEnded,
   onCommit,
   onUnbind
 }: HotkeyCaptureProps): ReactElement {
@@ -350,10 +351,12 @@ export function HotkeyCapture({
       leaseHeartbeat.current = null;
     }
     if (pendingLeaseSession.current === sessionId) pendingLeaseSession.current = null;
-    void dispatch("settings:endHotkeyRecording", { sessionId, generation }).catch(
-      () => undefined
-    );
-  }, []);
+    void dispatch("settings:endHotkeyRecording", { sessionId, generation })
+      .then((result) => {
+        if (result.ok && result.value.ended) return onLeaseEnded?.();
+      })
+      .catch(() => undefined);
+  }, [onLeaseEnded]);
 
   const stopAfterLostLease = useCallback((detail: string): void => {
     releaseLease();

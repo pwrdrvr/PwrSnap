@@ -6,9 +6,11 @@ type SwitchProps = {
   /** Accessible name. The Row label beside a switch is not tied to it, so
    *  without this a screen reader announces an unnamed switch. */
   label?: string | undefined;
+  /** Shown but not operable: there is nothing it could turn on. */
+  disabled?: boolean | undefined;
 };
 
-export function Switch({ on, onChange, label }: SwitchProps): ReactElement {
+export function Switch({ on, onChange, label, disabled }: SwitchProps): ReactElement {
   const cls = "pss__switch" + (on ? " is-on" : "");
   if (onChange === undefined) {
     return <span className={cls} role="img" aria-label={on ? "On" : "Off"} />;
@@ -20,6 +22,7 @@ export function Switch({ on, onChange, label }: SwitchProps): ReactElement {
       role="switch"
       aria-checked={on}
       aria-label={label}
+      disabled={disabled === true}
       onClick={() => onChange(!on)}
     />
   );

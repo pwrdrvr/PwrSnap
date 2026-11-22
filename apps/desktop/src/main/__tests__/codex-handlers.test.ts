@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
-import type { CodexModelOption, EnrichmentResult, Settings } from "@pwrsnap/shared";
+import type { AiSurfaceDefault, CodexModelOption, EnrichmentResult, Settings } from "@pwrsnap/shared";
 import { CustomModelService } from "../ai/direct-api/service";
 import type { CustomCredentials } from "../ai/direct-api/credentials";
 import { body, json, model, server } from "../ai/direct-api/__tests__/fixtures";
@@ -60,6 +60,7 @@ const { defaultSettings } = await import("../settings/desktop-settings-service")
 const { DesktopSettingsStore } = await import("../settings/desktop-settings-store");
 const { AiEnrichmentBudget } = await import("../ai/enrichment-budget");
 const { EnrichmentPrimaryHealth } = await import("../ai/enrichment-fallback");
+const { CodexTurnFailedError } = await import("../ai/codex-turn-error");
 const {
   reportCodexCliTooOld,
   resetCodexCompatibilityAlertForTests
@@ -756,6 +757,145 @@ describe("Codex handlers", () => {
     } finally {
       serviceSpy.mockRestore();
     }
+  });
+
+  // Codex primary, Apple's on-device model as the fallback (GPT-6-Luna →
+  // Apple Intelligence). Only Codex's own "no HTTP answer at all" transport
+  // classification moves the run; every other Codex failure fails it, and
+  // the on-device model is never asked.
+  describe("Codex primary with an on-device fallback", () => {
+    const offline = (key: string, httpStatusCode: number | null = null) =>
+      new CodexTurnFailedError("stream error: error sending request", { [key]: { httpStatusCode } } as never);
+    const appleCaption = JSON.stringify({
+      title: "Offline fixture", description: "Synthetic snap captioned on this Mac", ocrText: "",
+      filenameStem: "offline-fixture", textAnchors: [], tags: []
+    });
+    const withApple = async (body: (respondCalls: () => number) => Promise<void>): Promise<void> => {
+      let respond = 0;
+      const runSpy = vi.spyOn(appleFmCli, "runAppleFm").mockImplementation(async (args) => {
+        appleFmCli.assertAppleFmArgs(args);
+        if (args[0] === "config") return { code: 0, signal: null, stdout: "(none)\n", stderr: "" };
+        respond += 1;
+        return { code: 0, signal: null, stderr: "", stdout: appleCaption };
+      });
+      const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+      try {
+        await body(() => respond);
+      } finally {
+        runSpy.mockRestore();
+        platformSpy.mockRestore();
+      }
+    };
+    const lunaSettings = (fallback: AiSurfaceDefault | null): Settings => {
+      const settings = testSettings();
+      settings.ai.enabled = true;
+      settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+      settings.ai.defaults.enrichment = { provider: "codex", model: "gpt-6-luna" };
+      settings.ai.enrichmentFallback = fallback;
+      return settings;
+    };
+    const settle = async (runId: string): Promise<void> => {
+      await waitFor(() => ["completed", "failed"].includes(getAiRun(runId)?.status ?? ""));
+    };
+
+    test.each([
+      { scenario: "connection failed, no HTTP status", error: offline("httpConnectionFailed"), expected: "fallback" },
+      { scenario: "stream never connected", error: offline("responseStreamConnectionFailed"), expected: "fallback" },
+      { scenario: "retries exhausted, no answer", error: offline("responseTooManyFailedAttempts"), expected: "fallback" },
+      { scenario: "connection failed with HTTP 503", error: offline("httpConnectionFailed", 503), expected: "failed" },
+      { scenario: "stream disconnected mid-answer", error: offline("responseStreamDisconnected"), expected: "failed" },
+      { scenario: "signed out", error: new CodexTurnFailedError("401", "unauthorized"), expected: "failed" },
+      { scenario: "usage limit", error: new CodexTurnFailedError("limit", "usageLimitExceeded"), expected: "failed" },
+      { scenario: "policy block", error: new CodexTurnFailedError("blocked", "cyberPolicy"), expected: "failed" },
+      { scenario: "unclassified turn failure", error: new CodexTurnFailedError("boom", null), expected: "failed" },
+      { scenario: "turn timeout", error: new Error("Codex one-shot turn timed out"), expected: "failed" },
+      { scenario: "local setup error", error: new Error("spawn codex ENOENT"), expected: "failed" }
+    ])("$scenario → $expected", async ({ error, expected }) => {
+      await withApple(async (respondCalls) => {
+        const settings = lunaSettings({ provider: "apple:system" });
+        const codex = { enrichCapture: vi.fn(async () => { throw error; }), close: async () => undefined };
+        registerCodexHandlers({ clientFactory: () => codex as never, settingsReader: async () => settings,
+          budget: new AiEnrichmentBudget(), primaryHealth: new EnrichmentPrimaryHealth(() => 0, 60_000) });
+        const result = await bus.dispatch("codex:enrich", { captureId: "cap_1" }, { principal: "ipc" });
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        await settle(result.value.runId);
+        const run = getAiRun(result.value.runId);
+        expect(codex.enrichCapture).toHaveBeenCalledTimes(1);
+        if (expected === "failed") {
+          expect(run).toMatchObject({ status: "failed", fallbackFrom: null });
+          expect(respondCalls()).toBe(0);
+          return;
+        }
+        expect(run).toMatchObject({ status: "completed", fallbackFrom: "codex", selectedModel: "system" });
+        expect(respondCalls()).toBe(1);
+        expect(getCaptureEnrichment("cap_1")).toMatchObject({
+          status: "completed", fallbackFrom: "codex", suggestedDescription: "Synthetic snap captioned on this Mac"
+        });
+      });
+    }, 10_000);
+
+    test("a Codex fallback behind a Codex primary is never armed: an offline turn just fails", async () => {
+      const settings = lunaSettings({});
+      const codex = { enrichCapture: vi.fn(async () => { throw offline("httpConnectionFailed"); }),
+        close: async () => undefined };
+      registerCodexHandlers({ clientFactory: () => codex as never, settingsReader: async () => settings,
+        budget: new AiEnrichmentBudget(), primaryHealth: new EnrichmentPrimaryHealth(() => 0, 60_000) });
+      const result = await bus.dispatch("codex:enrich", { captureId: "cap_1" }, { principal: "ipc" });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      await settle(result.value.runId);
+      expect(getAiRun(result.value.runId)).toMatchObject({ status: "failed", fallbackFrom: null });
+      expect(codex.enrichCapture).toHaveBeenCalledTimes(1);
+    });
+
+    // During the turn, then before it (the down window), then recovery.
+    test("offline during a turn, skipped while down, probed after the window, recovery reported once", async () => {
+      await withApple(async (respondCalls) => {
+        const settings = lunaSettings({ provider: "apple:system" });
+        let online = false;
+        const fake = new FakeCodexClient();
+        const codex = {
+          enrichCapture: vi.fn(async (request: { model?: string | null; effort?: string }) => {
+            if (!online) throw offline("responseStreamConnectionFailed");
+            return fake.enrichCapture(request);
+          }),
+          close: async () => undefined
+        };
+        let now = 1_000;
+        const recoveries: Array<{ provider: string; downSince: string; upAt: string }> = [];
+        registerCodexHandlers({ clientFactory: () => codex as never, settingsReader: async () => settings,
+          budget: new AiEnrichmentBudget(), primaryHealth: new EnrichmentPrimaryHealth(() => now, 60_000),
+          onPrimaryRecovered: (recovery) => { recoveries.push(recovery); } });
+        const enrich = async (): Promise<string> => {
+          const result = await bus.dispatch("codex:enrich", { captureId: "cap_1" }, { principal: "ipc" });
+          if (!result.ok) throw new Error(result.error.message);
+          await settle(result.value.runId);
+          return result.value.runId;
+        };
+
+        // During: Codex is asked, reports no connection; Apple answers.
+        expect(getAiRun(await enrich())).toMatchObject({ status: "completed", fallbackFrom: "codex" });
+        expect(codex.enrichCapture).toHaveBeenCalledTimes(1);
+        // Before: inside the window Codex is not asked at all.
+        now = 30_000;
+        expect(getAiRun(await enrich())).toMatchObject({ status: "completed", fallbackFrom: "codex" });
+        expect(codex.enrichCapture).toHaveBeenCalledTimes(1);
+        expect(respondCalls()).toBe(2);
+        expect(recoveries).toEqual([]);
+        // Back online after the window: Codex is probed, answers, and the
+        // outage that began with the first offline turn is reported once.
+        now = 61_000;
+        online = true;
+        expect(getAiRun(await enrich())).toMatchObject({ status: "completed", fallbackFrom: null });
+        expect(codex.enrichCapture).toHaveBeenCalledTimes(2);
+        expect(respondCalls()).toBe(2);
+        expect(recoveries).toEqual([{ provider: "codex",
+          downSince: new Date(1_000).toISOString(), upAt: new Date(61_000).toISOString() }]);
+        await enrich();
+        expect(recoveries).toHaveLength(1);
+      });
+    }, 15_000);
   });
 
   test("eight direct enrichments share the connection queue; queued and active cancellation never dispatch again", async () => {

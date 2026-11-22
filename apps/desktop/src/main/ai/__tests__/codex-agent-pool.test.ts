@@ -6,6 +6,7 @@ import {
   runCodexOneShotFromPool
 } from "../codex-agent-pool";
 import { __setDesktopSettingsStoreForTests } from "../../settings/desktop-settings-store";
+import { CodexTurnFailedError } from "../codex-turn-error";
 
 type MockCodexThreadClient = {
   startThread: ReturnType<typeof vi.fn>;
@@ -38,6 +39,10 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 const mockCodexThreadClients = vi.hoisted(() => [] as MockCodexThreadClient[]);
+/** The App Server notification handler the pool installs on the connection. */
+const mockNotificationHandler = vi.hoisted(() => ({
+  current: null as ((method: string, params: unknown) => void) | null
+}));
 const mockConnectionRequest = vi.hoisted(() =>
   vi.fn(async (_method: string, _params: unknown): Promise<unknown> => ({}))
 );
@@ -129,10 +134,23 @@ vi.mock("@pwrdrvr/agent-client", () => {
     readonly onApprovalRequest = vi.fn(() => () => undefined);
     readonly getConnection = vi.fn(async () => ({
       request: mockConnectionRequest,
-      setNotificationHandler: vi.fn()
+      setNotificationHandler: vi.fn((handler: (method: string, params: unknown) => void) => {
+        mockNotificationHandler.current = handler;
+      })
     }));
     readonly initialize = vi.fn(async () => ({ userAgent: "codex-test" }));
-    readonly handleNotification = vi.fn();
+    // Normalizes the two failure notifications synchronously, as the real
+    // client does: by the time it returns, a one-shot waiting on this turn
+    // has already settled.
+    readonly handleNotification = vi.fn((method: string, params: unknown) => {
+      const p = params as { threadId: string; turnId?: string; error?: { message: string };
+        turn?: { id: string; status: string } };
+      if (method === "error") {
+        this.emitEvent({ kind: "error", threadId: p.threadId, turnId: p.turnId, message: p.error?.message });
+      } else if (method === "turn/completed" && p.turn !== undefined) {
+        this.emitEvent({ kind: "turn_completed", threadId: p.threadId, turnId: p.turn.id, status: p.turn.status });
+      }
+    });
 
     constructor(_options: unknown) {
       mockCodexThreadClients.push(this);
@@ -620,6 +638,54 @@ describe("Codex agent pool", () => {
         .toHaveLength(1);
     }
   );
+
+  // A failed one-shot carries the App Server's own classification, which
+  // capture enrichment needs to tell "this Mac is offline" from everything
+  // else. `turn/completed` settles the turn while the client normalizes it,
+  // so its `turn.error` has to be read before that.
+  test.each([
+    {
+      scenario: "only turn/completed carries the error",
+      notifications: (threadId: string, turnId: string): Array<[string, unknown]> => [
+        ["error", { threadId, turnId, willRetry: true,
+          error: { message: "Reconnecting... 1/5", codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } } } }],
+        ["turn/completed", { threadId, turn: { id: turnId, status: "failed",
+          error: { message: "error sending request", codexErrorInfo: { httpConnectionFailed: { httpStatusCode: null } } } } }]
+      ],
+      expected: { httpConnectionFailed: { httpStatusCode: null } }
+    },
+    {
+      scenario: "a final error notification, then a bare turn/completed",
+      notifications: (threadId: string, turnId: string): Array<[string, unknown]> => [
+        ["error", { threadId, turnId, willRetry: false, error: { message: "401 Unauthorized", codexErrorInfo: "unauthorized" } }],
+        ["turn/completed", { threadId, turn: { id: turnId, status: "failed", error: null } }]
+      ],
+      expected: "unauthorized"
+    }
+  ])("a failed turn keeps codexErrorInfo: $scenario", async ({ notifications, expected }) => {
+    mockConnectionRequest.mockImplementation(async (method: string) => {
+      if (method === "config/read") return { config: {} };
+      if (method === "thread/start") return { thread: { id: "offline-thread" }, model: "gpt-6-luna", modelProvider: "openai" };
+      if (method === "turn/start") {
+        setTimeout(() => {
+          for (const [name, params] of notifications("offline-thread", "offline-turn")) {
+            mockNotificationHandler.current?.(name, params);
+          }
+        }, 0);
+        return { turn: { id: "offline-turn" } };
+      }
+      return {};
+    });
+
+    const run = runCodexOneShotFromPool({
+      command: "codex-test",
+      env: { CODEX_HOME: "/tmp/pwrsnap-codex-offline-test" },
+      workspaceDir: "/tmp/pwrsnap-enrichment-jail",
+      prompt: "describe this image"
+    });
+    await expect(run).rejects.toBeInstanceOf(CodexTurnFailedError);
+    await expect(run).rejects.toMatchObject({ codexErrorInfo: expected });
+  });
 
   // --- Capture-enrichment sandbox invariant (issue #69) -------------------
   //

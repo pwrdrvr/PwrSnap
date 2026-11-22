@@ -1692,6 +1692,7 @@ a.pss__top-btn[aria-disabled="true"]:hover {
   transform: translateX(14px);
   background: var(--accent);
 }
+.pss__switch:disabled { opacity: 0.4; cursor: not-allowed; }
 .pss__switch-row { display: inline-flex; align-items: center; gap: 10px; align-self: flex-start; }
 .pss__switch-row span { font: 500 12px/1 var(--font-sans); color: var(--text-secondary); }
 
@@ -2287,6 +2288,43 @@ a.pss__top-btn[aria-disabled="true"]:hover {
   font: 400 11.5px/1.45 var(--font-sans);
   color: var(--text-secondary);
 }
+/* The fallback would not caption: it is not ready, or it needs the network
+   a Codex primary's fallback exists to do without. */
+.pss__role-fallback-note--warn {
+  border-color: var(--warn-border);
+  background: var(--warn-soft);
+  color: var(--warn-text);
+}
+/* "1 Codex · GPT-6-Luna → 2 Apple Intelligence when offline": the order a
+   capture's caption is tried in. */
+.pss__role-fallback-order {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font: 500 11px/1 var(--font-mono);
+  color: var(--text-secondary);
+}
+.pss__role-fallback-order > li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: 5px;
+  background: var(--bg-input);
+}
+.pss__role-fallback-order > li > b { color: var(--accent-bright); font-weight: 600; }
+.pss__role-fallback-order > li.pss__role-fallback-order-sep {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-subtle);
+}
+.pss__role-fallback-order-when { color: var(--text-muted); }
 
 /* Customization-count badge in page-header actions — shows
    "N customizations" next to the Reset button on Hotkeys (extensible

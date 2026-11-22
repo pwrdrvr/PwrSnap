@@ -85,6 +85,10 @@ On Windows and Linux the provider does not appear anywhere.
 - **A failure stays a failure.** A declined capture, missing terms or a model
   that is still downloading never sends the capture to another provider. The
   caption fallback in AI Features does not act on any of them.
+- **It can be the offline fallback.** Behind a Codex primary, AI Features can
+  name it as the caption fallback. It then captions only the captures Codex
+  could not send because this Mac had no network; every other Codex failure
+  still fails.
 - **One capture at a time**, in the order they were taken.
 - **No usage or cost is recorded.** The tool reports no token counts.
 

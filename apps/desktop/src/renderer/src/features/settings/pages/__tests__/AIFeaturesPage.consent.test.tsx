@@ -54,15 +54,21 @@ function settingsWithConsent(
   return { ...settings, ai: { ...settings.ai, ...ai } };
 }
 
+/** What `appleFm:status` answers; null answers like every other command
+ *  here (unavailable). */
+let appleFmStatus: { state: string } | null = null;
+
 function installFakeApi(): void {
   Object.defineProperty(window, "pwrsnapApi", {
     configurable: true,
     value: {
       platform: "darwin",
-      dispatch: async () => ({
-        ok: false,
-        error: { kind: "unknown", code: "test_unavailable", message: "unavailable in test" }
-      }),
+      dispatch: async (channel: string) => (channel === "appleFm:status" && appleFmStatus !== null
+        ? { ok: true, value: { modelLabel: null, detail: null, macosVersion: "26.6", checkedAt: 0, ...appleFmStatus } }
+        : {
+          ok: false,
+          error: { kind: "unknown", code: "test_unavailable", message: "unavailable in test" }
+        }),
       on: () => () => undefined,
       startCaptureDrag: () => undefined
     }
@@ -325,9 +331,97 @@ describe("AIFeaturesPage — caption fallback", () => {
     return container?.querySelector<HTMLButtonElement>('[role="switch"][aria-label^="Fall back when"]') ?? null;
   }
 
-  test("is not offered while captions run on Codex", async () => {
-    await renderPage("2026-10-01T00:00:00.000Z", { enrichmentFallback: {} });
-    expect(fallbackSwitch()).toBeNull();
+  afterEach(() => {
+    appleFmStatus = null;
+  });
+
+  function fallbackProvider(): HTMLSelectElement | null {
+    return container?.querySelector<HTMLSelectElement>('[aria-label="Caption fallback provider"]') ?? null;
+  }
+
+  const lunaPrimary: Partial<Settings["ai"]> = {
+    defaults: { libraryChat: {}, sizzleChat: {}, enrichment: { provider: "codex", model: "gpt-6-luna" } }
+  } as unknown as Partial<Settings["ai"]>;
+
+  test("behind Codex it is the offline fallback, and turning it on picks Apple Intelligence", async () => {
+    appleFmStatus = { state: "ready" };
+    await renderPage("2026-10-01T00:00:00.000Z", lunaPrimary);
+    expect(container?.textContent).toContain("If Codex is offline");
+    expect(fallbackSwitch()?.getAttribute("aria-label")).toBe("Fall back when Codex is offline");
+    expect(fallbackSwitch()?.disabled).toBe(false);
+    await act(async () => {
+      fallbackSwitch()?.click();
+      await Promise.resolve();
+    });
+    expect(patchMock).toHaveBeenCalledWith({ ai: { enrichmentFallback: { provider: "apple:system" } } });
+  });
+
+  test("Luna → Apple: no Codex in the picker, the order, and the offline-only rule", async () => {
+    appleFmStatus = { state: "ready" };
+    await renderPage("2026-10-01T00:00:00.000Z", { ...lunaPrimary, enrichmentFallback: { provider: "apple:system" } });
+    const provider = fallbackProvider();
+    expect(provider?.value).toBe("apple:system");
+    expect(Array.from(provider?.options ?? []).map((o) => o.value)).not.toContain("");
+    const order = container?.querySelector('[aria-label="Caption order"]');
+    expect(order?.textContent).toContain("1 Codex · gpt-6-luna");
+    expect(order?.textContent).toContain("2 Apple Intelligence when offline");
+    expect(container?.textContent).toContain("Sign-in, plan limits, timeouts, bad output and Codex setup problems still fail");
+    expect(container?.textContent).toContain("Runs on this Mac · captures are not sent anywhere");
+    expect(container?.querySelector(".pss__role-fallback-note--warn")).toBeNull();
+  });
+
+  test("a saved Apple fallback that isn't ready stays selected and says why", async () => {
+    appleFmStatus = { state: "license-required" };
+    await renderPage("2026-10-01T00:00:00.000Z", { ...lunaPrimary, enrichmentFallback: { provider: "apple:system" } });
+    expect(fallbackProvider()?.value).toBe("apple:system");
+    expect(container?.querySelector(".pss__role-fallback-note--warn")?.textContent)
+      .toContain("isn't ready on this Mac (terms not agreed)");
+  });
+
+  test("with no model on this Mac to pick, the switch is disabled and says why", async () => {
+    appleFmStatus = { state: "license-required" };
+    await renderPage("2026-10-01T00:00:00.000Z", lunaPrimary);
+    expect(fallbackSwitch()?.disabled).toBe(true);
+    expect(container?.textContent).toContain(
+      "Nothing here captions without a network. Apple Intelligence isn't ready on this Mac (terms not agreed)");
+    await act(async () => {
+      fallbackSwitch()?.click();
+      await Promise.resolve();
+    });
+    expect(patchMock).not.toHaveBeenCalled();
+  });
+
+  test("a disabled ACP agent's primary is named as Codex, which is what runs", async () => {
+    appleFmStatus = { state: "ready" };
+    await renderPage("2026-10-01T00:00:00.000Z", {
+      defaults: { libraryChat: {}, sizzleChat: {}, enrichment: { provider: "acp:qwen" } },
+      enrichmentFallback: { provider: "apple:system" }
+    } as unknown as Partial<Settings["ai"]>);
+    expect(container?.textContent).toContain("If Codex is offline, use");
+    expect(container?.querySelector('[aria-label="Caption order"]')?.textContent).toContain("1 Codex");
+  });
+
+  test("a stale Codex fallback behind Codex is flagged, not shown as Codex", async () => {
+    appleFmStatus = { state: "ready" };
+    await renderPage("2026-10-01T00:00:00.000Z", { ...lunaPrimary, enrichmentFallback: {} });
+    expect(fallbackProvider()?.selectedOptions[0]?.textContent).toBe("Choose a model");
+    expect(container?.querySelector('[aria-label="Caption fallback model"]')).toBeNull();
+    expect(container?.querySelector(".pss__role-fallback-note--warn")?.textContent)
+      .toContain("Codex can't stand in for itself");
+  });
+
+  test("a remote fallback behind Codex warns it won't caption offline", async () => {
+    appleFmStatus = { state: "ready" };
+    await renderPage("2026-10-01T00:00:00.000Z", {
+      ...lunaPrimary,
+      customConnections: [{ id: CONNECTION_ID, name: "Team gateway", baseUrl: "https://models.example.test/v1",
+        protocol: "openai-chat", auth: { type: "none" } }],
+      customModels: [{ id: MODEL_ID, connectionId: CONNECTION_ID, displayName: "vision-large",
+        modelId: "vision-large", capabilities: { vision: true, streaming: true }, maxOutputTokens: 1024 }],
+      enrichmentFallback: { provider: `custom:${MODEL_ID}` }
+    } as unknown as Partial<Settings["ai"]>);
+    expect(container?.querySelector(".pss__role-fallback-note--warn")?.textContent)
+      .toContain("vision-large needs a network too, so it can't caption while this Mac is offline");
   });
 
   test("is off by default under a Direct API primary, and turns on from {}", async () => {

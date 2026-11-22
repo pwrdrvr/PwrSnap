@@ -855,9 +855,9 @@ export function registerCodexHandlers(params?: {
     // time. Re-reading the setting inside `runCaptureEnrichment` would mean a
     // Settings flip mid-run silently swaps providers and skews run metrics.
     const primary = resolveEnrichmentBackendPlan(settings, managedEnrichment, turnTimeoutMs, params?.turnTimeoutMs);
-    // Armed only when the primary can be "switched off" underneath us (a
-    // Direct API server, an ACP agent). Resolved from the same snapshot, so
-    // a Settings change mid-run can't swap either backend. Resolved only if
+    // Armed when the fallback runs on another backend than the primary
+    // (`enrichmentFallbackFor`). Resolved from the same snapshot, so a
+    // Settings change mid-run can't swap either backend. Resolved only if
     // the hop happens: the catalog listing above runs for a Codex PRIMARY, so
     // a Codex fallback learns the managed caption model here, when needed —
     // a local-first setup lists no Codex models while its primary answers.
@@ -1287,9 +1287,10 @@ async function runCaptureEnrichment(params: {
   settingsReader: SettingsReader;
   /** The backend `ai.defaults.enrichment` selects. */
   primary: EnrichmentBackendPlan;
-  /** `ai.enrichmentFallback`, armed only for a primary that can be switched
-   *  off underneath us. The run moves here once, and only when the primary
-   *  could not be reached (`isEnrichmentBackendUnavailable`). */
+  /** `ai.enrichmentFallback`, armed only when it names another backend than
+   *  the primary. The run moves here once, and only when the primary could
+   *  not be reached (`isEnrichmentBackendUnavailable`: for Codex, a Mac with
+   *  no network). */
   resolveFallback?: () => Promise<EnrichmentBackendPlan>;
   /** Which primaries are down right now; one per registration. */
   primaryHealth: EnrichmentPrimaryHealth;

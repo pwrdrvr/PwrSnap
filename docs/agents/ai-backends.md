@@ -29,9 +29,14 @@ Never route a custom model through Codex/ACP as a silent fallback. The one
 fallback that exists is `ai.enrichmentFallback`
 ([enrichment-fallback.ts](../../apps/desktop/src/main/ai/enrichment-fallback.ts)):
 opt-in in Settings, captions only, and taken only when the primary could not be
-reached (connection refused, HTTP 404/502/503, ACP agent not installed). A
-401/403, a bad answer, a timeout (504 included), or a removed or repointed custom model still
-fails closed. A run that falls back records the primary in
+reached (connection refused, HTTP 404/502/503, ACP agent not installed; for a
+Codex primary, a `CodexTurnFailedError` whose `codexErrorInfo` is a connection
+failure with no HTTP status — `isCodexNetworkUnavailable` in
+[codex-turn-error.ts](../../apps/desktop/src/main/ai/codex-turn-error.ts)). A
+401/403, a bad answer, a timeout (504 included), a Codex stream that
+disconnected mid-answer, a Codex sign-in, plan, policy or setup failure, or a
+removed or repointed custom model still fails closed. It is never armed on the
+primary's own backend (no Codex behind Codex). A run that falls back records the primary in
 `ai_runs.fallback_from`, and the Float-Over and Library show a FALLBACK chip.
 An unreachable primary is marked down for 60 s (`EnrichmentPrimaryHealth`):
 captures in that window skip it, and only the down/up transitions log above

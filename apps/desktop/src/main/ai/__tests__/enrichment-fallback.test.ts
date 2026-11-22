@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { Settings } from "@pwrsnap/shared";
+import { CodexTurnFailedError } from "../codex-turn-error";
 import { DirectApiError, isConnectFailure } from "../direct-api/transport";
 import {
   AcpAgentUnavailableError,
@@ -34,6 +35,13 @@ describe("isEnrichmentBackendUnavailable", () => {
     ["500 (the server answered)", new DirectApiError("x", 500), false],
     ["TLS / bad address (no socket code)", new DirectApiError("x"), false],
     ["invalid output", new DirectApiError("Model returned invalid enrichment JSON."), false],
+    ["Codex: connection failed, no HTTP answer",
+      new CodexTurnFailedError("x", { httpConnectionFailed: { httpStatusCode: null } }), true],
+    ["Codex: connection failed with an HTTP answer",
+      new CodexTurnFailedError("x", { httpConnectionFailed: { httpStatusCode: 502 } }), false],
+    ["Codex: signed out", new CodexTurnFailedError("x", "unauthorized"), false],
+    ["Codex: unclassified", new CodexTurnFailedError("x", null), false],
+    ["Codex: a turn timeout", new Error("Codex one-shot turn timed out"), false],
     ["a plain error", new Error("boom"), false],
     ["a non-error", "boom", false]
   ])("%s → %s", (_label, error, expected) => {
@@ -76,13 +84,18 @@ describe("enrichmentFallbackFor", () => {
     expect(enrichmentFallbackFor(settings("acp:kimi", { reasoning: "low" }))).toEqual({ reasoning: "low" });
   });
 
-  test("never for a Codex primary — there is nothing to fall back from", () => {
-    expect(enrichmentFallbackFor(settings(undefined, { provider: "acp:kimi" }))).toBeNull();
-    expect(enrichmentFallbackFor(settings("codex", { provider: CUSTOM }))).toBeNull();
+  test("armed for a Codex primary whose fallback is another backend (Luna → Apple)", () => {
+    expect(enrichmentFallbackFor(settings("codex", { provider: "apple:system" }))).toEqual({ provider: "apple:system" });
+    expect(enrichmentFallbackFor(settings(undefined, { provider: "acp:kimi" }))).toEqual({ provider: "acp:kimi" });
+    expect(enrichmentFallbackFor(settings("codex", { provider: CUSTOM }))).toEqual({ provider: CUSTOM });
   });
 
-  test("never for a disabled ACP agent's primary — that run is on Codex", () => {
+  test("never Codex behind Codex, however either is spelled", () => {
+    expect(enrichmentFallbackFor(settings("codex", {}))).toBeNull();
+    expect(enrichmentFallbackFor(settings(undefined, { provider: "codex" }))).toBeNull();
+    // A disabled ACP agent runs on Codex, on either side.
     expect(enrichmentFallbackFor(settings("acp:qwen", {}))).toBeNull();
+    expect(enrichmentFallbackFor(settings("codex", { provider: "acp:qwen" }))).toBeNull();
   });
 
   test("never back onto the primary itself", () => {

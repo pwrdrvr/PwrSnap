@@ -75,6 +75,9 @@ function deferred<T>() {
 function emit(event: string, ...args: unknown[]) {
   for (const handler of [...fixture.events.get(event) ?? []]) handler(...args);
 }
+function emitNative(event: string): void {
+  for (const handler of [...fixture.native.get(event) ?? []]) handler();
+}
 type Target = { version: string; channel: UpdateChannel };
 type Outcome = "ok" | "error" | "throw" | "cancel";
 type Hook = {
@@ -138,7 +141,7 @@ class Real {
     this.staged = this.published;
     emit("update-downloaded", { version: this.published });
     this.download.resolve([]);
-    for (const handler of [...fixture.native.get("update-downloaded") ?? []]) handler();
+    emitNative("update-downloaded");
     await this.download.promise;
   }
   download = deferred<string[]>();
@@ -170,7 +173,7 @@ class Real {
   }
 }
 
-async function createReal(platform: "darwin" | "win32") {
+async function createReal(platform: "darwin" | "win32", prepareForMacClose?: () => () => void) {
   process.env.NODE_ENV = "production";
   Object.defineProperty(process, "platform", { value: platform });
   updater.disposeAutoUpdater();
@@ -223,7 +226,7 @@ async function createReal(platform: "darwin" | "win32") {
       real.executing = -1;
       hook.finished.resolve();
     }
-  });
+  }, prepareForMacClose);
   return real;
 }
 
@@ -362,4 +365,39 @@ test("scheduled duplicate requests and shutdown completion share one native hand
       expect(real.notifications).toEqual([0]);
     } finally { await real.close(); }
   }), { numRuns: 100 });
+});
+
+test("macOS update window closes run with selector creation paused until the install ends", async () => {
+  await fc.assert(fc.asyncProperty(
+    fc.constantFrom("error", "cancel", "dispose"),
+    fc.integer({ min: 0, max: 2 }),
+    async (end, nativeQuitEvents) => {
+      fc.pre(end !== "cancel" || nativeQuitEvents === 1);
+      const restore = vi.fn();
+      const pauseSelector = vi.fn(() => restore);
+      const real = await createReal("darwin", pauseSelector);
+      // MacUpdater can return while waiting for Squirrel to finish staging.
+      fixture.install.mockImplementation(() => {});
+      try {
+        const { promise } = await real.start();
+        await real.finish(0, "ok");
+        await expect(promise).resolves.toEqual({ status: "restarting" });
+        expect(pauseSelector).not.toHaveBeenCalled();
+        // Electron emits this before taking its close-window snapshot, and
+        // again when the last window closes.
+        for (let i = 0; i < nativeQuitEvents; i += 1) emitNative("before-quit-for-update");
+        const expectedPauses = nativeQuitEvents > 0 ? 1 : 0;
+        expect(pauseSelector).toHaveBeenCalledTimes(expectedPauses);
+        expect(restore).not.toHaveBeenCalled();
+        if (end === "error") emit("error", new Error("native failure"));
+        else if (end === "cancel") {
+          real.window.close();
+          expect(real.cancel()).toBe(true);
+        } else updater.disposeAutoUpdater();
+        expect(restore).toHaveBeenCalledTimes(expectedPauses);
+        emitNative("before-quit-for-update");
+        expect(pauseSelector).toHaveBeenCalledTimes(expectedPauses);
+      } finally { await real.close(); }
+    }
+  ));
 });

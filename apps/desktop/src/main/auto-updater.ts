@@ -2073,6 +2073,7 @@ export function cancelAppUpdateDownload(): AppUpdateCancelResult {
 let installWithQuitFlush = async (
   install: (onInstallFailed?: () => void) => void
 ): Promise<void> => install();
+let prepareForMacUpdateClose: (() => () => void) | undefined;
 
 /** Installation is independent of discovery/transfer and their UI projection.
  * One request owns retry preparation and the deferred quit callback. A successful
@@ -2090,8 +2091,12 @@ type InstallRequest = {
 let installRequest: InstallRequest | undefined;
 
 /** Bootstrap supplies the same bounded diagnostics flush used by normal quit. */
-export function setAppUpdateInstallHandler(handler: typeof installWithQuitFlush): void {
+export function setAppUpdateInstallHandler(
+  handler: typeof installWithQuitFlush,
+  prepareForMacClose?: () => () => void
+): void {
   installWithQuitFlush = handler;
+  prepareForMacUpdateClose = prepareForMacClose;
 }
 
 export function installDownloadedAppUpdate(): Promise<AppUpdateInstallResult> {
@@ -2233,11 +2238,31 @@ async function performAppUpdateInstall(
       const stopCloseCancellation = onSizzleCloseCancelled(() => {
         failNativeInstall(new Error("Update installation canceled because quitting was canceled."));
       });
+      const prepareForClose = prepareForMacUpdateClose;
+      const nativeUpdater = process.platform === "darwin" && prepareForClose
+        ? optionalNativeUpdater()
+        : undefined;
+      let restoreAfterClose: (() => void) | undefined;
+      // MacUpdater can return before Squirrel has staged the update. Wait
+      // for Electron's first close pass, which snapshots the window list
+      // after this event and waits for it to become empty before quitting.
+      const beforeUpdateClose = (): void => {
+        restoreAfterClose = prepareForClose?.();
+      };
       request.stopObserving = () => {
         updater.removeListener("error", failNativeInstall);
         stopCloseCancellation();
+        nativeUpdater?.removeListener("before-quit-for-update", beforeUpdateClose);
+        const restore = restoreAfterClose;
+        restoreAfterClose = undefined;
+        try {
+          restore?.();
+        } catch (error) {
+          log.warn("failed to restore selector after native update close", { message: String(error) });
+        }
       };
       updater.on("error", failNativeInstall);
+      nativeUpdater?.once("before-quit-for-update", beforeUpdateClose);
       try {
         if (process.platform === "win32") {
           // NSIS defaults to its visible wizard. Install silently and

@@ -149,6 +149,7 @@ type SecondarySurface = {
 let activeInvocation: SelectorInvocation | null = null;
 let nextSelectorInvocationId = 0;
 let selectorLifetime = 0;
+let pausedForUpdateClose = false;
 
 function ownsSelector(invocation: SelectorInvocation): boolean {
   return activeInvocation === invocation && invocation.phase !== "settled";
@@ -613,6 +614,7 @@ export type SelectorMode = "auto" | "region" | "window";
  * once at boot; safe to call again to refresh after display changes.
  */
 export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup"): void {
+  if (pausedForUpdateClose) return;
   // Build one window per display we don't already have.
   //
   // Deliberately NOT skipped where `capture:interactive` refuses (Wayland
@@ -3212,6 +3214,22 @@ function isSelectorPayload(value: unknown): value is {
   return true;
 }
 
+/**
+ * Electron's macOS updater closes a snapshot of the window list before
+ * app.before-quit. Closing the Library can change display metrics, and a
+ * replacement selector created then would keep the window list nonempty.
+ */
+export function pauseRegionSelectorForUpdateClose(): () => void {
+  const wasWarmed = displayListenersAttached;
+  pausedForUpdateClose = true;
+  disposeRegionSelector();
+  const lifetime = selectorLifetime;
+  return () => {
+    pausedForUpdateClose = false;
+    if (wasWarmed && selectorLifetime === lifetime) preWarmRegionSelector();
+  };
+}
+
 export function disposeRegionSelector(): void {
   selectorLifetime += 1;
   finishPendingPresentation("destroy", "selector_disposed_before_visible_ack");
@@ -3244,6 +3262,7 @@ export function disposeRegionSelector(): void {
   standbyWarmScheduled.clear();
   selectorDisplaysNeedingFreshPanel.clear();
   if (resultListenerAttached) {
+    ipcMain.removeAllListeners(SELECTOR_DIAGNOSTICS_CHANNEL);
     ipcMain.removeAllListeners(SELECTOR_RESULT_CHANNEL);
     ipcMain.removeAllListeners(SELECTOR_PAINTED_CHANNEL);
     ipcMain.removeAllListeners(SELECTOR_PRESENTED_CHANNEL);

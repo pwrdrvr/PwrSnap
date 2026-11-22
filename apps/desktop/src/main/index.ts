@@ -36,6 +36,7 @@ import type {
 } from "@pwrsnap/shared";
 import {
   disposeRegionSelector,
+  pauseRegionSelectorForUpdateClose,
   pickRegion,
   preWarmRegionSelector
 } from "./capture/region-selector";
@@ -1513,7 +1514,10 @@ export function bootstrapApp(): void {
     if (isSizzleQuitDeferred()) return;
     diagnosticsQuitDeferred = diagnosticsShutdown.beforeQuit(event);
   });
-  setAppUpdateInstallHandler((install) => diagnosticsShutdown.quitAndInstall(install));
+  setAppUpdateInstallHandler(
+    (install) => diagnosticsShutdown.quitAndInstall(install),
+    pauseRegionSelectorForUpdateClose
+  );
   // The pass Electron will act on: nothing above deferred it.
   const isFinalQuitPass = (): boolean => !isSizzleQuitDeferred() && !diagnosticsQuitDeferred;
   // Electron emits before-quit before it begins closing BrowserWindows. Tear

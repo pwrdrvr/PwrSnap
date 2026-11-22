@@ -33,6 +33,7 @@ import {
 import { getMainLogger } from "../log";
 import { getDesktopSettingsStore } from "../settings/desktop-settings-store";
 import { withEffectiveCodeModeSettings } from "./codex-thread-config";
+import { CodexTurnFailedError, rawTurnErrorFor } from "./codex-turn-error";
 import {
   codexEnrichmentPermissionProfile,
   codexEnrichmentThreadSandbox,
@@ -206,6 +207,9 @@ class CodexAgentOwner {
   private readonly threadHandlers = new Map<string, CodexViewHandlers>();
   private readonly activeTurns = new Map<string, CodexViewHandlers>();
   private readonly rawNotificationListeners = new Set<
+    (method: string, params: unknown) => void
+  >();
+  private readonly rawPreNotificationListeners = new Set<
     (method: string, params: unknown) => void
   >();
   private closing = false;
@@ -537,6 +541,9 @@ class CodexAgentOwner {
       return;
     }
     connection.setNotificationHandler((method, params) => {
+      // Before the client normalizes it: `turn/completed` settles a one-shot
+      // synchronously, so a listener that needs its `turn.error` must run first.
+      for (const listener of this.rawPreNotificationListeners) listener(method, params);
       rawClient.handleNotification(method, params);
       for (const listener of this.rawNotificationListeners) listener(method, params);
     });
@@ -549,6 +556,17 @@ class CodexAgentOwner {
     this.rawNotificationListeners.add(listener);
     return () => {
       this.rawNotificationListeners.delete(listener);
+    };
+  }
+
+  /** Like `onRawNotification`, but called before the client normalizes the
+   *  notification into thread events. */
+  private onRawNotificationBeforeEvents(
+    listener: (method: string, params: unknown) => void
+  ): Unsubscribe {
+    this.rawPreNotificationListeners.add(listener);
+    return () => {
+      this.rawPreNotificationListeners.delete(listener);
     };
   }
 
@@ -681,9 +699,17 @@ class CodexAgentOwner {
       const agentMessages: string[] = [];
       let tokenUsage: NormalizedTokenUsage | null = null;
       let lastError: string | null = null;
+      // The App Server's own classification of the failure, which the
+      // normalized events drop. Capture enrichment needs it to tell a Mac
+      // with no network from every other failure (`codex-turn-error.ts`).
+      const turnError: { current: ReturnType<typeof rawTurnErrorFor> } = { current: null };
       const unsubscribeRaw = this.onRawNotification((method, params) => {
         const text = oneShotRawAssistantText(method, params, input.threadId, input.turnId);
         if (text.length > 0) agentMessages.push(text);
+      });
+      const unsubscribeRawError = this.onRawNotificationBeforeEvents((method, params) => {
+        const raw = rawTurnErrorFor(method, params, input.threadId, input.turnId);
+        if (raw !== null) turnError.current = raw;
       });
       const handlers = input.handlers;
       const onEvent = (event: NormalizedThreadEvent): void => {
@@ -703,7 +729,11 @@ class CodexAgentOwner {
         if (event.kind !== "turn_completed") return;
         cleanup();
         if (event.status === "failed") {
-          reject(new Error(lastError ?? "Codex one-shot turn failed"));
+          const failure = turnError.current;
+          reject(new CodexTurnFailedError(
+            lastError ?? (failure?.message || "Codex one-shot turn failed"),
+            failure?.codexErrorInfo ?? null
+          ));
           return;
         }
         if (event.status === "interrupted" || event.status === "cancelled") {
@@ -724,6 +754,7 @@ class CodexAgentOwner {
       const cleanup = (): void => {
         clearTimeout(timer);
         unsubscribeRaw();
+        unsubscribeRawError();
         // Drop only THIS turn's listener; the thread claim (and with it the
         // deny handlers) is released by `runOneShotInner`'s finally.
         handlers.events.delete(onEvent);

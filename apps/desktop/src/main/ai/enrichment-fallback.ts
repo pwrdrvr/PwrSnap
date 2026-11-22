@@ -1,19 +1,27 @@
 // Capture enrichment's second choice: `ai.enrichmentFallback`.
 //
-// A primary that is a Direct API model or an ACP agent can be switched off
-// underneath us (a local model server the operator stopped, an agent CLI that
-// was uninstalled). Without a fallback every new capture's caption fails until
-// someone regenerates it by hand. With one, the SAME run moves to the fallback
-// backend — once, and only for failures that mean "nothing answered".
+// A primary can stop answering underneath us: a local model server the
+// operator stopped, an agent CLI that was uninstalled, or — for Codex — a Mac
+// that has no network. Without a fallback every new capture's caption fails
+// until someone regenerates it by hand. With one, the SAME run moves to the
+// fallback backend — once, and only for failures that mean "nothing answered".
 //
-// What does NOT fall back, on purpose: an HTTP answer other than 404/502/503
-// (401/403 is a credential the operator must fix; a 504 is an upstream that
-// took the request and was slow, which is the timeout case below), invalid or empty output, a
-// timeout (the server is up, just slow — paying for a second model would hide
-// that), a removed or changed custom-model setting (removal fails closed), and
-// a Codex primary (there is no stopped-server case to cover).
+// What counts as "nothing answered" depends on the primary:
+// - Direct API / ACP: a refused or unreachable connection, HTTP 404/502/503,
+//   or an agent that is no longer installed.
+// - Codex: the App Server's own transport classification of a connection
+//   that got no HTTP answer at all (`isCodexNetworkUnavailable`).
+//
+// What does NOT fall back, on purpose: any other HTTP answer (401/403 is a
+// credential the operator must fix; a 504 is an upstream that took the request
+// and was slow), a Codex stream that disconnected mid-answer, sign-in, plan,
+// policy or overload errors, invalid or empty output, a timeout (the server is
+// up, just slow — paying for a second model would hide that), a Codex that
+// cannot start (a local setup error), and a removed or changed custom-model
+// setting (removal fails closed).
 
 import type { AiSurfaceDefault, Settings } from "@pwrsnap/shared";
+import { CodexTurnFailedError, isCodexNetworkUnavailable } from "./codex-turn-error";
 import { DirectApiError } from "./direct-api/transport";
 
 /** Thrown when an `acp:<id>` enrichment primary has no installed binary. */
@@ -36,6 +44,7 @@ export function isEnrichmentBackendUnavailable(error: unknown): boolean {
   if (error instanceof DirectApiError) {
     return error.unreachable || (error.status !== undefined && UNAVAILABLE_HTTP_STATUSES.has(error.status));
   }
+  if (error instanceof CodexTurnFailedError) return isCodexNetworkUnavailable(error.codexErrorInfo);
   return false;
 }
 
@@ -49,14 +58,13 @@ function providerKey(settings: Settings, provider: string | undefined): string {
   return provider;
 }
 
-/** The fallback to arm for a run, or null. Null when the fallback is off, when
- *  the primary is Codex (nothing to fall back from), or when the fallback
- *  names the primary itself. */
+/** The fallback to arm for a run, or null. Null when the fallback is off or
+ *  when it runs on the primary's own backend (a Codex primary with a Codex
+ *  fallback, say): a second try at what just failed is not a fallback. */
 export function enrichmentFallbackFor(settings: Settings): AiSurfaceDefault | null {
   const fallback = settings.ai.enrichmentFallback ?? null;
   if (fallback === null) return null;
   const primary = providerKey(settings, settings.ai.defaults.enrichment.provider);
-  if (primary === "codex") return null;
   if (providerKey(settings, fallback.provider) === primary) return null;
   return fallback;
 }

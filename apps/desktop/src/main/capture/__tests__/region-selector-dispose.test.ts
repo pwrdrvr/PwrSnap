@@ -8,6 +8,7 @@
 // lines "window created during quit" / "quit stalled").
 
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import fc from "fast-check";
 
 const h = vi.hoisted(() => ({
   windows: [] as Array<{ destroyed: boolean }>,
@@ -132,5 +133,43 @@ describe("a disposed region selector stays disposed", () => {
 
     expect(h.windows.length).toBe(built);
     expect(liveWindows()).toBe(0);
+  });
+
+  test("the updater's window-close pass cannot leave a replacement selector behind", async () => {
+    const selector = await import("../region-selector");
+    await fc.assert(fc.asyncProperty(
+      fc.array(fc.constantFrom("display-metrics-changed", "display-added", "display-removed", "prewarm"), {
+        minLength: 1,
+        maxLength: 8
+      }),
+      async (events) => {
+        h.windows.length = 0;
+        selector.preWarmRegionSelector();
+        expect(liveWindows()).toBe(1);
+
+        try {
+          const resume = selector.pauseRegionSelectorForUpdateClose();
+          try {
+            // Electron closes a snapshot of its window list. Closing the
+            // Library can change display metrics after the selector is gone.
+            for (const window of [...h.windows]) window.destroyed = true;
+            for (const event of events) {
+              if (event === "prewarm") selector.preWarmRegionSelector();
+              else emitScreen(event, display);
+            }
+            expect(liveWindows()).toBe(0);
+            await expect(selector.pickRegion()).resolves.toMatchObject({ ok: false, reason: "destroyed" });
+          } finally {
+            resume();
+          }
+          expect(liveWindows()).toBe(1);
+          h.windows.at(-1)!.destroyed = true;
+          emitScreen("display-metrics-changed", display);
+          expect(liveWindows()).toBe(1);
+        } finally {
+          selector.disposeRegionSelector();
+        }
+      }
+    ), { examples: [[["display-metrics-changed"]]] });
   });
 });

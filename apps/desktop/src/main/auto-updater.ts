@@ -18,9 +18,9 @@
 //     without updater state gets a ten-minute grace period; restarts keep
 //     the deadline, cached release list, ETags, and server backoff.
 
-import { app, autoUpdater as electronNativeUpdater } from "electron";
+import { app, autoUpdater as electronNativeUpdater, BaseWindow } from "electron";
 import { waitForUpdateCheckSlot } from "./update-check-wait";
-import { onSizzleCloseCancelled } from "./sizzle/sizzle-close-barrier";
+import { onWindowCloseCancelled } from "./window-close-cancellation";
 import electronUpdater from "electron-updater";
 import type {
   AppUpdateCancelResult,
@@ -104,7 +104,7 @@ function optionalAutoUpdater(): typeof electronUpdater.autoUpdater | undefined {
 /** Electron's own `autoUpdater` — on macOS, the Squirrel.Mac wrapper that
  *  electron-updater drives. Read lazily and defensively for the same reason
  *  `optionalAutoUpdater` is: test suites partial-mock `electron`. */
-function optionalNativeUpdater(): Pick<NodeJS.EventEmitter, "once" | "removeListener"> | undefined {
+function optionalNativeUpdater(): Pick<NodeJS.EventEmitter, "on" | "once" | "removeListener"> | undefined {
   try {
     return typeof electronNativeUpdater?.once === "function" ? electronNativeUpdater : undefined;
   } catch {
@@ -2073,6 +2073,7 @@ export function cancelAppUpdateDownload(): AppUpdateCancelResult {
 let installWithQuitFlush = async (
   install: (onInstallFailed?: () => void) => void
 ): Promise<void> => install();
+let prepareForMacUpdateClose: (() => () => void) | undefined;
 
 /** Installation is independent of discovery/transfer and their UI projection.
  * One request owns retry preparation and the deferred quit callback. A successful
@@ -2090,8 +2091,12 @@ type InstallRequest = {
 let installRequest: InstallRequest | undefined;
 
 /** Bootstrap supplies the same bounded diagnostics flush used by normal quit. */
-export function setAppUpdateInstallHandler(handler: typeof installWithQuitFlush): void {
+export function setAppUpdateInstallHandler(
+  handler: typeof installWithQuitFlush,
+  prepareForMacClose?: () => () => void
+): void {
   installWithQuitFlush = handler;
+  prepareForMacUpdateClose = prepareForMacClose;
 }
 
 export function installDownloadedAppUpdate(): Promise<AppUpdateInstallResult> {
@@ -2230,14 +2235,53 @@ async function performAppUpdateInstall(
       request.phase = "installing";
       // Native update quit closes windows before app.before-quit, so the
       // ordinary app-quit cancellation signal cannot see this close barrier.
-      const stopCloseCancellation = onSizzleCloseCancelled(() => {
+      const stopCloseCancellation = onWindowCloseCancelled(() => {
         failNativeInstall(new Error("Update installation canceled because quitting was canceled."));
       });
-      request.stopObserving = () => {
-        updater.removeListener("error", failNativeInstall);
-        stopCloseCancellation();
+      const prepareForClose = prepareForMacUpdateClose;
+      const nativeUpdater = process.platform === "darwin" && prepareForClose
+        ? optionalNativeUpdater()
+        : undefined;
+      // The wrapper shares its error event with release checks and downloads.
+      // Squirrel reports staging and relaunch failures directly to Electron.
+      const installErrors: {
+        on(event: "error", listener: (error: Error) => void): unknown;
+        removeListener(event: "error", listener: (error: Error) => void): unknown;
+      } = nativeUpdater ?? updater;
+      let restoreAfterClose: (() => void) | undefined;
+      let waitingForMacWindows = false;
+      const onInstallError = (error: Error): void => {
+        if (!waitingForMacWindows) failNativeInstall(error);
       };
-      updater.on("error", failNativeInstall);
+      const afterUpdateWindowsClosed = (): void => {
+        waitingForMacWindows = false;
+      };
+      // MacUpdater can return before Squirrel has staged the update. Wait
+      // for Electron's first close pass, which snapshots the window list
+      // after this event and waits for it to become empty before quitting.
+      const beforeUpdateClose = (): void => {
+        restoreAfterClose = prepareForClose?.();
+        waitingForMacWindows = BaseWindow.getAllWindows().length > 0;
+        // Electron emits the event again when the last window closes, then
+        // calls Squirrel. A native error in between can only be from staging
+        // another update. With an empty snapshot Squirrel starts immediately.
+        if (waitingForMacWindows) nativeUpdater?.once("before-quit-for-update", afterUpdateWindowsClosed);
+      };
+      request.stopObserving = () => {
+        installErrors.removeListener("error", onInstallError);
+        stopCloseCancellation();
+        nativeUpdater?.removeListener("before-quit-for-update", beforeUpdateClose);
+        nativeUpdater?.removeListener("before-quit-for-update", afterUpdateWindowsClosed);
+        const restore = restoreAfterClose;
+        restoreAfterClose = undefined;
+        try {
+          restore?.();
+        } catch (error) {
+          log.warn("failed to restore selector after native update close", { message: String(error) });
+        }
+      };
+      installErrors.on("error", onInstallError);
+      nativeUpdater?.once("before-quit-for-update", beforeUpdateClose);
       try {
         if (process.platform === "win32") {
           // NSIS defaults to its visible wizard. Install silently and

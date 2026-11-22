@@ -48,6 +48,7 @@ const balancedCases = [
   { width: 4480, height: 2520, dpr: 2, expected: [2240, 1260] },
   { width: 4800, height: 3200, dpr: 2, expected: [2400, 1600] },
   { width: 5120, height: 2880, dpr: 2, expected: [2400, 1350] },
+  { width: 3624, height: 3612, dpr: 1, expected: [1962, 1956] },
   { width: 2400, height: 2400, dpr: null, expected: [1959, 1959] }
 ];
 

@@ -18,8 +18,12 @@ nvm use
 pnpm install --frozen-lockfile
 pnpm build:native
 
+sizing_codex_home="$(mktemp -d)"
+printf '%s\n' 'cli_auth_credentials_store = "file"' > "$sizing_codex_home/config.toml"
+CODEX_HOME="$sizing_codex_home" codex login
+
 PWRSNAP_SIZING_LIVE=1 \
-PWRSNAP_SIZING_AUTH_FILE="$HOME/.codex/auth.json" \
+PWRSNAP_SIZING_CODEX_HOME="$sizing_codex_home" \
 PWRSNAP_SIZING_RESULTS="$(mktemp -d)/results.jsonl" \
 pnpm test --project desktop-main --silent=passed-only codex-still-sizing.experiment
 
@@ -27,16 +31,18 @@ node apps/desktop/src/main/ai/__tests__/still-sizing/report.mjs /path/to/results
 node apps/desktop/src/main/ai/__tests__/still-sizing/report.mjs /path/to/results.jsonl --blind
 ```
 
-Use a currently signed-in Codex file profile with Luna access. The harness
-uses a temporary copy of the auth file, a fresh configuration, scratch SQLite,
-generated PNGs and a dedicated enrichment jail. The output path must be new.
+Sign in directly to a fresh Codex home with Luna access. The benchmark uses
+that home in place so Codex can save refreshed credentials there. Keep the
+directory for reuse or remove it when finished with the benchmark. Scratch
+SQLite, generated PNGs and the enrichment jail use a separate temporary
+directory. The output path must be new.
 The initial live batch issues up to 22 sequential turns. Set
 `PWRSNAP_SIZING_BATCH=balanced` in the same command, with a new results path,
 for the eight-turn 2,400 px batch. Use `PWRSNAP_SIZING_SMOKE=1` for only the
 first turn of the selected batch. `PWRSNAP_SIZING_CODEX` selects the binary if
 needed.
-The harness closes the app server and removes its private scratch, credentials
-and raw trace in teardown. It writes only the measured fields and synthetic
+The harness closes the app server and removes its private scratch and raw
+trace in teardown. It writes only the measured fields and synthetic
 captions to the results file.
 
 The production `codex:enrich` handler runs through the command bus, reads the
@@ -76,10 +82,10 @@ client-side delivery. It does not expose the provider's internal raster.
   screen or missing information. Even a stored 2 alone is insufficient
   proof of a 2× source across the existing library.
 - Divide the long edge by trusted DPR and round it down to a whole pixel.
-  The other dimension follows the same scale, rounded to nearest with a
-  minimum of 1 px. Even 2× fixtures halve exactly when they fit. The
-  1,351 × 1,801 crop produces 675 × 900. Trusted fractional DPR is supported.
-  Missing or invalid DPR uses a divisor of 1 under the same bounds.
+  The other dimension follows the same scale, rounded to nearest with exact
+  half-pixels rounded up and a minimum of 1 px. Even 2× fixtures halve exactly
+  when they fit. The 1,351 × 1,801 crop produces 675 × 900. Trusted fractional
+  DPR is supported. Missing or invalid DPR uses a divisor of 1 under the same bounds.
 - The initial display-point arm used 1,400,000 pixels and a 2,048 px edge.
   The proposed **Balanced** limits are **3,840,000 pixels**, a **2,400 px
   long edge**, and **1,000,000 encoded bytes**. The area bound admits a
@@ -144,7 +150,9 @@ encoder. Model is the pooled client call, including the one-shot app-server
 work. Upstream is the time between the trace's request and response
 events. Wall is command dispatch to an observed terminal run, including
 up to 25 ms of polling. Bytes are decoded WebP bytes. Base64 counts and
-total tokens including output are in the data.
+total tokens including output are in the data. The report checks the
+prepared and upstream digests for each repeat and separates usage when an
+arm has differing prepared or upstream images.
 
 Patch estimates assume `ceil(width/32) × ceil(height/32)` and a 1.2×
 multiplier with ceiling, using the observed upstream dimensions and

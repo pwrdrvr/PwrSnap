@@ -15,11 +15,17 @@ export const BALANCED_DISPLAY_POINT_LIMITS = {
 type DisplayPointLimits = { maxPixels: number; maxEdgePx: number };
 
 export function fitInside(sourceWidth: number, sourceHeight: number, edge: number) {
-  const scale = Math.min(1, edge / Math.max(sourceWidth, sourceHeight));
-  return {
-    width: Math.max(1, Math.round(sourceWidth * scale)),
-    height: Math.max(1, Math.round(sourceHeight * scale))
-  };
+  const longest = Math.max(sourceWidth, sourceHeight);
+  const shortSource = Math.min(sourceWidth, sourceHeight);
+  const longEdge = Math.min(longest, edge);
+  // Keep exact half-pixels from rounding down through a floating-point scale.
+  const numerator = BigInt(shortSource) * BigInt(longEdge);
+  const denominator = BigInt(longest);
+  const roundUp = numerator % denominator * 2n >= denominator ? 1n : 0n;
+  const shortEdge = Math.max(1, Number(numerator / denominator + roundUp));
+  return sourceWidth >= sourceHeight
+    ? { width: longEdge, height: shortEdge }
+    : { width: shortEdge, height: longEdge };
 }
 
 export function displayPointEdge(

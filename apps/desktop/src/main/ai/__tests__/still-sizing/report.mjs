@@ -38,7 +38,17 @@ const apiDollars = ({ transport: { providerUsage } }) => {
   return ((input_tokens - cached_input_tokens - cache_write_input_tokens) * 0.10 +
     cached_input_tokens * 0.01 + cache_write_input_tokens * 0.125 + output_tokens * 0.50) / 1_000_000;
 };
-const groups = Map.groupBy(rows, ({ fixture, arm }) => `${fixture}/${arm}`);
+const groups = [...Map.groupBy(rows, ({ fixture, arm }) => `${fixture}/${arm}`)]
+  .flatMap(([arm, repeats]) => {
+    const rasters = Map.groupBy(repeats, ({ prepared, transport }) => JSON.stringify([
+      prepared.width, prepared.height, prepared.mime, prepared.bytes, prepared.sha256,
+      transport.width, transport.height, transport.mime, transport.decodedBytes, transport.sha256
+    ]));
+    return [...rasters.values()].map((samples) => ({
+      label: rasters.size === 1 ? arm : `${arm} (round ${samples.map(({ round }) => round).join(", ")})`,
+      samples
+    }));
+  });
 const headers = [
   "Fixture / arm", "Prepared px / B", "Upstream px / B", "Patches × 1.2", "Input", "Cached",
   "Output", "Est. USD × 1,000", "Prep ms", "Model s", "Upstream s", "Wall s", "Exact status", "Exact facts"
@@ -46,7 +56,7 @@ const headers = [
 const tableRow = (cells) => `| ${cells.join(" | ")} |`;
 console.log(tableRow(headers));
 console.log(tableRow(headers.map((_, index) => index < 3 ? "---" : "---:")));
-for (const [group, samples] of groups) {
+for (const { label, samples } of groups) {
   const [{ fixture, prepared, transport }] = samples;
   const { status, facts } = fixtureById.get(fixture);
   const statusHits = samples.filter((row) => includesFact(row, status)).length;
@@ -54,7 +64,7 @@ for (const [group, samples] of groups) {
   const patches = patchCount(transport);
   const seconds = (metric) => stats(samples.map((row) => metric(row) / 1000), 2);
   console.log(tableRow([
-    group,
+    label,
     `${prepared.width}×${prepared.height} / ${prepared.bytes}`,
     `${transport.width}×${transport.height} / ${transport.decodedBytes}`,
     Math.ceil(patches * 1.2),
@@ -69,5 +79,12 @@ for (const [group, samples] of groups) {
     `${statusHits}/${samples.length}`,
     `${factHits}/${samples.length * facts.length}`
   ]));
+}
+const changes = rows.filter(({ prepared, transport }) => prepared.sha256 !== transport.sha256);
+if (changes.length > 0) {
+  console.log("\nUpstream image changes by repeat\n");
+  for (const { fixture, arm, round, prepared, transport } of changes) {
+    console.log(`- ${fixture}/${arm} round ${round}: upstream image differs (SHA-256 ${prepared.sha256} → ${transport.sha256}).`);
+  }
 }
 console.log(`\nTotal equivalent standard API cost for ${rows.length} turns: $${rows.reduce((total, row) => total + apiDollars(row), 0).toFixed(5)}.`);

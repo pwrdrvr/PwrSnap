@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { expect, test, vi } from "vitest";
 import { bus } from "../../command-bus";
@@ -14,6 +14,7 @@ import { AiEnrichmentBudget } from "../enrichment-budget";
 import { CaptureEnrichmentClient, type CaptureEnrichmentResponse } from "../capture-enrichment-client";
 import { closeCodexAgentPool } from "../codex-agent-pool";
 import * as media from "../enrichment-image";
+import { resolveBenchmarkCodexHome } from "./still-sizing/benchmark-profile";
 import { type Arm, type Fixture, balancedFixtures, initialFixtures, renderFixture } from "./still-sizing/fixtures";
 import {
   BALANCED_DISPLAY_POINT_LIMITS, INITIAL_DISPLAY_POINT_LIMITS, displayPointEdge
@@ -45,32 +46,33 @@ function armEdge(fixture: Fixture, arm: Arm): number | undefined {
 }
 
 test.skipIf(!live)("Codex live still sizing measurement", async () => {
-  const auth = process.env.PWRSNAP_SIZING_AUTH_FILE;
+  const benchmarkHome = process.env.PWRSNAP_SIZING_CODEX_HOME;
   const output = process.env.PWRSNAP_SIZING_RESULTS;
   const command = process.env.PWRSNAP_SIZING_CODEX ?? "codex";
   const batch = process.env.PWRSNAP_SIZING_BATCH ?? "initial";
   if (batch !== "initial" && batch !== "balanced") throw new Error("Expected initial or balanced batch");
   const fixtures: readonly Fixture[] = batch === "balanced" ? balancedFixtures : initialFixtures;
   const limits = batch === "balanced" ? BALANCED_DISPLAY_POINT_LIMITS : INITIAL_DISPLAY_POINT_LIMITS;
-  if (!auth || !output || !isAbsolute(auth) || !isAbsolute(output)) {
-    throw new Error("Set absolute PWRSNAP_SIZING_AUTH_FILE and PWRSNAP_SIZING_RESULTS paths");
+  if (!benchmarkHome || !output || !isAbsolute(benchmarkHome) || !isAbsolute(output)) {
+    throw new Error("Set absolute PWRSNAP_SIZING_CODEX_HOME and PWRSNAP_SIZING_RESULTS paths");
   }
-  const version = execFileSync(command, ["--version"], { encoding: "utf8" }).trim().split(" ")[1];
+  const activeHomes = [join(homedir(), ".codex")];
+  if (process.env.CODEX_HOME) activeHomes.push(process.env.CODEX_HOME);
+  const codexHome = await resolveBenchmarkCodexHome(benchmarkHome, activeHomes);
+  const version = execFileSync(command, ["--version"], {
+    encoding: "utf8", env: { ...process.env, CODEX_HOME: codexHome }
+  }).trim().split(" ")[1];
   if (version !== "0.169.0") throw new Error("This rollout-trace reader is calibrated for Codex 0.169.0");
   // Exclusive creation prevents accidentally mixing rows from different runs.
   await writeFile(output, "", { flag: "wx", mode: 0o600 });
   const root = await mkdtemp(join(tmpdir(), "pwrsnap-still-sizing-"));
-  const codexHome = join(root, "codex-home");
   const traceRoot = join(root, "trace");
   const jail = join(root, "jail");
   electron.root = root;
   vi.stubEnv("PWRSNAP_DATA_ROOT", root);
 
   try {
-    await mkdir(codexHome, { mode: 0o700 });
     await mkdir(traceRoot, { mode: 0o700 });
-    await writeFile(join(codexHome, "auth.json"), await readFile(auth), { mode: 0o600 });
-    await writeFile(join(codexHome, "config.toml"), 'cli_auth_credentials_store = "file"\n');
     const db = await openDatabase();
     const insert = db.prepare(`INSERT INTO captures (
       id, kind, captured_at, legacy_src_path, width_px, height_px, device_pixel_ratio, byte_size, sha256

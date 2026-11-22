@@ -109,6 +109,10 @@ const REGION_SELECTOR_PAINTED_CHANNEL = "region-selector:painted";
 const REGION_SELECTOR_SNAPSHOT_READ_CHANNEL = "region-selector:snapshot-read";
 const REGION_SELECTOR_PRESENTATION_REQUEST_CHANNEL = "region-selector:presentation-request";
 const REGION_SELECTOR_PRESENTED_CHANNEL = "region-selector:presented";
+// Multi-display selector sessions: renderer → main pick report, and
+// main → renderer picks made on the other displays.
+const REGION_SELECTOR_PICKS_CHANNEL = "region-selector:picks";
+const REGION_SELECTOR_PEER_PICKS_CHANNEL = "region-selector:peer-picks";
 
 // One opaque epoch per preload execution. The renderer cannot choose or reuse
 // it; main binds it to the current top-level WebFrameMain before admitting a
@@ -176,6 +180,19 @@ export type WindowSnapEntry = {
    *  (along with z-order) so it stays consistent with what the OS
    *  considers "topmost at this point." */
   rawRect: { x: number; y: number; w: number; h: number };
+};
+
+/** Main → selector renderer in a multi-display session. Rects are in the
+ *  receiver's window-local logical px. */
+export type SelectorPeerPicks = {
+  screenUrl: string;
+  picks: { id: number; rect: { x: number; y: number; w: number; h: number } }[];
+  union: { x: number; y: number; w: number; h: number } | null;
+  total: number;
+  outputMode: "windows" | "rectangle";
+  displayWidth: number;
+  drop?: number[];
+  dropAll?: true;
 };
 
 export type SelectorRawSnapshotDescriptor = {
@@ -329,8 +346,36 @@ const pwrsnapApi = {
      *                      always produced).
      *  Only meaningful alongside `extents`. */
     outputMode?: "windows" | "rectangle";
+    /** Multi-display session: the window id behind each `extents`
+     *  entry (negative = this whole display), so main can merge picks
+     *  made on several displays without counting a window twice. */
+    extentIds?: number[];
+    /** Multi-display session: fold in the picks made on the OTHER
+     *  displays. Main recomputes `rect` from the merged set. */
+    mergePeers?: boolean;
   }): void {
     ipcRenderer.send(REGION_SELECTOR_RESULT_CHANNEL, payload);
+  },
+  /**
+   * Multi-display selector session: this display's pick set (window-
+   * local logical px), sent on every change, plus requests to drop a
+   * pick another display owns (`unpick`) or the whole session's set
+   * (`clearAll`).
+   */
+  reportSelectorPicks(payload: {
+    screenUrl: string;
+    picks: { id: number; rect: { x: number; y: number; w: number; h: number } }[];
+    outputMode: "windows" | "rectangle";
+    unpick?: number[];
+    clearAll?: boolean;
+  }): void {
+    ipcRenderer.send(REGION_SELECTOR_PICKS_CHANNEL, payload);
+  },
+  /** Multi-display selector session: picks made on the other displays. */
+  onSelectorPeerPicks(handler: (payload: SelectorPeerPicks) => void): () => void {
+    const wrapped = (_event: unknown, payload: unknown) => handler(payload as SelectorPeerPicks);
+    ipcRenderer.on(REGION_SELECTOR_PEER_PICKS_CHANNEL, wrapped);
+    return () => ipcRenderer.off(REGION_SELECTOR_PEER_PICKS_CHANNEL, wrapped);
   },
   /**
    * Region-selector renderer → main: the frozen-snapshot image for
@@ -629,6 +674,9 @@ const pwrsnapApi = {
       /** HUD style for this show, from `settings.recording.selectorHud`.
        *  `undefined` = "shutter". */
       hudStyle?: "shutter" | "clapperboard";
+      /** True when every display has a selector this show (a still on a
+       *  multi-display machine). */
+      multiDisplay?: boolean;
     }) => void
   ): () => void {
     const wrapped = (_event: unknown, payload: unknown) =>
@@ -643,6 +691,7 @@ const pwrsnapApi = {
           generation?: number;
           quickCaptureAction?: "ask" | "snap" | "record";
           hudStyle?: "shutter" | "clapperboard";
+          multiDisplay?: boolean;
         }
       );
     ipcRenderer.on(REGION_SELECTOR_MODE_CHANNEL, wrapped);

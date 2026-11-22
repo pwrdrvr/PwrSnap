@@ -37,6 +37,19 @@ export type WindowSnapEntry = {
   rawRect: { x: number; y: number; w: number; h: number };
 };
 
+/** Main → selector renderer in a multi-display session; rects are in the
+ *  receiver's window-local logical px. */
+export type SelectorPeerPicks = {
+  screenUrl: string;
+  picks: { id: number; rect: { x: number; y: number; w: number; h: number } }[];
+  union: { x: number; y: number; w: number; h: number } | null;
+  total: number;
+  outputMode: "windows" | "rectangle";
+  displayWidth: number;
+  drop?: number[];
+  dropAll?: true;
+};
+
 export type SelectorRawSnapshotDescriptor = {
   id: string;
   transport: "raw-rgba";
@@ -84,7 +97,20 @@ declare global {
          *  the rest of the union box transparent; `"rectangle"` keeps
          *  the whole box opaque. */
         outputMode?: "windows" | "rectangle";
+        /** Multi-display session: the window id behind each extent
+         *  (negative = this whole display). */
+        extentIds?: number[];
+        /** Multi-display session: fold in the other displays' picks. */
+        mergePeers?: boolean;
       }): void;
+      reportSelectorPicks(payload: {
+        screenUrl: string;
+        picks: { id: number; rect: { x: number; y: number; w: number; h: number } }[];
+        outputMode: "windows" | "rectangle";
+        unpick?: number[];
+        clearAll?: boolean;
+      }): void;
+      onSelectorPeerPicks(handler: (payload: SelectorPeerPicks) => void): () => void;
       notifySelectorSnapshotPainted(payload: {
         screenUrl: string;
         transport: "img" | "raw-rgba";
@@ -156,6 +182,8 @@ declare global {
           /** HUD style for this show, from `settings.recording.selectorHud`.
            *  `undefined` = "shutter". */
           hudStyle?: import("@pwrsnap/shared").SelectorHudStyle;
+          /** True when every display has a selector this show. */
+          multiDisplay?: boolean;
         }) => void
       ): () => void;
       requestTrayResize(payload: { width: number; height: number }): void;

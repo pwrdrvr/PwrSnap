@@ -17,6 +17,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vi
 import { MAX_SELECTOR_EXTENTS, shortDeviceLabel } from "@pwrsnap/shared";
 
 import type {
+  SelectorPeerPicks,
   SelectorRawSnapshotDescriptor,
   WindowSnapEntry
 } from "../../../preload-types";
@@ -42,6 +43,7 @@ type ModePayload = {
   hudStyle?: "shutter" | "clapperboard";
   invocationId?: string;
   generation?: number;
+  multiDisplay?: boolean;
 };
 type PresentationPayload = {
   invocationId: string;
@@ -61,7 +63,9 @@ let modeHandler: ((p: ModePayload) => void) | null = null;
 let snapshotHandler: ((p: SnapshotPayload) => void) | null = null;
 let keyHandler: ((p: { key: string }) => void) | null = null;
 let presentationHandler: ((p: PresentationPayload) => void) | null = null;
+let peerPicksHandler: ((p: SelectorPeerPicks) => void) | null = null;
 const submitRegion = vi.fn();
+const reportSelectorPicks = vi.fn();
 const notifySelectorSnapshotPainted = vi.fn();
 const notifySelectorPresented = vi.fn();
 const readSelectorSnapshot = vi.fn();
@@ -71,7 +75,9 @@ function installSelectorApi(): void {
   snapshotHandler = null;
   keyHandler = null;
   presentationHandler = null;
+  peerPicksHandler = null;
   submitRegion.mockReset();
+  reportSelectorPicks.mockReset();
   notifySelectorSnapshotPainted.mockReset();
   notifySelectorPresented.mockReset();
   readSelectorSnapshot.mockReset();
@@ -99,6 +105,11 @@ function installSelectorApi(): void {
     },
     onSelectorMode: (h: (p: ModePayload) => void) => {
       modeHandler = h;
+      return () => undefined;
+    },
+    reportSelectorPicks,
+    onSelectorPeerPicks: (h: (p: SelectorPeerPicks) => void) => {
+      peerPicksHandler = h;
       return () => undefined;
     },
     requestTrayResize: vi.fn(),
@@ -147,7 +158,9 @@ afterEach(async () => {
     "outputMode",
     "chooserBar",
     "sourceBar",
-    "quickAction"
+    "quickAction",
+    "peerPickCount",
+    "multiDisplay"
   ]) {
     delete document.body.dataset[k];
   }
@@ -3028,5 +3041,174 @@ describe("selector result invocation identity", () => {
     await drawRect();
     await keyDown("Enter");
     expect(submitRegion).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ ok: true, screenUrl: "pwrsnap-screen://r/new" }));
+  });
+});
+
+// --- Multi-display session -----------------------------------------
+//
+// With more than one display, every display shows its own selector and
+// main relays each renderer's picks to the others. These pin this
+// renderer's half of that contract: what it reports, what ↵ sends when
+// other displays hold picks, and the whole-display pick.
+
+const MULTI_URL = "pwrsnap-screen://r/multi-a";
+
+async function mountMultiDisplayScene(): Promise<void> {
+  await mountScene({ mode: "auto", screenUrl: MULTI_URL, multiDisplay: true });
+}
+
+async function emitPeerPicks(p: Omit<SelectorPeerPicks, "screenUrl" | "displayWidth">): Promise<void> {
+  await act(async () => {
+    peerPicksHandler?.({ screenUrl: MULTI_URL, displayWidth: window.innerWidth, ...p });
+  });
+}
+
+function lastPicksReport(): {
+  screenUrl: string;
+  picks: { id: number; rect: { x: number; y: number; w: number; h: number } }[];
+  unpick?: number[];
+  clearAll?: boolean;
+} {
+  const call = reportSelectorPicks.mock.calls.at(-1);
+  if (call === undefined) throw new Error("no picks report");
+  return call[0];
+}
+
+const PEER_RECT = { x: window.innerWidth + 100, y: 40, w: 300, h: 200 };
+
+describe("multi-display session", () => {
+  test("a click on bare desktop picks the whole display; ↵ captures it untagged", async () => {
+    await mountMultiDisplayScene();
+    await mouseMove(20, 20);
+    await mouseDown(20, 20);
+    await mouseUp(20, 20);
+    expect(document.body.dataset.pickCount).toBe("1");
+    await keyDown("Enter");
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    const payload = submitRegion.mock.calls[0]![0];
+    expect(payload).toMatchObject({
+      ok: true,
+      rect: { x: 0, y: 0, w: window.innerWidth, h: window.innerHeight }
+    });
+    expect(payload.snappedWindowId).toBeUndefined();
+    expect(payload.fullWindow).toBeUndefined();
+    expect(payload.mergePeers).toBeUndefined();
+  });
+
+  test("a one-display selector never picks the display on a desktop click", async () => {
+    await mountScene({ mode: "auto", screenUrl: MULTI_URL });
+    await mouseMove(20, 20);
+    await mouseDown(20, 20);
+    await mouseUp(20, 20);
+    expect(document.body.dataset.pickCount).toBe("0");
+    expect(reportSelectorPicks).not.toHaveBeenCalled();
+  });
+
+  test("reports this display's picks to main, in logical px, on every change", async () => {
+    await mountMultiDisplayScene();
+    await clickWindow(WIN);
+    expect(lastPicksReport()).toMatchObject({
+      screenUrl: MULTI_URL,
+      picks: [{ id: WIN.windowId, rect: { x: 200, y: 150, w: 400, h: 300 } }]
+    });
+    await clickWindow(WIN);
+    expect(lastPicksReport().picks).toEqual([]);
+  });
+
+  test("with picks on another display, ↵ asks main to merge them with this one's", async () => {
+    await mountMultiDisplayScene();
+    await emitPeerPicks({
+      picks: [{ id: 99, rect: PEER_RECT }],
+      union: PEER_RECT,
+      total: 1,
+      outputMode: "windows"
+    });
+    expect(container?.querySelectorAll('[data-testid="region-pick-peer"]')).toHaveLength(1);
+    expect(container?.querySelector('[data-testid="region-hud-peer-chip"]')).not.toBeNull();
+    await clickWindow(WIN);
+    await keyDown("Enter");
+    expect(submitRegion).toHaveBeenCalledTimes(1);
+    expect(submitRegion.mock.calls[0]![0]).toMatchObject({
+      ok: true,
+      mergePeers: true,
+      extents: [{ x: 200, y: 150, w: 400, h: 300 }],
+      extentIds: [WIN.windowId],
+      outputMode: "windows",
+      screenUrl: MULTI_URL
+    });
+  });
+
+  test("↵ with picks only on another display still captures them", async () => {
+    await mountMultiDisplayScene();
+    await emitPeerPicks({
+      picks: [{ id: 99, rect: PEER_RECT }],
+      union: PEER_RECT,
+      total: 1,
+      outputMode: "windows"
+    });
+    await mouseMove(centerOf(WIN).x, centerOf(WIN).y);
+    await keyDown("Enter");
+    expect(submitRegion.mock.calls[0]![0]).toMatchObject({
+      ok: true,
+      mergePeers: true,
+      extents: [],
+      extentIds: []
+    });
+  });
+
+  test("clicking a straddling window picked on the other display unpicks it there", async () => {
+    await mountMultiDisplayScene();
+    await emitPeerPicks({
+      picks: [{ id: WIN.windowId, rect: WIN.rawRect }],
+      union: WIN.rawRect,
+      total: 1,
+      outputMode: "windows"
+    });
+    await clickWindow(WIN);
+    expect(lastPicksReport()).toMatchObject({ unpick: [WIN.windowId], picks: [] });
+    expect(pickBoxes()).toHaveLength(0);
+    expect(document.body.dataset.peerPickCount).toBe("0");
+  });
+
+  test("Esc with picks only on another display drops the session's set, not the session", async () => {
+    await mountMultiDisplayScene();
+    await emitPeerPicks({
+      picks: [{ id: 99, rect: PEER_RECT }],
+      union: PEER_RECT,
+      total: 1,
+      outputMode: "windows"
+    });
+    await keyDown("Escape");
+    expect(submitRegion).not.toHaveBeenCalled();
+    expect(lastPicksReport()).toMatchObject({ clearAll: true });
+    expect(document.body.dataset.peerPickCount).toBe("0");
+  });
+
+  test("main asking this display to drop a pick removes it", async () => {
+    await mountMultiDisplayScene();
+    await clickWindow(WIN);
+    await clickWindow(WIN_B);
+    await emitPeerPicks({ picks: [], union: null, total: 1, outputMode: "windows", drop: [WIN.windowId] });
+    expect(pickBoxes()).toHaveLength(1);
+    expect(lastPicksReport().picks.map((p) => p.id)).toEqual([WIN_B.windowId]);
+  });
+
+  test("Record is refused while another display holds picks", async () => {
+    await mountScene({
+      mode: "auto",
+      screenUrl: MULTI_URL,
+      multiDisplay: true,
+      quickCaptureAction: "record"
+    });
+    await emitPeerPicks({
+      picks: [{ id: 99, rect: PEER_RECT }],
+      union: PEER_RECT,
+      total: 1,
+      outputMode: "windows"
+    });
+    await keyDown("Enter");
+    const payload = submitRegion.mock.calls[0]![0];
+    expect(payload.action).toBeUndefined();
+    expect(payload.mergePeers).toBe(true);
   });
 });

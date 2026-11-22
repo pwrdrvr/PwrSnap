@@ -428,6 +428,13 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
   background: rgba(255, 138, 31, 0.04);
 }
 
+/* Multi-display: a window or display picked on ANOTHER display, drawn
+   where it reaches onto this one. Same solid outline as a local pick —
+   it IS in the selection — with the tint dropped so the two read apart. */
+.region-pick--peer .region-pick__frame {
+  background: transparent;
+}
+
 /* Ordinal badge — matches the HUD chip number, so the user can tell
    which chip drops which window before clicking it. */
 .region-pick__badge {
@@ -836,6 +843,14 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
 }
 .region-hud--clapperboard .region-hud__chip {
   border-radius: 7px;
+}
+/* "+N on other displays" — a count, not a control. */
+.region-hud .region-hud__chip--peer {
+  padding: 0 9px;
+  color: var(--text-secondary);
+}
+.region-hud .region-hud__chip--peer:hover {
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
 }
 .region-hud .region-hud__chip:hover {
   background: color-mix(in srgb, var(--accent) 12%, transparent);

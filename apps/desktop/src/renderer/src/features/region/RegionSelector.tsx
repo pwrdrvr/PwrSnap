@@ -44,6 +44,14 @@ import { MicrophoneChip } from "./MicrophoneChip";
 // Coords reported to main are in window-local px (= display-local;
 // the selector window covers the whole display). Main converts to
 // global virtual coords + display id before screencapture.
+//
+// MULTI-DISPLAY. On a machine with more than one display every display
+// gets its own selector for a still (`multiDisplay` in the mode signal).
+// Each renderer keeps its own pick set exactly as above and reports it
+// to main on every change; main sends each renderer the PEER picks —
+// those made on the other displays — which it draws (`peerPicks`) and
+// folds into ↵ (`mergePeers`). A click on bare desktop picks the whole
+// display, so two (or N) full screens are just two (or N) picks.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { acceleratorToDisplayKeys, MAX_SELECTOR_EXTENTS, SELECTOR_HUD_STYLE_DEFAULT } from "@pwrsnap/shared";
@@ -55,6 +63,7 @@ import type {
   SelectorTerminalAction
 } from "@pwrsnap/shared";
 import type {
+  SelectorPeerPicks,
   SelectorRawSnapshotDescriptor,
   WindowSnapEntry
 } from "../../preload-types";
@@ -107,6 +116,41 @@ type SelectorPresentationRaf = {
 // deliberate second press. NOT re-armed on mousemove (a
 // stray cursor move must not be able to defeat the de-dupe).
 const ESCAPE_DEDUPE_MS = 50;
+
+/** Pick id for "this whole display" in a multi-display session. Native
+ *  window ids are never negative; main keys it by display. */
+const DISPLAY_PICK_ID = -1;
+
+function displayPickEntry(): WindowSnapEntry {
+  const r = displaySnapRect();
+  return {
+    windowId: DISPLAY_PICK_ID,
+    pid: 0,
+    bundleId: null,
+    appName: "Display",
+    title: null,
+    ownedByUs: false,
+    // Behind every window, so a picked window in front clips its frame.
+    zIndex: Number.MAX_SAFE_INTEGER,
+    rect: r,
+    rawRect: r
+  };
+}
+
+/** A pick entry for a window or display picked on ANOTHER display. */
+function peerEntry(id: number, rect: Rect): WindowSnapEntry {
+  return {
+    windowId: id,
+    pid: 0,
+    bundleId: null,
+    appName: null,
+    title: null,
+    ownedByUs: false,
+    zIndex: Number.MAX_SAFE_INTEGER,
+    rect,
+    rawRect: rect
+  };
+}
 
 type SnapTarget =
   | { kind: "window"; entry: WindowSnapEntry }
@@ -388,6 +432,12 @@ export function RegionSelector() {
   // will be in the capture. That is the whole model; see
   // `cropScreenSnapshotExtents` in capture-handlers.ts.
   const [picks, setPicks] = useState<readonly WindowSnapEntry[]>([]);
+  // Multi-display session: whether this show has a selector on every
+  // display, and the picks made on the OTHER displays (CSS px, this
+  // window's coordinates), plus the whole session's union box.
+  const [multiDisplay, setMultiDisplay] = useState(false);
+  const [peerPicks, setPeerPicks] = useState<readonly WindowSnapEntry[]>([]);
+  const [sessionUnion, setSessionUnion] = useState<Rect | null>(null);
   // What to keep inside the union box of `picks`:
   //   'windows'   — only the extents; everything between them goes
   //                 transparent. The default, and the reason the HUD
@@ -423,6 +473,8 @@ export function RegionSelector() {
   const lastMouseRef = useRef<{ x: number; y: number } | null>(null);
   const shiftRef = useRef(false);
   const picksRef = useRef<readonly WindowSnapEntry[]>([]);
+  const multiDisplayRef = useRef(false);
+  const peerPicksRef = useRef<readonly WindowSnapEntry[]>([]);
   // The window under the current mousedown, if that press could still
   // turn out to be a pick. Set on mousedown, cleared the moment the
   // gesture becomes a drag, consumed on mouseup. This ref is the whole
@@ -678,13 +730,15 @@ export function RegionSelector() {
   terminalRef.current = terminal;
   picksRef.current = picks;
   outputModeRef.current = outputMode;
+  multiDisplayRef.current = multiDisplay;
+  peerPicksRef.current = peerPicks;
 
   // Render-scope mirrors of the chooser predicates. The ref-reading
   // versions above serve the once-registered global handlers; these
   // serve JSX, and reading state here is what makes the bar re-render
   // when a pick lands or the policy arrives.
   const recordOffered = intent !== "video" && quickAction !== "snap";
-  const recordUsable = recordOffered && picks.length <= 1;
+  const recordUsable = recordOffered && picks.length <= 1 && peerPicks.length === 0;
   const primary: SelectorTerminalAction =
     terminal === "record" && recordUsable ? "record" : "snap";
   // What ↵ actually PRODUCES, which is not the same question as which
@@ -752,7 +806,7 @@ export function RegionSelector() {
     interaction.kind === "adjusting" ||
     interaction.kind === "moving" ||
     interaction.kind === "resizing";
-  const chooserBar = recordOffered && (picks.length > 0 || latched);
+  const chooserBar = recordOffered && (picks.length > 0 || peerPicks.length > 0 || latched);
   // The dedicated video selector gets a HUD from the first frame. It
   // has no chooser to latch and no pick set to hold one open, but it
   // does carry recording controls — the cursor bake and the source
@@ -767,7 +821,7 @@ export function RegionSelector() {
   // Record mode is the same: its sources have to be reachable before ↵,
   // so choosing Record raises the HUD even in live snap.
   const sourceBar = commitsRecording;
-  const showHud = picks.length > 0 || chooserBar || sourceBar;
+  const showHud = picks.length > 0 || peerPicks.length > 0 || chooserBar || sourceBar;
   // Synced here rather than with the refs above because `showHud` is not
   // known until this point — and before the return, so the hint legend's
   // own `sourceKeysBound()` calls see this render's value.
@@ -793,6 +847,9 @@ export function RegionSelector() {
     // One attribute, not two: `has-picks` was exactly
     // `pick-count !== "0"`, and two encodings of one fact can disagree.
     document.body.dataset.pickCount = String(picks.length);
+    // Multi-display: picks made on the other displays.
+    document.body.dataset.peerPickCount = String(peerPicks.length);
+    document.body.dataset.multiDisplay = multiDisplay ? "true" : "false";
     document.body.dataset.outputMode = outputMode;
     // The E2E signal for "the chooser is live in this show". The HUD can
     // be on screen without a pick set, so pick-count alone cannot stand
@@ -811,6 +868,8 @@ export function RegionSelector() {
     shiftHeld,
     mode,
     picks,
+    peerPicks,
+    multiDisplay,
     outputMode,
     chooserBar,
     sourceBar,
@@ -901,6 +960,12 @@ export function RegionSelector() {
       picksRef.current = [];
       setPicks([]);
       setOutputMode("windows");
+      const nextMulti = payload.multiDisplay === true;
+      multiDisplayRef.current = nextMulti;
+      setMultiDisplay(nextMulti);
+      peerPicksRef.current = [];
+      setPeerPicks([]);
+      setSessionUnion(null);
       // An armed pick belongs to the session that pressed the button.
       // Clearing it here is what stops a press made under the previous
       // mode from landing as a pick under the new one — `region` mode
@@ -1019,6 +1084,121 @@ export function RegionSelector() {
     };
   }, []);
 
+  // Multi-display: the picks made on the other displays, from main.
+  // useLayoutEffect for the same reason as the window-list subscription.
+  useLayoutEffect(() => {
+    const unsubscribe = window.pwrsnapApi?.onSelectorPeerPicks?.((payload: SelectorPeerPicks) => {
+      if (!multiDisplayRef.current || payload.screenUrl !== resultScreenUrlRef.current) return;
+      // Same css-per-logical factor the window list derives, from the
+      // same two numbers — this can arrive first.
+      const scale =
+        payload.displayWidth > 0 ? window.innerWidth / payload.displayWidth : 1;
+      cssToLogicalRef.current = scale;
+      const toCss = (r: Rect): Rect => ({
+        x: r.x * scale,
+        y: r.y * scale,
+        w: r.w * scale,
+        h: r.h * scale
+      });
+      if (payload.dropAll === true) dropLocalPicks("all");
+      else if (payload.drop !== undefined) dropLocalPicks(new Set(payload.drop));
+      const next = payload.picks.map((p) => peerEntry(p.id, toCss(p.rect)));
+      peerPicksRef.current = next;
+      setPeerPicks(next);
+      setSessionUnion(payload.union === null ? null : toCss(payload.union));
+      if (payload.outputMode !== outputModeRef.current) {
+        outputModeRef.current = payload.outputMode;
+        setOutputMode(payload.outputMode);
+      }
+    });
+    return () => {
+      unsubscribe?.();
+    };
+    // Handlers read refs only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Multi-display: tell main whenever this display's pick set or output
+  // shape changes, so the other displays draw it and ↵ anywhere can
+  // include it.
+  useEffect(() => {
+    if (!multiDisplay) return;
+    reportPicks(picks);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [multiDisplay, picks, outputMode]);
+
+  // The renderer's rects are in CSS pixels; main + screencapture expect
+  // display-logical pixels. Scale back via the inverse of the snapshot's
+  // css-to-logical factor. On standard displays this is 1.0 — no-op. On
+  // scaled-mode Retina (e.g. inner=1460 logical=1920) it's ~1.315 and
+  // corrects the doubling we'd otherwise see in the captured PNG. ONE
+  // definition, used by every commit route and the multi-display pick
+  // report — this is the most bug-prone arithmetic in the file and a
+  // second copy could be fixed while the first stayed wrong.
+  // The far edge is ROUNDED, not derived as `round(x) + round(w)` —
+  // the same rule `toPhysical` follows in extent-mask.ts, for the
+  // same reason: at a fractional factor the two differ whenever the
+  // fractions carry.
+  //
+  // Measured, this changes nothing for EXTENTS: they come only from
+  // the window list, which main sends as integer logical px and this
+  // renderer scales by `cssToLogicalRef`, so multiplying by its exact
+  // reciprocal here recovers the original integers under either rule
+  // (0 divergences across 12040 sampled geometries at four scale
+  // factors). It differs only for a FREE-DRAWN rect, whose CSS
+  // coordinates are arbitrary — and there the far edge is where the
+  // user released the button, which is what this computes. Kept
+  // because one rounding rule across the two layers is worth more
+  // than the ≤1px it moves.
+  function toLogicalRect(r: Rect): Rect {
+    const inv = cssToLogicalRef.current > 0 ? 1 / cssToLogicalRef.current : 1;
+    const x = Math.round(r.x * inv);
+    const y = Math.round(r.y * inv);
+    return {
+      x,
+      y,
+      w: Math.max(1, Math.round((r.x + r.w) * inv) - x),
+      h: Math.max(1, Math.round((r.y + r.h) * inv) - y)
+    };
+  }
+
+  /**
+   * Multi-display: report this display's pick set to main. `extra`
+   * carries the two requests that reach other displays — drop a window
+   * another display picked, or drop the whole session's set.
+   */
+  function reportPicks(
+    current: readonly WindowSnapEntry[],
+    extra: { unpick?: number[]; clearAll?: boolean } = {}
+  ): void {
+    const screen = resultScreenUrlRef.current;
+    if (!multiDisplayRef.current || screen === null) return;
+    window.pwrsnapApi?.reportSelectorPicks?.({
+      screenUrl: screen,
+      picks: current.map((p) => ({ id: p.windowId, rect: toLogicalRect(p.rawRect) })),
+      outputMode: outputModeRef.current,
+      ...extra
+    });
+  }
+
+  /** Drop the named windows from THIS display's pick set, as removing
+   *  their chips would. Main asks for it when another display unpicked a
+   *  window both displays list. */
+  function dropLocalPicks(ids: ReadonlySet<number> | "all"): void {
+    const current = picksRef.current;
+    const next = ids === "all" ? [] : current.filter((p) => !ids.has(p.windowId));
+    if (next.length === current.length) return;
+    picksRef.current = next;
+    setPicks(next);
+    const union = unionOfPicks(next);
+    if (union === null) {
+      dropToLiveSnap();
+      return;
+    }
+    rectRef.current = union;
+    setRect(union);
+  }
+
   function findWindowAt(clientX: number, clientY: number): WindowSnapEntry | null {
     // Walk the z-order ascending (frontmost first). Hit-test uses
     // the RAW bounds so the result matches what the OS considers
@@ -1114,7 +1294,13 @@ export function RegionSelector() {
    * carries no `extents`, and the result is one rectangle.
    */
   function recordAvailable(): boolean {
-    return recordOfferedByPolicy() && picksRef.current.length <= 1;
+    return (
+      recordOfferedByPolicy() &&
+      picksRef.current.length <= 1 &&
+      // A recording is one display's rectangle; picks on another display
+      // would make it a still of a different selection.
+      peerPicksRef.current.length === 0
+    );
   }
 
   /** Which action a bare ↵ (or the shutter) commits. */
@@ -1231,6 +1417,14 @@ export function RegionSelector() {
    * and the hand-adjusted geometry is what ships.
    */
   function clearPickSet(): void {
+    // Multi-display: the set is the session's, so dropping it drops the
+    // other displays' picks too.
+    if (peerPicksRef.current.length > 0) {
+      reportPicks([], { clearAll: true });
+      peerPicksRef.current = [];
+      setPeerPicks([]);
+      setSessionUnion(null);
+    }
     if (picksRef.current.length === 0) return;
     picksRef.current = [];
     setPicks([]);
@@ -1292,6 +1486,19 @@ export function RegionSelector() {
   function togglePick(entry: WindowSnapEntry): void {
     const current = picksRef.current;
     const removing = current.some((p) => p.windowId === entry.windowId);
+    // Multi-display: a window straddling two displays is listed by both.
+    // Picked on the other one, a click here removes it from there.
+    if (
+      !removing &&
+      entry.windowId >= 0 &&
+      peerPicksRef.current.some((p) => p.windowId === entry.windowId)
+    ) {
+      reportPicks(current, { unpick: [entry.windowId] });
+      const remaining = peerPicksRef.current.filter((p) => p.windowId !== entry.windowId);
+      peerPicksRef.current = remaining;
+      setPeerPicks(remaining);
+      return;
+    }
     // Main's payload validator rejects the WHOLE payload past this
     // bound, and a rejected payload resolves the session as
     // `cancelled` — so without this the 65th pick did not fail loudly,
@@ -1307,7 +1514,7 @@ export function RegionSelector() {
     // control and the `T` binding both disappear. Snap back to the
     // default or the user is stranded in `rectangle` with no key and no
     // button to leave it — and the next pick they add inherits it.
-    if (next.length < 2) {
+    if (next.length + peerPicksRef.current.length < 2) {
       outputModeRef.current = "windows";
       setOutputMode("windows");
     }
@@ -1394,40 +1601,8 @@ export function RegionSelector() {
       });
       return;
     }
-    // The renderer's rects are in CSS pixels. Main + screencapture
-    // expect display-logical pixels. Scale back via the inverse of the
-    // snapshot's css-to-logical factor. On standard displays this is
-    // 1.0 — no-op. On scaled-mode Retina (e.g. inner=1460 logical=1920)
-    // it's ~1.315 and corrects the doubling we'd otherwise see in the
-    // captured PNG. ONE definition, used by every commit route — this
-    // is the most bug-prone arithmetic in the file and a second copy
-    // could be fixed while the first stayed wrong.
-    const inv = cssToLogicalRef.current > 0 ? 1 / cssToLogicalRef.current : 1;
-    // The far edge is ROUNDED, not derived as `round(x) + round(w)` —
-    // the same rule `toPhysical` follows in extent-mask.ts, for the
-    // same reason: at a fractional factor the two differ whenever the
-    // fractions carry.
-    //
-    // Measured, this changes nothing for EXTENTS: they come only from
-    // the window list, which main sends as integer logical px and this
-    // renderer scales by `cssToLogicalRef`, so multiplying by its exact
-    // reciprocal here recovers the original integers under either rule
-    // (0 divergences across 12040 sampled geometries at four scale
-    // factors). It differs only for a FREE-DRAWN rect, whose CSS
-    // coordinates are arbitrary — and there the far edge is where the
-    // user released the button, which is what this computes. Kept
-    // because one rounding rule across the two layers is worth more
-    // than the ≤1px it moves.
-    const toLogical = (r: Rect): Rect => {
-      const x = Math.round(r.x * inv);
-      const y = Math.round(r.y * inv);
-      return {
-        x,
-        y,
-        w: Math.max(1, Math.round((r.x + r.w) * inv) - x),
-        h: Math.max(1, Math.round((r.y + r.h) * inv) - y)
-      };
-    };
+    // CSS px → display-logical px; see `toLogicalRect`.
+    const toLogical = toLogicalRect;
     // Multi-window pick wins over the single-target path when the user
     // has one. Its rect is the union box, so everything downstream in
     // main — validation, source-app resolution, cursor placement —
@@ -1439,6 +1614,24 @@ export function RegionSelector() {
     // commit would record the bounding box of windows the user picked
     // in an abandoned session and never re-confirmed.
     const activePicks = multiSelectAllowed() ? picksRef.current : [];
+    // Multi-display with picks on other displays: ↵ here captures the
+    // whole session's set. Main folds the other displays' picks into
+    // these and recomputes the union box, so `rect` is only a hint.
+    if (multiSelectAllowed() && multiDisplayRef.current && peerPicksRef.current.length > 0) {
+      const union = unionOfPicks([...activePicks, ...peerPicksRef.current]) ?? displaySnapRect();
+      submittedRef.current = true;
+      submitSelection({
+        ok: true,
+        rect: toLogical(union),
+        displayId,
+        extents: activePicks.map((p) => toLogical(p.rawRect)),
+        extentIds: activePicks.map((p) => p.windowId),
+        outputMode: outputModeRef.current,
+        mergePeers: true
+      });
+      resetToSnap();
+      return;
+    }
     if (activePicks.length > 0) {
       const union = unionOfPicks(activePicks);
       if (union === null || !rectIsMeaningful(union)) {
@@ -1454,13 +1647,16 @@ export function RegionSelector() {
       // answer and the mode question disappears.
       if (activePicks.length === 1) {
         const only = activePicks[0]!;
-        const wantFull = modeRef.current === "window" || shiftRef.current;
+        // A whole-display pick has no window behind it: no source-window
+        // tag and no full-window capture.
+        const isWindow = only.windowId >= 0;
+        const wantFull = isWindow && (modeRef.current === "window" || shiftRef.current);
         submittedRef.current = true;
         submitSelection({
           ok: true,
           rect: toLogical(only.rawRect),
           displayId,
-          snappedWindowId: only.windowId,
+          ...(isWindow ? { snappedWindowId: only.windowId } : {}),
           ...(action === "record" ? { action } : {}),
           ...(isRecording ? { captureCursor: captureCursorRef.current } : {}),
           ...(isRecording && sourcesRef.current !== null
@@ -1476,6 +1672,7 @@ export function RegionSelector() {
         resetToSnap();
         return;
       }
+      const firstWindowPick = activePicks.find((p) => p.windowId >= 0);
       submittedRef.current = true;
       submitSelection({
         ok: true,
@@ -1485,8 +1682,12 @@ export function RegionSelector() {
         outputMode: outputModeRef.current,
         // The first pick names the capture's source app. Without it a
         // multi-window union's centre often lands on empty desktop and
-        // the record gets no source app at all.
-        snappedWindowId: activePicks[0]!.windowId
+        // the record gets no source app at all. (A whole-display pick
+        // names none; the first WINDOW pick does.)
+        ...(firstWindowPick !== undefined ? { snappedWindowId: firstWindowPick.windowId } : {}),
+        ...(multiDisplayRef.current
+          ? { extentIds: activePicks.map((p) => p.windowId) }
+          : {})
       });
       resetToSnap();
       return;
@@ -1603,6 +1804,14 @@ export function RegionSelector() {
     picksRef.current = [];
     setPicks([]);
     setOutputMode("windows");
+    // Peer picks belong to the session, not to this display's gesture:
+    // drop them only on the way out. A mid-session step back that
+    // cleared them here would hide picks main still holds.
+    if (submittedRef.current) {
+      peerPicksRef.current = [];
+      setPeerPicks([]);
+      setSessionUnion(null);
+    }
     // Same for an armed-but-unreleased pick: ↵ can commit while the
     // button is still down, and the press must not outlive the
     // selection it was part of.
@@ -1639,7 +1848,7 @@ export function RegionSelector() {
     // rect: the first Escape drops it, a second one exits. Checked
     // before the interaction kind because togglePick parks the
     // interaction in `snap` while picks are live.
-    if (picksRef.current.length > 0) {
+    if (picksRef.current.length > 0 || peerPicksRef.current.length > 0) {
       // Drop the SET, not the session — and land where removing the
       // last chip lands. `resetToSnap()` hard-sets the display rect,
       // so Escaping a lone pick used to leave the whole screen armed
@@ -1776,7 +1985,10 @@ export function RegionSelector() {
         chooseTerminal("snap");
         return;
       }
-      if ((event.key === "t" || event.key === "T") && picksRef.current.length > 1) {
+      if (
+        (event.key === "t" || event.key === "T") &&
+        picksRef.current.length + peerPicksRef.current.length > 1
+      ) {
         // Flip the output shape. Only bound at two or more picks: with
         // one, the union box IS the extent, so both modes produce the
         // same pixels and the key would be a no-op the user could not
@@ -1986,7 +2198,14 @@ export function RegionSelector() {
       ) {
         return snap.entry;
       }
-      return findWindowAt(event.clientX, event.clientY);
+      const hit = findWindowAt(event.clientX, event.clientY);
+      // Multi-display: bare desktop picks the whole display, so several
+      // full screens are just several picks. `auto` only — `window` mode
+      // is a window picker.
+      if (hit === null && multiDisplayRef.current && modeRef.current === "auto") {
+        return displayPickEntry();
+      }
+      return hit;
     }
 
     function onMouseDown(event: MouseEvent): void {
@@ -2444,6 +2663,13 @@ export function RegionSelector() {
   const isAdjustable = interaction.kind === "adjusting";
   const isSnap = interaction.kind === "snap" || interaction.kind === "pending";
   const hasPicks = picks.length > 0;
+  // Multi-display: picks made on the other displays. `setLive` is "a
+  // pick set exists anywhere in this session"; `maskBox` is the
+  // session's union box when other displays contribute to it.
+  const peerCount = peerPicks.length;
+  const setLive = hasPicks || peerCount > 0;
+  const totalPicks = picks.length + peerCount;
+  const maskBox = peerCount > 0 && sessionUnion !== null ? sessionUnion : rect;
   // Grippers on a LONE pick: its box is a real rect the user can own,
   // so it gets the adjusting handles before anything is adjusted —
   // pressing one is how "this window, but only its top-left" is done
@@ -2451,7 +2677,9 @@ export function RegionSelector() {
   // on-screen part of the box (see the matching press in onMouseDown).
   // Never above one pick, where the box is a derived union.
   const lonePickGrips =
-    picks.length === 1 && isSnap ? intersectRectWithViewport(rect, viewport()) : null;
+    picks.length === 1 && peerCount === 0 && isSnap
+      ? intersectRectWithViewport(rect, viewport())
+      : null;
   // While a window-derived rect is being resized, where the whole
   // window was: it answers "how much of it am I keeping" while the
   // dim is busy hiding the part being cut away.
@@ -2479,19 +2707,20 @@ export function RegionSelector() {
   // would paint their intersection as dimmed and alpha-checkered while
   // the composite keeps those pixels opaque. Masking is union-shaped:
   // black over black is still black.
-  const holes: Rect[] = !hasPicks
+  const holes: Rect[] = !setLive
     ? []
     : outputMode === "windows"
-      ? picks.map((p) => p.rawRect)
-      : [rect];
+      ? [...picks, ...peerPicks].map((p) => p.rawRect)
+      : [maskBox];
   // Hovering an un-picked window while a set is live: show where the
   // next click would land. The main rect is pinned to the union, so
   // without this there is no feedback that the click does anything.
   const hoverEntry =
-    hasPicks &&
+    setLive &&
     isSnap &&
     snapTarget.kind === "window" &&
-    !picks.some((p) => p.windowId === snapTarget.entry.windowId)
+    !picks.some((p) => p.windowId === snapTarget.entry.windowId) &&
+    !peerPicks.some((p) => p.windowId === snapTarget.entry.windowId)
       ? snapTarget.entry
       : null;
   // Frames are recomputed only when the pick set changes — this
@@ -2646,13 +2875,13 @@ export function RegionSelector() {
     // Multi-select owns the legend while a pick set is live — the
     // single-selection keys (⇧ full-window, drag-region, arrows) either
     // don't apply to a derived union box or would silently drop the set.
-    if (hasPicks) {
+    if (setLive) {
       return (
         <>
           <span>
-            <kbd>click</kbd>add / remove window
+            <kbd>click</kbd>add / remove {multiDisplay ? "window or display" : "window"}
           </span>
-          {picks.length > 1 && (
+          {totalPicks > 1 && (
             <>
               <span className="region-hint-sep">·</span>
               <span>
@@ -2665,7 +2894,7 @@ export function RegionSelector() {
           <span>
             <kbd>tab</kbd>next window
           </span>
-          {picks.length === 1 && (
+          {picks.length === 1 && peerCount === 0 && (
             <>
               <span className="region-hint-sep">·</span>
               <span>
@@ -2885,7 +3114,7 @@ export function RegionSelector() {
           viewport, so a window resize — main calls setBounds on
           `display-metrics-changed`, which on macOS includes a menu-bar
           show/hide — cannot leave an undimmed strip along an edge. */}
-      {hasPicks ? (
+      {setLive ? (
         <svg className="region-mask" aria-hidden>
           <defs>
             {/* Transparency checker. The renderer's own alpha checkers
@@ -2931,10 +3160,10 @@ export function RegionSelector() {
           {outputMode === "windows" && (
             <rect
               className="region-mask__alpha"
-              x={rect.x}
-              y={rect.y}
-              width={Math.max(0, rect.w)}
-              height={Math.max(0, rect.h)}
+              x={maskBox.x}
+              y={maskBox.y}
+              width={Math.max(0, maskBox.w)}
+              height={Math.max(0, maskBox.h)}
               fill="url(#region-alpha-checker)"
               mask="url(#region-mask-holes)"
             />
@@ -2979,6 +3208,22 @@ export function RegionSelector() {
           testId="region-pick"
           badgeClassName="region-pick__badge"
           badge={idx + 1}
+        />
+      ))}
+
+      {/* Multi-display: windows and displays picked on the OTHER
+          displays, where they reach onto this one. Not clickable here —
+          a straddling window is unpicked by clicking it, which main
+          routes to the display that picked it. */}
+      {peerPicks.map((p) => (
+        <WindowFrame
+          key={`peer-${p.windowId}`}
+          entry={p}
+          frame={UNOCCLUDED_FRAME}
+          className="region-pick region-pick--peer"
+          testId="region-pick-peer"
+          badgeClassName="region-pick__badge"
+          badge="↔"
         />
       ))}
 
@@ -3032,7 +3277,7 @@ export function RegionSelector() {
           box and that pick's box are the same rectangle, and drawing
           both puts a dashed border under a solid one. The pick box wins
           because it carries the ordinal badge. */}
-      {!(hasPicks && picks.length === 1) && (
+      {!(hasPicks && picks.length === 1 && peerCount === 0) && !(!hasPicks && peerCount > 0) && (
       <div
         className={
           "region-rect" +
@@ -3040,14 +3285,14 @@ export function RegionSelector() {
           // With a pick set live the rect is the derived union box, not
           // a snap target — never style it as one, or a two-window pick
           // reads as a single-window snap.
-          (hasPicks
+          (setLive
             ? ` region-rect--union region-rect--union-${outputMode}`
             : isSnap
               ? ` region-rect--snap-${snapTarget.kind}`
               : "")
         }
         data-testid="region-rect"
-        style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}
+        style={{ left: maskBox.x, top: maskBox.y, width: maskBox.w, height: maskBox.h }}
       >
         {isAdjustable && (
           <>
@@ -3099,10 +3344,18 @@ export function RegionSelector() {
             />
           )}
           {intent === "video" && <strong style={{ marginRight: 6 }}>RECORD</strong>}
-          {hasPicks ? (
+          {setLive && !hasPicks ? (
             <>
-              {picks.length} {picks.length === 1 ? "window" : "windows"} ·{" "}
-              {Math.round(rect.w)} × {Math.round(rect.h)}
+              {totalPicks} picked on other displays · click to add
+            </>
+          ) : hasPicks ? (
+            <>
+              {totalPicks}{" "}
+              {multiDisplay
+                ? totalPicks === 1 ? "pick" : "picks"
+                : totalPicks === 1 ? "window" : "windows"}{" "}
+              ·{" "}
+              {Math.round(maskBox.w)} × {Math.round(maskBox.h)}
             </>
           ) : isSnap && snapTarget.kind === "window" ? (
             <>
@@ -3150,7 +3403,7 @@ export function RegionSelector() {
         {showHud && (
         <div
           className={
-            hasPicks
+            setLive
               ? `region-hud region-hud--${hudStyle}`
               : `region-hud region-hud--${hudStyle} region-hud--chooser-only`
           }
@@ -3179,7 +3432,7 @@ export function RegionSelector() {
           <div className="region-hud__bar">
           {/* Output shape. Hidden at one pick, where the union box is
               the extent and both modes produce identical pixels. */}
-          {picks.length > 1 && (
+          {totalPicks > 1 && (
             <div className="region-hud__seg" role="group" aria-label="Output shape">
               <button
                 type="button"
@@ -3240,6 +3493,13 @@ export function RegionSelector() {
                 </button>
               ))}
             </div>
+          )}
+          {peerCount > 0 && (
+            <span className="region-hud__chip region-hud__chip--peer" data-testid="region-hud-peer-chip">
+              <span className="region-hud__chip-name">
+                +{peerCount} on {peerCount === 1 ? "another display" : "other displays"}
+              </span>
+            </span>
           )}
           {/* Snap or Record. Choosing is not committing: ↵ (or the
               shutter) commits whichever is chosen, and Record mode is
@@ -3425,7 +3685,7 @@ export function RegionSelector() {
               `interaction.kind` alone said "cancel" for a state Esc
               actually steps back from. */}
           <kbd>esc</kbd>
-          {interaction.kind === "snap" && !hasPicks ? "cancel" : "back"}
+          {interaction.kind === "snap" && !setLive ? "cancel" : "back"}
         </span>
         </div>
         </div>

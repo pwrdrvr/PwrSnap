@@ -127,6 +127,22 @@
   flex: 0 0 auto;
 }
 
+/* Burst take: the mode and the ring's current size. Tabular digits so the
+   count ticking up does not jiggle the bar. */
+.rc__burst {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  flex: 0 0 auto;
+  font: 500 12px/1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.rc__burst > b {
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--accent-bright);
+}
+
 /* Source chips during the take. `no-drag` because the bar itself is a
    drag region — without it the chips would move the window instead of
    reporting anything. */

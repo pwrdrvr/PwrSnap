@@ -314,6 +314,82 @@ describe("recording microphone preflight", () => {
   });
 });
 
+describe("recording:start with output burst", () => {
+  const rect = { x: 10, y: 20, w: 400, h: 300 };
+  const burst = {
+    subject: { kind: "region" as const, rect, displayId: 1 },
+    capabilities: { microphone: false, systemAudio: false },
+    captureCursor: true,
+    output: "burst" as const
+  };
+
+  // Rule: a burst is silent stills of one rectangle. ANY sound, camera,
+  // named microphone or whole-display subject means the caller wanted
+  // something else, and the request is refused whole — never started with
+  // half of it dropped. Checked over every combination of the five
+  // forbidden ingredients, each on its own and together.
+  test("refuses every burst that asks for sound, a camera or a display", async () => {
+    const { default: fc } = await import("fast-check");
+    const { validateRecordingStartRequest } = await import("../recording-handlers");
+    fc.assert(
+      fc.property(
+        fc.record({
+          microphone: fc.boolean(),
+          systemAudio: fc.boolean(),
+          camera: fc.boolean(),
+          device: fc.boolean(),
+          display: fc.boolean()
+        }),
+        (pick) => {
+          // A named microphone is only well-formed with the microphone on.
+          const device = pick.device && pick.microphone;
+          const capabilities = {
+            microphone: pick.microphone,
+            systemAudio: pick.systemAudio,
+            ...(pick.camera ? { camera: { deviceId: "cam-1" } } : {}),
+            ...(device ? { microphoneDevice: { label: "Desk Mic" } } : {})
+          };
+          const subject = pick.display ? { kind: "display" as const, displayId: 1 } : burst.subject;
+          const { output: _output, ...asVideo } = { ...burst, subject, capabilities };
+          // Oracle: the same request as a video is well-formed, so any
+          // refusal below is the burst rule and nothing else.
+          expect(validateRecordingStartRequest(asVideo).ok).toBe(true);
+          const result = validateRecordingStartRequest({ ...burst, subject, capabilities });
+          const forbidden = pick.microphone || pick.systemAudio || pick.camera || device || pick.display;
+          expect(result.ok).toBe(!forbidden);
+        }
+      ),
+      { numRuns: 64 }
+    );
+  });
+
+  test("an unknown output is refused", async () => {
+    const { validateRecordingStartRequest } = await import("../recording-handlers");
+    expect(validateRecordingStartRequest({ ...burst, output: "gif" }).ok).toBe(false);
+  });
+
+  test("off macOS a burst is a typed refusal before anything starts", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    expect(await bus.dispatch("recording:start", burst, { principal: "ipc" })).toMatchObject({
+      ok: false,
+      error: { code: "burst_unsupported" }
+    });
+    expect(mocks.start).not.toHaveBeenCalled();
+  });
+
+  test("on macOS a burst starts with no countdown and the burst output", async () => {
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    mocks.start.mockResolvedValue({ sessionId: "burst-session" });
+    expect(await bus.dispatch("recording:start", burst, { principal: "ipc" })).toEqual({
+      ok: true,
+      value: { sessionId: "burst-session" }
+    });
+    expect(mocks.start).toHaveBeenCalledWith(
+      expect.objectContaining({ output: "burst", countdownSeconds: 0, captureCursor: true })
+    );
+  });
+});
+
 describe("recording:* command-bus surface", () => {
   // Note: `recording-state.ts` holds module-level state. None of the
   // tests in this file call setRecordingState, so the default `{ phase:

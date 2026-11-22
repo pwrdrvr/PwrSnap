@@ -79,10 +79,10 @@ declare global {
         displayId?: number;
         snappedWindowId?: number;
         fullWindow?: boolean;
-        /** Terminal action. Present ONLY for `"record"`; a snap commit
-         *  ships the pre-chooser payload and main reads a missing
-         *  `action` as `"snap"`. */
-        action?: "snap" | "record";
+        /** Terminal action. Present ONLY for `"record"` / `"burst"`; a
+         *  snap commit ships the pre-chooser payload and main reads a
+         *  missing `action` as `"snap"`. */
+        action?: "snap" | "record" | "burst";
         captureCursor?: boolean;
         /** Recording-only: the audio sources armed on the selector's
          *  source chips. Omitted for image captures and for shows that
@@ -172,6 +172,9 @@ declare global {
            *  recording, which is also what leaves the chips hidden. */
           sources?: import("@pwrsnap/shared").RecordingCapabilities;
   cameraOffered?: boolean;
+          /** True when this backend can take a burst (macOS today):
+           *  the chooser then offers Burst next to Snap and Record. */
+          burstOffered?: boolean;
           /** The saved microphone and camera, from
            *  `settings.recording.microphoneDevice` / `.cameraDevice`. */
           devices?: import("@pwrsnap/shared").RecordingDeviceDefaults;

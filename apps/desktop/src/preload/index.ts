@@ -322,7 +322,7 @@ const pwrsnapApi = {
      *  unchanged and main reads a missing `action` as `"snap"`. Main
      *  re-derives this against the persisted policy and never trusts a
      *  `"record"` it did not offer. */
-    action?: "snap" | "record";
+    action?: "snap" | "record" | "burst";
     /** Recording-only: whether the recording bakes in the mouse cursor,
      *  from the selector's `C` toggle. Omitted for image captures. */
     captureCursor?: boolean;

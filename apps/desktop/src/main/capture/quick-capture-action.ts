@@ -22,6 +22,9 @@ import type { QuickCaptureAction, SelectorTerminalAction } from "@pwrsnap/shared
  * `"record"` regardless of the echo would eat the `S` escape hatch and
  * record a selection the user explicitly asked to photograph.
  *
+ * Burst rides the same chooser and the same rule: it is offered beside
+ * Record under `"ask"` / `"record"`, only on a backend that writes stills.
+ *
  * Note what this function is NOT: it does not know about pick sets. A
  * multi-window commit cannot be recorded at all, and that is enforced
  * where the two facts meet — the renderer's `recordAvailable()` and the
@@ -30,8 +33,13 @@ import type { QuickCaptureAction, SelectorTerminalAction } from "@pwrsnap/shared
  */
 export function resolveQuickCaptureAction(
   preference: QuickCaptureAction,
-  reported: SelectorTerminalAction | undefined
+  reported: SelectorTerminalAction | undefined,
+  /** Whether this show offered Burst (the backend can write stills). A
+   *  "burst" echo from a show that did not offer it falls back to a snap,
+   *  for the same reason a "record" echo under `"snap"` does. */
+  burstOffered = false
 ): SelectorTerminalAction {
   if (preference === "snap") return "snap";
+  if (reported === "burst" && !burstOffered) return "snap";
   return reported ?? "snap";
 }

@@ -28,6 +28,8 @@ export function recordingBackendCapabilities(
         liveDisconnectDetection: false,
         midRecordingToggles: false
       },
+      // The native recorder writes full-resolution stills (burst.swift).
+      outputs: { burst: true },
       controllerExcludedFromCapture: true
     };
   }
@@ -45,6 +47,8 @@ export function recordingBackendCapabilities(
         liveDisconnectDetection: false,
         midRecordingToggles: false
       },
+      // gdigrab has no still sink yet; Burst stays out of the selector.
+      outputs: { burst: false },
       controllerExcludedFromCapture: false
     };
   }
@@ -61,6 +65,7 @@ export function recordingBackendCapabilities(
       liveDisconnectDetection: false,
       midRecordingToggles: false
     },
+    outputs: { burst: false },
     controllerExcludedFromCapture: false
   };
 }

@@ -14,16 +14,20 @@ import { setVideoCamera } from "../persistence/video-repo";
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { app, Notification, screen } from "electron";
 import { nanoid } from "nanoid";
-import type {
-  RecordingCapabilities,
-  RecordingFailureCode,
-  RecordingSubject
+import {
+  BURST_FPS,
+  BURST_MAX_FRAMES,
+  type RecordingCapabilities,
+  type RecordingFailureCode,
+  type RecordingOutput,
+  type RecordingSubject
 } from "@pwrsnap/shared";
+import { BURST_TEMP_PREFIX, discardBurst, openBurstSession } from "../burst/burst-session";
 import { getMainLogger } from "../log";
 import { globalRectToDisplayLocal } from "../capture/rect-overlap";
 import { setFloatOverState } from "../float-over";
@@ -72,7 +76,8 @@ function snapshotStartOptions(opts: StartOptions): StartOptions {
       ...(opts.capabilities.microphoneDevice ? { microphoneDevice: { ...opts.capabilities.microphoneDevice } } : {})
     },
     countdownSeconds: opts.countdownSeconds,
-    captureCursor: opts.captureCursor
+    captureCursor: opts.captureCursor,
+    ...(opts.output === "burst" ? { output: "burst" as const } : {})
   };
 }
 
@@ -120,6 +125,9 @@ export type StartOptions = {
    *  backend. `| undefined` is explicit so restart() can forward a possibly-unset
    *  snapshot under exactOptionalPropertyTypes. */
   captureCursor?: boolean | undefined;
+  /** `burst`: lossless stills into a ring, reviewed after Stop. Absent = a
+   *  video. Audio and camera are never recorded for a burst. */
+  output?: RecordingOutput | undefined;
 };
 
 export type TrustedRecordingWindowIdentity = Readonly<{
@@ -129,7 +137,9 @@ export type TrustedRecordingWindowIdentity = Readonly<{
 
 export type RecordingService = {
   start(opts: StartOptions): Promise<{ sessionId: string }>;
-  stop(): Promise<{ captureId: string }>;
+  /** A video returns its capture; a burst returns `captureId: ""` and the
+   *  `burstId` its review window was opened on. */
+  stop(): Promise<{ captureId: string; burstId?: string }>;
   cancel(): Promise<void>;
   /** Discard the in-flight session and immediately start a fresh
    *  one with the same subject + capabilities. Throws
@@ -197,13 +207,15 @@ type RecorderStartedEvent = {
 type RecorderStoppedEvent = {
   event: "stopped";
   durationSec: number;
-  containerFormat: "mp4" | "mov";
+  containerFormat: "mp4" | "mov" | "burst";
+  /** Burst only: the ring the recorder ended with. */
+  burst?: { written?: number; dropped?: number; failed?: number; evicted?: number; frames?: unknown[]; pointerSprites?: unknown[] };
   hasSystemAudio: boolean;
   hasMicrophoneAudio: boolean;
   outputPath: string;
 };
 type RecorderErrorEvent = { event: "error"; code: string; message: string };
-type RecorderEvent = RecorderStartedEvent | RecorderStoppedEvent | RecorderErrorEvent | { event: "timeline"; utcTimeMs?: number } | { event: "cameraPreview"; excluded: boolean };
+type RecorderEvent = RecorderStartedEvent | RecorderStoppedEvent | RecorderErrorEvent | { event: "timeline"; utcTimeMs?: number } | { event: "cameraPreview"; excluded: boolean } | { event: "burstProgress"; kept?: number; written?: number };
 
 // Resources and waiters belong to one admitted attempt, including the period
 // before a child exists. Never look up a child/temp directory through mutable
@@ -242,7 +254,9 @@ class RecordingAttempt {
   startFailureCode: RecordingFailureCode = "recorder_start_failed";
   trustedWindowIdentity: TrustedRecordingWindowIdentity | null = null;
   sourceWindowTitlePromise: Promise<string | null> | null = null;
-  stopOperation: Promise<{ captureId: string }> | null = null;
+  stopOperation: Promise<{ captureId: string; burstId?: string }> | null = null;
+  /** Burst only: stills the ring holds, from the recorder's progress lines. */
+  burstFrames = 0;
   cancelOperation: Promise<void> | null = null;
   cleanupOperation: Promise<void> | null = null;
   restarting = false;
@@ -345,7 +359,12 @@ abstract class AttemptRecorderService implements RecordingService {
       }
       // Assign late allocations to their owner even if cancellation wins the
       // wait. Retirement drains allocation before releasing admission.
-      attempt.allocation = mkdtemp(join(tmpdir(), "pwrsnap-recording-")).then(dir => {
+      const isBurst = attempt.options.output === "burst";
+      attempt.allocation = mkdtemp(join(tmpdir(), isBurst ? BURST_TEMP_PREFIX : "pwrsnap-recording-")).then(async dir => {
+        if (isBurst) {
+          await mkdir(join(dir, "frames"));
+          if (attempt.options.captureCursor !== false) await mkdir(join(dir, "pointer"));
+        }
         attempt.tempDir = dir;
         attempt.outputPath = join(dir, `${attempt.sessionId}.mp4`);
         return dir;
@@ -359,12 +378,7 @@ abstract class AttemptRecorderService implements RecordingService {
       await this.startRecorder(attempt, binary);
       this.assertStarting(attempt);
       attempt.phase = "recording";
-      setRecordingState({
-        phase: "recording", sessionId: attempt.sessionId,
-        startedAt: new Date(attempt.startedAtMs).toISOString(),
-        rect: attempt.rect, displayId: attempt.displayId,
-        capabilities: this.recordedCapabilities(attempt)
-      });
+      this.publishRecording(attempt);
       return { sessionId: attempt.sessionId };
     } catch (cause) {
       if (attempt.cancelled || !this.owns(attempt)) throw new Error("cancelled");
@@ -374,6 +388,16 @@ abstract class AttemptRecorderService implements RecordingService {
         cause, { canRetry });
       throw cause;
     }
+  }
+
+  protected publishRecording(attempt: RecordingAttempt): void {
+    setRecordingState({
+      phase: "recording", sessionId: attempt.sessionId,
+      startedAt: new Date(attempt.startedAtMs).toISOString(),
+      rect: attempt.rect, displayId: attempt.displayId,
+      capabilities: this.recordedCapabilities(attempt),
+      ...(attempt.options.output === "burst" ? { output: "burst" as const, burstFrames: attempt.burstFrames } : {})
+    });
   }
 
   protected recordedCapabilities(attempt: RecordingAttempt): RecordingCapabilities {
@@ -395,7 +419,7 @@ abstract class AttemptRecorderService implements RecordingService {
     setRecordingState({ phase: "starting", sessionId: attempt.sessionId, rect: attempt.rect, displayId: attempt.displayId });
   }
 
-  stop(): Promise<{ captureId: string }> {
+  stop(): Promise<{ captureId: string; burstId?: string }> {
     const attempt = this.attempt;
     if (!attempt) return Promise.reject(new Error("no_active_recording"));
     if (attempt.stopOperation) return attempt.stopOperation;
@@ -406,7 +430,7 @@ abstract class AttemptRecorderService implements RecordingService {
     return attempt.stopOperation;
   }
 
-  private async finish(attempt: RecordingAttempt): Promise<{ captureId: string }> {
+  private async finish(attempt: RecordingAttempt): Promise<{ captureId: string; burstId?: string }> {
     setRecordingState({ phase: "stopping", sessionId: attempt.sessionId });
     let stopped: RecorderStoppedEvent;
     try {
@@ -423,12 +447,16 @@ abstract class AttemptRecorderService implements RecordingService {
     }
     attempt.phase = "processing";
     setRecordingState({ phase: "processing", sessionId: attempt.sessionId });
+    if (attempt.options.output === "burst") return this.finishBurst(attempt, stopped);
     let sourceAdopted = false;
     try {
       const sourceWindowTitle = await (attempt.sourceWindowTitlePromise ?? Promise.resolve(null));
       const requested = this.recordedCapabilities(attempt);
+      // A video take's recorder never reports a burst container.
+      const containerFormat = stopped.containerFormat === "mov" ? "mov" : "mp4";
       const stored = await persistStoppedRecording({
         ...stopped,
+        containerFormat,
         requestedSystemAudio: requested.systemAudio,
         requestedMicrophone: requested.microphone,
         subject: attempt.options.subject, sourceWindowTitle,
@@ -454,6 +482,71 @@ abstract class AttemptRecorderService implements RecordingService {
         { preserveTempDir: !sourceAdopted, canRetry: false });
       throw cause;
     }
+  }
+
+  /** Hand the burst's temp directory to a review session. From here the
+   *  session owns (and deletes) it; the attempt only retires. */
+  private async finishBurst(
+    attempt: RecordingAttempt,
+    stopped: RecorderStoppedEvent
+  ): Promise<{ captureId: string; burstId: string }> {
+    let burstId: string;
+    try {
+      const rootDir = attempt.tempDir;
+      if (rootDir === null) throw new Error("burst directory is gone");
+      const subject = attempt.options.subject;
+      const sourceWindowTitle = await (attempt.sourceWindowTitlePromise ?? Promise.resolve(null));
+      burstId = openBurstSession({
+        rootDir,
+        framesDir: join(rootDir, "frames"),
+        frames: Array.isArray(stopped.burst?.frames) ? stopped.burst.frames : [],
+        evictedFrames: stopped.burst?.evicted ?? 0,
+        droppedFrames: stopped.burst?.dropped ?? 0,
+        sourceApp: subject.kind === "window"
+          ? { bundleId: subject.appBundleId ?? null, appName: subject.appName ?? null }
+          : null,
+        sourceWindowTitle,
+        devicePixelRatio: displayScaleFactor(attempt.displayId),
+        ...(attempt.options.captureCursor !== false
+          ? {
+              pointerDir: join(rootDir, "pointer"),
+              pointerSprites: Array.isArray(stopped.burst?.pointerSprites) ? stopped.burst.pointerSprites : []
+            }
+          : {})
+      });
+      // Ownership moved: retiring the attempt must not delete the stills.
+      attempt.tempDir = null;
+      await this.cleanup(attempt);
+      this.retryOptions = null;
+      this.retryWindowIdentity = null;
+      this.attempt = null;
+      setRecordingState({ phase: "idle" });
+    } catch (cause) {
+      log.warn("burst hand-off failed; stills preserved for recovery", {
+        tempDir: attempt.tempDir,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      await this.fail(attempt, "processing_failed", cause, { preserveTempDir: true, canRetry: false });
+      throw cause;
+    }
+    // The take is over and the session owns the stills; from here a
+    // failure is the session's, not the attempt's. Loaded lazily: the
+    // review window pulls in the whole window layer, which nothing else in
+    // the recording service needs.
+    try {
+      const { openBurstReviewWindow } = await import("../burst/burst-review-window");
+      openBurstReviewWindow(burstId);
+    } catch (cause) {
+      // No window means no way to choose: don't leave stills nobody can
+      // reach sitting in temp until quit.
+      log.warn("burst review window failed to open; discarding", {
+        burstId,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      await discardBurst(burstId);
+      throw cause;
+    }
+    return { captureId: "", burstId };
   }
 
   async restart(): Promise<{ sessionId: string }> {
@@ -649,9 +742,21 @@ class NativeRecorderService extends AttemptRecorderService {
       microphone: options.capabilities.microphone,
       ...(options.capabilities.microphone && options.capabilities.microphoneDevice !== undefined
         ? { microphoneDevice: options.capabilities.microphoneDevice.label } : {}),
-      showsCursor: options.captureCursor,
+      // A burst never paints the pointer into its stills: it tracks it
+      // beside them instead (burstPointerDir), so moving it is not a change.
+      showsCursor: options.output === "burst" ? false : options.captureCursor,
       captureAtMs: Date.now() + options.countdownSeconds * 1000,
-      excludePids: collectOurPids(), cameraPreview
+      excludePids: collectOurPids(), cameraPreview,
+      ...(options.output === "burst"
+        ? {
+            mode: "burst",
+            burstDir: join(attempt.tempDir ?? "", "frames"),
+            burstFps: BURST_FPS,
+            burstMaxFrames: BURST_MAX_FRAMES,
+            pixelScale: displayScaleFactor(attempt.displayId),
+            ...(options.captureCursor !== false ? { burstPointerDir: join(attempt.tempDir ?? "", "pointer") } : {})
+          }
+        : {})
     }) + "\n");
     await this.countdown(attempt);
     await withDeadline(attempt.wait(attempt.started.promise), 15_000, "recorder_start_timeout");
@@ -700,6 +805,12 @@ class NativeRecorderService extends AttemptRecorderService {
           break;
         case "cameraPreview":
           confirmCameraPreviewExclusion(parsed.excluded === true);
+          break;
+        case "burstProgress":
+          if (typeof parsed.kept === "number" && Number.isFinite(parsed.kept)) {
+            attempt.burstFrames = Math.max(0, Math.floor(parsed.kept));
+            if (attempt.phase === "recording") this.publishRecording(attempt);
+          }
           break;
         case "started":
           if (!attempt.startAcknowledged) {
@@ -1029,6 +1140,12 @@ function subjectToPhysicalRect(subject: RecordingSubject): {
       return { x: 0, y: 0, w: 0, h: 0 };
     }
   }
+}
+
+/** Backing pixels per point of a display (1 when it is gone). */
+function displayScaleFactor(displayId: number): number {
+  const display = screen.getAllDisplays().find((d) => d.id === displayId);
+  return display !== undefined && display.scaleFactor > 0 ? display.scaleFactor : 1;
 }
 
 function subjectDisplayId(subject: RecordingSubject): number {

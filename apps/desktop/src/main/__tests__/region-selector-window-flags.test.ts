@@ -25,6 +25,7 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { BrowserWindow, Display } from "electron";
+import { SELECTOR_TERMINAL_ACTIONS } from "@pwrsnap/shared";
 import type { ScreenSnapshot } from "../capture/screen-snapshot";
 import type { WindowInfo } from "../capture/window-list";
 
@@ -1326,16 +1327,66 @@ describe("region-selector — Snap-vs-Record commit payload (issue #75)", () => 
     expect(result).not.toHaveProperty("action");
   });
 
-  test("rejects a commit whose action is neither snap nor record", async () => {
+  // Oracle: the renderer's chooser commits SelectorTerminalAction, so main
+  // must honor every member of that list — and nothing else. Main once
+  // kept its own two-item list, and a Burst commit arrived as a cancel:
+  // the selector closed and nothing started.
+  test.each(SELECTOR_TERMINAL_ACTIONS.map((action) => [action]))(
+    "a %s commit from the chooser is a commit, never a cancel",
+    async (action) => {
+      const { pickRegion } = await import("../capture/region-selector");
+      const pick = pickRegion({ quickCaptureAction: "ask", burstOffered: true });
+      await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
+
+      emitSelectorResult({
+        ok: true,
+        rect: { x: 10, y: 20, w: 300, h: 200 },
+        displayId: 1,
+        snappedWindowId: 42,
+        action
+      });
+      const result = await pick;
+      expect(result).toMatchObject({ ok: true, snappedWindowId: 42 });
+      // A snap rides as the absence of an action (the pre-chooser wire shape).
+      if (action === "snap") expect(result).not.toHaveProperty("action");
+      else expect(result).toMatchObject({ action });
+    }
+  );
+
+  test.each([["video"], ["Burst"], [""], ["record "]])(
+    "rejects a commit whose action %j is not one the chooser has",
+    async (action) => {
+      const { pickRegion } = await import("../capture/region-selector");
+      const pick = pickRegion();
+      await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
+
+      emitSelectorResult(
+        { ok: true, rect: { x: 10, y: 20, w: 300, h: 200 }, displayId: 1, action }
+      );
+      // An unparseable payload is a cancel, not a partially-honored commit.
+      await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+    }
+  );
+
+  test("strips a burst action from a multi-window commit, as it does a record", async () => {
+    // A burst is one rectangular stream too; the union box would catch the gaps.
     const { pickRegion } = await import("../capture/region-selector");
-    const pick = pickRegion();
+    const pick = pickRegion({ quickCaptureAction: "ask", burstOffered: true });
     await vi.waitFor(() => expect(constructed[0]?.show).toHaveBeenCalled());
 
-    emitSelectorResult(
-      { ok: true, rect: { x: 10, y: 20, w: 300, h: 200 }, displayId: 1, action: "video" }
-    );
-    // An unparseable payload is a cancel, not a partially-honored commit.
-    await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
+    emitSelectorResult({
+      ok: true,
+      rect: { x: 0, y: 0, w: 800, h: 600 },
+      displayId: 1,
+      action: "burst",
+      extents: [
+        { x: 0, y: 0, w: 200, h: 200 },
+        { x: 600, y: 400, w: 200, h: 200 }
+      ]
+    });
+    const result = await pick;
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty("action");
   });
 
   test("strips a record action from a multi-window commit and keeps the extents", async () => {

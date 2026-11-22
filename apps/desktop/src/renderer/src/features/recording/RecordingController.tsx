@@ -12,6 +12,8 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
 import {
+  BURST_FPS,
+  BURST_MAX_FRAMES,
   EVENT_CHANNELS,
   recordingFailureSummary,
   type RecordingBackendCapabilities,
@@ -212,6 +214,11 @@ export function RecordingController(): ReactElement {
     state.phase === "preflight" || state.phase === "countdown" || state.phase === "starting";
   const isRecording = state.phase === "recording";
   const isStopping = state.phase === "stopping" || state.phase === "processing";
+  // A burst rides the same take lifecycle with its own words: it keeps a
+  // ring of stills, Stop opens the review, and there is no Restart (the
+  // ring already keeps only the newest seconds).
+  const isBurst = isRecording && state.output === "burst";
+  const burstFrames = isRecording ? state.burstFrames ?? 0 : 0;
 
   if (state.phase === "failed") {
     return <RecordingFailureCard state={state} />;
@@ -249,11 +256,22 @@ export function RecordingController(): ReactElement {
                 <span data-recording-dot className="rc__dot" />
                 <span
                   role="timer"
-                  aria-label={`Recording duration ${formatHMS(elapsedSec)}`}
+                  aria-label={`${isBurst ? "Burst" : "Recording"} duration ${formatHMS(elapsedSec)}`}
                   className="rc__timer"
                 >
                   {formatHMS(elapsedSec)}
                 </span>
+                {isBurst && (
+                  <>
+                    <span className="rc__sep" aria-hidden="true" />
+                    <span className="rc__burst" data-testid="rc-burst">
+                      <b>BURST</b>
+                      <span data-testid="rc-burst-frames">
+                        {burstFrames} {burstFrames === 1 ? "still" : "stills"}
+                      </span>
+                    </span>
+                  </>
+                )}
                 {/* What this take is capturing, in the same chips the
                     selector offered and the float-over will confirm.
                     These are the REQUESTED sources: neither shipped
@@ -292,14 +310,14 @@ export function RecordingController(): ReactElement {
                     type="button"
                     className="rc__btn rc__btn--stop"
                     data-recording-action="stop"
-                    aria-label="Stop and save recording"
+                    aria-label={isBurst ? "Stop and review the burst" : "Stop and save recording"}
                     disabled={busyAction !== null}
                     onClick={() => void runAction("stop")}
                   >
-                    {busyAction === "stop" ? "Stopping…" : "Stop"}
+                    {busyAction === "stop" ? "Stopping…" : isBurst ? "Stop & review" : "Stop"}
                   </button>
                 )}
-                {(backend?.controls.restart ?? true) && (
+                {!isBurst && (backend?.controls.restart ?? true) && (
                   <button
                     type="button"
                     className="rc__btn rc__btn--restart"
@@ -351,7 +369,9 @@ export function RecordingController(): ReactElement {
               </div>
             )}
             <div data-recording-caption className="rc__caption">
-              {backend === null
+              {isBurst
+                ? `${BURST_FPS} stills a second while the screen changes · keeps the last ${Math.round(BURST_MAX_FRAMES / BURST_FPS)} s`
+                : backend === null
                 ? "Checking recorder capabilities…"
                 : backend.controllerExcludedFromCapture
                   ? "this controller is not visible in the recording"

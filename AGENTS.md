@@ -250,8 +250,8 @@ float-over state delivery, the dock, or how the toast closes:
 - **The float-over asks for its state; main never sends it on a timer.**
 - **The float-over dock is the toast's own window, and it never lands in a
   capture.**
-- **A copy click, then a leave, closes the toast; a close onto the tabs
-  folds.**
+- **Taking the snap (copy click, ⌘1–3, drag out), then a leave, closes
+  the toast; a close onto the tabs folds.**
 
 Read [docs/agents/recording.md](docs/agents/recording.md) before changing the
 recording frame, the HUD, anything shown during a take, or activation:

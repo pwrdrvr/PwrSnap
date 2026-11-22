@@ -52,6 +52,12 @@ type VariantId = keyof typeof VARIANTS;
  * closes the way a countdown ends. Coming back inside it stops the drain.
  */
 export const COPY_LEAVE_CLOSE_MS = 400;
+/**
+ * Dragging a file out of the toast arms it like a copy. During the native
+ * drag the window gets no mouse events, only `dragover` while the pointer
+ * is over it, every ~50ms; this long without one means it has left.
+ */
+export const DRAG_OUT_LEAVE_MS = 150;
 /** The plain exit (`fo-out` in float-over.css). */
 export const FADE_EXIT_MS = 220;
 /** The fold into the screen edge (`fo-tuck` in float-over.css), used for
@@ -614,7 +620,6 @@ export function FloatOver({
     null
   );
   const [hovering, setHovering] = useState(false);
-  const [nativeDragging, setNativeDragging] = useState(false);
   // A trim-handle drag on the video strip takes pointer capture, so it
   // keeps running after the pointer leaves the toast — `mouseleave`
   // fires, `hovering` drops, and without this term the countdown would
@@ -626,10 +631,15 @@ export function FloatOver({
   // "fade" for a close that removes the snap, "tuck" for one that lands
   // it on the edge tabs (the window folds into that edge).
   const [exiting, setExiting] = useState<"fade" | "tuck" | null>(null);
-  // A copy card click succeeded: leaving the window now closes the toast
+  // The user took the snap: a copy card click that succeeded, a ⌘1–3
+  // copy, or a file dragged out. Leaving the window now closes the toast
   // (COPY_LEAVE_CLOSE_MS) instead of resuming the countdown. Never
   // disarms; the toast remounts for every snap it shows.
   const [closeOnLeave, setCloseOnLeave] = useState(false);
+  // While a file dragged out of the toast is in flight: the timer that
+  // decides the pointer has left (DRAG_OUT_LEAVE_MS without a dragover).
+  const dragOutRef = useRef(false);
+  const dragOutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [storage, setStorage] = useState({ drive: false, dropbox: false, s3: false });
   const [visibleSrc, setVisibleSrc] = useState(src);
   const [sourceLoaded, setSourceLoaded] = useState(false);
@@ -815,7 +825,6 @@ export function FloatOver({
     (!tuckMode && inFlight) ||
     externalHover ||
     hovering ||
-    nativeDragging ||
     trimDragging ||
     hasUserDescription ||
     hasUserTitle ||
@@ -917,9 +926,7 @@ export function FloatOver({
   }, [isPaused, startCountdown, autoMs, closeOnLeave]);
 
   // A click on a copy card (or its FILE chip) arms close-on-leave once
-  // the copy reports success. The ⌘1–3 shortcuts do not come through
-  // here: they fire from another app, with the pointer usually nowhere
-  // near the toast, and arming them would close it right after the key.
+  // the copy reports success.
   const armingCopy = (action: CopyAction | undefined): CopyAction => (preset) => {
     const outcome = action?.(preset);
     if (outcome === undefined) {
@@ -932,9 +939,49 @@ export function FloatOver({
     });
   };
 
+  // ⌘1–3 arm it too. Main pulses a card for every shortcut copy (it owns
+  // the chords globally, so this fires with another app frontmost); with
+  // the pointer already elsewhere, the toast drains and closes right
+  // away. The pulse counts are the host's and outlive a toast, so only a
+  // rise past what this toast mounted with counts.
+  const pulseTotal = (copyPulses?.low ?? 0) + (copyPulses?.med ?? 0) + (copyPulses?.high ?? 0);
+  const pulseBaselineRef = useRef(pulseTotal);
+  useEffect(() => {
+    if (pulseTotal > pulseBaselineRef.current) setCloseOnLeave(true);
+  }, [pulseTotal]);
+
+  // No dragover for DRAG_OUT_LEAVE_MS: the dragged file, and the pointer
+  // with it, has left the window.
+  const awaitDragOutLeave = (): void => {
+    if (dragOutTimerRef.current !== null) clearTimeout(dragOutTimerRef.current);
+    dragOutTimerRef.current = setTimeout(() => {
+      dragOutTimerRef.current = null;
+      setHovering(false);
+    }, DRAG_OUT_LEAVE_MS);
+  };
+  const endDragOut = (): void => {
+    dragOutRef.current = false;
+    if (dragOutTimerRef.current !== null) clearTimeout(dragOutTimerRef.current);
+    dragOutTimerRef.current = null;
+  };
+  const awaitDragOutLeaveRef = useRef(awaitDragOutLeave);
+  awaitDragOutLeaveRef.current = awaitDragOutLeave;
+  const endDragOutRef = useRef(endDragOut);
+  endDragOutRef.current = endDragOut;
+
+  // A file dragged out of the preview or a card's FILE chip is the snap
+  // being taken, like a copy: it arms close-on-leave, and the drag
+  // leaving the window is the leave. Nothing holds the toast for the
+  // drag.
+  const startDragOut = (): void => {
+    setCloseOnLeave(true);
+    dragOutRef.current = true;
+    awaitDragOutLeave();
+  };
+
   useEffect(() => {
     const finishNativeDrag = (event?: MouseEvent | DragEvent): void => {
-      setNativeDragging(false);
+      endDragOutRef.current();
       // Backstop for the trim hold. The strip's own pointerup only
       // reaches `VideoTimeline` while pointer capture holds; if capture
       // was never taken (setPointerCapture threw) the release lands on
@@ -949,45 +996,41 @@ export function FloatOver({
 
     const handleMouseMove = (event: MouseEvent): void => {
       syncHoverFromPoint(event.clientX, event.clientY);
-      if (nativeDragging && event.buttons === 0) {
-        setNativeDragging(false);
-      }
     };
     const handleMouseOut = (event: MouseEvent): void => {
-      if (event.relatedTarget === null) {
-        setHovering(false);
-        if (nativeDragging && event.buttons === 0) {
-          setNativeDragging(false);
-        }
-      }
+      if (event.relatedTarget === null) setHovering(false);
+    };
+    // Over the window mid-drag, the only sign of the pointer.
+    const handleDragOver = (event: DragEvent): void => {
+      if (!dragOutRef.current) return;
+      syncHoverFromPoint(event.clientX, event.clientY);
+      awaitDragOutLeaveRef.current();
     };
     const handleBlur = (): void => {
       setHovering(false);
-      setNativeDragging(false);
-    };
-    const handleKeyUp = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") {
-        setNativeDragging(false);
-      }
     };
 
     window.addEventListener("mousemove", handleMouseMove);
     window.addEventListener("mouseout", handleMouseOut);
+    window.addEventListener("dragover", handleDragOver);
     window.addEventListener("mouseup", finishNativeDrag);
     window.addEventListener("dragend", finishNativeDrag);
     window.addEventListener("drop", finishNativeDrag);
     window.addEventListener("blur", handleBlur);
-    window.addEventListener("keyup", handleKeyUp);
     return () => {
       window.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("mouseout", handleMouseOut);
+      window.removeEventListener("dragover", handleDragOver);
       window.removeEventListener("mouseup", finishNativeDrag);
       window.removeEventListener("dragend", finishNativeDrag);
       window.removeEventListener("drop", finishNativeDrag);
       window.removeEventListener("blur", handleBlur);
-      window.removeEventListener("keyup", handleKeyUp);
+      endDragOutRef.current();
     };
-  }, [nativeDragging]);
+    // Registered once: everything it calls is reached through refs, or
+    // reads only refs (syncHoverFromPoint).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Clear any pending exit-animation timer on unmount. Prevents a
   // setTimeout from a previous mount firing onDismiss after the NEW
@@ -1010,17 +1053,13 @@ export function FloatOver({
   const dragFile = (event: React.DragEvent): void => {
     if (onDragFile === undefined) return;
     event.preventDefault();
-    setNativeDragging(true);
-    syncHoverFromPoint(event.clientX, event.clientY);
+    startDragOut();
     onDragFile();
   };
 
-  // A card's FILE chip hands the OS a file the same way: the drag is a
-  // hold, or an armed toast would close 400 ms into it. The window-level
-  // mouseup / dragend / drop listeners release it.
   const dragPreset = (preset: "low" | "med" | "high"): void => {
     if (onDragPreset === undefined) return;
-    setNativeDragging(true);
+    startDragOut();
     onDragPreset(preset);
   };
 

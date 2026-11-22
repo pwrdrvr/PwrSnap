@@ -5,23 +5,24 @@ import fc from "fast-check";
 import type { CaptureEnrichment } from "@pwrsnap/shared";
 import {
   COPY_LEAVE_CLOSE_MS,
+  DRAG_OUT_LEAVE_MS,
   FADE_EXIT_MS,
   FloatOver,
   TUCK_EXIT_MS
 } from "../FloatOver";
 import { DOCK_TUCK_COUNTDOWN_MS } from "../float-over-dock-model";
 
-// The rule: a successful click on one of the toast's own copy cards (or a
-// card's FILE chip) arms the toast, and from then on every stretch with
-// the pointer outside the window closes it after COPY_LEAVE_CLOSE_MS
-// instead of resuming the countdown. Nothing else arms it: a failed copy,
-// a ⌘1–3 shortcut, hovering. Dragging a card's file out holds it like
-// hovering does. Unarmed, the countdown is exactly what it
-// always was: DOCK_TUCK_COUNTDOWN_MS of pointer-outside time.
+// The rule: taking the snap arms the toast — a successful click on one of
+// its copy cards (or a card's FILE chip), a ⌘1–3 shortcut copy, or a file
+// dragged out — and from then on every stretch with the pointer outside
+// the window closes it after COPY_LEAVE_CLOSE_MS instead of resuming the
+// countdown. A failed copy and hovering do not arm it. Mid-drag the
+// window sees no mouse events, only dragover while the pointer is over
+// it, so DRAG_OUT_LEAVE_MS without one is a leave. Unarmed, the countdown
+// is exactly what it always was: DOCK_TUCK_COUNTDOWN_MS of
+// pointer-outside time.
 
 beforeEach(() => {
-  // jsdom has no layout: after a drop the pointer is over nothing here.
-  document.elementFromPoint = () => null;
   vi.useFakeTimers({
     toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "requestAnimationFrame", "cancelAnimationFrame", "Date"]
   });
@@ -64,6 +65,7 @@ type Step =
   | { readonly kind: "copy"; readonly ok: boolean; readonly via: "card" | "file" }
   | { readonly kind: "shortcut" }
   | { readonly kind: "drag" }
+  | { readonly kind: "dragover" }
   | { readonly kind: "drop" }
   | { readonly kind: "wait"; readonly ms: number };
 
@@ -73,6 +75,7 @@ const stepArb: fc.Arbitrary<Step> = fc.oneof(
   fc.record({ kind: fc.constant("copy" as const), ok: fc.boolean(), via: fc.constantFrom("card" as const, "file" as const) }),
   fc.constant<Step>({ kind: "shortcut" }),
   fc.constant<Step>({ kind: "drag" }),
+  fc.constant<Step>({ kind: "dragover" }),
   fc.constant<Step>({ kind: "drop" }),
   // Short waits land inside the 400 ms drain; long ones cross the countdown.
   fc.record({ kind: fc.constant("wait" as const), ms: fc.oneof(fc.integer({ min: 1, max: COPY_LEAVE_CLOSE_MS - 1 }), fc.integer({ min: 1, max: 3000 })) })
@@ -85,26 +88,37 @@ const stepArb: fc.Arbitrary<Step> = fc.oneof(
 type Model = {
   t: number;
   inside: boolean;
-  /** A card's FILE chip is being dragged out: a hold, like hovering. */
-  dragging: boolean;
   armed: boolean;
+  /** A file is being dragged out of the toast. */
+  dragOut: boolean;
+  /** When the drag's silence (no dragover) turns into a leave. */
+  leaveAt: number | null;
   /** Unarmed countdown time already spent outside, banked at each enter. */
   spent: number;
   runStart: number;
   deadline: number | null;
 };
 
-/** Apply a change to what holds the bar, starting or stopping a run. */
-function hold(m: Model, change: Partial<Pick<Model, "inside" | "dragging">>): void {
-  const wasRunning = !m.inside && !m.dragging;
-  Object.assign(m, change);
-  const running = !m.inside && !m.dragging;
-  if (wasRunning && !running) {
+/** The pointer enters or leaves, starting or stopping a run. */
+function point(m: Model, inside: boolean): void {
+  if (inside === m.inside) return;
+  m.inside = inside;
+  if (inside) {
     if (!m.armed) m.spent += m.t - m.runStart;
     m.deadline = null;
-  } else if (!wasRunning && running) {
+  } else {
     m.runStart = m.t;
     m.deadline = m.armed ? m.t + COPY_LEAVE_CLOSE_MS : m.t + (DOCK_TUCK_COUNTDOWN_MS - m.spent);
+  }
+}
+
+/** The snap is taken. A run already going restarts as the 400 ms drain. */
+function arm(m: Model): void {
+  if (m.armed) return;
+  m.armed = true;
+  if (!m.inside) {
+    m.runStart = m.t;
+    m.deadline = m.t + COPY_LEAVE_CLOSE_MS;
   }
 }
 
@@ -149,50 +163,59 @@ test("only a successful copy click arms it, and armed, each leave closes in COPY
         onDragPreset
       });
       const exitMs = sidebarVisible ? TUCK_EXIT_MS : FADE_EXIT_MS;
-      const m: Model = { t: 0, inside: false, dragging: false, armed: false, spent: 0, runStart: 0, deadline: DOCK_TUCK_COUNTDOWN_MS };
+      const m: Model = { t: 0, inside: false, armed: false, dragOut: false, leaveAt: null, spent: 0, runStart: 0, deadline: DOCK_TUCK_COUNTDOWN_MS };
       const fo = (): HTMLElement => container.querySelector<HTMLElement>(".fo")!;
+      // jsdom has no layout: a point with x >= 0 is over the toast.
+      document.elementFromPoint = (x: number) => (x >= 0 ? fo() : null);
       const enter = async (): Promise<void> => {
         await act(async () => {
           fo().dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: document.body }));
         });
-        hold(m, { inside: true });
+        point(m, true);
       };
-      // `buttons` is 1 while a drag holds the button down: a leave with
-      // the button up is how the toast learns a drag ended.
-      const leave = async (buttons = 0): Promise<void> => {
+      const leave = async (): Promise<void> => {
         await act(async () => {
-          fo().dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body, buttons }));
-          window.dispatchEvent(new MouseEvent("mouseout", { relatedTarget: null, buttons }));
+          fo().dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body }));
+          window.dispatchEvent(new MouseEvent("mouseout", { relatedTarget: null }));
         });
-        hold(m, { inside: false });
+        point(m, false);
       };
       try {
         await act(async () => {
           root.render(createElement(FloatOver, props()));
         });
         for (const step of steps) {
-          // Mid-drag the pointer is out with the file; only time and the
-          // drop happen.
-          if (m.dragging && step.kind !== "wait" && step.kind !== "drop") continue;
           if (step.kind === "enter") {
             await enter();
           } else if (step.kind === "leave") {
             await leave();
           } else if (step.kind === "drag") {
-            // Press on a FILE chip, drag it out of the window.
+            // Press on a FILE chip and start dragging the file.
             await enter();
             const chip = container.querySelector<HTMLElement>(".fo__copy-file")!;
             await act(async () => {
               chip.dispatchEvent(new Event("dragstart", { bubbles: true, cancelable: true }));
             });
-            hold(m, { dragging: true });
-            await leave(1);
+            arm(m);
+            m.dragOut = true;
+            m.leaveAt = m.t + DRAG_OUT_LEAVE_MS;
+          } else if (step.kind === "dragover") {
+            // The dragged file passes over the toast.
+            await act(async () => {
+              window.dispatchEvent(new MouseEvent("dragover", { clientX: 10, clientY: 10 }));
+            });
+            if (m.dragOut) {
+              point(m, true);
+              m.leaveAt = m.t + DRAG_OUT_LEAVE_MS;
+            }
           } else if (step.kind === "drop") {
-            if (!m.dragging) continue;
+            // Dropped somewhere else.
             await act(async () => {
               window.dispatchEvent(new MouseEvent("dragend", { clientX: -10, clientY: -10 }));
             });
-            hold(m, { dragging: false });
+            m.dragOut = false;
+            m.leaveAt = null;
+            point(m, false);
           } else if (step.kind === "copy") {
             // A click needs the pointer on the card.
             await enter();
@@ -203,19 +226,27 @@ test("only a successful copy click arms it, and armed, each leave closes in COPY
             await act(async () => {
               target.click();
             });
-            if (step.ok) m.armed = true;
+            if (step.ok) arm(m);
           } else if (step.kind === "shortcut") {
-            // Main copies on ⌘1–3; the toast only replays the card's flash.
+            // Main copies on ⌘1–3 and pulses the card.
             pulses = { ...pulses, med: pulses.med + 1 };
             await act(async () => {
               root.render(createElement(FloatOver, props()));
             });
+            arm(m);
           } else {
             const end = m.t + step.ms;
+            if (m.leaveAt !== null && end >= m.leaveAt) {
+              // The drag went quiet: the pointer left with the file.
+              await settle(m.leaveAt - m.t);
+              m.t = m.leaveAt;
+              m.leaveAt = null;
+              point(m, false);
+            }
             if (m.deadline !== null && end >= m.deadline) {
               // The bar reaches zero in this wait: it closes within one
               // frame of the deadline, after the exit animation.
-              await settle(step.ms);
+              await settle(end - m.t);
               const deadline = m.deadline;
               if (end < deadline + exitMs) expect(onTimeout).not.toHaveBeenCalled();
               await settle(Math.max(0, deadline + 16 + exitMs + 1 - end));
@@ -223,7 +254,7 @@ test("only a successful copy click arms it, and armed, each leave closes in COPY
               expect(onDismiss).not.toHaveBeenCalled();
               return;
             }
-            await settle(step.ms);
+            await settle(end - m.t);
             m.t = end;
           }
           expect(onTimeout).not.toHaveBeenCalled();

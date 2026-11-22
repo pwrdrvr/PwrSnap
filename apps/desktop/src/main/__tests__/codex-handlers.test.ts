@@ -567,7 +567,7 @@ describe("Codex handlers", () => {
       const imagePath = args[0] === "caption"
         ? (JSON.parse(options.stdin ?? "") as { imagePaths: string[] }).imagePaths[0]!
         : args[args.indexOf("--image") + 1]!;
-      expect(await sharp(imagePath).metadata()).toMatchObject({ format: "jpeg" });
+      expect(await sharp(await readFile(imagePath)).metadata()).toMatchObject({ format: "jpeg" });
       if (scenario === "guardrail") {
         return { code: 1, signal: null, stdout: "", stderr: "Error: The model's safety guardrails were triggered.\n" };
       }
@@ -860,7 +860,7 @@ describe("Codex handlers", () => {
           imagePaths: [expect.any(String)],
           recognizeText: true
         });
-        expect(await sharp(input.imagePaths[0]!).metadata()).toMatchObject({ format: "jpeg" });
+        expect(await sharp(await readFile(input.imagePaths[0]!)).metadata()).toMatchObject({ format: "jpeg" });
         paths.push(...input.imagePaths);
         respond += 1;
         return { code: 0, signal: null, stderr: "", stdout: appleCaption };

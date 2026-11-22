@@ -100,8 +100,8 @@ export async function prepareEnrichmentImage(
     const encoded = format === "webp"
       ? raster.webp({ quality, effort: 4 })
       : raster.jpeg({ quality, mozjpeg: true });
-    // Reopening the derivative in libvips can leave a file handle that
-    // prevents scratch cleanup on Windows.
+    // Use the encoder's metadata. Reopening a WebP with Sharp can keep the
+    // scratch file locked on Windows even after the metadata read finishes.
     const output = await encoded.toFile(outputPath);
     throwIfAborted(options.abortSignal);
     if (output.size > maxBytes) {

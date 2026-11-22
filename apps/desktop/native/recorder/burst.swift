@@ -1,10 +1,11 @@
 // Burst capture sink for the PwrSnap recorder.
 //
 // A burst is a short run of lossless stills, not a video: ScreenCaptureKit
-// delivers BGRA frames at up to `fps` (only when the screen changed — an
-// idle display produces no `.complete` frames, so there are no duplicate
-// stills), and each one is written as a PNG into a directory the caller
-// owns. The directory is a RING: once `maxFrames` stills exist, the oldest
+// delivers BGRA frames at up to `fps`, and each one that differs from the
+// last still kept (by more than `changeFloor` visibly changed pixels — see
+// frame-change.swift) is written as a PNG into a directory the caller owns.
+// ScreenCaptureKit's own "something changed" is not enough: a pointer moving
+// outside a captured window delivers frames whose pixels are identical. The directory is a RING: once `maxFrames` stills exist, the oldest
 // is deleted as each new one lands, so a burst left running costs a
 // bounded amount of disk and the user reviews the last N seconds.
 //
@@ -42,8 +43,13 @@ final class BurstSink {
     private let group = DispatchGroup()
     private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
     private let onProgress: (Int, Int) -> Void
+    private let changeFloor: Int
 
     private var lastAcceptedPts: Double = -Double.infinity
+    /// The pixels of the last frame accepted for writing — what the next
+    /// frame must differ from. Shares storage with that frame's CGImage.
+    /// Touched only on the stream's sample queue (in `consume`).
+    private var reference: (data: Data, width: Int, height: Int, rowBytes: Int)?
     private var nextIndex = 0
     // Ring state — touched only on ringQueue.
     private var frames: [Frame] = []
@@ -51,14 +57,19 @@ final class BurstSink {
     private var dropped = 0
     private var failed = 0
     private var evicted = 0
+    private var unchanged = 0
 
-    init(dir: URL, fps: Double, maxFrames: Int, maxInFlight: Int = 4, onProgress: @escaping (Int, Int) -> Void) {
+    init(
+        dir: URL, fps: Double, maxFrames: Int, maxInFlight: Int = 4, changeFloor: Int = 0,
+        onProgress: @escaping (Int, Int) -> Void
+    ) {
         self.dir = dir
         self.minInterval = fps > 0 ? 1.0 / fps : 0
         self.maxFrames = max(1, maxFrames)
         self.maxInFlight = max(1, maxInFlight)
         self.slots = DispatchSemaphore(value: max(1, maxInFlight))
         self.onProgress = onProgress
+        self.changeFloor = max(0, changeFloor)
     }
 
     /// One `.complete` screen sample. Called on the stream's sample queue.
@@ -69,16 +80,23 @@ final class BurstSink {
         // so a frame that lands a hair early is not thrown away).
         if pts - lastAcceptedPts < minInterval * 0.95 { return }
         guard let pixels = CMSampleBufferGetImageBuffer(buf) else { return }
+        // Before a slot is taken: a frame that shows nothing new must cost
+        // neither an encode nor a place in the ring.
+        if isUnchanged(pixels) {
+            ringQueue.async { self.unchanged += 1 }
+            return
+        }
         guard slots.wait(timeout: .now()) == .success else {
             ringQueue.async { self.dropped += 1 }
             return
         }
         lastAcceptedPts = pts
-        guard let image = copyImage(pixels) else {
+        guard let copy = copyPixels(pixels), let image = makeImage(copy) else {
             slots.signal()
             ringQueue.async { self.failed += 1 }
             return
         }
+        reference = copy
         // Host clock → UTC, sampled now: the same conversion the video path
         // uses for its timeline event.
         let hostNow = CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock()))
@@ -114,13 +132,34 @@ final class BurstSink {
     }
 
     /// Wait for in-flight encodes, then report the ring in capture order.
-    func finish() -> (frames: [Frame], written: Int, dropped: Int, failed: Int, evicted: Int) {
+    func finish() -> (frames: [Frame], written: Int, dropped: Int, failed: Int, evicted: Int, unchanged: Int) {
         group.wait()
-        return ringQueue.sync { (frames, written, dropped, failed, evicted) }
+        return ringQueue.sync { (frames, written, dropped, failed, evicted, unchanged) }
+    }
+
+    /// True when `pixels` differs from the last accepted frame by no more
+    /// than `changeFloor` pixels. A size change (or no frame yet) is a change.
+    private func isUnchanged(_ pixels: CVPixelBuffer) -> Bool {
+        guard let ref = reference,
+              CVPixelBufferGetPixelFormatType(pixels) == kCVPixelFormatType_32BGRA,
+              CVPixelBufferGetWidth(pixels) == ref.width,
+              CVPixelBufferGetHeight(pixels) == ref.height else { return false }
+        CVPixelBufferLockBaseAddress(pixels, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixels, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(pixels) else { return false }
+        let rowBytes = CVPixelBufferGetBytesPerRow(pixels)
+        let changed = ref.data.withUnsafeBytes { refBytes in
+            changedPixelCount(
+                refBytes.baseAddress!, rowBytesA: ref.rowBytes,
+                UnsafeRawPointer(base), rowBytesB: rowBytes,
+                width: ref.width, height: ref.height, limit: changeFloor, tolerance: burstColorTolerance
+            )
+        }
+        return changed <= changeFloor
     }
 
     /// Copy BGRA pixels out of the (pooled) capture buffer into memory we own.
-    private func copyImage(_ pixels: CVPixelBuffer) -> CGImage? {
+    private func copyPixels(_ pixels: CVPixelBuffer) -> (data: Data, width: Int, height: Int, rowBytes: Int)? {
         guard CVPixelBufferGetPixelFormatType(pixels) == kCVPixelFormatType_32BGRA else { return nil }
         CVPixelBufferLockBaseAddress(pixels, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pixels, .readOnly) }
@@ -129,7 +168,11 @@ final class BurstSink {
         let height = CVPixelBufferGetHeight(pixels)
         let rowBytes = CVPixelBufferGetBytesPerRow(pixels)
         guard width > 0, height > 0 else { return nil }
-        let data = Data(bytes: base, count: rowBytes * height)
+        return (Data(bytes: base, count: rowBytes * height), width, height, rowBytes)
+    }
+
+    private func makeImage(_ copy: (data: Data, width: Int, height: Int, rowBytes: Int)) -> CGImage? {
+        let (data, width, height, rowBytes) = copy
         guard let provider = CGDataProvider(data: data as CFData) else { return nil }
         let info = CGBitmapInfo(rawValue: CGBitmapInfo.byteOrder32Little.rawValue
             | CGImageAlphaInfo.noneSkipFirst.rawValue)

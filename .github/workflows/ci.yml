@@ -46,9 +46,11 @@ env:
     apps/desktop/native/preview-extension/preview-provider.swift
     apps/desktop/native/recorder/audio-level.swift
     apps/desktop/native/recorder/burst.swift
+    apps/desktop/native/recorder/frame-change.swift
     apps/desktop/native/recorder/main.swift
     apps/desktop/native/recorder/microphone.swift
     apps/desktop/native/recorder/tests/burst-ring.swift
+    apps/desktop/native/recorder/tests/frame-change-model.swift
     apps/desktop/native/recorder/tests/microphone-match.swift
     apps/desktop/native/recorder/tests/microphone-roundtrip.swift
     apps/desktop/native/recorder/tests/no-device-io.c

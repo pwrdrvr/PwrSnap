@@ -269,9 +269,12 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             cfg.queueDepth = 8
             cfg.colorSpaceName = CGColorSpace.sRGB
             let maxFrames = min(max(req.burstMaxFrames ?? 300, 1), 3000)
-            diag("burst mode dir=\(dirPath) fps=\(fps) maxFrames=\(maxFrames) out=\(cfg.width)x\(cfg.height)")
+            let changeFloor = burstChangeFloor(pixelScale: scale)
+            diag("burst mode dir=\(dirPath) fps=\(fps) maxFrames=\(maxFrames) out=\(cfg.width)x\(cfg.height) changeFloor=\(changeFloor)")
             var lastProgressEmit = Date.distantPast
-            burst = BurstSink(dir: URL(fileURLWithPath: dirPath), fps: fps, maxFrames: maxFrames) { kept, written in
+            burst = BurstSink(
+                dir: URL(fileURLWithPath: dirPath), fps: fps, maxFrames: maxFrames, changeFloor: changeFloor
+            ) { kept, written in
                 // At most ~4 progress lines a second; the HUD only shows a count.
                 let now = Date()
                 guard now.timeIntervalSince(lastProgressEmit) >= 0.25 else { return }
@@ -858,7 +861,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         writeQueue.sync { }
         let result = sink.finish()
-        diag("burst finished kept=\(result.frames.count) written=\(result.written) dropped=\(result.dropped) failed=\(result.failed) evicted=\(result.evicted)")
+        diag("burst finished kept=\(result.frames.count) written=\(result.written) dropped=\(result.dropped) failed=\(result.failed) evicted=\(result.evicted) unchanged=\(result.unchanged)")
         emit([
             "event": "stopped",
             "durationSec": Date().timeIntervalSince(startedAtWallClock),

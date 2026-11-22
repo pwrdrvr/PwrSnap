@@ -241,8 +241,12 @@ the moment of the save.
 **Burst is a recording that produces stills.** The chooser's third mode
 runs the same recorder, HUD and take lifecycle as a video. The recorder
 writes lossless stills of one rectangle at full pixel resolution, up to ten
-a second and only while the screen changes, into a ring that keeps the
-newest 300 (`native/recorder/burst.swift`). It records no sound or camera,
+a second, into a ring that keeps the newest 300
+(`native/recorder/burst.swift`). A frame is written only when it differs
+from the last still kept by more than a text caret's worth of pixels, each
+changed by more than an invisible 3/255 (`native/recorder/frame-change.swift`).
+ScreenCaptureKit's own change signal is not enough: it reports frames whose
+pixels are identical. It records no sound or camera,
 and `recording:start` refuses a burst that asks for them. At Stop the
 recording service hands the temp directory to a burst session
 (`burst/burst-session.ts`), which owns it from then on. The Burst Review

@@ -58,6 +58,8 @@ import {
   SCHEMES
 } from "./protocols-parse";
 import { markStartup, startupProfilingEnabled } from "./startup-profiler";
+import { burstFramePath, burstPointerSpritePath, burstThumbPaths, parseBurstFrameUrl } from "./burst/burst-session";
+import { ensureBurstThumb } from "./burst/burst-thumbs";
 import { reportCapturesAccessFailure } from "./storage/captures-access-health";
 
 const log = getMainLogger("pwrsnap:protocols");
@@ -304,6 +306,28 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
   });
 
   protocol.handle(SCHEMES.screen, async (request) => {
+    // `b/<burstId>/<index>`: a Burst Review still, served from the burst's
+    // own temp directory while its session is open.
+    const burst = parseBurstFrameUrl(request.url);
+    if (burst !== null) {
+      try {
+        if (burst.variant === "pointer") {
+          const path = burstPointerSpritePath(burst.burstId, burst.index);
+          if (path === null) return new Response("not found", { status: 404 });
+          return await fileResponse(path, request);
+        }
+        if (burst.variant === "thumb") {
+          const paths = burstThumbPaths(burst.burstId, burst.index);
+          if (paths === null) return new Response("not found", { status: 404 });
+          return await fileResponse(await ensureBurstThumb(paths), request);
+        }
+        const path = burstFramePath(burst.burstId, burst.index);
+        if (path === null) return new Response("not found", { status: 404 });
+        return await fileResponse(path, request);
+      } catch {
+        return new Response("not found", { status: 404 });
+      }
+    }
     // Path-segment id, same shape as `pwrsnap-capture://r/<id>`.
     const id = parseCaptureId(request.url, SCHEMES.screen);
     if (id === null) {

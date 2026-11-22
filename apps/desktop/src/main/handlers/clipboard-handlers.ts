@@ -89,8 +89,10 @@ import { getActiveExportStrategy } from "./settings-handlers";
 import { prepareRenderedFileAlias } from "../render/file-alias";
 import {
   buildPastedImageDisplayName,
-  buildPresetExportDisplayName
+  buildPresetExportDisplayName,
+  buildVideoFrameDisplayName
 } from "../render/export-filename";
+import { ensureVideoFrameStill } from "../recording/video-frame-still";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
 import { writeNamedPngToPasteboard } from "../clipboard/named-image-pasteboard";
 import { PasteboardTimeoutError } from "../clipboard/pasteboard-timeout";
@@ -246,6 +248,60 @@ async function writeNamedImageToPasteboard(args: {
 }
 
 export function registerClipboardHandlers(): void {
+  // ── clipboard:copyVideoFrame ──────────────────────────────────────
+  // The frame under the playhead, at the recording's own resolution, as a
+  // PNG — the still a user scrubbed to. Same pasteboard shape as an image
+  // copy (named PNG file + image bytes), so it pastes like a snap.
+  bus.register("clipboard:copyVideoFrame", async (req) => {
+    if (typeof req.captureId !== "string" || !Number.isFinite(req.timeSec)) {
+      return err({ kind: "validation", code: "invalid_request", message: "captureId and a finite timeSec are required" });
+    }
+    const record = getCaptureById(req.captureId);
+    if (record === null || record.deleted_at !== null || record.kind !== "video") {
+      return err({ kind: "validation", code: "not_found", message: `video capture not found: ${req.captureId}` });
+    }
+    try {
+      const still = await ensureVideoFrameStill(record, req.timeSec);
+      const namedPasteboardWritten = await writeNamedImageToPasteboard({
+        pngPath: still.path,
+        displayName: buildVideoFrameDisplayName({
+          record,
+          enrichment: getCaptureEnrichment(record.id),
+          timeSec: still.timeSec
+        }),
+        captureId: record.id,
+        preset: `frame-${Math.round(still.timeSec * 1000)}ms`
+      });
+      if (!namedPasteboardWritten) {
+        // Decoded only for this fallback: a full-resolution PNG decode is a
+        // synchronous main-thread stall the named-file path never needs.
+        const image = nativeImage.createFromPath(still.path);
+        if (image.isEmpty()) {
+          return err({ kind: "render", code: "decode_failed", message: "The extracted frame did not decode." });
+        }
+        await writeClipboardImage(image);
+      }
+      notifyClipboardChanged();
+      log.info("copied video frame to clipboard", {
+        captureId: record.id,
+        timeSec: still.timeSec,
+        widthPx: still.widthPx,
+        heightPx: still.heightPx,
+        namedPasteboardWritten
+      });
+      return ok({ widthPx: still.widthPx, heightPx: still.heightPx, timeSec: still.timeSec });
+    } catch {
+      // ffmpeg's stderr carries absolute source paths: keep them out of the
+      // disk log and the renderer, like every other persist/extract path.
+      log.error("video frame copy failed", { captureId: record.id, code: "frame_extract_failed" });
+      return err({
+        kind: "render",
+        code: "frame_extract_failed",
+        message: "The frame could not be extracted from this recording."
+      });
+    }
+  });
+
   // ── clipboard:copy (v1 + v2) ──────────────────────────────────────
   bus.register("clipboard:copy", async (req) => {
     const record = getCaptureById(req.captureId);

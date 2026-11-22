@@ -1,4 +1,4 @@
-import { RecordingCameraSchema, RecordingMicrophoneSchema } from "@pwrsnap/shared";
+import { isSelectorTerminalAction, RecordingCameraSchema, RecordingMicrophoneSchema } from "@pwrsnap/shared";
 // Pre-warmed per-display region-selector windows. Cold BrowserWindow
 // creation is 150–400ms; the ⌘⇧P → first-paint budget is 120ms. So
 // we create one window per display at boot (`show: false`), rebuild
@@ -30,7 +30,8 @@ import type {
   QuickCaptureAction,
   RecordingCapabilities,
   RecordingDeviceDefaults,
-  SelectorHudStyle
+  SelectorHudStyle,
+  SelectorTerminalAction
 } from "@pwrsnap/shared";
 import { linuxSquareCorners } from "../linux-window-corners";
 import { getMainLogger } from "../log";
@@ -381,7 +382,7 @@ type SelectorOutcome =
        *  always explicit about both sources. */
       sources?: RecordingCapabilities;
       /** The terminal action the user chose at commit (issue #75).
-       *  Present ONLY for `"record"`; a snap commit omits it and every
+       *  Present ONLY for `"record"` and `"burst"`; a snap commit omits it and every
        *  reader treats a missing value as `"snap"`, so a pre-chooser
        *  call site's payload is unchanged.
        *
@@ -389,7 +390,7 @@ type SelectorOutcome =
        *  affordance the user reached for. `resolveQuickCaptureAction`
        *  re-derives the actual action against the persisted policy, so a
        *  `"record"` main never offered cannot take effect. */
-      action?: "snap" | "record";
+      action?: SelectorTerminalAction;
       /** Multi-window pick. One entry per picked window's EXTENT, in
        *  the same GLOBAL logical-px space as `rect` (the display offset
        *  is applied to both together, below).
@@ -754,8 +755,8 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
               ...(payload.sources.camera ? { camera: payload.sources.camera } : {})
             };
           }
-          if (payload.action === "record") {
-            result.action = "record";
+          if (payload.action === "record" || payload.action === "burst") {
+            result.action = payload.action;
           }
           if (payload.extents !== undefined && payload.extents.length > 0) {
             // Same display → global translation the union rect above
@@ -781,7 +782,10 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
           // degradation: the still honors every extent, so the user gets
           // a picture of exactly what they picked instead of a video of
           // something they did not.
-          if (result.action === "record" && (result.extents?.length ?? 0) > 1) {
+          if (
+            (result.action === "record" || result.action === "burst") &&
+            (result.extents?.length ?? 0) > 1
+          ) {
             log.warn("selector commit asked to record a multi-window pick — snapping instead", {
               extents: result.extents?.length ?? 0
             });
@@ -877,6 +881,9 @@ type SelectorOptions = {
    *  Omitted means "no saved choice", the same as two nulls. */
   devicesDefault?: RecordingDeviceDefaults;
   cameraOffered?: boolean;
+  /** Offer Burst beside Snap / Record (the backend writes stills). Only
+   *  meaningful with a `quickCaptureAction` that offers Record. */
+  burstOffered?: boolean;
   /** Selector-based image-capture diagnostics. Omitted by video flows. */
   latencyTrace?: CaptureLatencyTrace;
   /** Snap-vs-Record policy for this show (issue #75), from
@@ -1271,6 +1278,7 @@ async function prepareRegion(
           ...(sourcesDefault !== undefined ? { sources: sourcesDefault } : {}),
           ...(devicesDefault !== undefined ? { devices: devicesDefault } : {}),
           cameraOffered: opts.cameraOffered === true,
+          burstOffered: opts.burstOffered === true,
           quickCaptureAction,
           ...(hudStyle !== undefined ? { hudStyle } : {}),
           ...(latencyTrace !== undefined && presentationGeneration !== undefined
@@ -2355,7 +2363,7 @@ function isSelectorPayload(value: unknown): value is {
   fullWindow?: boolean;
   captureCursor?: boolean;
   sources?: RecordingCapabilities;
-  action?: "snap" | "record";
+  action?: SelectorTerminalAction;
   extents?: { x: number; y: number; w: number; h: number }[];
   outputMode?: "windows" | "rectangle";
 } {
@@ -2400,7 +2408,7 @@ function isSelectorPayload(value: unknown): value is {
       return false;
     }
   }
-  if (v.action !== undefined && v.action !== "snap" && v.action !== "record") {
+  if (v.action !== undefined && !isSelectorTerminalAction(v.action)) {
     return false;
   }
   if (v.extents !== undefined) {

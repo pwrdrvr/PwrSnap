@@ -38,4 +38,18 @@ describe("resolveQuickCaptureAction", () => {
     expect(resolveQuickCaptureAction("snap", undefined)).toBe("snap");
     expect(resolveQuickCaptureAction("record", undefined)).toBe("snap");
   });
+
+  test("burst is honored only where the show offered it", () => {
+    // Offered (macOS): the user chose Burst, so it bursts — under either
+    // policy that shows the chooser.
+    expect(resolveQuickCaptureAction("ask", "burst", true)).toBe("burst");
+    expect(resolveQuickCaptureAction("record", "burst", true)).toBe("burst");
+    // Not offered (a backend with no burst, or an old caller that does not
+    // pass the flag): a "burst" echo is a bug, and the safe reading is the
+    // still, never a recording nobody configured.
+    expect(resolveQuickCaptureAction("ask", "burst", false)).toBe("snap");
+    expect(resolveQuickCaptureAction("ask", "burst")).toBe("snap");
+    // The snap-only policy shows no chooser at all.
+    expect(resolveQuickCaptureAction("snap", "burst", true)).toBe("snap");
+  });
 });

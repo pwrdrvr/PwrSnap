@@ -59,6 +59,16 @@ import {
   stepTime
 } from "../shared/video-range";
 import { VideoTransport } from "./VideoTransport";
+import {
+  placeVideoFrameMenu,
+  VideoFrameMenu,
+  VideoFrameStatusPill,
+  type VideoFrameMenuState
+} from "./VideoFrameMenu";
+import {
+  publishVideoFramePosition,
+  registerVideoFramePosition
+} from "../shared/video-frame-actions";
 import { PresenterLayer } from "../camera/PresenterLayer";
 import { presenterKeyAction, usePresenter } from "../camera/usePresenter";
 import {
@@ -753,6 +763,22 @@ export function VideoStage({
 
   const onStripWidth = useCallback((w: number) => setStripWidth(w), []);
 
+  // Copy Frame / Save Frame as Snap. The rail's FRAME row asks this stage
+  // where the head is (see video-frame-actions.ts): the live element time,
+  // and the discrete head for its label.
+  const [frameMenu, setFrameMenu] = useState<VideoFrameMenuState | null>(null);
+  const closeFrameMenu = useCallback(() => setFrameMenu(null), []);
+  const currentTimeRef = useRef(currentTime);
+  currentTimeRef.current = currentTime;
+  useEffect(
+    () =>
+      registerVideoFramePosition(captureId, () => videoRef.current?.currentTime ?? currentTimeRef.current),
+    [captureId]
+  );
+  useEffect(() => {
+    publishVideoFramePosition(captureId, currentTime);
+  }, [captureId, currentTime]);
+
   return (
     <div
       ref={rootRef}
@@ -778,7 +804,18 @@ export function VideoStage({
       data-testid="video-stage"
     >
       {trim.editError && <div role="alert">{trim.editError}</div>}
-      <div className="psl__video-frame">
+      <div
+        className="psl__video-frame"
+        onContextMenu={(e) => {
+          if (e.target instanceof Element && e.target.closest("[data-presenter-ui]") !== null) return;
+          e.preventDefault();
+          const at = placeVideoFrameMenu(e.clientX, e.clientY, {
+            width: window.innerWidth,
+            height: window.innerHeight
+          });
+          setFrameMenu({ ...at, timeSec: videoRef.current?.currentTime ?? currentTime });
+        }}
+      >
         <video
           ref={videoRef}
           className="psl__video-el"
@@ -797,7 +834,11 @@ export function VideoStage({
             editing={presenter.editing}
           />
         )}
+        <VideoFrameStatusPill captureId={captureId} />
       </div>
+      {frameMenu !== null && (
+        <VideoFrameMenu captureId={captureId} menu={frameMenu} onClose={closeFrameMenu} />
+      )}
       <VideoTransport
         playing={playing}
         currentTime={currentTime}

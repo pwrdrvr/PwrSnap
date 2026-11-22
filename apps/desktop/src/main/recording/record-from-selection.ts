@@ -15,7 +15,7 @@
 
 import { app, dialog, type BrowserWindow } from "electron";
 import { RECORDING_MEDIA_DEFAULTS } from "@pwrsnap/shared";
-import type { RecordingState, RecordingSubject, Settings } from "@pwrsnap/shared";
+import type { RecordingOutput, RecordingState, RecordingSubject, Settings } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { releaseFloatOverDock, setFloatOverState } from "../float-over";
 import { getMainLogger } from "../log";
@@ -253,6 +253,9 @@ function scheduleLeadInReraise(overlapping: BrowserWindow[]): void {
 export async function startRecordingFromSelection(
   selection: CommittedSelection,
   recording: RecordingDefaults,
+  /** `burst`: stills, not a video — no countdown (the point is to catch
+   *  something already happening), no audio, no camera. */
+  output: RecordingOutput = "video",
 ): Promise<void> {
   const log = getMainLogger("pwrsnap:shortcut");
   const { screenSnapshotId, previousAppPid } = selection;
@@ -402,10 +405,13 @@ export async function startRecordingFromSelection(
     // defaults covers the two cases where no chips were rendered — a
     // settings read that failed before the picker opened, and any
     // caller that never passed `sourcesDefault`.
-    const capabilities = selection.sources ?? {
-      systemAudio: recording.includeSystemAudio,
-      microphone: recording.includeMicrophone,
-    };
+    const isBurst = output === "burst";
+    const capabilities = isBurst
+      ? { systemAudio: false, microphone: false }
+      : selection.sources ?? {
+          systemAudio: recording.includeSystemAudio,
+          microphone: recording.includeMicrophone,
+        };
     // Source-app attribution mirrors the image-capture path
     // (capture-handlers.ts) via the shared `resolveSelectionSourceApp`
     // helper: snap-target id first, rect-center hit test as fallback,
@@ -451,7 +457,8 @@ export async function startRecordingFromSelection(
         // The selector's `C` toggle wins; fall back to the persisted
         // default if the renderer didn't send a value.
         captureCursor: selection.captureCursor ?? recording.videoCaptureCursor,
-        countdownSeconds: 3,
+        countdownSeconds: isBurst ? 0 : 3,
+        ...(isBurst ? { output: "burst" as const } : {}),
       },
       { principal: "ipc" },
     );

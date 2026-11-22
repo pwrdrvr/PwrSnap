@@ -1,0 +1,317 @@
+/* Burst Review — pick the stills of a burst to keep. Lives in a `.ps-doc`
+   window (shared title strip); everything below the strip is this file. */
+
+.ps-burst__main {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto auto auto auto;
+  min-height: 0;
+  background: var(--bg-app);
+}
+
+.ps-burst__empty {
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  margin: 0;
+  color: var(--text-muted);
+  font: 500 13px/1.4 var(--font-sans);
+}
+
+/* --- Stage ---------------------------------------------------------- */
+.ps-burst__stage {
+  position: relative;
+  display: grid;
+  min-height: 0;
+  padding: 16px 20px 12px;
+}
+/* The still's own box: the largest rectangle of its aspect ratio that fits
+   the stage, sized from the container (no layout measuring), so the pointer
+   overlay can be placed in percentages of the still and clips at its edge
+   like the canvas would. */
+.ps-burst__stage-box {
+  grid-area: 1 / 1;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 0;
+  container-type: size;
+}
+.ps-burst__stage-frame {
+  position: relative;
+  display: grid;
+  overflow: hidden;
+  width: min(100cqw, calc(100cqh * var(--ps-burst-ar, 1)));
+  height: min(100cqh, calc(100cqw / var(--ps-burst-ar, 1)));
+}
+.ps-burst__stage-under,
+.ps-burst__stage-img {
+  grid-area: 1 / 1;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  object-fit: contain;
+}
+.ps-burst__pointer {
+  position: absolute;
+  max-width: none;
+  pointer-events: none;
+}
+/* The thumbnail sits under the full still and shows while it decodes, so
+   stepping through the strip never flashes an empty stage. No `filter` (or
+   anything else that makes a stacking context) on the underlay: that paints
+   it ABOVE a non-positioned sibling, whatever the DOM order — the full still
+   is positioned so it always wins. */
+.ps-burst__stage-img {
+  position: relative;
+}
+.ps-burst__chip {
+  position: absolute;
+  top: 26px;
+  left: 30px;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 11px;
+  border-radius: var(--radius-pill);
+  background: rgba(0, 0, 0, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+  color: #f7f3eb;
+  font: 500 12px/1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.ps-burst__chip b {
+  font-weight: 600;
+}
+.ps-burst__chip > span {
+  color: #b8b0a5;
+}
+.ps-burst__chip-n {
+  padding-left: 10px;
+  box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.16);
+}
+.ps-burst__pick {
+  position: absolute;
+  top: 22px;
+  right: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 13px 0 10px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: rgba(0, 0, 0, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+  color: #f7f3eb;
+  font: 600 12px/1 var(--font-sans);
+  cursor: pointer;
+}
+.ps-burst__pick[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 26%, rgba(0, 0, 0, 0.8));
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--accent-bright);
+}
+.ps-burst__pick:disabled {
+  cursor: default;
+}
+.ps-burst__pick:focus-visible,
+.ps-burst__btn:focus-visible,
+.ps-burst__stamp input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* --- Filmstrip ------------------------------------------------------ */
+.ps-burst__strip {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 10px 20px 12px;
+  /* scrollIntoView on the focused still keeps it clear of the padding. */
+  scroll-padding-inline: 20px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-sidebar);
+}
+.ps-burst__cell {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  flex: none;
+}
+.ps-burst__thumb {
+  position: relative;
+  flex: none;
+  width: 132px;
+  height: 84px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--bg-panel);
+  box-shadow: inset 0 0 0 1px var(--border-default);
+  cursor: pointer;
+}
+.ps-burst__thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+.ps-burst__thumb[aria-current="true"] {
+  box-shadow:
+    inset 0 0 0 2px var(--text-primary),
+    0 0 0 1px var(--bg-app);
+}
+.ps-burst__thumb[data-chosen="true"] {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.ps-burst__thumb[data-chosen="true"][aria-current="true"] {
+  box-shadow:
+    inset 0 0 0 2px var(--accent),
+    0 0 0 2px var(--text-primary);
+}
+.ps-burst__thumb[data-kept="true"] img {
+  opacity: 0.45;
+}
+.ps-burst__check {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.62);
+  color: #f7f3eb;
+  cursor: pointer;
+}
+.ps-burst__thumb[data-chosen="true"] .ps-burst__check,
+.ps-burst__thumb[data-kept="true"] .ps-burst__check {
+  color: var(--accent);
+}
+.ps-burst__offset {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  padding: 3px 5px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.66);
+  color: #f7f3eb;
+  font: 500 10px/1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+/* "Nothing changed for 0.8 s": the recorder only writes a still when the
+   screen moved, so a long spacing is a still screen, not a lost frame. */
+.ps-burst__gap {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  border-radius: var(--radius-sm);
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--text-primary) 6%, transparent) 0 4px,
+    transparent 4px 8px
+  );
+  color: var(--text-muted);
+  font: 500 10px/1 var(--font-mono);
+}
+.ps-burst__gap span {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+}
+
+/* --- Action bar ----------------------------------------------------- */
+.ps-burst__bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-sidebar);
+  font: 500 12px/1.3 var(--font-sans);
+  color: var(--text-secondary);
+}
+.ps-burst__summary b {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.ps-burst__meta {
+  color: var(--text-muted);
+}
+.ps-burst__stamp {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.ps-burst__stamp input {
+  accent-color: var(--accent);
+  margin: 0;
+}
+.ps-burst__stamp code {
+  margin-left: 8px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
+  color: var(--text-primary);
+  font: 500 11px/1.2 var(--font-mono);
+}
+.ps-burst__spacer {
+  flex: 1 1 auto;
+}
+.ps-burst__btn {
+  height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  font: 600 12px/1 var(--font-sans);
+  cursor: pointer;
+}
+.ps-burst__btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ps-burst__btn--ghost {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  color: var(--text-secondary);
+}
+.ps-burst__btn--ghost[aria-pressed="true"] {
+  box-shadow: inset 0 0 0 1px var(--danger-border);
+  color: var(--danger-text);
+}
+.ps-burst__btn--primary {
+  background: var(--accent);
+  color: #000;
+}
+.ps-burst__error {
+  margin: 0;
+  padding: 8px 20px;
+  background: var(--danger-soft);
+  color: var(--text-primary);
+  font: 500 12px/1.4 var(--font-sans);
+}
+.ps-burst__keys {
+  margin: 0;
+  padding: 0 20px 10px;
+  background: var(--bg-sidebar);
+  color: var(--text-muted);
+  font: 500 11px/1 var(--font-sans);
+}
+.ps-burst__keys kbd {
+  display: inline-block;
+  min-width: 14px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  color: var(--text-secondary);
+  font: 500 10px/1 var(--font-mono);
+  text-align: center;
+}

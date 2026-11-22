@@ -230,6 +230,38 @@ talking over it is content, not idle. One cached ffmpeg pass per capture
 (`recording/video-activity.ts`), a derived-cache lane like the filmstrip
 and waveform.
 
+**A frame of a video becomes an ordinary snap.** Copy Frame and Save Frame
+as Snap (the video stage's right-click menu and the export panel's FRAME
+row) take the frame on screen AT OR BEFORE the playhead — the one the
+player is showing — never the nearest frame after it, decoded once into the
+derived cache (`recording/video-frame-still.ts`). A saved frame is captured
+at its moment in the recording (the stop time minus the time left), not at
+the moment of the save.
+
+**Burst is a recording that produces stills.** The chooser's third mode
+runs the same recorder, HUD and take lifecycle as a video. The recorder
+writes lossless stills of one rectangle at full pixel resolution, up to ten
+a second, into a ring that keeps the newest 300
+(`native/recorder/burst.swift`). A frame is written only when it differs
+from the last still kept by more than a text caret's worth of pixels, each
+changed by more than an invisible 3/255 (`native/recorder/frame-change.swift`).
+ScreenCaptureKit's own change signal is not enough: it reports frames whose
+pixels are identical. The pointer is never painted into a burst's stills:
+with the cursor on, the recorder tracks it beside them
+(`native/recorder/pointer.swift`), so moving it alone is not a change. The
+review draws it on top, and a kept still gets it back as the same removable
+Cursor layer a screenshot has. It records no sound or camera,
+and `recording:start` refuses a burst that asks for them. At Stop the
+recording service hands the temp directory to a burst session
+(`burst/burst-session.ts`), which owns it from then on. The Burst Review
+window shows the stills from that directory. Keep turns the chosen ones into
+ordinary snaps: each is captured at its frame's own time and tagged `burst`.
+Optionally it gets a removable text layer giving that time and the offset
+from the first kept still, as data, not pixels. Everything not kept is
+deleted, because a burst is a way to catch a moment, not a new kind of
+capture. Bursts are macOS-only (`outputs.burst` in the recording
+capabilities) until another backend can write stills.
+
 **A duplicate is an independent capture; the family is only a label.**
 Duplicate (and Edit a Copy) makes a new capture with its own id, bundle and
 rows. Choosing "with edits" carries the layer tree (re-keyed, because layer

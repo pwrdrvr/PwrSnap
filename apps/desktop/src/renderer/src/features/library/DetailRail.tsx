@@ -62,6 +62,7 @@ import { useVideoExportPresets } from "../shared/useVideoExportPresets";
 import { useVideoPresetMetrics } from "../shared/useVideoPresetMetrics";
 import { recordedAudioTracks, useMp4ExportAudio } from "../shared/useMp4ExportAudio";
 import { VideoExportPresetGrid } from "../shared/VideoExportPresetGrid";
+import { VideoFrameRow } from "./VideoFrameRow";
 import { exportRangeLabel, exportSegmentsOf } from "../shared/video-range";
 import { AppTag } from "../shared/AppIcons";
 import { enrichmentRunClock } from "../shared/EnrichmentRunClock";
@@ -1033,6 +1034,11 @@ export function DetailRail({
             // the image L/M/H affordances. State + metrics live in
             // the two hooks above; the grid is purely presentational.
             <div data-testid="psl-copy-row-video">
+              <VideoFrameRow
+                captureId={record.id}
+                widthPx={record.width_px}
+                heightPx={record.height_px}
+              />
               <VideoExportPresetGrid
                 metrics={videoPresetMetrics}
                 states={videoExportStates}

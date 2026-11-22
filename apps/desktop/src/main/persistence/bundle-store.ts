@@ -29,7 +29,9 @@ import yazl from "yazl";
 import {
   BundleDocumentV2,
   BundleManifestV2,
+  BundleLayerNode as BundleLayerNodeSchema,
   type BundleLayerNode,
+  type Overlay,
   cloneAffineTransform,
   validateBundleZipEntryNamesV2
 } from "@pwrsnap/shared";
@@ -730,6 +732,15 @@ export type PersistCaptureFromTempArgs = {
    * the new bundle never needs a repack just to learn its family.
    */
   lineage?: { familyId: string; duplicatedFrom: string } | undefined;
+  /**
+   * Ordinary user annotations the capture starts with, stacked above the
+   * source (and the cursor layer) in order. Burst capture uses this for the
+   * capture-time label on each kept frame: an annotation, not pixels, so the
+   * user can move or delete it like any label they drew. Each node is
+   * schema-checked here; a shape that does not parse fails the capture
+   * rather than writing a bundle no reader could open.
+   */
+  annotations?: ReadonlyArray<{ name: string; shape: Overlay }> | undefined;
 };
 
 export type PersistCaptureFromTempResult = {
@@ -1149,6 +1160,30 @@ export async function persistCaptureFromTempV2(
             message: cause instanceof Error ? cause.message : String(cause)
           });
         }
+      }
+
+      for (const annotation of args.annotations ?? []) {
+        initialLayers.push(
+          BundleLayerNodeSchema.parse({
+            id: nanoid(16),
+            parent_id: rootGroupId,
+            kind: "vector",
+            shape: annotation.shape,
+            name: annotation.name,
+            visible: true,
+            locked: false,
+            opacity: 1,
+            blend_mode: "normal",
+            transform: [1, 0, 0, 1, 0, 0],
+            z_index: initialLayers.length,
+            source: "user",
+            ai_run_id: null,
+            applied_at: now,
+            rejected_at: null,
+            superseded_by: null,
+            created_at: now
+          })
+        );
       }
 
       const document: BundleDocumentV2 = {

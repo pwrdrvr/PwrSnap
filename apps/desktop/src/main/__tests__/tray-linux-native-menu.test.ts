@@ -635,6 +635,7 @@ describe("a persistent menu carries no elapsed clock", () => {
         liveDisconnectDetection: false,
         midRecordingToggles: false
       },
+      outputs: { burst: false },
       controllerExcludedFromCapture: false
     });
   });

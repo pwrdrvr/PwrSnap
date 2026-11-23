@@ -32,7 +32,8 @@ describe("enrichmentFallbackFor (property)", () => {
       fc.constantFrom(...SELECTORS.filter((provider) => provider !== "apple:system")),
       fc.option(fc.constantFrom(...SELECTORS), { nil: null }),
       fc.subarray(["kimi", "gemini", "qwen"]),
-      (primary, fallbackProvider, enabled) => {
+      fc.boolean(),
+      (primary, fallbackProvider, enabled, paused) => {
         const fallback = fallbackProvider === null
           ? null
           : fallbackProvider === undefined ? {} : { provider: fallbackProvider };
@@ -40,10 +41,11 @@ describe("enrichmentFallbackFor (property)", () => {
           ai: {
             defaults: { libraryChat: {}, sizzleChat: {}, enrichment: primary === undefined ? {} : { provider: primary } },
             enrichmentFallback: fallback,
+            enrichmentFallbackPaused: paused,
             acp: { enabledAgentIds: enabled }
           }
         } as unknown as Settings;
-        const expectedArmed = fallback !== null &&
+        const expectedArmed = !paused && fallback !== null &&
           backendOf(fallback.provider, enabled) !== backendOf(primary, enabled);
         const armed = enrichmentFallbackFor(settings);
         expect(armed).toEqual(expectedArmed ? fallback : null);

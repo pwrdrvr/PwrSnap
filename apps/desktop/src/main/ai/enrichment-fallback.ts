@@ -65,7 +65,7 @@ function providerKey(settings: Settings, provider: string | undefined): string {
  *  fallback, say): a second try at what just failed is not a fallback. */
 export function enrichmentFallbackFor(settings: Settings): AiSurfaceDefault | null {
   const fallback = settings.ai.enrichmentFallback ?? null;
-  if (fallback === null) return null;
+  if (fallback === null || settings.ai.enrichmentFallbackPaused === true) return null;
   const primaryProvider = settings.ai.defaults.enrichment.provider;
   if (isAppleFmProvider(primaryProvider)) {
     const route = appleRefusalFallbackRoute(settings.ai);

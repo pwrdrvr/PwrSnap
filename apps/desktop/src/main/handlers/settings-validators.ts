@@ -295,11 +295,20 @@ export function validateSettingsWrite(
       const defaultsErr = validateAiDefaultsPatch(ai.defaults);
       if (defaultsErr) return { ok: false, error: defaultsErr };
     }
-    // null turns the caption fallback off; an object is a surface-default
+    // null clears the caption fallback; an object is a surface-default
     // patch under the same rules as `ai.defaults.enrichment`.
     if (!isUndefined(ai.enrichmentFallback) && ai.enrichmentFallback !== null) {
       const fallbackErr = validateAiSurfaceDefault("enrichmentFallback", ai.enrichmentFallback);
       if (fallbackErr) return { ok: false, error: fallbackErr };
+    }
+    if (!isUndefined(ai.enrichmentFallbackPaused) && !isBoolean(ai.enrichmentFallbackPaused)) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_ai_enrichmentFallbackPaused",
+          "settings:write: ai.enrichmentFallbackPaused must be a boolean"
+        )
+      };
     }
     if (!isUndefined(ai.appleRefusalFallbackConsent) && ai.appleRefusalFallbackConsent !== null &&
         !isString(ai.appleRefusalFallbackConsent)) {

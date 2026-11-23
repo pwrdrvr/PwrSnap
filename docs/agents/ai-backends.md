@@ -27,7 +27,8 @@ them only through the `customModels:*` verbs — `ai.customConnections` and
 Never route a custom model through Codex/ACP as a silent fallback. The one
 fallback that exists is `ai.enrichmentFallback`
 ([enrichment-fallback.ts](../../apps/desktop/src/main/ai/enrichment-fallback.ts)):
-opt-in in Settings, captions only. For reachability failures it is taken when the primary could not be
+opt-in in Settings, captions only. Turning it off saves the selection for
+later. For reachability failures it is taken when the primary could not be
 reached (connection refused, HTTP 404/502/503, ACP agent not installed; for a
 Codex primary, a `CodexTurnFailedError` whose `codexErrorInfo` is a connection
 failure with no HTTP status — `isCodexNetworkUnavailable` in
@@ -306,14 +307,15 @@ The transport owners are
 The real Mac image probe is opt-in. Caption and readiness paths never agree
 to a license or change system settings. Only the bundled helper's typed
 `LanguageModelError.refusal` in `caption` emits the fixed `refusal` code. The
-production handler can retry that capture once if Apple is the primary and
-an eligible alternate is saved. Off-device fallback requires explicit approval
+production handler sends that capture directly to the configured alternate
+when Apple is the primary and the alternate is eligible and enabled. Apple
+gets one attempt per capture. Off-device fallback requires explicit approval
 in Settings for the selected provider and model or endpoint. A refusal leaves
 outage tracking alone and the next capture starts with Apple. A refusal while
 Apple is already the fallback ends the run. A `guardrailViolation`, readiness,
 setup, timeout, cancellation or malformed result follows its usual failure
 route, as does an ambiguous refusal from the development CLI. Caption text
-cannot trigger a retry.
+cannot trigger fallback.
 
 ### Legacy development CLI
 
@@ -372,10 +374,8 @@ contract is therefore the command line.
 - **A sentence this build does not recognise is `unavailable`, verbatim.**
   The states are classified from the tool's own sentences. Do not add a guess
   for an unknown one.
-- **`AppleFmError` is not a fallback trigger.** `isEnrichmentBackendUnavailable`
-  does not accept it, on purpose: a refusal by Apple's safety checks, missing
-  terms or a model still downloading is something the operator should see
-  (see "AI backends" above on not widening the trigger set).
+- **The legacy CLI cannot trigger fallback.** Its errors, including
+  guardrail text, missing terms, and a model still downloading, fail the run.
 - **Nothing polls, and no model runs for a user who did not choose it.** The
   status probe (three read-only commands, no model turn) runs when Settings
   opens AI Providers or AI Features, or while captions are set to the

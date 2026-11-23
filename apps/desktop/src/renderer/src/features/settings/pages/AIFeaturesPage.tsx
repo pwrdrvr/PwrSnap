@@ -41,6 +41,7 @@ import {
   DEFAULT_CODEX_CAPTION_MODEL,
   DEFAULT_ENRICHMENT_REASONING_EFFORT,
   effectiveAiEnrichmentRateLimit,
+  enrichmentProviderBackend,
   EVENT_CHANNELS,
   isAiEnrichmentRateLimit,
   isAiReasoningEffort,
@@ -262,6 +263,7 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
     isAppleFmProvider(provider) || isLocalProvider(provider);
   const enrichmentFallbackControl = (): ReactNode => {
     if (settings === null) return null;
+    const paused = settings.ai.enrichmentFallbackPaused === true;
     const value = enrichmentFallback ?? {};
     const fallbackProvider = value.provider ?? "";
     const options = [...acpChatProviderOptions, ...appleProviderOptions("enrichment", value.provider),
@@ -270,9 +272,12 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
     const onValue = captionFallbackOnValue({ primaryOnCodex, options, onDevice: isOnDevice });
     const refusalRoute = appleRefusalFallbackRoute(settings.ai);
     const refusalConsentKey = refusalRoute?.consentKey ?? null;
-    const on = primaryOnApple
-      ? refusalRoute !== null && (refusalConsentKey === null || refusalConsentKey === settings.ai.appleRefusalFallbackConsent)
-      : enrichmentFallback !== null;
+    const needsApproval = refusalConsentKey !== null && refusalConsentKey !== settings.ai.appleRefusalFallbackConsent;
+    const hasFallback = enrichmentFallback !== null;
+    const on = !paused && (primaryOnApple ? refusalRoute !== null && !needsApproval : hasFallback);
+    const canTurnOn = primaryOnApple ? refusalRoute !== null : hasFallback
+      ? enrichmentProviderBackend(fallbackProvider, enabledAgentIds) !== enrichmentProviderBackend(enrichmentPrimary, enabledAgentIds)
+      : onValue !== null;
     // A disabled ACP agent's captions run on Codex: name what runs.
     const primary = primaryOnCodex
       ? { providerLabel: "Codex", modelLabel: undefined }
@@ -293,12 +298,12 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
     // Why Apple's model can't caption right now, or null when it can.
     const appleNotReady = appleFm !== null && !isAppleFmReady(appleFm) ? appleFmStateCopy(appleFm).reason : null;
     let warning: string | null = null;
-    if (on && isAppleFmProvider(fallbackProvider) && appleNotReady !== null) {
+    if (hasFallback && isAppleFmProvider(fallbackProvider) && appleNotReady !== null) {
       warning = `${APPLE_FM_DISPLAY_NAME} isn't ready on this Mac (${appleNotReady}). ` +
         `Until it is, captions that need the fallback fail as they would without one. AI Providers has the step to fix it.`;
-    } else if (on && primaryOnCodex && runsOnCodex(fallbackProvider, enabledAgentIds)) {
+    } else if (hasFallback && primaryOnCodex && runsOnCodex(fallbackProvider, enabledAgentIds)) {
       warning = "Codex can't stand in for itself. Pick a model on this Mac.";
-    } else if (on && primaryOnCodex && !isOnDevice(fallbackProvider)) {
+    } else if (hasFallback && primaryOnCodex && !isOnDevice(fallbackProvider)) {
       warning = `${fallbackLabel} needs a network too, so it can't caption while this Mac is offline. ` +
         `Pick ${APPLE_FM_DISPLAY_NAME} or a Direct API model on this Mac for offline captions.`;
     }
@@ -309,25 +314,29 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
         offline={primaryOnCodex}
         appleRefusal={primaryOnApple}
         on={on}
-        canTurnOn={primaryOnApple ? refusalRoute !== null : onValue !== null}
+        paused={paused}
+        showPicker={hasFallback || primaryOnApple}
+        canTurnOn={canTurnOn}
         appleUnavailable={appleNotReady !== null && isAppleFmOffered(appleFm)
           ? `${APPLE_FM_DISPLAY_NAME} isn't ready on this Mac (${appleNotReady})`
           : `${APPLE_FM_DISPLAY_NAME} isn't available on this computer`}
         offDeviceNotice={refusalConsentKey !== null
           ? `If Apple Intelligence refuses a caption, PwrSnap will send the capture to ${fallbackLabel} for processing off this Mac.` +
             (on ? "" : " Turn on the fallback to allow this.")
-          : on && isLocalProvider(enrichmentPrimary) && !isOnDevice(fallbackProvider)
-            ? `While ${primary.providerLabel} is down, each new capture's image goes to ${fallbackLabel} instead of staying on this Mac.`
+          : hasFallback && isLocalProvider(enrichmentPrimary) && !isOnDevice(fallbackProvider)
+            ? on
+              ? `While ${primary.providerLabel} is down, each new capture's image goes to ${fallbackLabel} instead of staying on this Mac.`
+              : `Turning on this fallback allows ${fallbackLabel} to process captures off this Mac when ${primary.providerLabel} is down.`
             : null}
         fallbackLabel={fallbackLabel}
         warning={warning}
         onToggle={(next) => {
-          if (primaryOnApple && next) {
-            if (refusalConsentKey !== null) void patch({ ai: { appleRefusalFallbackConsent: refusalConsentKey } });
-            return;
-          }
-          if (next && onValue === null) return;
-          void patch({ ai: { enrichmentFallback: next ? onValue : null } });
+          if (!next) void patch({ ai: { enrichmentFallbackPaused: true } });
+          else if (hasFallback) void patch({ ai: {
+            ...(paused ? { enrichmentFallbackPaused: false } : {}),
+            ...(needsApproval ? { appleRefusalFallbackConsent: refusalConsentKey } : {})
+          } });
+          else if (!primaryOnApple && onValue !== null) void patch({ ai: { enrichmentFallback: onValue } });
         }}
       >
         <AiSurfaceDefaultControl
@@ -982,6 +991,8 @@ function EnrichmentFallbackControl({
   offline,
   appleRefusal,
   on,
+  paused,
+  showPicker,
   canTurnOn,
   appleUnavailable,
   offDeviceNotice,
@@ -996,6 +1007,8 @@ function EnrichmentFallbackControl({
   offline: boolean;
   appleRefusal: boolean;
   on: boolean;
+  paused: boolean;
+  showPicker: boolean;
   /** False when nothing could stand in (behind Codex: no model on this Mac). */
   canTurnOn: boolean;
   /** Why Apple's on-device model can't be picked, for the disabled state. */
@@ -1009,10 +1022,12 @@ function EnrichmentFallbackControl({
   const condition = appleRefusal ? "refuses a caption" : offline ? "is offline" : "can't be reached";
   const disabled = !on && !canTurnOn;
   let sub: string;
-  if (appleRefusal) {
+  if (paused) {
+    sub = canTurnOn ? "Off. Your fallback settings are saved." : "Off. Choose a different fallback provider below.";
+  } else if (appleRefusal) {
     sub = disabled
       ? "Choose a fallback provider below."
-      : "PwrSnap can retry that capture once. Guardrail violations, setup errors, and timeouts still fail.";
+      : "PwrSnap goes straight to the fallback after a refusal. Guardrail violations, setup errors, and timeouts still fail.";
   } else if (disabled) {
     sub = `Nothing here captions without a network. ${appleUnavailable}, ` +
       "and no Direct API model on this Mac reads images.";
@@ -1056,7 +1071,7 @@ function EnrichmentFallbackControl({
           </li>
         </ol>
       ) : null}
-      {on || appleRefusal ? children : null}
+      {showPicker ? children : null}
       {warning !== null ? (
         <p className="pss__role-fallback-note pss__role-fallback-note--warn" role="status">{warning}</p>
       ) : null}

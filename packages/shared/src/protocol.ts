@@ -3033,10 +3033,12 @@ export type Settings = {
      *  thread/start or turn/start). */
     defaults: AiSurfaceDefaults;
     /** Second choice for capture enrichment, used when the primary can't
-     *  be reached or Apple's native caption model returns a typed refusal. Same field
-     *  semantics as a surface default (`{}` = Codex on its managed default).
-     *  null / absent = off: an unreachable primary fails the run. Additive. */
+     *  be reached or Apple's native caption model returns a typed refusal.
+     *  Same field semantics as a surface default (`{}` = Codex on its
+     *  managed default). Null or absent leaves the fallback unconfigured. */
     enrichmentFallback?: AiSurfaceDefault | null;
+    /** Disable use of the saved caption fallback until the user resumes it. */
+    enrichmentFallbackPaused?: boolean;
     /** Approval for the selected off-device Apple refusal fallback, keyed
      *  to its destination. Missing or null keeps this route off. */
     appleRefusalFallbackConsent?: string | null;
@@ -4075,9 +4077,10 @@ export type SettingsPatch = {
       sizzleChat?: AiSurfaceDefaultPatch;
       enrichment?: AiSurfaceDefaultPatch;
     };
-    /** `null` turns the enrichment fallback off. An object turns it on (from
-     *  `{}` when it was off) and merges leaf-by-leaf like a surface default. */
+    /** `null` clears the saved fallback. An object merges leaf-by-leaf like
+     *  a surface default. Use `enrichmentFallbackPaused` to keep the choice. */
     enrichmentFallback?: AiSurfaceDefaultPatch | null;
+    enrichmentFallbackPaused?: boolean;
     /** Approve the currently selected destination, or clear with null. */
     appleRefusalFallbackConsent?: string | null;
     /** ACP-agent enablement patch. `enabledAgentIds` REPLACES the stored

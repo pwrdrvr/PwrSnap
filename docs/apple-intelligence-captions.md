@@ -23,12 +23,14 @@ The check reads model availability without generating a response.
 **Test** on that screen sends one short text prompt to the model and times the
 answer. It uses no capture.
 
-To retry when Apple Intelligence refuses a caption, choose a fallback under
+To use a fallback when Apple Intelligence refuses a caption, choose it under
 **If Apple Intelligence refuses a caption** in the Captions settings. An
 off-device provider needs explicit approval in that control before PwrSnap
 sends it a capture. A fallback saved before this feature still needs that
 approval, including a choice inherited from a different caption primary.
-A selected loopback Direct API model can run as a local fallback.
+A selected loopback Direct API model can run as a local fallback. Switch
+fallback off to pause it. Your provider, model, and reasoning stay saved for
+when you switch it back on.
 
 ## What each state means
 
@@ -80,8 +82,9 @@ On Windows and Linux the provider does not appear anywhere.
 - **Captions only.** It is not offered for Library chat or Sizzle Reel chat.
 - **A small model.** Descriptions are shorter than a cloud model's, and it can
   misread small text. In testing it read `pnpm` in a terminal as `npm`.
-- **It can refuse a caption.** With an eligible fallback, PwrSnap retries
-  that capture once. The next capture starts with Apple again. An explicit
+- **It can refuse a caption.** When an eligible fallback is on, PwrSnap sends
+  the capture straight to it after the first Apple attempt. The next capture
+  starts with Apple again. An explicit
   guardrail violation, a model that is still downloading, other setup
   failures, timeouts, and malformed output leave the run failed. Cancellation
   ends the run. A refusal from the development CLI also leaves the run failed.

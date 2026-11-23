@@ -376,16 +376,35 @@ describe("AIFeaturesPage — caption fallback", () => {
     } });
   });
 
-  test("the Apple model label and approved off-device retry describe their own destinations", async () => {
+  test("turning off an approved Apple fallback preserves its configuration", async () => {
     appleFmStatus = { state: "ready" };
     await renderPage("2026-10-01T00:00:00.000Z", {
       ...applePrimary, enrichmentFallback: {}, appleRefusalFallbackConsent: '["codex",""]'
     });
     expect(fallbackSwitch()?.getAttribute("aria-checked")).toBe("true");
     expect(container?.textContent).toContain("This model runs on this Mac");
+    expect(container?.textContent).toContain("PwrSnap goes straight to the fallback after a refusal");
     expect(container?.textContent).toContain("send the capture to Codex for processing off this Mac");
     await act(async () => { fallbackSwitch()?.click(); });
-    expect(patchMock).toHaveBeenCalledWith({ ai: { enrichmentFallback: null } });
+    expect(patchMock).toHaveBeenCalledWith({ ai: { enrichmentFallbackPaused: true } });
+  });
+
+  test.each([
+    { primary: applePrimary, provider: "", model: "gpt-5.4-mini", approval: '["codex","gpt-5.4-mini"]' },
+    { primary: localPrimary, provider: "", model: "gpt-5.4-mini", approval: null },
+    { primary: lunaPrimary, provider: "apple:system", model: "", approval: null }
+  ])("a paused fallback keeps $provider and $model selected and can resume", async ({ primary, provider, model, approval }) => {
+    appleFmStatus = { state: "ready" };
+    await renderPage("2026-10-01T00:00:00.000Z", {
+      ...primary, enrichmentFallback: { provider, model }, appleRefusalFallbackConsent: approval,
+      enrichmentFallbackPaused: true
+    });
+    expect(fallbackSwitch()?.getAttribute("aria-checked")).toBe("false");
+    expect(fallbackProvider()?.value).toBe(provider);
+    const modelPicker = container?.querySelector<HTMLSelectElement>('[aria-label="Caption fallback model"]');
+    expect(modelPicker?.value).toBe(model);
+    await act(async () => { fallbackSwitch()?.click(); });
+    expect(patchMock).toHaveBeenCalledWith({ ai: { enrichmentFallbackPaused: false } });
   });
 
   test("a saved loopback fallback is active for refusals without an off-device prompt", async () => {
@@ -512,7 +531,7 @@ describe("AIFeaturesPage — caption fallback", () => {
       fallbackSwitch()?.click();
       await Promise.resolve();
     });
-    expect(patchMock).toHaveBeenCalledWith({ ai: { enrichmentFallback: null } });
+    expect(patchMock).toHaveBeenCalledWith({ ai: { enrichmentFallbackPaused: true } });
   });
 
   test("a field change patches the fallback, not the primary", async () => {

@@ -673,6 +673,7 @@ describe("Codex handlers", () => {
       { outcome: "refusal", choice: "approved", status: "completed", hops: true },
       { outcome: "refusal", choice: "legacy", status: "failed", hops: false },
       { outcome: "refusal", choice: "off", status: "failed", hops: false },
+      { outcome: "refusal", choice: "paused", status: "failed", hops: false },
       { outcome: "guardrail", choice: "approved", status: "failed", hops: false },
       { outcome: "not-ready", choice: "approved", status: "failed", hops: false },
       { outcome: "timeout", choice: "approved", status: "failed", hops: false },
@@ -688,7 +689,8 @@ describe("Codex handlers", () => {
       settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
       settings.ai.defaults.enrichment = { provider: "apple:system" };
       settings.ai.enrichmentFallback = choice === "off" ? null : {};
-      if (choice === "approved") settings.ai.appleRefusalFallbackConsent = '["codex",""]';
+      if (choice === "approved" || choice === "paused") settings.ai.appleRefusalFallbackConsent = '["codex",""]';
+      if (choice === "paused") settings.ai.enrichmentFallbackPaused = true;
 
       const primaryHealth = new EnrichmentPrimaryHealth(() => 0);
       const markDown = vi.spyOn(primaryHealth, "markDown");
@@ -735,6 +737,7 @@ describe("Codex handlers", () => {
         await waitFor(() => ["completed", "failed", "cancelled"].includes(getAiRun(runId)?.status ?? ""));
         expect(getAiRun(runId)).toMatchObject({ status, fallbackFrom: hops ? "apple:system" : null });
         expect(clientFactory).toHaveBeenCalledTimes(hops ? 1 : 0);
+        if (outcome !== "CLI refusal text") expect(nativeRun).toHaveBeenCalledTimes(1);
         if (hops) {
           expect(getCaptureEnrichment("cap_1")).toMatchObject({
             fallbackFrom: "apple:system", suggestedDescription: "A screenshot with visible text."

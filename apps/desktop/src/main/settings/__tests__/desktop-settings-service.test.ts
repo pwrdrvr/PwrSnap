@@ -317,6 +317,15 @@ describe("DesktopSettingsService.write", () => {
     expect((await svc.read()).ai).toMatchObject({ enrichmentFallback: {}, appleRefusalFallbackConsent: null });
     await svc.write({ ai: { appleRefusalFallbackConsent: approval } });
     expect((await new DesktopSettingsService({ filePath }).read()).ai).toMatchObject({ appleRefusalFallbackConsent: approval });
+    for (const paused of [true, false, true, false]) {
+      await svc.write({ ai: { enrichmentFallbackPaused: paused } });
+      expect(JSON.parse(readFileSync(filePath, "utf8")).ai).toMatchObject({
+        enrichmentFallback: {}, enrichmentFallbackPaused: paused, appleRefusalFallbackConsent: approval
+      });
+      expect((await new DesktopSettingsService({ filePath }).read()).ai).toMatchObject({
+        enrichmentFallback: {}, enrichmentFallbackPaused: paused, appleRefusalFallbackConsent: approval
+      });
+    }
     await svc.write({ ai: { enrichmentFallback: { reasoning: "low" } } });
     expect(JSON.parse(readFileSync(filePath, "utf8")).ai.appleRefusalFallbackConsent).toBe(approval);
     // A stale click for the former model must not approve the new destination.

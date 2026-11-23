@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.4.0 - 2026-11-22
+
+- Recording - Added live audio meters and controls to mute individual sources
+  during a take. Recordings now preserve the tail of the longer audio track
+  when sources end at different times.
+- Hotkeys - Added recovery options and alternative shortcuts when a global
+  hotkey is unavailable.
+- Clipboard - Fixed loss of Retina density information when copying macOS
+  screenshots, so compatible apps paste them at the intended size.
+- Capture Captions - Improved Codex enrichment by using smaller WebP images
+  for still captures.
+- Performance Diagnostics - Added configurable CPU capture rules and Chromium
+  tracing to help diagnose spikes with context from before the trigger.
+- Updates - Fixed a macOS update restart that could rebuild capture selector
+  windows while the app was shutting down.
+
 ## v1.3.8 - 2026-11-22
 
 - Screenshots - Added multi-display selection. Pick windows or displays across

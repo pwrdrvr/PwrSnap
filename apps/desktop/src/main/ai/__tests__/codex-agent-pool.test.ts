@@ -731,6 +731,20 @@ describe("Codex agent pool", () => {
     };
   }
 
+  test("rechecks image authorization after thread setup and before Codex gets the capture", async () => {
+    stageHeldOneShot();
+    const authorizeImageSend = vi.fn(async () => {
+      expect(mockConnectionRequest.mock.calls.some(([method]) => method === "thread/start")).toBe(true);
+      throw new Error("fixture approval withdrawn");
+    });
+    await expect(runCodexOneShotFromPool({
+      command: "codex-test", workspaceDir: "/tmp/pwrsnap-enrichment-jail",
+      prompt: "describe this image", imagePaths: ["/scratch/fixture.jpg"], authorizeImageSend
+    })).rejects.toThrow("fixture approval withdrawn");
+    expect(authorizeImageSend).toHaveBeenCalledTimes(1);
+    expect(mockConnectionRequest.mock.calls.some(([method]) => method === "turn/start")).toBe(false);
+  });
+
   test("pins the sandbox posture on every enrichment thread/start", async () => {
     mockConnectionRequest.mockImplementation(async (method: string, params: unknown) => {
       if (method === "config/read") return { config: {} };

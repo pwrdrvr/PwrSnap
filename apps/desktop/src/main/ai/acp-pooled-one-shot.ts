@@ -49,6 +49,9 @@ export type PooledAcpOneShotRequest = {
   /** Reasoning effort token (agent-specific). */
   effort?: string;
   abortSignal?: AbortSignal;
+  authorizeImageSend?: () => Promise<void>;
+  /** Decline to submit the turn when ACP cannot confirm an explicitly approved model. */
+  requireSelectedModel?: boolean;
   /** Present when this one-shot is a capture-enrichment run. Registers the
    *  session in the enrichment-thread registry for the run's duration so the
    *  app-lifetime pooled approval handler — shared with chat, and given only a
@@ -148,7 +151,11 @@ export async function runPooledAcpOneShot(input: {
     // and adding an "abort" listener to an already-aborted signal never fires
     // it retroactively — re-check now that the listener covers what follows
     // (inside the try, so the just-opened session is still archived).
+    if (request.authorizeImageSend !== undefined) await request.authorizeImageSend();
     throwIfAborted();
+    if (request.requireSelectedModel && request.model && thread.model !== request.model) {
+      throw new Error("the agent did not confirm the approved model.");
+    }
     const { turnId } = await client.startTurn({
       threadId: thread.threadId,
       input: {

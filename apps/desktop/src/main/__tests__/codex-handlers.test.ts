@@ -765,6 +765,77 @@ describe("Codex handlers", () => {
       }
     });
 
+    test.each(["paused", "revoked", "changed model", "paused before send", "still approved"])(
+      "an off-device Apple fallback checks the original approval (%s)", async (change) => {
+        let settings = testSettings();
+        settings.ai.enabled = true;
+        settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+        settings.ai.defaults.enrichment = { provider: "apple:system" };
+        settings.ai.enrichmentFallback = { model: "approved-model" };
+        settings.ai.appleRefusalFallbackConsent = '["codex","approved-model"]';
+        const appleEntered = deferred<void>();
+        const finishApple = deferred<appleFmCli.FmRunResult>();
+        const beforeSend = deferred<void>();
+        const send = deferred<void>();
+        const native = vi.spyOn(appleFmNative, "resolveNativeCaptionRunner").mockResolvedValue(async () => {
+          appleEntered.resolve();
+          return finishApple.promise;
+        });
+        const platform = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+        const remote = new FakeCodexClient();
+        const clientFactory = vi.fn(() => ({
+          enrichCapture: async (request: CaptureEnrichmentRequest) => {
+            beforeSend.resolve();
+            await send.promise;
+            await request.authorizeImageSend?.();
+            return remote.enrichCapture(request);
+          },
+          close: async () => undefined
+        }) as never);
+        try {
+          registerCodexHandlers({ clientFactory, settingsReader: async () => settings,
+            budget: new AiEnrichmentBudget() });
+          const started = await bus.dispatch("codex:enrich", { captureId: "cap_1" }, { principal: "ipc" });
+          if (!started.ok) throw new Error(started.error.message);
+          const { runId } = started.value;
+          await appleEntered.promise;
+          const ai = { ...settings.ai };
+          if (change === "paused") ai.enrichmentFallbackPaused = true;
+          if (change === "revoked") ai.appleRefusalFallbackConsent = null;
+          if (change === "changed model") {
+            ai.enrichmentFallback = { model: "different-model" };
+            ai.appleRefusalFallbackConsent = '["codex","different-model"]';
+          }
+          settings = { ...settings, ai };
+          finishApple.resolve(refusal);
+          let pendingUsage: unknown;
+          if (change === "paused before send" || change === "still approved") {
+            await beforeSend.promise;
+            pendingUsage = await bus.dispatch("codex:usageRunDetail", { runId }, { principal: "ipc" });
+            if (change === "paused before send") settings = { ...settings, ai: { ...settings.ai, enrichmentFallbackPaused: true } };
+          }
+          send.resolve();
+          await waitFor(() => ["completed", "failed"].includes(getAiRun(runId)?.status ?? ""));
+          if (change === "still approved") {
+            expect(remote.lastRequest?.model).toBe("approved-model");
+            expect(getAiRun(runId)?.status).toBe("completed");
+          } else {
+            expect(remote.lastRequest).toBeNull();
+            expect(getAiRun(runId)?.status).toBe("failed");
+            expect(clientFactory).toHaveBeenCalledTimes(change === "paused before send" ? 1 : 0);
+          }
+          if (pendingUsage !== undefined) expect(pendingUsage).toMatchObject({ ok: true, value: {
+            modelProvider: "codex", selectedModelLabel: "approved-model",
+            run: { status: "running", fallbackFrom: "apple:system" }
+          } });
+        } finally {
+          send.resolve();
+          platform.mockRestore();
+          native.mockRestore();
+        }
+      }
+    );
+
     test("a selected loopback fallback can caption a refusal without off-device approval", async () => {
       const receive = vi.fn();
       const http = await server(async (req, res) => {

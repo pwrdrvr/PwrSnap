@@ -55,6 +55,8 @@ export type CaptureEnrichmentRequest = {
    *  Settings → AI per-surface default `ai.defaults.enrichment.reasoning`. */
   effort?: string;
   abortSignal?: AbortSignal;
+  /** Off-device Apple fallback approval, checked just before submitting images. */
+  authorizeImageSend?: () => Promise<void>;
   /** Run + capture identity, used only to attribute a denied sandbox
    *  escalation in the logs (see `enrichment-sandbox.ts`). */
   diagnostics?: EnrichmentRunDiagnostics;
@@ -152,6 +154,7 @@ export class CaptureEnrichmentClient {
       model: request.model ?? null,
       modelProvider: request.modelProvider ?? null,
       ...(request.abortSignal !== undefined ? { abortSignal: request.abortSignal } : {}),
+      ...(request.authorizeImageSend !== undefined ? { authorizeImageSend: request.authorizeImageSend } : {}),
       ...(request.diagnostics !== undefined ? { diagnostics: request.diagnostics } : {})
     });
     return {

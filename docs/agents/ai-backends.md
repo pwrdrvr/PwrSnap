@@ -310,7 +310,11 @@ to a license or change system settings. Only the bundled helper's typed
 production handler sends that capture directly to the configured alternate
 when Apple is the primary and the alternate is eligible and enabled. Apple
 gets one attempt per capture. Off-device fallback requires explicit approval
-in Settings for the selected provider and model or endpoint. A refusal leaves
+in Settings for the selected provider and model or endpoint. Recheck the original
+approval at handoff and just before the transport sends images. A pause,
+revoked approval, or changed destination stops the send for the queued run.
+An explicitly selected ACP model must be confirmed by the session before
+the capture is attached. A refusal leaves
 outage tracking alone and the next capture starts with Apple. A refusal while
 Apple is already the fallback ends the run. A `guardrailViolation`, readiness,
 setup, timeout, cancellation or malformed result follows its usual failure

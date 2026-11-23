@@ -92,6 +92,7 @@ export type CodexOneShotPoolRunOptions = {
   model?: string | null;
   modelProvider?: string | null;
   abortSignal?: AbortSignal;
+  authorizeImageSend?: () => Promise<void>;
   /** Identifies the enrichment run, so a denied escalation can be logged
    *  against a specific capture. Omit only in tests/tools. */
   diagnostics?: EnrichmentRunDiagnostics;
@@ -452,6 +453,8 @@ class CodexAgentOwner {
         { type: "text", text: options.prompt, text_elements: [] },
         ...imagePathsToLocalImageInputs(options.imagePaths ?? [])
       ];
+      if (options.authorizeImageSend !== undefined) await options.authorizeImageSend();
+      options.abortSignal?.throwIfAborted();
       const turnResponse = (await connection.request(
         "turn/start",
         {

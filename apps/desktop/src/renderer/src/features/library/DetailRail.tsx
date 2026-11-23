@@ -32,6 +32,7 @@ import {
   EVENT_CHANNELS,
   exportStrategyFromSettings,
   desktopFileManagerName,
+  isAppleFmProvider,
   sizzleProjectHasCapture,
   sizzleSceneCaptureIds
 } from "@pwrsnap/shared";
@@ -1440,7 +1441,7 @@ function DetailTab({
       cancelled = true;
       off();
     };
-  }, [enrichment?.latestRunId, enrichment?.status]);
+  }, [enrichment?.latestRunId, enrichment?.status, enrichment?.fallbackFrom]);
 
   const [titleValue, titleOrigin, setTitleEdit, commitTitle] = useFieldEditor({
     captureId: record.id,
@@ -1685,10 +1686,13 @@ function DetailTab({
         // The usage strip below names the model that actually answered; the
         // chip says it wasn't the usual one, and the tooltip which one failed.
         fallbackFrom={fallbackFromLabel}
+        fallbackAfterRefusal={isAppleFmProvider(enrichment?.fallbackFrom)}
         clock={enrichmentRunClock(enrichment)}
         // Only recorded run metadata supplies attribution, once. Defaults
         // belong to the Regenerate tooltip, even while this detail is loading.
-        {...(usageDetail !== null && usageDetail.run.id === enrichment?.latestRunId ? { meta: <AiRunUsageStrip detail={usageDetail} /> } : {})}
+        {...(usageDetail !== null && usageDetail.run.id === enrichment?.latestRunId &&
+          (usageDetail.run.fallbackFrom ?? null) === (enrichment.fallbackFrom ?? null)
+          ? { meta: <AiRunUsageStrip detail={usageDetail} /> } : {})}
         footer={
           codexBusy || hasAnyDraft || !aiSafetyDisabled || autoApply !== null ? (
             <>
@@ -2131,6 +2135,7 @@ function OcrTab({
           providerLabel={null}
           error={enrichment?.error}
           fallbackFrom={fallbackFromLabel}
+          fallbackAfterRefusal={isAppleFmProvider(enrichment?.fallbackFrom)}
         />
         <div className="psl__ocr-tab-actions">
           {refreshing && enrichment?.latestRunId ? (

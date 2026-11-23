@@ -51,4 +51,13 @@ describe("CodexStatusPill caption fallback", () => {
     expect(render(<CodexStatusPill status={null} providerLabel="Codex" fallbackFrom="qwen3-vl-8b" />)
       .querySelector(".ps-codex-pill__fallback")).toBeNull();
   });
+
+  it.each(["completed", "failed"] as const)("explains an Apple refusal when the fallback %s", (status) => {
+    const container = render(<CodexStatusPill status={status} accepted={status === "completed"}
+      providerLabel="Codex" error="model overloaded" fallbackFrom="Apple Intelligence" fallbackAfterRefusal />);
+    const summary = container.querySelector(".ps-codex-pill__summary");
+    const copy = status === "failed" ? summary?.textContent : summary?.getAttribute("title");
+    expect(copy).toContain("Apple Intelligence refused to caption this snap");
+    expect(copy).not.toContain("could not be reached");
+  });
 });

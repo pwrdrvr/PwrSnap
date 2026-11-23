@@ -119,8 +119,8 @@ describe("buildRecordingAudioSpanArgs", () => {
     const args = buildRecordingAudioSpanArgs([0], SPANS);
     expect(args[0]).toBe("-filter_complex");
     expect(args[1]!.split(";")).toEqual([
-      "[0:a:0]aresample=async=1:first_pts=0[recorded_audio_0]",
-      "[recorded_audio_0]asplit=2[span_audio_0][span_audio_1]",
+      "[0:a:0]aresample=async=1:first_pts=0[audio_to_cut]",
+      "[audio_to_cut]asplit=2[span_audio_0][span_audio_1]",
       "[span_audio_0]atrim=start=1.000:end=2.500,asetpts=PTS-STARTPTS[kept_audio_0]",
       "[span_audio_1]atrim=start=6.000:end=8.250,asetpts=PTS-STARTPTS[kept_audio_1]",
       "[kept_audio_0][kept_audio_1]concat=n=2:v=0:a=1[recorded_audio]"
@@ -131,7 +131,7 @@ describe("buildRecordingAudioSpanArgs", () => {
   test("two tracks: the same un-normalized mix as the uncut path, then cut", () => {
     const graph = buildRecordingAudioSpanArgs([0, 1], SPANS)[1]!;
     expect(graph).toContain(
-      "[recorded_audio_0][recorded_audio_1]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,asplit=2"
+      "[recorded_audio_0][recorded_audio_1]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[audio_to_cut];[audio_to_cut]asplit=2"
     );
   });
 

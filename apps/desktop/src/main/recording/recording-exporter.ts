@@ -53,6 +53,7 @@ import { resolveFfmpegPath } from "./ffmpeg-resolver";
 import {
   AUDIO_PIPELINE_VERSION,
   buildRecordingAudioArgs,
+  buildRecordingAudioFilters,
   probeAudioStreamCount,
   selectedRecordingAudioStreams
 } from "./recording-audio";
@@ -1024,17 +1025,8 @@ export function buildSegmentedMp4EncodeArgs(input: {
     ...spans.map((span, i) => `[vs${i}]trim=${spanTrim(span)},setpts=PTS-STARTPTS[v${i}]`)
   ];
   if (hasAudio) {
-    const resampled = audioStreams.map(
-      (index, i) => `[0:a:${index}]aresample=async=1:first_pts=0[ra${i}]`
-    );
-    graph.push(...resampled);
-    // `normalize=0` for the reason `buildRecordingAudioArgs` gives: the
-    // mix must be as loud as a single-source export.
-    const source =
-      audioStreams.length === 1
-        ? "[ra0]"
-        : `${splitLabels("ra", audioStreams.length)}amix=inputs=${audioStreams.length}:duration=longest:dropout_transition=0:normalize=0,`;
-    graph.push(`${source}asplit=${n}${splitLabels("as", n)}`);
+    graph.push(...buildRecordingAudioFilters(audioStreams, "audio_to_cut"));
+    graph.push(`[audio_to_cut]asplit=${n}${splitLabels("as", n)}`);
     graph.push(
       ...spans.map((span, i) => `[as${i}]atrim=${spanTrim(span)},asetpts=PTS-STARTPTS[a${i}]`)
     );

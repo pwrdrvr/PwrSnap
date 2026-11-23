@@ -22,7 +22,7 @@ export { selectedRecordingAudioStreams, type RecordedAudioTrackFacts } from "@pw
  * mix moved to v2, so a bump would have re-derived the other two assets
  * while `lookupExport` quietly kept serving the old mixing.
  */
-export const AUDIO_PIPELINE_VERSION = "mixed-audio-v2";
+export const AUDIO_PIPELINE_VERSION = "mixed-audio-v3";
 
 /** A file on disk plus the track facts that describe its audio layout. */
 export type RecordingAudioSource = RecordedAudioTrackFacts & {
@@ -138,9 +138,21 @@ export async function probeAudioStreamCount(videoPath: string, signal?: AbortSig
 export function buildRecordingAudioArgs(streams: readonly number[]): string[] {
   if (streams.length === 0) return ["-an"];
   if (streams.length === 1) return ["-map", `0:a:${streams[0]}?`];
-  // Preserve delayed starts and gaps against the video's zero-based clock.
-  // `longest` retains the full voice/system tail when one stream ends first.
-  //
+  return [
+    "-filter_complex", buildRecordingAudioFilters(streams, "recorded_audio").join(";"),
+    "-map", "[recorded_audio]"
+  ];
+}
+
+/** Align selected audio to the video clock and produce one filter output. */
+export function buildRecordingAudioFilters(streams: readonly number[], output: string): string[] {
+  const resample = "aresample=async=1:first_pts=0";
+  if (streams.length === 1) return [`[0:a:${streams[0]}]${resample}[${output}]`];
+
+  // FFmpeg 6.1.1 can stop delivering audio at the shorter input's EOF
+  // even with duration=longest (#766). A one-sample silence frame after
+  // each resampled input preserves the longer input's tail. Keep the
+  // padding finite so the mix still ends with the recorded audio.
   // `normalize=0` is load-bearing. amix's default divides every input by the
   // input count, so a two-source mix came out exactly 6 dB quieter than the
   // single-`-map` path — measured -27.1 dB against -21.1 dB for the same
@@ -150,14 +162,13 @@ export function buildRecordingAudioArgs(streams: readonly number[]): string[] {
   // `duration=longest`, amix renormalizes the instant the shorter input ends,
   // a measured +6.1 dB jump mid-file. Summing without normalization matches
   // what every single-source export already does.
-  const inputs = streams.map((index, i) =>
-    `[0:a:${index}]aresample=async=1:first_pts=0[recorded_audio_${i}]`
+  const inputs = streams.map(
+    (index, i) => `[0:a:${index}]${resample},apad=pad_len=1[recorded_audio_${i}]`
   );
   const labels = streams.map((_, i) => `[recorded_audio_${i}]`).join("");
   return [
-    "-filter_complex",
-    [...inputs, `${labels}amix=inputs=${streams.length}:duration=longest:dropout_transition=0:normalize=0[recorded_audio]`].join(";"),
-    "-map", "[recorded_audio]"
+    ...inputs,
+    `${labels}amix=inputs=${streams.length}:duration=longest:dropout_transition=0:normalize=0[${output}]`
   ];
 }
 
@@ -176,15 +187,7 @@ export function buildRecordingAudioSpanArgs(
 ): string[] {
   if (streams.length === 0) return ["-an"];
   const n = spans.length;
-  const inputs = streams.map((index, i) =>
-    `[0:a:${index}]aresample=async=1:first_pts=0[recorded_audio_${i}]`
-  );
-  const labels = streams.map((_, i) => `[recorded_audio_${i}]`).join("");
-  // `normalize=0` for the reason `buildRecordingAudioArgs` gives.
-  const mixed =
-    streams.length === 1
-      ? labels
-      : `${labels}amix=inputs=${streams.length}:duration=longest:dropout_transition=0:normalize=0,`;
+  const inputs = buildRecordingAudioFilters(streams, "audio_to_cut");
   const split = spans.map((_, k) => `[span_audio_${k}]`).join("");
   const trims = spans.map(
     (span, k) =>
@@ -193,7 +196,7 @@ export function buildRecordingAudioSpanArgs(
   const kept = spans.map((_, k) => `[kept_audio_${k}]`).join("");
   return [
     "-filter_complex",
-    [...inputs, `${mixed}asplit=${n}${split}`, ...trims, `${kept}concat=n=${n}:v=0:a=1[recorded_audio]`].join(";"),
+    [...inputs, `[audio_to_cut]asplit=${n}${split}`, ...trims, `${kept}concat=n=${n}:v=0:a=1[recorded_audio]`].join(";"),
     "-map", "[recorded_audio]"
   ];
 }

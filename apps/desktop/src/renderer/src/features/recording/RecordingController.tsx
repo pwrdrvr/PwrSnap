@@ -22,19 +22,9 @@ import {
   type RecordingState
 } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
-import { SourceChip } from "../shared/SourceChip";
+import { SourceChip, WarnGlyph } from "../shared/SourceChip";
+import { formatHMS, useRecordingHudAudio } from "./recording-hud-audio";
 import "./RecordingController.css";
-
-function formatHMS(seconds: number): string {
-  const total = Math.max(0, Math.floor(seconds));
-  const hh = Math.floor(total / 3600);
-  const mm = Math.floor((total % 3600) / 60);
-  const ss = total % 60;
-  if (hh > 0) {
-    return `${hh}:${mm.toString().padStart(2, "0")}:${ss.toString().padStart(2, "0")}`;
-  }
-  return `${mm.toString().padStart(2, "0")}:${ss.toString().padStart(2, "0")}`;
-}
 
 export function RecordingController(): ReactElement {
   const [state, setState] = useState<RecordingState>({ phase: "idle" });
@@ -42,13 +32,19 @@ export function RecordingController(): ReactElement {
   const [elapsedSec, setElapsedSec] = useState(0);
   const [armedAction, setArmedAction] = useState<"restart" | "cancel" | null>(null);
   const [busyAction, setBusyAction] = useState<"stop" | "restart" | "cancel" | null>(null);
+  const audio = useRecordingHudAudio(state.phase === "recording" ? state : null, backend);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   // Snapshot on mount, then subscribe.
   useEffect(() => {
     let cancelled = false;
+    let receivedUpdate = false;
+    const off = window.pwrsnapApi?.on(EVENT_CHANNELS.recordingState, (payload) => {
+      receivedUpdate = true;
+      setState(payload as RecordingState);
+    });
     void dispatch("recording:state", {}).then((res) => {
-      if (cancelled) return;
+      if (cancelled || receivedUpdate) return;
       if (res.ok) setState(res.value);
     });
     void dispatch("recording:capabilities", {})
@@ -67,9 +63,6 @@ export function RecordingController(): ReactElement {
       .catch(() => {
         if (!cancelled) setBackend(null);
       });
-    const off = window.pwrsnapApi?.on(EVENT_CHANNELS.recordingState, (payload) => {
-      setState(payload as RecordingState);
-    });
     return () => {
       cancelled = true;
       off?.();
@@ -113,19 +106,20 @@ export function RecordingController(): ReactElement {
   // Tick the duration timer once per second while recording. We don't
   // tick during countdown — the countdown phase carries its own
   // `secondsRemaining` value in the state event.
+  const startedAt = state.phase === "recording" ? state.startedAt : null;
   useEffect(() => {
-    if (state.phase !== "recording") {
+    if (startedAt === null) {
       setElapsedSec(0);
       return;
     }
-    const startedAtMs = new Date(state.startedAt).getTime();
+    const startedAtMs = new Date(startedAt).getTime();
     const update = (): void => {
       setElapsedSec((Date.now() - startedAtMs) / 1000);
     };
     update();
     const handle = setInterval(update, 500);
     return () => clearInterval(handle);
-  }, [state]);
+  }, [startedAt]);
 
   useEffect(() => {
     setArmedAction(null);
@@ -219,6 +213,7 @@ export function RecordingController(): ReactElement {
   // ring already keeps only the newest seconds).
   const isBurst = isRecording && state.output === "burst";
   const burstFrames = isRecording ? state.burstFrames ?? 0 : 0;
+  const sources = isRecording ? recordingSourceChips(state.capabilities) : [];
 
   if (state.phase === "failed") {
     return <RecordingFailureCard state={state} />;
@@ -272,15 +267,7 @@ export function RecordingController(): ReactElement {
                     </span>
                   </>
                 )}
-                {/* What this take is capturing, in the same chips the
-                    selector offered and the float-over will confirm.
-                    These are the REQUESTED sources: neither shipped
-                    backend reports live levels
-                    (`backend.sources.liveAudioLevels`), so a moving
-                    meter here would be a fiction. Rendering them as
-                    `live` with a static full meter states "this source
-                    is part of the take" and nothing more. */}
-                {recordingSourceChips(state.capabilities).length > 0 && (
+                {sources.length > 0 && (
                   <>
                     <span className="rc__sep" aria-hidden="true" />
                     <div
@@ -289,15 +276,14 @@ export function RecordingController(): ReactElement {
                       role="group"
                       aria-label="Recording sources"
                     >
-                      {recordingSourceChips(state.capabilities).map((source) => (
+                      {sources.map((source) => (
                         <SourceChip
                           key={source}
                           source={source}
-                          state="live"
                           density="dense"
                           onScrim
-                          meterTone="recorded"
                           testId={`rc-source-${source}`}
+                          {...(source === "camera" ? { state: "live" as const } : audio.chip(source))}
                         />
                       ))}
                     </div>
@@ -368,8 +354,16 @@ export function RecordingController(): ReactElement {
                   : "Cancel discards this take. Press Confirm cancel again."}
               </div>
             )}
-            <div data-recording-caption className="rc__caption">
-              {isBurst
+            <div
+              data-recording-caption
+              className="rc__caption"
+              data-tone={audio.notice?.tone}
+              title={audio.notice?.text}
+            >
+              {audio.notice !== null ? <>
+                {audio.notice.tone === "warn" ? <WarnGlyph /> : null}
+                <span>{audio.notice.text}</span>
+              </> : isBurst
                 ? `${BURST_FPS} stills a second while the screen changes · keeps the last ${Math.round(BURST_MAX_FRAMES / BURST_FPS)} s`
                 : backend === null
                 ? "Checking recorder capabilities…"
@@ -378,6 +372,9 @@ export function RecordingController(): ReactElement {
                   : state.rect.w === 0 && state.rect.h === 0
                     ? "Windows full-display recordings may include this controller"
                     : "PwrSnap keeps this controller outside the recorded region when space allows"}
+            </div>
+            <div className="sr-only" role="status" aria-live="polite">
+              {audio.notice?.announce === true ? audio.notice.text : null}
             </div>
           </div>
         )}

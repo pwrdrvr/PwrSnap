@@ -58,12 +58,12 @@ class RecorderProcess extends EventEmitter {
   alive = true;
   outputPath = "";
   request = 0;
-  readonly stdin = { write: (line: string) => {
+  readonly stdin = Object.assign(new EventEmitter(), { write: (line: string) => {
     if (!this.alive) throw new Error("Recorder stdin is closed");
     if (line === "q" || JSON.parse(line).type === "stop") this.stop();
     else this.open((JSON.parse(line) as { outputPath: string }).outputPath);
     return true;
-  } };
+  } });
   open(path: string): void {
     const directory = world.directories.get(dirname(path));
     if (!directory || directory.removed) throw new Error("Recorder needs its owned directory");

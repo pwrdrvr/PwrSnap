@@ -1049,6 +1049,29 @@ export function registerRecordingHandlers(): void {
     }
   });
 
+  bus.register("recording:muteAudio", async (req, ctx) => {
+    if (req === null || typeof req !== "object" || typeof req.sessionId !== "string" ||
+      (req.source !== "systemAudio" && req.source !== "microphone") || typeof req.muted !== "boolean") {
+      return err(validationError("invalid_audio_source", "A recording session, audio source, and mute state are required."));
+    }
+    const state = getRecordingState();
+    const service = getService();
+    if (ctx.principal !== "ipc" || !recordingBackendCapabilities().sources.midRecordingToggles ||
+      state.phase !== "recording" || state.sessionId !== req.sessionId || state.output === "burst" ||
+      !state.capabilities[req.source] || service.muteAudio === undefined) {
+      return err(validationError("control_unavailable", "This audio source cannot be changed in the current take."));
+    }
+    try {
+      await service.muteAudio(req);
+      return ok(undefined);
+    } catch (cause) {
+      log.warn("recording:muteAudio failed", {
+        sessionId: req.sessionId, source: req.source, message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err(recordingError("recording_mute_failed", "PwrSnap couldn’t confirm the audio change."));
+    }
+  });
+
   bus.register("recording:retry", async (req) => {
     const sessionId = failedSessionId(req);
     if (sessionId === null) {

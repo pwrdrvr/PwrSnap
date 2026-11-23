@@ -385,12 +385,11 @@ export type RecordingState =
        * the timer, and on restart they would briefly describe the
        * previous take.
        *
-       * This is the REQUESTED set. Whether a source is actually
-       * producing samples is a live signal the shipped backends do not
-       * expose yet — see `RecordingBackendCapabilities.sources
-       * .liveAudioLevels`.
+       * This is the REQUESTED set. Audio telemetry describes the samples
+       * the writer has accepted from those sources.
        */
       capabilities: RecordingCapabilities;
+      audioTelemetry?: RecordingAudioTelemetry;
       /** "burst" while a burst take runs (lossless stills, not a video).
        *  Absent for an ordinary recording. */
       output?: RecordingOutput | undefined;
@@ -407,6 +406,20 @@ export type RecordingState =
       canRetry: boolean;
       displayId: number;
     };
+
+export type RecordingAudioSource = "systemAudio" | "microphone";
+
+export type RecordingAudioReading = (
+  | { state: "waiting" }
+  | { state: "no-input" | "no-write"; lastSampleAtMs: number | null }
+  /** 0–1 in meter steps. Null means no PCM level was measurable in this window. */
+  | { state: "writing"; level: number | null; clipping?: true;
+      recovery?: { atMs: number; gapMs: number } }
+) & { muted?: true };
+
+export type RecordingAudioTelemetry = Partial<Record<RecordingAudioSource, RecordingAudioReading>>;
+
+export type RecordingAudioMuteRequest = { sessionId: string; source: RecordingAudioSource; muted: boolean };
 
 /**
  * How the recording frame is allowed to relate to the recorded rect.
@@ -525,9 +538,8 @@ export type RecordingCapabilities = {
  * which describes the inputs requested for one take.
  *
  * The recording HUD uses this snapshot to avoid advertising controls or live
- * monitoring that the active backend cannot actually perform. In particular,
- * neither shipped backend can pause/resume, switch audio tracks mid-stream,
- * or report live RMS levels. Camera capture is a separate browser recorder.
+ * monitoring that the active backend cannot actually perform. Camera
+ * capture is a separate browser recorder from the screen and audio inputs.
  */
 export type RecordingBackendCapabilities = {
   backend: "macos-native" | "windows-ffmpeg" | "unsupported";
@@ -5668,6 +5680,8 @@ export type Commands = {
    * is in flight.
    */
   "recording:restart": { req: Record<string, never>; res: { sessionId: string } };
+  /** Silence or resume an armed audio track in this take. */
+  "recording:muteAudio": { req: RecordingAudioMuteRequest; res: void };
   /** Retry only the currently displayed failed session with its original
    * subject/capabilities. A stale failure card cannot start a new take. */
   "recording:retry": { req: { sessionId: string }; res: { sessionId: string } };

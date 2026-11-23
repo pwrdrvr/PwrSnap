@@ -1,5 +1,21 @@
 import AVFoundation
 import CoreMedia
+import Darwin
+
+struct MuteAudioRequest: Decodable {
+    enum Source: String, Decodable { case systemAudio, microphone }
+    let requestId: Int
+    let source: Source
+    let muted: Bool
+    /// Decimal nanoseconds on the same continuous monotonic clock as libuv.
+    let expiresAtNs: String
+
+    /// Call on the write queue, when the command can actually change a track.
+    func applyIfCurrent(nowNs: UInt64 = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW), _ apply: () -> Bool) -> Bool {
+        guard let deadline = UInt64(expiresAtNs), nowNs < deadline else { return false }
+        return apply()
+    }
+}
 
 /// Amplitude below which a buffer is treated as silence, ~-60 dBFS.
 ///
@@ -9,38 +25,119 @@ import CoreMedia
 /// -91 dBFS, i.e. 2.8e-5).
 let audioSilenceFloor: Float = 0.001
 
-/// Peak absolute amplitude (0...1) of a linear-PCM sample buffer.
-///
-/// This exists because a sample COUNT cannot tell "this source captured
-/// audio" from "this source captured six seconds of digital silence". A
-/// muted input, or a system tap with nothing playing through it, still
-/// delivers buffers on schedule and still appends them — so counting
-/// appends reports a healthy source for a track that holds nothing. That
-/// is what made a recording claim system audio it never had, and what made
-/// the preview play a silent track while the waveform drew the microphone.
-///
-/// Pass `stopAt` to bail out as soon as the peak reaches a threshold. The
-/// callers only ever ask "did this cross the floor", and the answer is
-/// still correct for that question while the scan gets to stop early. The
-/// default returns the exact peak, so a measurement probe can keep using
-/// this as a plain peak meter.
-///
-/// **Every readable layout must actually be read.** Returning 0 is not a
-/// harmless "unknown" — 0 means "this source captured nothing", and that
-/// answer deletes the track from every export and from the preview mix.
-/// Handling only the formats we happened to test made a 24-bit USB
-/// interface report a full take of narration as silent, so the branch
-/// chain below covers every linear-PCM shape CoreAudio can hand us:
-/// float32/64, and 8/16/24/32-bit integer, packed or 32-bit-aligned,
-/// little- or big-endian. The final `return 0` is now reachable only for
-/// genuinely non-PCM data.
-func peakAmplitude(
-    of sampleBuffer: CMSampleBuffer,
-    stopAt threshold: Float = .greatestFiniteMagnitude
-) -> Float {
+/// Audio samples accepted by one writer input. Accessed only on its write
+/// queue. Input callbacks advance a separate clock so writer backpressure
+/// and missing input can be distinguished, including during digital silence.
+struct AudioSampleTelemetry {
+    private var lastInput: UInt64?
+    private var lastSample: UInt64?
+    private var lastClip: UInt64?
+    private var window = AudioLevels()
+    private(set) var heardSound = false
+    private(set) var muted = false
+
+    mutating func setMuted(_ muted: Bool) {
+        guard self.muted != muted else { return }
+        self.muted = muted
+        window = AudioLevels()
+        lastClip = nil
+    }
+
+    func bufferForWriting(_ sample: CMSampleBuffer) -> CMSampleBuffer? {
+        muted ? silentPCM(matching: sample) : sample
+    }
+
+    mutating func received(_ sample: CMSampleBuffer) {
+        if CMSampleBufferGetNumSamples(sample) > 0 {
+            lastInput = DispatchTime.now().uptimeNanoseconds
+        }
+    }
+
+    mutating func appended(_ sample: CMSampleBuffer, at now: UInt64 = DispatchTime.now().uptimeNanoseconds) {
+        guard CMSampleBufferGetNumSamples(sample) > 0 else { return }
+        lastSample = now
+        accumulateLevels(of: sample, into: &window)
+        heardSound = heardSound || window.peak >= audioSilenceFloor
+    }
+
+    mutating func report(at now: UInt64) -> [String: Any] {
+        // -1 dBFS. Hold the indicator for 1.5s from the measured window.
+        if window.peak >= 0.8912509 { lastClip = now }
+        let reading: [String: Any] = [
+            "muted": muted,
+            "clipping": lastClip.map { now - $0 <= 1_500_000_000 } ?? false,
+            "rms": window.rms.map { $0 as Any } ?? NSNull(),
+            "lastSampleAgeMs": lastSample.map { Double(now - $0) / 1_000_000 as Any } ?? NSNull(),
+            "lastInputAgeMs": lastInput.map { Double(now - $0) / 1_000_000 as Any } ?? NSNull()
+        ]
+        window = AudioLevels()
+        return reading
+    }
+}
+
+/// Keep the armed AAC track and its original timing when muted. The writer
+/// gets fresh silence with the same PCM layout. If the source changes to an
+/// unreadable format, drop that packet while muted rather than forwarding it.
+private func silentPCM(matching sample: CMSampleBuffer) -> CMSampleBuffer? {
+    guard let format = CMSampleBufferGetFormatDescription(sample),
+          let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(format)?.pointee,
+          asbd.mFormatID == kAudioFormatLinearPCM else { return nil }
+    let samples = CMSampleBufferGetNumSamples(sample)
+    guard samples > 0 else { return nil }
+    let signedOrFloat = asbd.mFormatFlags & (kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsFloat) != 0
+    let unsigned8Bit = asbd.mBitsPerChannel == 8 &&
+        (asbd.mBytesPerFrame == 1 || asbd.mBytesPerFrame == asbd.mChannelsPerFrame)
+    guard signedOrFloat || unsigned8Bit else { return nil }
+    return try? sample.withAudioBufferList { original, _ -> CMSampleBuffer? in
+        guard let largestBuffer = original.map(\.mDataByteSize).max(), largestBuffer > 0,
+              let bytes = calloc(1, Int(largestBuffer)) else { return nil }
+        defer { free(bytes) }
+        if !signedOrFloat { memset(bytes, 0x80, Int(largestBuffer)) }
+
+        let silence = AudioBufferList.allocate(maximumBuffers: original.count)
+        defer { free(silence.unsafeMutablePointer) }
+        silence.unsafeMutablePointer.pointee.mNumberBuffers = UInt32(original.count)
+        for (index, buffer) in original.enumerated() {
+            silence[index] = AudioBuffer(mNumberChannels: buffer.mNumberChannels,
+                mDataByteSize: buffer.mDataByteSize, mData: bytes)
+        }
+        var timing = CMSampleTimingInfo()
+        var output: CMSampleBuffer?
+        guard CMSampleBufferGetSampleTimingInfo(sample, at: 0, timingInfoOut: &timing) == noErr,
+              CMSampleBufferCreate(allocator: kCFAllocatorDefault, dataBuffer: nil, dataReady: false,
+                makeDataReadyCallback: nil, refcon: nil, formatDescription: format,
+                sampleCount: samples, sampleTimingEntryCount: 1, sampleTimingArray: &timing,
+                sampleSizeEntryCount: 0, sampleSizeArray: nil, sampleBufferOut: &output) == noErr,
+              let output,
+              CMSampleBufferSetDataBufferFromAudioBufferList(output, blockBufferAllocator: nil,
+                blockBufferMemoryAllocator: nil, flags: kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
+                bufferList: silence.unsafePointer) == noErr,
+              CMSampleBufferSetDataReady(output) == noErr else { return nil }
+        return output
+    }
+}
+
+private struct AudioLevels {
+    var peak: Float = 0
+    var sumOfSquares: Double = 0
+    var sampleCount = 0
+
+    var rms: Double? { sampleCount > 0 ? min(1, sqrt(sumOfSquares / Double(sampleCount))) : nil }
+
+    mutating func add(_ value: Double) {
+        guard value.isFinite else { return }
+        peak = max(peak, Float(abs(value)))
+        sumOfSquares += value * value
+        sampleCount += 1
+    }
+}
+
+/// Scan the writer's PCM once for both the live RMS and the post-take
+/// sound check. Normalize each channel sample before combining its energy.
+private func accumulateLevels(of sampleBuffer: CMSampleBuffer, into levels: inout AudioLevels) {
     guard let format = CMSampleBufferGetFormatDescription(sampleBuffer),
           let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(format)?.pointee,
-          asbd.mFormatID == kAudioFormatLinearPCM else { return 0 }
+          asbd.mFormatID == kAudioFormatLinearPCM else { return }
 
     // Non-interleaved stereo needs one AudioBuffer per channel, and a
     // stack-allocated AudioBufferList only has room for one. Allocate
@@ -67,9 +164,11 @@ func peakAmplitude(
         blockBufferMemoryAllocator: nil,
         flags: kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
         blockBufferOut: &blockBuffer
-    ) == noErr else { return 0 }
+    ) == noErr else { return }
+    defer { withExtendedLifetime(blockBuffer) {} }
 
     let isFloat = (asbd.mFormatFlags & kAudioFormatFlagIsFloat) != 0
+    let isSigned = (asbd.mFormatFlags & kAudioFormatFlagIsSignedInteger) != 0
     let isBigEndian = (asbd.mFormatFlags & kAudioFormatFlagIsBigEndian) != 0
     let isAlignedHigh = (asbd.mFormatFlags & kAudioFormatFlagIsAlignedHigh) != 0
     let bits = Int(asbd.mBitsPerChannel)
@@ -79,9 +178,7 @@ func peakAmplitude(
     let frameBytes = Int(asbd.mBytesPerFrame)
     let samplesPerFrame = isNonInterleaved ? 1 : channels
     let bytesPerSample = frameBytes > 0 ? frameBytes / samplesPerFrame : (bits + 7) / 8
-    guard bytesPerSample > 0 else { return 0 }
-
-    var peak: Float = 0
+    guard bytesPerSample > 0 else { return }
 
     for buffer in list {
         guard let data = buffer.mData else { continue }
@@ -89,32 +186,31 @@ func peakAmplitude(
 
         if isFloat && bits == 32 {
             let count = byteCount / MemoryLayout<Float>.size
-            let samples = data.bindMemory(to: Float.self, capacity: count)
+            let samples = data.bindMemory(to: UInt32.self, capacity: count)
             for i in 0..<count {
-                peak = max(peak, abs(samples[i]))
-                if peak >= threshold { return peak }
+                let raw = isBigEndian ? UInt32(bigEndian: samples[i]) : UInt32(littleEndian: samples[i])
+                levels.add(Double(Float(bitPattern: raw)))
             }
         } else if isFloat && bits == 64 {
             let count = byteCount / MemoryLayout<Double>.size
-            let samples = data.bindMemory(to: Double.self, capacity: count)
+            let samples = data.bindMemory(to: UInt64.self, capacity: count)
             for i in 0..<count {
-                peak = max(peak, Float(abs(samples[i])))
-                if peak >= threshold { return peak }
+                let raw = isBigEndian ? UInt64(bigEndian: samples[i]) : UInt64(littleEndian: samples[i])
+                levels.add(Double(bitPattern: raw))
             }
         } else if !isFloat && bits == 8 {
             let count = byteCount
-            let samples = data.bindMemory(to: Int8.self, capacity: count)
+            let samples = data.bindMemory(to: UInt8.self, capacity: count)
             for i in 0..<count {
-                peak = max(peak, abs(Float(samples[i]) / 128.0))
-                if peak >= threshold { return peak }
+                let raw = isSigned ? Int(Int8(bitPattern: samples[i])) : Int(samples[i]) - 128
+                levels.add(Double(raw) / 128.0)
             }
         } else if !isFloat && bits == 16 {
             let count = byteCount / MemoryLayout<Int16>.size
             let samples = data.bindMemory(to: Int16.self, capacity: count)
             for i in 0..<count {
                 let raw = isBigEndian ? Int16(bigEndian: samples[i]) : samples[i]
-                peak = max(peak, abs(Float(raw) / 32768.0))
-                if peak >= threshold { return peak }
+                levels.add(Double(raw) / 32768.0)
             }
         } else if !isFloat && bits == 24 && bytesPerSample == 3 {
             // Packed 24-bit: three bytes per sample, no container. Read the
@@ -129,8 +225,7 @@ func peakAmplitude(
                     ? (b0 << 16) | (b1 << 8) | b2
                     : (b2 << 16) | (b1 << 8) | b0
                 let signed = Int32(bitPattern: unsigned << 8) >> 8
-                peak = max(peak, abs(Float(signed) / 8_388_608.0))
-                if peak >= threshold { return peak }
+                levels.add(Double(signed) / 8_388_608.0)
             }
         } else if !isFloat && (bits == 24 || bits == 32) && bytesPerSample == 4 {
             // 32-bit container. A full 32-bit sample, or a 24-bit one
@@ -140,14 +235,12 @@ func peakAmplitude(
             let count = byteCount / MemoryLayout<Int32>.size
             let samples = data.bindMemory(to: Int32.self, capacity: count)
             let fullWidth = bits == 32 || isAlignedHigh
-            let divisor: Float = fullWidth ? 2_147_483_648.0 : 8_388_608.0
+            let divisor: Double = fullWidth ? 2_147_483_648.0 : 8_388_608.0
             for i in 0..<count {
                 var raw = isBigEndian ? Int32(bigEndian: samples[i]) : samples[i]
                 if !fullWidth { raw = (raw << 8) >> 8 }
-                peak = max(peak, abs(Float(raw) / divisor))
-                if peak >= threshold { return peak }
+                levels.add(Double(raw) / divisor)
             }
         }
     }
-    return peak
 }

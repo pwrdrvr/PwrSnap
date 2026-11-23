@@ -1204,7 +1204,7 @@ describe("settings:read + settings:write round-trip (integration)", () => {
     });
     const manager = new HotkeyRegistrationManager({
       platform: "win32",
-      registrar: { register, unregister },
+      registrar: { register, unregister, isRegistered: (accelerator) => live.has(accelerator) },
       callbackFor: () => vi.fn(),
       logger: { warn: vi.fn(), error: vi.fn() }
     });
@@ -1280,7 +1280,7 @@ describe("settings:read + settings:write round-trip (integration)", () => {
     });
     const manager = new HotkeyRegistrationManager({
       platform: "win32",
-      registrar: { register, unregister },
+      registrar: { register, unregister, isRegistered: (accelerator) => live.has(accelerator) },
       callbackFor: () => vi.fn(),
       logger: { warn: vi.fn(), error: vi.fn() }
     });
@@ -1418,7 +1418,7 @@ describe("settings:read + settings:write round-trip (integration)", () => {
     });
     const manager = new HotkeyRegistrationManager({
       platform: "win32",
-      registrar: { register, unregister },
+      registrar: { register, unregister, isRegistered: (accelerator) => live.has(accelerator) },
       callbackFor: () => vi.fn(),
       logger: { warn: vi.fn(), error: vi.fn() }
     });
@@ -1512,7 +1512,7 @@ describe("settings:read + settings:write round-trip (integration)", () => {
     });
     const manager = new HotkeyRegistrationManager({
       platform: "win32",
-      registrar: { register, unregister },
+      registrar: { register, unregister, isRegistered: (accelerator) => live.has(accelerator) },
       callbackFor: () => vi.fn(),
       logger: { warn: vi.fn(), error: vi.fn() }
     });

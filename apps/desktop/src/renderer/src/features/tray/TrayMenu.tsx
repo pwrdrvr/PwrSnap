@@ -274,7 +274,10 @@ export function TrayMenu() {
       if (!cancelled && result.ok) setRecordingState(result.value);
     });
     const off = window.pwrsnapApi?.on(EVENT_CHANNELS.recordingState, (payload) => {
-      setRecordingState(payload as RecordingState);
+      const next = payload as RecordingState;
+      // The tray's gate reads only the phase. Audio meters share this
+      // event but should not rerender the resident tray popover.
+      setRecordingState((current) => current?.phase === next.phase ? current : next);
     });
     return () => {
       cancelled = true;

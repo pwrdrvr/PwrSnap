@@ -1314,47 +1314,94 @@ a.pss__top-btn[aria-disabled="true"]:hover {
   font: 500 11px/1 var(--font-sans);
 }
 
-.pss__hotkey-control {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 8px;
-  min-width: 0;
+/* The row's right column. Replaces .pss__hotkey-registration-error. */
+.pss__hotkey-control { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; min-width: 0; }
+
+/* Chip treatment when the SAVED binding is not active. Dashed warn border,
+   keys stay readable. Never applied to a failed candidate: a candidate that
+   failed was never saved. */
+.pss__hk.is-inactive { border-color: var(--warn-border); border-style: dashed; }
+
+/* Recovery panel: one per row, under the chip, 440px like the recorder. */
+.pss__hk-recovery { width: 440px; max-width: 100%; display: flex; flex-direction: column; gap: 10px; padding: 11px 12px 12px; background: var(--bg-panel-elevated); border: 1px solid var(--border-default); border-left-width: 3px; border-radius: 9px; text-align: left; }
+.pss__hk-recovery.is-failed { border-left-color: var(--danger); }
+.pss__hk-recovery.is-inactive { border-left-color: var(--warn); }
+.pss__hk-recovery.is-duplicate { border-left-color: var(--accent); }
+
+.pss__hk-recovery-copy { display: flex; flex-direction: column; gap: 6px; }
+.pss__hk-recovery-hdr { display: flex; align-items: flex-start; gap: 9px; }
+.pss__hk-recovery-tag { flex: none; margin-top: 1px; padding: 4px 6px; border: 1px solid var(--border-default); border-radius: 4px; font: 700 9px/1 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; white-space: nowrap; color: var(--text-secondary); }
+.pss__hk-recovery.is-failed .pss__hk-recovery-tag { color: var(--danger-text); border-color: var(--danger-border); background: var(--danger-soft); }
+.pss__hk-recovery.is-inactive .pss__hk-recovery-tag { color: var(--warn-text); border-color: var(--warn-border); background: var(--warn-soft); }
+.pss__hk-recovery.is-duplicate .pss__hk-recovery-tag { color: var(--accent-bright); border-color: var(--accent-border); background: var(--accent-soft); }
+.pss__hk-recovery-title { flex: 1; min-width: 0; margin: 0; font: 650 12.5px/1.35 var(--font-sans); color: var(--text-primary); text-wrap: pretty; }
+.pss__hk-recovery-title:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; border-radius: 3px; }
+.pss__hk-recovery-body { margin: 0; font: 400 12px/1.45 var(--font-sans); color: var(--text-secondary); text-wrap: pretty; }
+
+/* Inline chord inside running copy: the shipped per-key caps, smaller. */
+.pss__hk-inline { display: inline-flex; gap: 2px; vertical-align: -3px; margin: 0 1px; }
+.pss__hk-inline > .ps-kbd { height: 17px; min-width: 16px; padding: 0 3px; font-size: 10px; color: var(--text-primary); }
+
+/* "Saved shortcut, unchanged" line. */
+.pss__hk-kept { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 7px 9px; background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: 7px; font: 500 11.5px/1.3 var(--font-sans); color: var(--text-muted); }
+.pss__hk-kept > .pss__hk-inline { vertical-align: 0; }
+
+/* Runtime status pill. Text always says the state; color is secondary. */
+.pss__hk-status { display: inline-flex; align-items: center; gap: 5px; height: 19px; padding: 0 7px; border: 1px solid var(--border-subtle); border-radius: 999px; background: var(--bg-panel-elevated); color: var(--text-muted); font: 700 9px/1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; }
+.pss__hk-status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.pss__hk-status.is-active { color: var(--success-text); border-color: var(--success-border); background: var(--success-soft); }
+.pss__hk-status.is-inactive { color: var(--warn-text); border-color: var(--warn-border); background: var(--warn-soft); }
+.pss__hk-status.is-checking::before { background: transparent; border: 1.5px solid currentColor; border-right-color: transparent; width: 5px; height: 5px; }
+
+/* Suggestions. */
+.pss__hk-suggest { display: flex; flex-direction: column; gap: 7px; }
+.pss__hk-suggest-hd { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; }
+.pss__hk-suggest-k { font: 700 9px/1 var(--font-sans); letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); }
+.pss__hk-suggest-note { font: 400 11px/1.35 var(--font-sans); color: var(--text-muted); text-wrap: pretty; }
+.pss__hk-suggest-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.pss__hk-suggest-btn { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 9px 0 7px; background: var(--bg-input); border: 1px solid var(--border-default); border-radius: 6px; color: var(--text-secondary); font: 600 11px/1 var(--font-sans); cursor: pointer; white-space: nowrap; }
+.pss__hk-suggest-btn > .verb { color: var(--text-muted); }
+.pss__hk-suggest-btn.is-trying { border-color: var(--accent-border); background: color-mix(in srgb, var(--accent) 8%, var(--bg-input)); cursor: wait; }
+.pss__hk-suggest-btn.is-trying > .verb { color: var(--accent-bright); }
+
+.pss__hk-suggest-btn:hover:not(:disabled), .pss__hk-act:hover:not(:disabled) { border-color: var(--accent-border); }
+.pss__hk-suggest-btn:disabled, .pss__hk-act:disabled { opacity: 0.56; cursor: default; }
+.pss__hk-suggest-btn.is-rejected { border-style: dashed; background: transparent; opacity: 1; }
+.pss__hk-suggest-btn.is-rejected > .pss__hk-inline { opacity: 0.45; }
+.pss__hk-suggest-btn.is-rejected > .verb { color: var(--danger-text); }
+
+/* Actions. */
+.pss__hk-recovery-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.pss__hk-act { display: inline-flex; align-items: center; height: 26px; padding: 0 10px; border: 1px solid var(--border-default); border-radius: 6px; background: var(--bg-panel); color: var(--text-secondary); font: 600 11px/1 var(--font-sans); white-space: nowrap; cursor: pointer; }
+.pss__hk-act.is-primary { color: var(--accent-bright); border-color: var(--accent-border); background: var(--accent-soft); }
+.pss__hk-act.is-ghost { border-color: transparent; background: transparent; color: var(--text-muted); }
+
+/* Short-lived confirmation under the chip after a save or Retry succeeds. */
+.pss__hk-confirm { display: inline-flex; align-items: center; gap: 6px; font: 550 11px/1.35 var(--font-sans); color: var(--success-text); }
+
+/* Page summary, under the page header, only while a saved row is inactive. */
+.pss__hotkey-summary { display: flex; align-items: flex-start; gap: 10px; margin: -6px 0 18px; padding: 10px 12px; background: var(--warn-soft); border: 1px solid var(--warn-border); border-radius: 8px; font: 500 12px/1.45 var(--font-sans); color: var(--text-secondary); }
+.pss__hotkey-summary > b { color: var(--warn-text); font-weight: 650; white-space: nowrap; }
+.pss__hotkey-summary-links { display: inline-flex; flex-wrap: wrap; gap: 4px 10px; }
+.pss__hotkey-summary-link { color: var(--text-primary); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--warn-text) 60%, transparent); text-underline-offset: 3px; cursor: pointer; }
+
+.pss__row:has(.pss__hotkey-control) { scroll-margin-top: 20px; }
+.pss__row.is-flash { animation: pss-hk-flash 1.2s ease-out 1; }
+@keyframes pss-hk-flash { 0% { background: var(--accent-soft); } 100% { background: transparent; } }
+@media (prefers-reduced-motion: reduce) {
+  .pss__row.is-flash { animation: none; background: var(--accent-tint); }
 }
-.pss__hotkey-registration-error,
+
+@media (max-width: 880px) {
+  .pss__hotkeys-header { flex-direction: column; align-items: flex-start; gap: 12px; }
+  .pss__hotkey-control { align-items: stretch; }
+  .pss__hotkey-control .pss__hk-capture { align-self: flex-start; }
+  .pss__hk-recovery { width: 100%; }
+}
+
 .pss__hotkey-status-error {
   color: var(--danger-text);
   font: 550 11px/1.4 var(--font-sans);
-}
-.pss__hotkey-registration-error {
-  display: flex;
-  align-items: flex-start;
-  justify-content: flex-end;
-  gap: 9px;
-  max-width: 440px;
-  text-align: left;
-}
-.pss__hotkey-retry {
-  flex: 0 0 auto;
-  min-height: 26px;
-  padding: 0 9px;
-  border: 1px solid var(--danger-border);
-  border-radius: 6px;
-  background: var(--danger-soft);
-  color: var(--danger-text);
-  font: 650 11px/1 var(--font-sans);
-  cursor: pointer;
-}
-.pss__hotkey-retry:hover { border-color: var(--danger-text); }
-.pss__hotkey-retry:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-}
-.pss__hotkey-retry:disabled {
-  cursor: wait;
-  opacity: 0.62;
-}
-.pss__hotkey-status-error {
   margin: -4px 0 16px;
   padding: 9px 11px;
   border: 1px solid var(--danger-border);

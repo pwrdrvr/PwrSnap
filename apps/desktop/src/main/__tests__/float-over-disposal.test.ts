@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import fc from "fast-check";
 import type { Settings } from "@pwrsnap/shared";
 
 type ClosedListener = () => void;
@@ -50,6 +51,7 @@ const mocks = vi.hoisted(() => {
       return window;
     }),
     globalShortcut: {
+      isRegistered: vi.fn((_accelerator: string) => false),
       register: vi.fn((_accelerator: string, _callback: () => void) => true),
       unregister: vi.fn()
     },
@@ -126,9 +128,11 @@ describe("disposeFloatOver", () => {
     vi.useFakeTimers();
     disposeFloatOver();
     mocks.createFloatOverWindow.mockClear();
+    mocks.globalShortcut.isRegistered.mockReset();
+    mocks.globalShortcut.isRegistered.mockReturnValue(false);
     mocks.globalShortcut.register.mockReset();
     mocks.globalShortcut.register.mockReturnValue(true);
-    mocks.globalShortcut.unregister.mockClear();
+    mocks.globalShortcut.unregister.mockReset();
     mocks.dispatch.mockReset();
     mocks.dispatch.mockImplementation(async (name: string, request: { id?: string }) => {
       if (name === "library:byId") {
@@ -215,6 +219,48 @@ describe("disposeFloatOver", () => {
       "CommandOrControl+2",
       "CommandOrControl+3"
     ]);
+  });
+
+  it("leaves every pre-registered copy chord with its process-local owner", async () => {
+    await fc.assert(fc.asyncProperty(
+      fc.subarray(["CommandOrControl+1", "CommandOrControl+2", "CommandOrControl+3"], {
+        minLength: 1
+      }),
+      async (existingChords) => {
+        const priorCallback = vi.fn();
+        const prior = new Map(existingChords.map((chord) => [chord, priorCallback]));
+        const live = new Map<string, () => void>(prior);
+        mocks.globalShortcut.isRegistered.mockImplementation((chord) => live.has(chord));
+        mocks.globalShortcut.register.mockImplementation((chord, callback) => {
+          live.set(chord, callback);
+          return true;
+        });
+        mocks.globalShortcut.unregister.mockImplementation((chord: string) => {
+          live.delete(chord);
+        });
+
+        setFloatOverState({ kind: "show-loaded", captureId: "cap_local_owner" });
+        await flushShortcutLookup();
+        const retainedWhileOpen = existingChords.map((chord) => live.get(chord));
+        disposeFloatOver();
+
+        expect(retainedWhileOpen).toEqual(existingChords.map(() => priorCallback));
+        expect(live).toEqual(prior);
+      }
+    ));
+  });
+
+  it("never unregisters a pre-registered CommandOrControl+3 on dismissal", async () => {
+    mocks.globalShortcut.isRegistered.mockImplementation((chord) => chord === "CommandOrControl+3");
+    setFloatOverState({ kind: "show-loaded", captureId: "cap_local_owner" });
+    await flushShortcutLookup();
+    disposeFloatOver();
+
+    expect(mocks.globalShortcut.register).not.toHaveBeenCalledWith(
+      "CommandOrControl+3",
+      expect.any(Function)
+    );
+    expect(mocks.globalShortcut.unregister).not.toHaveBeenCalledWith("CommandOrControl+3");
   });
 
   it("releases and restores transient copy shortcuts around recording", async () => {

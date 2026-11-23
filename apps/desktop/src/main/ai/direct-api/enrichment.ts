@@ -32,6 +32,7 @@ export class DirectEnrichmentBackend implements EnrichmentBackend {
     // primary or fallback could have waited while consent changed.
     await this.beforeRequest?.();
     const headers = await this.service.credentials.headers(this.model, req.abortSignal);
+    await req.authorizeImageSend?.();
     await this.beforeRequest?.();
     req.abortSignal?.throwIfAborted();
     try {

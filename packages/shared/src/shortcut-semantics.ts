@@ -208,7 +208,9 @@ export function acceleratorsAreEquivalent(
   return leftIdentity !== null && leftIdentity === rightIdentity;
 }
 
-function physicalAcceleratorIdentity(
+/** Derive a key for comparing physical chords. Use the canonical accelerator
+ * instead when passing a shortcut to Electron. Invalid inputs have no identity. */
+export function physicalAcceleratorIdentity(
   accelerator: string,
   platform: ShortcutPlatform
 ): string | null {

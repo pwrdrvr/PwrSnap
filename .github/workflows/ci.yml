@@ -43,6 +43,8 @@ env:
     apps/desktop/scripts/build-native.mjs
     apps/desktop/scripts/build-apple-caption.mjs
     apps/desktop/native/apple-caption/main.swift
+    apps/desktop/native/apple-caption/search-text.swift
+    apps/desktop/native/apple-caption/tests/search-text-test.swift
     apps/desktop/native/pasteboard-writer/main.swift
     apps/desktop/native/preview-extension/Info.plist
     apps/desktop/native/preview-extension/preview-provider.swift
@@ -259,8 +261,8 @@ jobs:
           cache-inputs: ${{ env.PWRSNAP_DEPENDENCY_CACHE_INPUTS }}
 
       - name: Lint
-        # Includes check:renderer-bytecode: the 26 KiB function budget tracks
-        # the post-split maximum, well below V8's 60 KiB TurboFan cutoff.
+        # Includes the 26 KiB renderer bytecode check on Node and the Electron
+        # distribution pinned for packaging. This checks compilation only.
         run: pnpm run lint
 
   build:
@@ -356,6 +358,26 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Test recording audio with Ubuntu FFmpeg 6.1.1
+        timeout-minutes: 5
+        run: |
+          # Newer FFmpeg builds keep the tail even without the #766 fix.
+          # Run the decoded-audio oracle on the affected build in isolation.
+          docker build --platform linux/amd64 --tag pwrsnap-ci-noble-ffmpeg - <<'DOCKERFILE'
+          FROM ubuntu:24.04
+          RUN apt-get update \
+            && apt-get install -y --no-install-recommends ffmpeg=7:6.1.1-3ubuntu5 \
+            && rm -rf /var/lib/apt/lists/*
+          DOCKERFILE
+          docker run --rm --platform linux/amd64 --network none \
+            --user "$(id -u):$(id -g)" --workdir /workspace --env HOME=/tmp \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspace" \
+            --mount "type=bind,source=$(readlink -f "$(command -v node)"),target=/usr/local/bin/node,readonly" \
+            --env PWRSNAP_FFMPEG_PATH=/usr/bin/ffmpeg --env PWRSNAP_REQUIRE_AUDIO_FFMPEG=1 \
+            pwrsnap-ci-noble-ffmpeg node node_modules/vitest/vitest.mjs run \
+            --config vitest.workspace.ts --project desktop-main --testTimeout=30000 \
+            apps/desktop/src/main/recording/__tests__/recording-exporter-audio-ffmpeg.test.ts
 
   desktop-e2e:
     # Renamed from "Desktop E2E": that name is now the aggregate job at the
@@ -508,6 +530,9 @@ jobs:
 
       - name: Build native helpers
         run: pnpm rebuild:electron-native
+
+      - name: Test native Apple caption publication
+        run: pnpm exec vitest run apps/desktop/scripts/native-apple-search-text.test.mjs
 
       - name: Prepare E2E report directory
         run: |

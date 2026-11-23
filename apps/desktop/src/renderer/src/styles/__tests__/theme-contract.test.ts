@@ -199,6 +199,19 @@ describe("theme contract: WCAG contrast spot-checks", () => {
     return (light + 0.05) / (dark + 0.05);
   }
 
+  it.each([":root", ':root\\[data-theme="light"\\]'])(
+    "recording HUD warnings meet AA on black in %s", (theme) => {
+      const hud = stripCssComments(readFileSync(join(
+        __dirname, "..", "..", "features", "recording", "RecordingController.css"
+      ), "utf8"));
+      const warning = extractCssBlock(hud, '\\.rc__caption\\[data-tone="warn"\\]', { label: LABEL });
+      const rawColor = /\bcolor:\s*([^;]+);/.exec(warning)?.[1]?.trim() ?? "";
+      const token = /^var\(--([\w-]+)\)$/.exec(rawColor)?.[1];
+      const color = token === undefined ? rawColor : tokenValue(extractBlock(theme), token);
+      expect(contrastRatio(color, "#000000")).toBeGreaterThanOrEqual(4.5);
+    }
+  );
+
   describe("dark theme", () => {
     const block = extractBlock(":root");
     const textPrimary = tokenValue(block, "text-primary");

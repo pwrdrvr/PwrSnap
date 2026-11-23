@@ -5,7 +5,8 @@ import { planErrorMessage } from "./chatgpt-plan/errors";
 // operator stopped, an agent CLI that was uninstalled, or — for Codex — a Mac
 // that has no network. Without a fallback every new capture's caption fails
 // until someone regenerates it by hand. With one, the SAME run moves to the
-// fallback backend — once, and only for failures that mean "nothing answered".
+// fallback backend once. Apple also has a capture-local refusal route, which
+// is independent of the reachability and outage handling below.
 //
 // What counts as "nothing answered" depends on the primary:
 // - Direct API / ACP: a refused or unreachable connection, HTTP 404/502/503,
@@ -21,7 +22,13 @@ import { planErrorMessage } from "./chatgpt-plan/errors";
 // cannot start (a local setup error), and a removed or changed custom-model
 // setting (removal fails closed).
 
-import { enrichmentProviderBackend, type AiSurfaceDefault, type Settings } from "@pwrsnap/shared";
+import {
+  appleRefusalFallbackRoute,
+  enrichmentProviderBackend,
+  isAppleFmProvider,
+  type AiSurfaceDefault,
+  type Settings
+} from "@pwrsnap/shared";
 import { CodexTurnFailedError, isCodexNetworkUnavailable } from "./codex-turn-error";
 import { DirectApiError } from "./direct-api/transport";
 
@@ -60,8 +67,15 @@ function providerKey(settings: Settings, provider: string | undefined): string {
  *  fallback, say): a second try at what just failed is not a fallback. */
 export function enrichmentFallbackFor(settings: Settings): AiSurfaceDefault | null {
   const fallback = settings.ai.enrichmentFallback ?? null;
-  if (fallback === null) return null;
-  const primary = providerKey(settings, settings.ai.defaults.enrichment.provider);
+  if (fallback === null || settings.ai.enrichmentFallbackPaused === true) return null;
+  const primaryProvider = settings.ai.defaults.enrichment.provider;
+  if (isAppleFmProvider(primaryProvider)) {
+    const route = appleRefusalFallbackRoute(settings.ai);
+    if (route === null || (route.consentKey !== null && route.consentKey !== settings.ai.appleRefusalFallbackConsent)) {
+      return null;
+    }
+  }
+  const primary = providerKey(settings, primaryProvider);
   if (providerKey(settings, fallback.provider) === primary) return null;
   return fallback;
 }

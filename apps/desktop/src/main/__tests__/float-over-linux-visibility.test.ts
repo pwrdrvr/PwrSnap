@@ -82,6 +82,7 @@ const mocks = vi.hoisted(() => {
       return window;
     }),
     globalShortcut: {
+      isRegistered: vi.fn(() => false),
       register: vi.fn(() => true),
       unregister: vi.fn()
     },

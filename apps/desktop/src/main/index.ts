@@ -151,6 +151,7 @@ import { getRecordingService } from "./recording/recording-service";
 import {
   getRecordingState,
   isRecordingActive,
+  setRecordingState,
   subscribeToRecordingState
 } from "./recording/recording-state";
 import {
@@ -2544,6 +2545,7 @@ export function bootstrapApp(): void {
         },
         dispatch: <Name extends string>(name: Name, req: unknown) =>
           bus.dispatch(name as never, req as never, { principal: "ipc" }),
+        setRecordingState,
         // UI-only grant metadata seed. Linux/xvfb has no system keychain, so
         // the production grant service correctly refuses to issue encrypted
         // tokens there. Keep this inside the E2E-only bridge and write the

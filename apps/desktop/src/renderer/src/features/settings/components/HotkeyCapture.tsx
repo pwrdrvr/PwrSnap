@@ -35,7 +35,14 @@ export type HotkeyCaptureProps = {
   onCancel: () => void;
   /** Lets the page block modal actions while the native lease is arming. */
   onPreparingChange?: (preparing: boolean) => void;
-  /** Resolves only after main has accepted and activated the binding. */
+  /** Refresh runtime status after main has restored native shortcuts. */
+  onLeaseEnded?: () => void;
+  triggerId?: string;
+  disabled?: boolean;
+  inactive?: boolean;
+  /** Handle known registration failures in the row's recovery panel. */
+  onCommitFailed?: (accelerator: string, error: unknown) => boolean;
+  /** Resolves after main has persisted the binding. */
   onCommit: (next: string) => void | Promise<void>;
   /** Explicit Clear action. Keyboard input never calls this callback. */
   onUnbind?: () => void | Promise<void>;
@@ -234,9 +241,7 @@ export function accelFromKeyboardEvent(
 
 function messageFromError(error: unknown, verb: "save" | "clear"): string {
   const detail = error instanceof Error && error.message.trim() !== "" ? error.message : null;
-  return detail === null
-    ? `PwrSnap could not ${verb} this shortcut. The previous binding is still active.`
-    : `${detail} The previous binding is still active.`;
+  return detail ?? `PwrSnap could not ${verb} this shortcut. The saved shortcut is unchanged.`;
 }
 
 function swallowKeyboardEvent(event: KeyboardEvent): void {
@@ -295,6 +300,11 @@ export function HotkeyCapture({
   onStart,
   onCancel,
   onPreparingChange,
+  onLeaseEnded,
+  triggerId,
+  disabled = false,
+  inactive = false,
+  onCommitFailed,
   onCommit,
   onUnbind
 }: HotkeyCaptureProps): ReactElement {
@@ -320,12 +330,14 @@ export function HotkeyCapture({
   >(() => undefined);
   const onCancelRef = useRef(onCancel);
   const onCommitRef = useRef(onCommit);
+  const onCommitFailedRef = useRef(onCommitFailed);
   const onPreparingChangeRef = useRef(onPreparingChange);
   // Page/context updates can replace callback identities while a transactional
   // save is in flight. Keep the listener stable and invoke the latest callback
   // so an unrelated render cannot dispose the rejection/error path.
   onCancelRef.current = onCancel;
   onCommitRef.current = onCommit;
+  onCommitFailedRef.current = onCommitFailed;
   onPreparingChangeRef.current = onPreparingChange;
 
   const setPreparing = useCallback((next: boolean): void => {
@@ -350,10 +362,13 @@ export function HotkeyCapture({
       leaseHeartbeat.current = null;
     }
     if (pendingLeaseSession.current === sessionId) pendingLeaseSession.current = null;
-    void dispatch("settings:endHotkeyRecording", { sessionId, generation }).catch(
-      () => undefined
-    );
-  }, []);
+    void dispatch("settings:endHotkeyRecording", { sessionId, generation })
+      .then((result) => {
+        // Main may have expired the lease before our save reply arrived.
+        if (result.ok) return onLeaseEnded?.();
+      })
+      .catch(() => undefined);
+  }, [onLeaseEnded]);
 
   const stopAfterLostLease = useCallback((detail: string): void => {
     releaseLease();
@@ -531,7 +546,12 @@ export function HotkeyCapture({
         .catch((commitError: unknown) => {
           if (!disposed) {
             restoreFocus.current = false;
-            setError(messageFromError(commitError, "save"));
+            if (onCommitFailedRef.current?.(candidate.accelerator, commitError)) {
+              releaseLease();
+              onCancelRef.current();
+            } else {
+              setError(messageFromError(commitError, "save"));
+            }
             setLiveAccelerator("");
             setCandidateReady(false);
           }
@@ -684,10 +704,11 @@ export function HotkeyCapture({
     <span className="pss__hk-capture">
       <button
         ref={triggerRef}
+        id={triggerId}
         type="button"
         className="pss__hk-capture-trigger"
         onClick={() => void startRecording()}
-        disabled={clearing || arming}
+        disabled={disabled || clearing || arming}
         aria-busy={arming}
         aria-label={`${value === "" ? "Set" : "Change"} ${label} hotkey, currently ${accessibleValue}`}
       >
@@ -696,7 +717,7 @@ export function HotkeyCapture({
         ) : glyphs.length === 0 ? (
           <HkUnset />
         ) : (
-          <Hk keys={glyphs} />
+          <Hk keys={glyphs} inactive={inactive} />
         )}
       </button>
       {value !== "" && onUnbind !== undefined ? (
@@ -704,7 +725,7 @@ export function HotkeyCapture({
           type="button"
           className="pss__hk-capture-clear"
           onClick={() => void clear()}
-          disabled={clearing}
+          disabled={disabled || clearing}
           aria-label={`Clear ${label} hotkey`}
           data-tip="Clear hotkey"
         >

@@ -17,6 +17,7 @@ import { ENRICHMENT_QUEUE_MAX_AGE_MS } from "../ai/direct-api/enrichment-queue";
 import * as appleFmCli from "../ai/apple-fm/fm-cli";
 import * as appleFmNative from "../ai/apple-fm/native";
 import { getAppleFmStatusService } from "../ai/apple-fm/service";
+import { projectLocalAgentSearchRows, toCaptureSearchRequest } from "../local-agents/local-agent-search";
 import { buildInitialV2Tree, packBundleV2 } from "../persistence/bundle-store";
 import { getCacheSourcePath } from "../persistence/paths";
 import { purgeCacheForCapture } from "../persistence/source-store";
@@ -62,6 +63,7 @@ const {
   withUsageModelLabels
 } = await import("../handlers/codex-handlers");
 const { getAiRun } = await import("../persistence/ai-runs-repo");
+const { searchCaptures } = await import("../persistence/captures-repo");
 const { getCaptureEnrichment } = await import("../persistence/enrichment-repo");
 const { defaultSettings } = await import("../settings/desktop-settings-service");
 const { DesktopSettingsStore, __setDesktopSettingsStoreForTests } =
@@ -541,15 +543,20 @@ describe("Codex handlers", () => {
 
   // Production wiring for Apple's on-device model: the real handler, plan
   // resolution, image preparation, queue and run persistence; only the fm
-  // process itself is scripted. Three rules ride on this: the on-device
-  // selector never reaches Codex, the tool is run with the fixed argv, and a
-  // failure is never moved to the caption fallback.
+  // process itself is scripted. The on-device selector never reaches Codex,
+  // the tool is run with the fixed argv, and a failure is never moved to the
+  // caption fallback. Native OCR reaches the Library index and MCP projection.
   test.each([
     { scenario: "success", expected: "completed" },
     { scenario: "native-success", expected: "completed" },
+    { scenario: "native-no-text", expected: "completed" },
     { scenario: "guardrail", expected: "failed" },
     { scenario: "terms-with-fallback-armed", expected: "failed" }
   ] as const)("on-device Apple enrichment: $scenario → $expected", async ({ scenario, expected }) => {
+    const native = scenario === "native-success" || scenario === "native-no-text";
+    const query = "Zephyr 2749"; // Present only in the native helper's OCR field.
+    const ocrText = scenario === "native-success" ? query : "";
+    if (native) testDb.exec(migration("0032_capture_source_window_title.sql"));
     let finish!: (run: { id: string; status: string }) => void;
     const finished = new Promise<{ id: string; status: string }>((resolve) => { finish = resolve; });
     electronMock.windows.push({
@@ -576,12 +583,11 @@ describe("Codex handlers", () => {
         return { code: 1, signal: null, stdout: "", stderr: "Not agreed. Run 'sudo fm license' to review and agree.\n" };
       }
       return { code: 0, signal: null, stderr: "", stdout: JSON.stringify({
-        title: "On-device fixture", description: "Synthetic image captioned on this Mac", ocrText: "",
-        filenameStem: "on-device-fixture", textAnchors: [], tags: []
+        title: "On-device fixture", description: "Synthetic image captioned on this Mac", ocrText,
+        filenameStem: "on-device-fixture", tags: []
       }) };
     };
     const runSpy = vi.spyOn(appleFmCli, "runAppleFm").mockImplementation(scriptedRun);
-    const native = scenario === "native-success";
     const nativeSpy = vi.spyOn(appleFmNative, "resolveNativeCaptionRunner")
       .mockResolvedValue(native ? scriptedRun : null);
     // The tool is macOS-only; the wiring under test is not.
@@ -632,6 +638,18 @@ describe("Codex handlers", () => {
         expect(getCaptureEnrichment("cap_1")?.suggestedDescription).toBe("Synthetic image captioned on this Mac");
         expect(usage).toMatchObject({ ok: true, value: { modelLabel: "Apple Intelligence (on-device)" } });
         expect(invalidate).not.toHaveBeenCalled();
+        if (native) {
+          const hasOcr = ocrText.length > 0;
+          const mcpRequest = toCaptureSearchRequest({ query, hasOcr: true });
+          expect(getCaptureEnrichment("cap_1")?.ocrText).toBe(ocrText);
+          expect(searchCaptures({ query }).map(({ record }) => record.id))
+            .toEqual(hasOcr ? ["cap_1"] : []);
+          expect(projectLocalAgentSearchRows(searchCaptures(mcpRequest)))
+            .toMatchObject(hasOcr ? [{ id: "cap_1", hasOcr: true }] : []);
+          expect(searchCaptures(toCaptureSearchRequest({ hasOcr: true }))).toHaveLength(hasOcr ? 1 : 0);
+          expect(projectLocalAgentSearchRows(searchCaptures({})))
+            .toMatchObject([{ id: "cap_1", hasOcr }]);
+        }
       } else if (scenario === "guardrail") {
         expect(run?.error).toContain("Apple's safety checks declined it");
         expect(invalidate).not.toHaveBeenCalled();
@@ -780,6 +798,248 @@ describe("Codex handlers", () => {
       serviceSpy.mockRestore();
       await http.close();
     }
+  });
+
+  describe("native Apple caption refusal routing", () => {
+    const caption = JSON.stringify({ title: "Refusal fixture", description: "Synthetic refusal example" });
+    const refusal = { code: 1, signal: null, stdout: "", stderr: "refusal\n" };
+
+    test.each([
+      { outcome: "refusal", choice: "approved", status: "completed", hops: true },
+      { outcome: "refusal", choice: "legacy", status: "failed", hops: false },
+      { outcome: "refusal", choice: "off", status: "failed", hops: false },
+      { outcome: "refusal", choice: "paused", status: "failed", hops: false },
+      { outcome: "guardrail", choice: "approved", status: "failed", hops: false },
+      { outcome: "not-ready", choice: "approved", status: "failed", hops: false },
+      { outcome: "timeout", choice: "approved", status: "failed", hops: false },
+      { outcome: "refusal with extra text", choice: "approved", status: "failed", hops: false },
+      { outcome: "signalled exit", choice: "approved", status: "failed", hops: false },
+      { outcome: "invalid JSON", choice: "approved", status: "failed", hops: false },
+      { outcome: "caption containing refusal", choice: "approved", status: "completed", hops: false },
+      { outcome: "CLI refusal text", choice: "approved", status: "failed", hops: false },
+      { outcome: "cancel then refusal", choice: "approved", status: "cancelled", hops: false }
+    ])("$outcome with fallback $choice", async ({ outcome, choice, status, hops }) => {
+      const settings = testSettings();
+      settings.ai.enabled = true;
+      settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+      settings.ai.defaults.enrichment = { provider: "apple:system" };
+      settings.ai.enrichmentFallback = choice === "off" ? null : {};
+      if (choice === "approved" || choice === "paused") settings.ai.appleRefusalFallbackConsent = '["codex",""]';
+      if (choice === "paused") settings.ai.enrichmentFallbackPaused = true;
+
+      const primaryHealth = new EnrichmentPrimaryHealth(() => 0);
+      const markDown = vi.spyOn(primaryHealth, "markDown");
+      const noteUnreachable = vi.spyOn(primaryHealth, "noteUnreachable");
+      const onPrimaryRecovered = vi.fn();
+      const client = new FakeCodexClient();
+      const clientFactory = vi.fn(() => client as never);
+      const entered = deferred<void>();
+      const finish = deferred<appleFmCli.FmRunResult>();
+      const nativeRun = vi.fn<appleFmCli.FmRunner>().mockImplementation(async (args, options) => {
+        expect(args).toEqual(["caption"]);
+        const { imagePaths } = JSON.parse(options.stdin ?? "") as { imagePaths: string[] };
+        expect(await sharp(await readFile(imagePaths[0]!)).metadata()).toMatchObject({ format: "jpeg" });
+        if (nativeRun.mock.calls.length > 1 || outcome === "caption containing refusal") {
+          return { ...refusal, code: 0, stdout: caption };
+        }
+        if (outcome === "cancel then refusal") {
+          entered.resolve();
+          return finish.promise;
+        }
+        if (outcome === "invalid JSON") return { ...refusal, code: 0, stdout: "refusal" };
+        if (outcome === "signalled exit") return { ...refusal, code: null, signal: "SIGTERM" };
+        return { ...refusal, stderr: `${outcome}\n` };
+      });
+      const native = vi.spyOn(appleFmNative, "resolveNativeCaptionRunner")
+        .mockResolvedValue(outcome === "CLI refusal text" ? null : nativeRun);
+      const legacy = vi.spyOn(appleFmCli, "runAppleFm").mockImplementation(async (args) =>
+        args[0] === "config" ? { ...refusal, code: 0, stdout: "(none)\n", stderr: "" } : refusal);
+      const platform = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+      try {
+        registerCodexHandlers({ clientFactory, settingsReader: async () => settings,
+          budget: new AiEnrichmentBudget(), primaryHealth, onPrimaryRecovered });
+        const start = async (captureId: string): Promise<string> => {
+          const reply = await bus.dispatch("codex:enrich", { captureId }, { principal: "ipc" });
+          if (!reply.ok) throw new Error(reply.error.message);
+          return reply.value.runId;
+        };
+        const runId = await start("cap_1");
+        if (outcome === "cancel then refusal") {
+          await entered.promise;
+          expect((await bus.dispatch("codex:cancel", { runId }, { principal: "ipc" })).ok).toBe(true);
+          finish.resolve(refusal);
+        }
+        await waitFor(() => ["completed", "failed", "cancelled"].includes(getAiRun(runId)?.status ?? ""));
+        expect(getAiRun(runId)).toMatchObject({ status, fallbackFrom: hops ? "apple:system" : null });
+        expect(clientFactory).toHaveBeenCalledTimes(hops ? 1 : 0);
+        if (outcome !== "CLI refusal text") expect(nativeRun).toHaveBeenCalledTimes(1);
+        if (hops) {
+          expect(getCaptureEnrichment("cap_1")).toMatchObject({
+            fallbackFrom: "apple:system", suggestedDescription: "A screenshot with visible text."
+          });
+          const usage = await bus.dispatch("codex:usageRunDetail", { runId }, { principal: "ipc" });
+          expect(usage).toMatchObject({ ok: true, value: { modelProvider: "openai" } });
+
+          await seedCapture("cap_after_refusal");
+          const nextId = await start("cap_after_refusal");
+          await waitFor(() => getAiRun(nextId)?.status === "completed");
+          expect(getAiRun(nextId)).toMatchObject({ selectedModel: "system", fallbackFrom: null });
+          expect(nativeRun).toHaveBeenCalledTimes(2);
+          expect(clientFactory).toHaveBeenCalledTimes(1);
+        }
+        if (outcome === "refusal with extra text") {
+          expect(getAiRun(runId)?.error).toBe("the on-device model could not finish the caption.");
+        }
+        expect(markDown).not.toHaveBeenCalled();
+        expect(noteUnreachable).not.toHaveBeenCalled();
+        expect(onPrimaryRecovered).not.toHaveBeenCalled();
+      } finally {
+        platform.mockRestore();
+        legacy.mockRestore();
+        native.mockRestore();
+      }
+    });
+
+    test.each(["paused", "revoked", "changed model", "paused before send", "still approved"])(
+      "an off-device Apple fallback checks the original approval (%s)", async (change) => {
+        let settings = testSettings();
+        settings.ai.enabled = true;
+        settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+        settings.ai.defaults.enrichment = { provider: "apple:system" };
+        settings.ai.enrichmentFallback = { model: "approved-model" };
+        settings.ai.appleRefusalFallbackConsent = '["codex","approved-model"]';
+        const appleEntered = deferred<void>();
+        const finishApple = deferred<appleFmCli.FmRunResult>();
+        const beforeSend = deferred<void>();
+        const send = deferred<void>();
+        const native = vi.spyOn(appleFmNative, "resolveNativeCaptionRunner").mockResolvedValue(async () => {
+          appleEntered.resolve();
+          return finishApple.promise;
+        });
+        const platform = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+        const remote = new FakeCodexClient();
+        const clientFactory = vi.fn(() => ({
+          enrichCapture: async (request: CaptureEnrichmentRequest) => {
+            beforeSend.resolve();
+            await send.promise;
+            await request.authorizeImageSend?.();
+            return remote.enrichCapture(request);
+          },
+          close: async () => undefined
+        }) as never);
+        try {
+          registerCodexHandlers({ clientFactory, settingsReader: async () => settings,
+            budget: new AiEnrichmentBudget() });
+          const started = await bus.dispatch("codex:enrich", { captureId: "cap_1" }, { principal: "ipc" });
+          if (!started.ok) throw new Error(started.error.message);
+          const { runId } = started.value;
+          await appleEntered.promise;
+          const ai = { ...settings.ai };
+          if (change === "paused") ai.enrichmentFallbackPaused = true;
+          if (change === "revoked") ai.appleRefusalFallbackConsent = null;
+          if (change === "changed model") {
+            ai.enrichmentFallback = { model: "different-model" };
+            ai.appleRefusalFallbackConsent = '["codex","different-model"]';
+          }
+          settings = { ...settings, ai };
+          finishApple.resolve(refusal);
+          let pendingUsage: unknown;
+          if (change === "paused before send" || change === "still approved") {
+            await beforeSend.promise;
+            pendingUsage = await bus.dispatch("codex:usageRunDetail", { runId }, { principal: "ipc" });
+            if (change === "paused before send") settings = { ...settings, ai: { ...settings.ai, enrichmentFallbackPaused: true } };
+          }
+          send.resolve();
+          await waitFor(() => ["completed", "failed"].includes(getAiRun(runId)?.status ?? ""));
+          if (change === "still approved") {
+            expect(remote.lastRequest?.model).toBe("approved-model");
+            expect(getAiRun(runId)?.status).toBe("completed");
+          } else {
+            expect(remote.lastRequest).toBeNull();
+            expect(getAiRun(runId)?.status).toBe("failed");
+            expect(clientFactory).toHaveBeenCalledTimes(change === "paused before send" ? 1 : 0);
+          }
+          if (pendingUsage !== undefined) expect(pendingUsage).toMatchObject({ ok: true, value: {
+            modelProvider: "codex", selectedModelLabel: "approved-model",
+            run: { status: "running", fallbackFrom: "apple:system" }
+          } });
+        } finally {
+          send.resolve();
+          platform.mockRestore();
+          native.mockRestore();
+        }
+      }
+    );
+
+    test("a selected loopback fallback can caption a refusal without off-device approval", async () => {
+      const receive = vi.fn();
+      const http = await server(async (req, res) => {
+        receive(await body(req));
+        json(res, { choices: [{ message: { content: caption } }] });
+      });
+      const entry = model(`${http.url}/v1`);
+      entry.capabilities.streaming = false;
+      const settings = testSettings();
+      settings.ai.enabled = true;
+      settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+      settings.ai.defaults.enrichment = { provider: "apple:system" };
+      settings.ai.enrichmentFallback = { provider: `custom:${entry.id}` };
+      settings.ai.customConnections = [{ id: entry.connectionId, name: "Local fixture",
+        baseUrl: entry.baseUrl, protocol: entry.protocol, auth: entry.auth }];
+      settings.ai.customModels = [entry];
+      const service = new CustomModelService({ read: async () => settings,
+        write: async () => { throw new Error("Unexpected settings write"); } },
+      { headers: async () => ({}) } as unknown as CustomCredentials, async () => undefined);
+      const serviceSpy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
+      const nativeRun = vi.fn<appleFmCli.FmRunner>().mockResolvedValue(refusal);
+      const native = vi.spyOn(appleFmNative, "resolveNativeCaptionRunner").mockResolvedValue(nativeRun);
+      const platform = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+      try {
+        registerCodexHandlers({ settingsReader: async () => settings, budget: new AiEnrichmentBudget() });
+        const reply = await bus.dispatch("codex:enrich", { captureId: "cap_1" }, { principal: "ipc" });
+        if (!reply.ok) throw new Error(reply.error.message);
+        await waitFor(() => ["completed", "failed"].includes(getAiRun(reply.value.runId)?.status ?? ""));
+        expect(getAiRun(reply.value.runId)).toMatchObject({
+          status: "completed", fallbackFrom: "apple:system", selectedModel: entry.modelId
+        });
+        expect(nativeRun).toHaveBeenCalledTimes(1);
+        expect(receive).toHaveBeenCalledTimes(1);
+      } finally {
+        platform.mockRestore();
+        native.mockRestore();
+        serviceSpy.mockRestore();
+        await http.close();
+      }
+    });
+
+    test("when Apple refuses as the fallback, the run ends with the original hop", async () => {
+      const settings = testSettings();
+      settings.ai.enabled = true;
+      settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+      settings.ai.enrichmentFallback = { provider: "apple:system" };
+      const client = new FakeCodexClient();
+      const turn = vi.spyOn(client, "enrichCapture").mockRejectedValue(new CodexTurnFailedError(
+        "Synthetic offline turn", { httpConnectionFailed: { httpStatusCode: null } }
+      ));
+      const nativeRun = vi.fn<appleFmCli.FmRunner>().mockResolvedValue(refusal);
+      const native = vi.spyOn(appleFmNative, "resolveNativeCaptionRunner").mockResolvedValue(nativeRun);
+      const platform = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+      try {
+        registerCodexHandlers({ clientFactory: () => client as never, settingsReader: async () => settings,
+          budget: new AiEnrichmentBudget() });
+        const reply = await bus.dispatch("codex:enrich", { captureId: "cap_1" }, { principal: "ipc" });
+        if (!reply.ok) throw new Error(reply.error.message);
+        await waitFor(() => getAiRun(reply.value.runId)?.status === "failed");
+        expect(getAiRun(reply.value.runId)).toMatchObject({
+          fallbackFrom: "codex", selectedModel: "system", error: expect.stringContaining("refused")
+        });
+        expect(turn).toHaveBeenCalledTimes(1);
+        expect(nativeRun).toHaveBeenCalledTimes(1);
+      } finally {
+        platform.mockRestore();
+        native.mockRestore();
+      }
+    });
   });
 
   // A stopped local server is what `ai.enrichmentFallback` exists for. The

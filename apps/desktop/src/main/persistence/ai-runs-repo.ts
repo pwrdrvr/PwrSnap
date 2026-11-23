@@ -95,8 +95,8 @@ export function markAiRunRunning(id: string): AiRunSnapshot | null {
   return getAiRun(id);
 }
 
-/** Record that the run moved to `ai.enrichmentFallback` because its primary
- *  provider could not be reached. `selected_model` follows the run to the
+/** Record that the run moved to `ai.enrichmentFallback`. An Apple primary
+ *  only hands off after a refusal. `selected_model` follows the run to the
  *  model that now answers it, so the run record names what actually ran. */
 export function markAiRunFallback(
   id: string,

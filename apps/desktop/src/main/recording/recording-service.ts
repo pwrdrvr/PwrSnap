@@ -22,6 +22,9 @@ import { nanoid } from "nanoid";
 import {
   BURST_FPS,
   BURST_MAX_FRAMES,
+  type RecordingAudioMuteRequest,
+  type RecordingAudioSource,
+  type RecordingAudioTelemetry,
   type RecordingCapabilities,
   type RecordingFailureCode,
   type RecordingOutput,
@@ -54,6 +57,7 @@ import {
   setRecordingState
 } from "./recording-state";
 import { resolveFfmpegPath } from "./ffmpeg-resolver";
+import { updateAudioTelemetry, type RecorderAudioTelemetryEvent } from "./recording-audio-telemetry";
 import { planWindowsFfmpegCapture, windowsCaptureStartUtcMs } from "./windows-ffmpeg-capture";
 
 const log = getMainLogger("pwrsnap:recording-service");
@@ -145,6 +149,7 @@ export type RecordingService = {
    *  one with the same subject + capabilities. Throws
    *  `not_recording` if no session is active. */
   restart(): Promise<{ sessionId: string }>;
+  muteAudio?(request: RecordingAudioMuteRequest): Promise<void>;
   /** Read the safe capability subset needed to preflight a retry. Validates
    * that the supplied failure session is still current and retryable. */
   retryCapabilities(sessionId: string): RecordingCapabilities;
@@ -215,7 +220,9 @@ type RecorderStoppedEvent = {
   outputPath: string;
 };
 type RecorderErrorEvent = { event: "error"; code: string; message: string };
-type RecorderEvent = RecorderStartedEvent | RecorderStoppedEvent | RecorderErrorEvent | { event: "timeline"; utcTimeMs?: number } | { event: "cameraPreview"; excluded: boolean } | { event: "burstProgress"; kept?: number; written?: number };
+type RecorderMuteResult = { event: "audioMuteResult"; requestId?: number; applied?: boolean };
+const AUDIO_MUTE_TIMEOUT_MS = 1_500;
+type RecorderEvent = RecorderStartedEvent | RecorderStoppedEvent | RecorderErrorEvent | RecorderAudioTelemetryEvent | RecorderMuteResult | { event: "timeline"; utcTimeMs?: number } | { event: "cameraPreview"; excluded: boolean } | { event: "burstProgress"; kept?: number; written?: number };
 
 // Resources and waiters belong to one admitted attempt, including the period
 // before a child exists. Never look up a child/temp directory through mutable
@@ -257,6 +264,12 @@ class RecordingAttempt {
   stopOperation: Promise<{ captureId: string; burstId?: string }> | null = null;
   /** Burst only: stills the ring holds, from the recorder's progress lines. */
   burstFrames = 0;
+  audioTelemetry: RecordingAudioTelemetry | undefined;
+  audioMuteId = 0;
+  readonly audioMuteRequests = new Map<RecordingAudioSource, {
+    id: number;
+    result: ReturnType<typeof deferred<boolean>>;
+  }>();
   cancelOperation: Promise<void> | null = null;
   cleanupOperation: Promise<void> | null = null;
   restarting = false;
@@ -273,6 +286,10 @@ class RecordingAttempt {
 
   wait<T>(operation: Promise<T>): Promise<T> {
     return Promise.race([operation, this.aborted.promise]);
+  }
+
+  rejectAudioMuteRequests(cause: Error): void {
+    for (const { result } of this.audioMuteRequests.values()) result.reject(cause);
   }
 }
 
@@ -390,14 +407,15 @@ abstract class AttemptRecorderService implements RecordingService {
     }
   }
 
-  protected publishRecording(attempt: RecordingAttempt): void {
+  protected publishRecording(attempt: RecordingAttempt, update?: "audio-telemetry"): void {
     setRecordingState({
       phase: "recording", sessionId: attempt.sessionId,
       startedAt: new Date(attempt.startedAtMs).toISOString(),
       rect: attempt.rect, displayId: attempt.displayId,
       capabilities: this.recordedCapabilities(attempt),
+      ...(attempt.audioTelemetry === undefined ? {} : { audioTelemetry: attempt.audioTelemetry }),
       ...(attempt.options.output === "burst" ? { output: "burst" as const, burstFrames: attempt.burstFrames } : {})
-    });
+    }, update);
   }
 
   protected recordedCapabilities(attempt: RecordingAttempt): RecordingCapabilities {
@@ -425,6 +443,7 @@ abstract class AttemptRecorderService implements RecordingService {
     if (attempt.stopOperation) return attempt.stopOperation;
     if (attempt.phase !== "recording") return Promise.reject(new Error("control_unavailable"));
     attempt.phase = "stopping";
+    attempt.rejectAudioMuteRequests(new Error("control_unavailable"));
     // Set ownership before any await so duplicate stops share one persistence.
     attempt.stopOperation = this.finish(attempt);
     return attempt.stopOperation;
@@ -647,6 +666,7 @@ abstract class AttemptRecorderService implements RecordingService {
   private cleanup(attempt: RecordingAttempt, options: { preserveTempDir?: boolean } = {}): Promise<void> {
     if (attempt.cleanupOperation) return attempt.cleanupOperation;
     attempt.phase = "retired";
+    attempt.rejectAudioMuteRequests(new Error("control_unavailable"));
     // Capture the process-global camera synchronously before awaiting anything.
     // The camera is already detached and its worker closed before its file
     // cleanup awaits. A close/remove error must not keep admission reserved or
@@ -675,6 +695,27 @@ class NativeRecorderService extends AttemptRecorderService {
     return "native recorder binary not available — Fast Video Capture requires macOS 13+ and the bundled PwrSnapRecorder helper";
   }
 
+  async muteAudio({ sessionId, source, muted }: RecordingAudioMuteRequest): Promise<void> {
+    const attempt = this.attempt;
+    const child = attempt?.child;
+    if (!attempt || !child || attempt.sessionId !== sessionId || attempt.phase !== "recording" ||
+      attempt.options.output === "burst" || !attempt.options.capabilities[source] ||
+      attempt.audioMuteRequests.has(source)) throw new Error("control_unavailable");
+
+    const requestId = ++attempt.audioMuteId;
+    const result = deferred<boolean>();
+    attempt.audioMuteRequests.set(source, { id: requestId, result });
+    try {
+      // On macOS the helper and libuv share the continuous monotonic clock.
+      const expiresAtNs = (process.hrtime.bigint() + BigInt(AUDIO_MUTE_TIMEOUT_MS) * 1_000_000n).toString();
+      child.stdin.write(JSON.stringify({ type: "muteAudio", requestId, source, muted, expiresAtNs }) + "\n");
+      const applied = await withDeadline(attempt.wait(result.promise), AUDIO_MUTE_TIMEOUT_MS, "recorder_mute_timeout");
+      if (!applied) throw new Error("control_unavailable");
+    } finally {
+      attempt.audioMuteRequests.delete(source);
+    }
+  }
+
   protected async startRecorder(attempt: RecordingAttempt, binary: string): Promise<void> {
     try {
       const info = statSync(binary);
@@ -685,6 +726,7 @@ class NativeRecorderService extends AttemptRecorderService {
     attempt.startFailureCode = "recorder_spawn_failed";
     const child = spawn(binary, [], { stdio: ["pipe", "pipe", "pipe"] });
     attempt.child = child;
+    child.stdin.on("error", (cause) => attempt.rejectAudioMuteRequests(cause));
     attempt.startFailureCode = "recorder_start_failed";
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
@@ -800,6 +842,22 @@ class NativeRecorderService extends AttemptRecorderService {
       // process-global camera or settle startup successfully.
       if (attempt.cancelled && parsed.event !== "stopped") continue;
       switch (parsed.event) {
+        case "audioMuteResult": {
+          if (attempt.phase !== "recording") break;
+          for (const { id, result } of attempt.audioMuteRequests.values()) {
+            if (id === parsed.requestId) result.resolve(parsed.applied === true);
+          }
+          break;
+        }
+        case "audioTelemetry": {
+          if (!attempt.startAcknowledged || attempt.options.output === "burst" ||
+            (attempt.phase !== "starting" && attempt.phase !== "recording")) break;
+          const next = updateAudioTelemetry(attempt.audioTelemetry, parsed, attempt.options.capabilities);
+          if (next === attempt.audioTelemetry) break;
+          attempt.audioTelemetry = next;
+          if (attempt.phase === "recording") this.publishRecording(attempt, "audio-telemetry");
+          break;
+        }
         case "timeline":
           if (parsed.utcTimeMs !== undefined) markCameraScreenStartUtc(parsed.utcTimeMs);
           break;

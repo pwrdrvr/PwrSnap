@@ -140,7 +140,9 @@ an AI provider, direct API, fallback, enrichment thread, ACP, `fm`, or budget.
   outside the jail, or network, enforced in the transport. Never loosen it.
 - **Apple captions use a fixed local helper.** Use `SystemLanguageModel.default`
   without tools, bounded Vision OCR and private stdin. The legacy development
-  CLI stays behind `assertAppleFmArgs`. `AppleFmError` never falls back.
+  CLI stays behind `assertAppleFmArgs`. Only a typed native refusal from the
+  primary can go straight to the configured alternate. Off-device fallback needs
+  explicit approval for that destination.
 - **Only the operator's re-run is exempt from the enrichment budget.** Never
   key an exemption on a request field.
 

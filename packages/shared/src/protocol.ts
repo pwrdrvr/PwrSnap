@@ -385,12 +385,11 @@ export type RecordingState =
        * the timer, and on restart they would briefly describe the
        * previous take.
        *
-       * This is the REQUESTED set. Whether a source is actually
-       * producing samples is a live signal the shipped backends do not
-       * expose yet — see `RecordingBackendCapabilities.sources
-       * .liveAudioLevels`.
+       * This is the REQUESTED set. Audio telemetry describes the samples
+       * the writer has accepted from those sources.
        */
       capabilities: RecordingCapabilities;
+      audioTelemetry?: RecordingAudioTelemetry;
       /** "burst" while a burst take runs (lossless stills, not a video).
        *  Absent for an ordinary recording. */
       output?: RecordingOutput | undefined;
@@ -407,6 +406,20 @@ export type RecordingState =
       canRetry: boolean;
       displayId: number;
     };
+
+export type RecordingAudioSource = "systemAudio" | "microphone";
+
+export type RecordingAudioReading = (
+  | { state: "waiting" }
+  | { state: "no-input" | "no-write"; lastSampleAtMs: number | null }
+  /** 0–1 in meter steps. Null means no PCM level was measurable in this window. */
+  | { state: "writing"; level: number | null; clipping?: true;
+      recovery?: { atMs: number; gapMs: number } }
+) & { muted?: true };
+
+export type RecordingAudioTelemetry = Partial<Record<RecordingAudioSource, RecordingAudioReading>>;
+
+export type RecordingAudioMuteRequest = { sessionId: string; source: RecordingAudioSource; muted: boolean };
 
 /**
  * How the recording frame is allowed to relate to the recorded rect.
@@ -525,9 +538,8 @@ export type RecordingCapabilities = {
  * which describes the inputs requested for one take.
  *
  * The recording HUD uses this snapshot to avoid advertising controls or live
- * monitoring that the active backend cannot actually perform. In particular,
- * neither shipped backend can pause/resume, switch audio tracks mid-stream,
- * or report live RMS levels. Camera capture is a separate browser recorder.
+ * monitoring that the active backend cannot actually perform. Camera
+ * capture is a separate browser recorder from the screen and audio inputs.
  */
 export type RecordingBackendCapabilities = {
   backend: "macos-native" | "windows-ffmpeg" | "unsupported";
@@ -3021,12 +3033,16 @@ export type Settings = {
      *  Codex default" (no `model` / `modelProvider` / `effort` is sent on
      *  thread/start or turn/start). */
     defaults: AiSurfaceDefaults;
-    /** Second choice for capture enrichment, used only when the primary
-     *  (`defaults.enrichment`, a Direct API model or an ACP agent) can't be
-     *  reached — see `isEnrichmentBackendUnavailable` in main. Same field
-     *  semantics as a surface default (`{}` = Codex on its managed default).
-     *  null / absent = off: an unreachable primary fails the run. Additive. */
+    /** Second choice for capture enrichment, used when the primary can't
+     *  be reached or Apple's native caption model returns a typed refusal.
+     *  Same field semantics as a surface default (`{}` = Codex on its
+     *  managed default). Null or absent leaves the fallback unconfigured. */
     enrichmentFallback?: AiSurfaceDefault | null;
+    /** Disable use of the saved caption fallback until the user resumes it. */
+    enrichmentFallbackPaused?: boolean;
+    /** Approval for the selected off-device Apple refusal fallback, keyed
+     *  to its destination. Missing or null keeps this route off. */
+    appleRefusalFallbackConsent?: string | null;
     /** ACP-agent enablement (Settings → AI → ACP agents). The set of
      *  locally-installed ACP agents the user has opted into. Additive;
      *  defaults to empty. Discovery is the `acp:discover` verb; enabling
@@ -3379,6 +3395,8 @@ export type HotkeyRegistrationFailureCode =
 export type HotkeyRegistrationFailure = {
   code: HotkeyRegistrationFailureCode;
   message: string;
+  conflictsWith?: HotkeySettingKey;
+  threw?: boolean;
 };
 
 /** Runtime ownership of one persisted hotkey. Settings remain authoritative:
@@ -4064,9 +4082,12 @@ export type SettingsPatch = {
       sizzleChat?: AiSurfaceDefaultPatch;
       enrichment?: AiSurfaceDefaultPatch;
     };
-    /** `null` turns the enrichment fallback off. An object turns it on (from
-     *  `{}` when it was off) and merges leaf-by-leaf like a surface default. */
+    /** `null` clears the saved fallback. An object merges leaf-by-leaf like
+     *  a surface default. Use `enrichmentFallbackPaused` to keep the choice. */
     enrichmentFallback?: AiSurfaceDefaultPatch | null;
+    enrichmentFallbackPaused?: boolean;
+    /** Approve the currently selected destination, or clear with null. */
+    appleRefusalFallbackConsent?: string | null;
     /** ACP-agent enablement patch. `enabledAgentIds` REPLACES the stored
      *  set wholesale (the renderer ships the full desired set on each
      *  toggle, mirroring `ai.chat.sensitiveDataPatterns`). An empty array
@@ -5685,6 +5706,8 @@ export type Commands = {
    * is in flight.
    */
   "recording:restart": { req: Record<string, never>; res: { sessionId: string } };
+  /** Silence or resume an armed audio track in this take. */
+  "recording:muteAudio": { req: RecordingAudioMuteRequest; res: void };
   /** Retry only the currently displayed failed session with its original
    * subject/capabilities. A stale failure card cannot start a new take. */
   "recording:retry": { req: { sessionId: string }; res: { sessionId: string } };

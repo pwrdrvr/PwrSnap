@@ -24,9 +24,9 @@ export function recordingBackendCapabilities(
         systemAudio: true,
         microphone: true,
         webcam: true,
-        liveAudioLevels: false,
-        liveDisconnectDetection: false,
-        midRecordingToggles: false
+        liveAudioLevels: true,
+        liveDisconnectDetection: true,
+        midRecordingToggles: true
       },
       // The native recorder writes full-resolution stills (burst.swift).
       outputs: { burst: true },

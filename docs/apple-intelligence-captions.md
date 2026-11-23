@@ -1,9 +1,10 @@
 # Captions on Apple's on-device model
 
 On a Mac running macOS 27 or later, PwrSnap can write a capture's title,
-description, tags and file name with the language model built into macOS. The
-capture is read on the Mac. It is not sent to a server, and there is no
-account, key or bill.
+description, tags and file name with the language model built into macOS.
+For still captures it can also save short snippets of visible text for
+Library search. All processing stays on the Mac. There is no account, key or
+bill.
 
 Choose Apple Intelligence as the caption model or as a fallback in AI
 Features. PwrSnap asks macOS whether the model can run when you open
@@ -21,6 +22,15 @@ The check reads model availability without generating a response.
 
 **Test** on that screen sends one short text prompt to the model and times the
 answer. It uses no capture.
+
+To use a fallback when Apple Intelligence refuses a caption, choose it under
+**If Apple Intelligence refuses a caption** in the Captions settings. An
+off-device provider needs explicit approval in that control before PwrSnap
+sends it a capture. A fallback saved before this feature still needs that
+approval, including a choice inherited from a different caption primary.
+A selected loopback Direct API model can run as a local fallback. Switch
+fallback off to pause it. Your provider, model, and reasoning stay saved for
+when you switch it back on.
 
 ## What each state means
 
@@ -60,20 +70,31 @@ On Windows and Linux the provider does not appear anywhere.
 - PwrSnap prepares a bounded image with a longest edge of 1024 px, or three
   sampled frames for a recording. For still images, Apple's Vision framework
   reads screen text on the Mac. The model sees the image, capture metadata,
-  and a short amount of that text together. PwrSnap saves the generated caption
-  fields and discards the OCR evidence used by the model.
+  and a bounded amount of that text together. The model looks for distinctive
+  search terms such as complete filenames, identifiers and error messages.
+  Vision runs with language correction off to better preserve filenames and
+  identifiers. PwrSnap saves up to five verbatim snippets of at most 120 UTF-8
+  bytes each, alongside the caption fields. Each snippet must match text
+  within a single line of the Vision evidence. PwrSnap discards the evidence
+  after captioning. If Vision misses or misreads small text, the corresponding
+  search term may be absent or misspelled. The helper excludes clearly
+  labeled credentials from search evidence.
 - **Captions only.** It is not offered for Library chat or Sizzle Reel chat.
 - **A small model.** Descriptions are shorter than a cloud model's, and it can
   misread small text. In testing it read `pnpm` in a terminal as `npm`.
-- **It can decline a capture.** Apple's safety checks sometimes stop a request.
-  That capture's caption fails and says so.
-- **A failure stays a failure.** A declined capture or a model that is still
-  downloading does not trigger a fallback to another provider.
+- **It can refuse a caption.** When an eligible fallback is on, PwrSnap sends
+  the capture straight to it after the first Apple attempt. The next capture
+  starts with Apple again. An explicit
+  guardrail violation, a model that is still downloading, other setup
+  failures, timeouts, and malformed output leave the run failed. Cancellation
+  ends the run. A refusal from the development CLI also leaves the run failed.
 - **It can be the offline fallback.** Behind a Codex primary, AI Features can
   name it as the caption fallback for connection failures where Codex
-  receives no HTTP response.
+  receives no HTTP response. If Apple refuses while serving as the fallback,
+  the run ends there.
 - **One capture at a time**, in the order they were taken.
-- **No usage or cost is recorded.** The request runs entirely on this Mac.
+- **No usage or cost is recorded for the Apple turn.** Fallback usage is
+  attributed to the provider that ran it.
 
 ## Apple's terms
 
@@ -88,10 +109,11 @@ CLI. PwrSnap only opens an empty Terminal when asked. An administrator can
 review and agree to the CLI terms separately.
 
 To test the bundled path on an Apple Silicon Mac with macOS 27 and a ready
-model, build the helper and run the opt-in synthetic caption test.
+model, build the native helpers and run the opt-in synthetic caption and
+search test.
 
 ```sh
-node apps/desktop/scripts/build-apple-caption.mjs
+pnpm build:native
 PWRSNAP_APPLE_FM_NATIVE_REAL=1 pnpm exec vitest run apps/desktop/src/main/ai/apple-fm/__tests__/apple-fm-real.test.ts
 ```
 

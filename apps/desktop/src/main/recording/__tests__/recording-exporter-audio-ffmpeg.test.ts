@@ -19,7 +19,7 @@ vi.mock("../../log", () => ({ getMainLogger: () => ({ info() {}, warn() {}, erro
 
 import { resolveFfmpegPath } from "../ffmpeg-resolver";
 import { probeAudioStreamCount } from "../recording-audio";
-import { exportVideoRange } from "../recording-exporter";
+import { buildSegmentedMp4EncodeArgs, exportVideoRange } from "../recording-exporter";
 import { extractVideoAudio, prepareVideoPlayback } from "../../sizzle/audio-extract";
 
 const ffmpeg = resolveFfmpegPath();
@@ -59,11 +59,21 @@ function expectTones(path: string, system: boolean, mic: boolean): void {
   }
 }
 
+// Compare the mixed tail with the independently decoded system track. A
+// duration check alone would pass if the mixer replaced the tail with silence.
+function expectSystemTail(samples: Float32Array, start: number): void {
+  const sourceAmplitude = magnitude(systemSamples, 440, 2.1, 0.2);
+  expect(sourceAmplitude).toBeGreaterThan(0.02);
+  expect(magnitude(samples, 440, start, 0.2)).toBeGreaterThan(sourceAmplitude * 0.8);
+  expect(magnitude(samples, 880, start, 0.2)).toBeLessThan(0.003);
+}
+
 let source: string;
 let systemOnly: string;
 let micOnly: string;
 let silent: string;
 let silentSystem: string;
+let systemSamples: Float32Array;
 const dual = { hasSystemAudio: true, hasMicrophoneAudio: true };
 const video: VideoCaptureMetadata = {
   ...dual, durationSec: 2.4, containerFormat: "mp4",
@@ -93,6 +103,7 @@ describe.skipIf(ffmpeg === null)("recorded audio through real FFmpeg", () => {
       "-ac:a:0", "2", "-b:a", "192k", source
     ]);
     run(["-i", source, "-map", "0:v", "-map", "0:a:0", "-c", "copy", systemOnly]);
+    systemSamples = pcm(systemOnly);
     run(["-i", source, "-map", "0:v", "-map", "0:a:1", "-c", "copy", micOnly]);
     run(["-i", source, "-map", "0:v", "-c", "copy", "-an", silent]);
     // Two audio tracks where the FIRST is digital silence — system audio
@@ -121,6 +132,11 @@ describe.skipIf(ffmpeg === null)("recorded audio through real FFmpeg", () => {
     expect(pcm(path).length / 48000).toBeCloseTo(1, 1);
   });
 
+  test("full native extraction preserves audio after the microphone ends", async () => {
+    const path = await extractVideoAudio({ videoPath: source, ...dual, startSec: 0, durationSec: 2.4 });
+    expectSystemTail(pcm(path), 2.1);
+  });
+
   test("native extraction supports mic-only and stale dual metadata", async () => {
     const mic = await extractVideoAudio({ videoPath: micOnly, hasSystemAudio: false, hasMicrophoneAudio: true, startSec: 0.75, durationSec: 1 });
     expectTones(mic, false, true);
@@ -142,9 +158,27 @@ describe.skipIf(ffmpeg === null)("recorded audio through real FFmpeg", () => {
     expect(magnitude(samples, 880, 0.1, 0.2)).toBeLessThan(0.003);
     expect(magnitude(samples, 440, 0.8, 0.4)).toBeGreaterThan(0.02);
     expect(magnitude(samples, 880, 0.8, 0.4)).toBeGreaterThan(0.02);
-    expect(magnitude(samples, 440, 2.1, 0.2)).toBeGreaterThan(0.02);
-    expect(magnitude(samples, 880, 2.1, 0.2)).toBeLessThan(0.003);
+    expectSystemTail(samples, 2.1);
+    // Re-encoding AAC can round the final sample count to another AAC frame.
+    expect(samples.length).toBeLessThanOrEqual(systemSamples.length + 1024);
     expect(await prepareVideoPlayback(out, { videoPath: source, ...dual })).toBe(path);
+  });
+
+  test("cut MP4 keeps the system tail in a span after the microphone ends", () => {
+    const outPath = join(state.root, "export-cut-tail.mp4");
+    run(buildSegmentedMp4EncodeArgs({
+      src: source,
+      spans: [{ start: 0.75, end: 1.25 }, { start: 2.05, end: 2.4 }],
+      audioStreams: [0, 1],
+      scale: null,
+      // Run the production trim/concat/mix graph on hosts without a
+      // platform H.264 encoder. The audio oracle is independent of video codec.
+      encoderArgs: ["-c:v", "mpeg4"],
+      outPath
+    }));
+    const samples = pcm(outPath);
+    expect(magnitude(samples, 880, 0.1, 0.2)).toBeGreaterThan(0.02);
+    expectSystemTail(samples, 0.55);
   });
 
   // The shape that sent someone hunting for a volume slider: the recording
@@ -197,6 +231,18 @@ describe.skipIf(ffmpeg === null)("recorded audio through real FFmpeg", () => {
   });
 
   describe.skipIf(process.platform !== "darwin" && process.platform !== "win32")("MP4 exports", () => {
+    test("exports the full system tail with both tracks selected", async () => {
+      const result = await exportVideoRange({
+        record: { id: "full-tail", kind: "video", legacy_src_path: source, width_px: 160, height_px: 90 } as CaptureRecord,
+        video,
+        format: "mp4",
+        preset: "high",
+        range: video.defaultRange,
+        audio: { includeSystemAudio: true, includeMicrophone: true }
+      });
+      expectSystemTail(pcm(result.path), 2.1);
+    });
+
     test.each([
       ["both", true, true, "dual"],
       ["system", true, false, "dual"],

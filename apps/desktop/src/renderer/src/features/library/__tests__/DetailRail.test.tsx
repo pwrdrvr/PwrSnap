@@ -847,7 +847,7 @@ describe("DetailRail", () => {
     expect(usage?.getAttribute("title")).toContain("Price unavailable");
   });
 
-  test("refreshes latest AI run usage when the same run completes", async () => {
+  test.each(["fallback", "completion"] as const)("refreshes latest AI run usage on %s for the same run", async (event) => {
     let currentUsage = aiUsageDetail({
       run: { ...aiUsageDetail().run, status: "running", completedAt: null },
       usageStatus: "unavailable",
@@ -867,11 +867,13 @@ describe("DetailRail", () => {
       dispatch.mock.calls.filter(([name]) => name === "codex:usageRunDetail")
     ).toHaveLength(1);
 
-    currentUsage = aiUsageDetail();
+    currentUsage = event === "fallback" ? aiUsageDetail({
+      run: { ...currentUsage.run, fallbackFrom: "apple:system" }
+    }) : aiUsageDetail();
     await act(async () => {
       pushEvent(EVENT_CHANNELS.aiRunUpdated, {
         run: currentUsage.run,
-        enrichment: enrichment({ status: "completed" })
+        enrichment: enrichment({ status: currentUsage.run.status, fallbackFrom: currentUsage.run.fallbackFrom ?? null })
       });
       await Promise.resolve();
       await Promise.resolve();

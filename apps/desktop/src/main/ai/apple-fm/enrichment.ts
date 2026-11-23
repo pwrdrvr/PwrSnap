@@ -4,10 +4,8 @@
 // images and capture metadata together. An older development checkout uses
 // the guarded CLI. Both return a caption parsed by the shared validator.
 //
-// A failure never moves the capture to another provider. `AppleFmError` is
-// deliberately not one of the errors `isEnrichmentBackendUnavailable`
-// accepts: a refusal, a missing licence agreement, or a model still
-// downloading is something the operator should see.
+// Only the bundled helper can report a typed refusal. The handler may retry
+// that capture with the configured fallback. Apple errors never mark it down.
 
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -46,6 +44,7 @@ export const APPLE_FM_USER_AGENT = "PwrSnap Apple Foundation Models (fm)";
 export const APPLE_FM_NATIVE_USER_AGENT = "PwrSnap Apple Foundation Models (native)";
 
 export type AppleFmErrorCode =
+  | "refusal"
   | "guardrail"
   | "license-required"
   | "not-ready"
@@ -235,6 +234,11 @@ export class AppleFmEnrichmentBackend implements EnrichmentBackend {
       timeoutMs: this.timeoutMs,
       ...(req.abortSignal !== undefined ? { signal: req.abortSignal } : {})
     }));
+    // `fail` in the bundled helper uses exit 1 and a fixed stderr code. A
+    // successful caption, legacy CLI text, or abnormal exit cannot opt in.
+    if (result.code === 1 && result.signal === null && result.stderr.trim() === "refusal") {
+      throw new AppleFmError("refusal", "the on-device model refused to caption it. Regenerate, or pick another provider for captions.");
+    }
     if (result.code !== 0) throw appleFmNativeError(result.stderr);
     return result;
   }

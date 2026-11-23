@@ -15,7 +15,7 @@
 // ~0.8 s. Screen recordings are VFR and mostly still, so decoding is
 // far faster than realtime.
 //
-// The result is cached as `activity-v1-h<hz>-w<width>.json` beside the
+// The result is cached as `activity-v<version>-h<hz>-w<width>.json` beside the
 // contact strip and published through the derived-cache gate: it is a
 // seconds-long ffmpeg run whose output lands in `<cacheRoot>/video/<id>/`
 // by rename, which is exactly the class of writer AGENTS.md says must
@@ -38,9 +38,9 @@ import { videoAssetDir } from "./video-frames";
 
 const log = getMainLogger("pwrsnap:video-activity");
 
-/** Bump when the measure changes (noise floor, scaling, encoding) so a
+/** Bump when the measure changes (noise floor, scaling, audio mix, encoding) so a
  *  stale cache file is never read as the new one. */
-export const ACTIVITY_VERSION = 2;
+export const ACTIVITY_VERSION = 3;
 
 /** Grayscale analysis width. Small on purpose — see the shared module:
  *  the downscale is what folds a blinking caret into "still". */

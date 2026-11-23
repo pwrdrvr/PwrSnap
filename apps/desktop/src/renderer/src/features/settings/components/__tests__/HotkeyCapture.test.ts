@@ -690,7 +690,7 @@ describe("HotkeyCapture lifecycle", () => {
 
   test("failed save stays open with actionable inline feedback", async () => {
     const commit = vi.fn(async () => {
-      throw new Error("That shortcut is already used by another app.");
+      throw new Error("PwrSnap could not register Ctrl+Shift+R.");
     });
     const view = await renderHarness({ commit });
     await click(".pss__hk-capture-trigger");
@@ -701,7 +701,7 @@ describe("HotkeyCapture lifecycle", () => {
       keyEvent("keyup", { key: "r", code: "KeyR", ctrlKey: true, shiftKey: true })
     );
     expect(view.querySelector(".pss__hk-capture.is-recording")).not.toBeNull();
-    expect(view.querySelector("[role='alert']")?.textContent).toContain("already used");
+    expect(view.querySelector("[role='alert']")?.textContent).toContain("could not register");
     expect(
       leaseDispatch.mock.calls.filter(([name]) => name === "settings:endHotkeyRecording")
     ).toHaveLength(0);

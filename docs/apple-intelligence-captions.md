@@ -68,7 +68,8 @@ On Windows and Linux the provider does not appear anywhere.
   bytes each, alongside the caption fields. Each snippet must match text
   within a single line of the Vision evidence. PwrSnap discards the evidence
   after captioning. If Vision misses or misreads small text, the corresponding
-  search term may be absent or misspelled.
+  search term may be absent or misspelled. The helper excludes clearly
+  labeled credentials from search evidence.
 - **Captions only.** It is not offered for Library chat or Sizzle Reel chat.
 - **A small model.** Descriptions are shorter than a cloud model's, and it can
   misread small text. In testing it read `pnpm` in a terminal as `npm`.

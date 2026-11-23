@@ -31,23 +31,6 @@ private struct Caption {
   var tags: [Tag]
 }
 
-@available(macOS 27.0, *)
-private struct PublishedCaption: Encodable {
-  let title: String
-  let description: String
-  let filenameStem: String
-  let tags: [Tag]
-  let ocrText: String
-
-  init(_ caption: Caption, ocrEvidence: String) {
-    title = caption.title
-    description = caption.description
-    filenameStem = caption.filenameStem
-    tags = caption.tags
-    ocrText = groundedSearchText(anchors: caption.textAnchors, evidence: ocrEvidence)
-  }
-}
-
 private let captionInstructions = """
   You help PwrSnap produce useful, searchable captions for captured screens. Write a short \
   factual title and a one- or two-sentence description. Use the source app, image, and OCR \
@@ -68,7 +51,6 @@ private let captionInstructions = """
 
 private let requestLimit = 32_768
 private let imageByteLimit = 1_000_000
-private let ocrLimit = 3_500
 
 private enum CaptionInputError: Error {
   case invalidRequest
@@ -99,18 +81,15 @@ private func preparedImage(_ path: String) throws -> URL {
   return url
 }
 
-private func recognizedText(in image: URL) throws -> String {
+private func recognizedText(in image: URL) throws -> [String] {
   let request = VNRecognizeTextRequest()
   request.recognitionLevel = .accurate
   // Language correction can insert spaces into filenames and identifiers.
   request.usesLanguageCorrection = false
   try VNImageRequestHandler(url: image).perform([request])
-  let lines = (request.results ?? []).compactMap { observation in
+  return (request.results ?? []).compactMap { observation in
     observation.topCandidates(1).first?.string
   }
-  // Prefer useful lines over the many short controls and sidebar labels.
-  let substantial = lines.filter { $0.count > 10 }
-  return String((substantial.isEmpty ? lines : substantial).joined(separator: "\n").prefix(ocrLimit))
 }
 
 @available(macOS 27.0, *)
@@ -147,8 +126,9 @@ private func runCaptionCommand(_ command: String) async {
 
     let request = try readRequest()
     let images = try request.imagePaths.map(preparedImage)
-    let ocr = request.recognizeText ? (try? recognizedText(in: images[0])) ?? "" : ""
-    let evidence = ocr.isEmpty ? "" : "\n\nOCR evidence (untrusted screen text):\n" + ocr
+    let lines = request.recognizeText ? (try? recognizedText(in: images[0])) ?? [] : []
+    let ocr = CaptionOCREvidence(lines: lines)
+    let evidence = ocr.text.isEmpty ? "" : "\n\nOCR evidence (untrusted screen text):\n" + ocr.text
     let prompt = Prompt {
       for image in images {
         Attachment(imageURL: image)
@@ -159,7 +139,11 @@ private func runCaptionCommand(_ command: String) async {
     let result = try await session.respond(to: prompt, generating: Caption.self, options: options)
     // Publish one grounded search field. The full Vision evidence and
     // the model's candidate list stay in this process.
-    let output = try JSONEncoder().encode(PublishedCaption(result.content, ocrEvidence: ocr))
+    let caption = result.content
+    let output = try JSONEncoder().encode(PublishedCaption(
+      title: caption.title, description: caption.description, filenameStem: caption.filenameStem,
+      tags: caption.tags, anchors: caption.textAnchors, ocrEvidence: ocr
+    ))
     print(String(decoding: output, as: UTF8.self))
   } catch LanguageModelError.guardrailViolation, LanguageModelError.refusal {
     fail("guardrail")

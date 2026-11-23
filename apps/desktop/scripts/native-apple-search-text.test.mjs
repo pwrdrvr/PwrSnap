@@ -7,7 +7,7 @@ import { test } from "vitest";
 
 const run = promisify(execFile);
 
-test.skipIf(process.platform !== "darwin")("native Apple search text only keeps bounded, verbatim Vision snippets", async () => {
+test.skipIf(process.platform !== "darwin")("native Apple caption JSON only publishes eligible Vision snippets", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pwrsnap-apple-search-test-"));
   try {
     const native = resolve(import.meta.dirname, "..", "native", "apple-caption");

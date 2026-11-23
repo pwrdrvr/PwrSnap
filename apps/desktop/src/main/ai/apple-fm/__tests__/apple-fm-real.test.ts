@@ -83,7 +83,7 @@ test.skipIf(!nativeEnabled)("the bundled Apple helper keeps the filename and fun
     <path d="M0 0h1440v108H0z M0 864h1440v36H0z" fill="#303743"/>
     <g font-family="Menlo" font-size="23" fill="#e4e9f2">
       <text x="540" y="32">Fixture Code Editor</text>
-      <text x="44" y="83">pond-schedule.swift</text>
+      <text x="44" y="83">main.swift</text>
       <text x="44" y="172">import Foundation</text>
       <text x="44" y="237">func calculatePondSchedule() {</text>
       <text x="76" y="272">print("Reservoir review overdue")</text>
@@ -92,7 +92,7 @@ test.skipIf(!nativeEnabled)("the bundled Apple helper keeps the filename and fun
     </g>
   </svg>`;
   const { ocrText } = await captionSyntheticStill(svg, "Fixture Code Editor", 1440, 900);
-  expect(ocrText).toContain("pond-schedule.swift");
+  expect(ocrText).toContain("main.swift");
   expect(ocrText).toContain("calculatePondSchedule");
   expect(ocrText).not.toMatch(/Fixture Code Editor|\b(?:Ln 5|Col 1|UTF-8)\b/i);
 }, 180_000);

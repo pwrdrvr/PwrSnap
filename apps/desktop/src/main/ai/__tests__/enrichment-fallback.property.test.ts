@@ -5,11 +5,13 @@
 // - Armed: a fallback is set, and it runs on another backend than the primary
 //   ("" / "codex" / a disabled ACP agent are all Codex). Pre-fix code returned
 //   null for every Codex primary, so `codex → apple:system` shrank here.
+// - Behind Apple: the saved alternate is eligible and off-device routes
+//   have approval for the selected destination.
 // - Offline: one of the three transport failures that carry no HTTP status.
 
 import fc from "fast-check";
 import { describe, expect, test } from "vitest";
-import type { Settings } from "@pwrsnap/shared";
+import type { CustomConnection, CustomModel, Settings } from "@pwrsnap/shared";
 import { CodexTurnFailedError, isCodexNetworkUnavailable, rawTurnErrorFor } from "../codex-turn-error";
 import { enrichmentFallbackFor, isEnrichmentBackendUnavailable } from "../enrichment-fallback";
 
@@ -25,12 +27,13 @@ function backendOf(provider: string | undefined, enabled: readonly string[]): st
 }
 
 describe("enrichmentFallbackFor (property)", () => {
-  test("armed exactly when a fallback is set on a backend other than the primary's", () => {
+  test("for reachability, armed exactly when a fallback runs on a different backend", () => {
     fc.assert(fc.property(
-      fc.constantFrom(...SELECTORS),
+      fc.constantFrom(...SELECTORS.filter((provider) => provider !== "apple:system")),
       fc.option(fc.constantFrom(...SELECTORS), { nil: null }),
       fc.subarray(["kimi", "gemini", "qwen"]),
-      (primary, fallbackProvider, enabled) => {
+      fc.boolean(),
+      (primary, fallbackProvider, enabled, paused) => {
         const fallback = fallbackProvider === null
           ? null
           : fallbackProvider === undefined ? {} : { provider: fallbackProvider };
@@ -38,15 +41,51 @@ describe("enrichmentFallbackFor (property)", () => {
           ai: {
             defaults: { libraryChat: {}, sizzleChat: {}, enrichment: primary === undefined ? {} : { provider: primary } },
             enrichmentFallback: fallback,
+            enrichmentFallbackPaused: paused,
             acp: { enabledAgentIds: enabled }
           }
         } as unknown as Settings;
-        const expectedArmed = fallback !== null &&
+        const expectedArmed = !paused && fallback !== null &&
           backendOf(fallback.provider, enabled) !== backendOf(primary, enabled);
         const armed = enrichmentFallbackFor(settings);
         expect(armed).toEqual(expectedArmed ? fallback : null);
       }
     ), { numRuns: 500 });
+  });
+
+  test("Apple retries only via a saved eligible alternate with matching approval when off-device", () => {
+    const [modelId, connectionId] = [
+      "12345678-1234-4234-8234-123456789001", "12345678-1234-4234-8234-123456789002"
+    ];
+    const custom = `custom:${modelId}`;
+    fc.assert(fc.property(
+      fc.constantFrom(null, "codex", "apple:system", "acp:kimi", custom),
+      fc.constantFrom("http://localhost:8080/v1", "https://fixture.example/v1"),
+      fc.boolean(), fc.boolean(), fc.boolean(), fc.constantFrom("approved", "missing", "stale"),
+      (provider, url, customExists, vision, agentEnabled, approval) => {
+        const model: CustomModel = { id: modelId, connectionId, displayName: "Fixture", modelId: "fixture-model",
+          capabilities: { vision, streaming: false }, maxOutputTokens: 100 };
+        const connection: CustomConnection = { id: connectionId, name: "Fixture", baseUrl: url,
+          protocol: "openai-chat", auth: { type: "none" } };
+        const fallback = provider === null ? null : { provider };
+        const consent = provider === custom
+          ? JSON.stringify([custom, connectionId, approval === "stale" ? "https://old.example/v1" : url,
+            "openai-chat", model.modelId])
+          : JSON.stringify([provider, approval === "stale" ? "old-model" : ""]);
+        const settings = { ai: {
+          defaults: { enrichment: { provider: "apple:system" } },
+          enrichmentFallback: fallback,
+          appleRefusalFallbackConsent: approval === "missing" ? null : consent,
+          acp: { enabledAgentIds: agentEnabled ? ["kimi"] : [] },
+          customConnections: [connection], customModels: customExists ? [model] : []
+        } } as Settings;
+        const approved = approval === "approved";
+        const expected = (provider === "codex" && approved) ||
+          (provider === "acp:kimi" && agentEnabled && approved) ||
+          (provider === custom && customExists && vision && (url.startsWith("http:") || approved));
+        expect(enrichmentFallbackFor(settings)).toEqual(expected ? fallback : null);
+      }
+    ), { numRuns: 250 });
   });
 });
 

@@ -23,6 +23,15 @@ The check reads model availability without generating a response.
 **Test** on that screen sends one short text prompt to the model and times the
 answer. It uses no capture.
 
+To use a fallback when Apple Intelligence refuses a caption, choose it under
+**If Apple Intelligence refuses a caption** in the Captions settings. An
+off-device provider needs explicit approval in that control before PwrSnap
+sends it a capture. A fallback saved before this feature still needs that
+approval, including a choice inherited from a different caption primary.
+A selected loopback Direct API model can run as a local fallback. Switch
+fallback off to pause it. Your provider, model, and reasoning stay saved for
+when you switch it back on.
+
 ## What each state means
 
 PwrSnap reads the state from the macOS Foundation Models framework.
@@ -73,15 +82,19 @@ On Windows and Linux the provider does not appear anywhere.
 - **Captions only.** It is not offered for Library chat or Sizzle Reel chat.
 - **A small model.** Descriptions are shorter than a cloud model's, and it can
   misread small text. In testing it read `pnpm` in a terminal as `npm`.
-- **It can decline a capture.** Apple's safety checks sometimes stop a request.
-  That capture's caption fails and says so.
-- **A failure stays a failure.** A declined capture or a model that is still
-  downloading does not trigger a fallback to another provider.
+- **It can refuse a caption.** When an eligible fallback is on, PwrSnap sends
+  the capture straight to it after the first Apple attempt. The next capture
+  starts with Apple again. An explicit
+  guardrail violation, a model that is still downloading, other setup
+  failures, timeouts, and malformed output leave the run failed. Cancellation
+  ends the run. A refusal from the development CLI also leaves the run failed.
 - **It can be the offline fallback.** Behind a Codex primary, AI Features can
   name it as the caption fallback for connection failures where Codex
-  receives no HTTP response.
+  receives no HTTP response. If Apple refuses while serving as the fallback,
+  the run ends there.
 - **One capture at a time**, in the order they were taken.
-- **No usage or cost is recorded.** The request runs entirely on this Mac.
+- **No usage or cost is recorded for the Apple turn.** Fallback usage is
+  attributed to the provider that ran it.
 
 ## Apple's terms
 

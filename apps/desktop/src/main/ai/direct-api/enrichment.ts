@@ -19,7 +19,10 @@ export class DirectEnrichmentBackend implements EnrichmentBackend {
       const mime = bytes[0] === 0xff && bytes[1] === 0xd8 ? "image/jpeg" : "image/png";
       images.push(`data:${mime};base64,${bytes.toString("base64")}`);
     }
-    const result = await invokeApi({ model: this.model, headers: await this.service.credentials.headers(this.model, req.abortSignal),
+    const headers = await this.service.credentials.headers(this.model, req.abortSignal);
+    if (req.authorizeImageSend !== undefined) await req.authorizeImageSend();
+    req.abortSignal?.throwIfAborted();
+    const result = await invokeApi({ model: this.model, headers,
       timeoutMs: DIRECT_ENRICHMENT_TIMEOUT_MS,
       ...(this.model.enrichmentReasoning ? { reasoningMode: this.model.enrichmentReasoning } : {}),
       system: `${CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS}\nReturn ONLY a JSON object conforming to this schema:\n${JSON.stringify(CAPTURE_ENRICHMENT_SCHEMA)}`,

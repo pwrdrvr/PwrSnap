@@ -343,6 +343,90 @@ describe("AIFeaturesPage — caption fallback", () => {
     defaults: { libraryChat: {}, sizzleChat: {}, enrichment: { provider: "codex", model: "gpt-6-luna" } }
   } as unknown as Partial<Settings["ai"]>;
 
+  const applePrimary: Partial<Settings["ai"]> = {
+    defaults: { libraryChat: {}, sizzleChat: {}, enrichment: { provider: "apple:system" } }
+  };
+
+  test("a saved Codex choice requires explicit off-device approval for Apple refusals", async () => {
+    appleFmStatus = { state: "ready" };
+    await renderPage("2026-10-01T00:00:00.000Z", { ...applePrimary, enrichmentFallback: {} });
+    expect(fallbackSwitch()?.getAttribute("aria-label")).toBe("Fall back when Apple Intelligence refuses a caption");
+    expect(fallbackSwitch()?.getAttribute("aria-checked")).toBe("false");
+    expect(fallbackProvider()?.value).toBe("");
+    const descriptionId = fallbackSwitch()?.getAttribute("aria-describedby");
+    expect(document.getElementById(descriptionId ?? "")?.textContent)
+      .toContain("send the capture to Codex for processing off this Mac");
+    expect(patchMock).not.toHaveBeenCalled();
+    await act(async () => { fallbackSwitch()?.click(); });
+    expect(patchMock).toHaveBeenCalledWith({ ai: { appleRefusalFallbackConsent: '["codex",""]' } });
+  });
+
+  test("with no saved Apple fallback, offers a choice without selecting Codex", async () => {
+    appleFmStatus = { state: "ready" };
+    await renderPage("2026-10-01T00:00:00.000Z", { ...localPrimary, ...applePrimary });
+    expect(fallbackSwitch()?.disabled).toBe(true);
+    expect(fallbackProvider()?.selectedOptions[0]?.textContent).toBe("Choose a model");
+    await act(async () => {
+      const select = fallbackProvider()!;
+      select.value = `custom:${MODEL_ID}`;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(patchMock).toHaveBeenCalledWith({ ai: {
+      enrichmentFallback: { provider: `custom:${MODEL_ID}`, model: "", reasoning: "" }
+    } });
+  });
+
+  test("turning off an approved Apple fallback preserves its configuration", async () => {
+    appleFmStatus = { state: "ready" };
+    await renderPage("2026-10-01T00:00:00.000Z", {
+      ...applePrimary, enrichmentFallback: {}, appleRefusalFallbackConsent: '["codex",""]'
+    });
+    expect(fallbackSwitch()?.getAttribute("aria-checked")).toBe("true");
+    expect(container?.textContent).toContain("This model runs on this Mac");
+    expect(container?.textContent).toContain("PwrSnap goes straight to the fallback after a refusal");
+    expect(container?.textContent).toContain("send the capture to Codex for processing off this Mac");
+    await act(async () => { fallbackSwitch()?.click(); });
+    expect(patchMock).toHaveBeenCalledWith({ ai: { enrichmentFallbackPaused: true } });
+  });
+
+  test.each([
+    { primary: applePrimary, provider: "", model: "gpt-5.4-mini", approval: '["codex","gpt-5.4-mini"]' },
+    { primary: localPrimary, provider: "", model: "gpt-5.4-mini", approval: null },
+    { primary: lunaPrimary, provider: "apple:system", model: "", approval: null }
+  ])("a paused fallback keeps $provider and $model selected and can resume", async ({ primary, provider, model, approval }) => {
+    appleFmStatus = { state: "ready" };
+    await renderPage("2026-10-01T00:00:00.000Z", {
+      ...primary, enrichmentFallback: { provider, model }, appleRefusalFallbackConsent: approval,
+      enrichmentFallbackPaused: true
+    });
+    expect(fallbackSwitch()?.getAttribute("aria-checked")).toBe("false");
+    expect(fallbackProvider()?.value).toBe(provider);
+    const modelPicker = container?.querySelector<HTMLSelectElement>('[aria-label="Caption fallback model"]');
+    expect(modelPicker?.value).toBe(model);
+    await act(async () => { fallbackSwitch()?.click(); });
+    expect(patchMock).toHaveBeenCalledWith({ ai: { enrichmentFallbackPaused: false } });
+  });
+
+  test("a saved loopback fallback is active for refusals without an off-device prompt", async () => {
+    appleFmStatus = { state: "ready" };
+    await renderPage("2026-10-01T00:00:00.000Z", {
+      ...localPrimary, ...applePrimary, enrichmentFallback: { provider: `custom:${MODEL_ID}` }
+    });
+    expect(fallbackSwitch()?.getAttribute("aria-checked")).toBe("true");
+    expect(container?.querySelector('[aria-label="Caption order"]')?.textContent).toContain("when Apple refuses");
+    expect(container?.textContent).not.toContain("processing off this Mac");
+  });
+
+  test("an inherited Apple fallback cannot stand in for Apple", async () => {
+    appleFmStatus = { state: "ready" };
+    await renderPage("2026-10-01T00:00:00.000Z", {
+      ...applePrimary, enrichmentFallback: { provider: "apple:system" }
+    });
+    expect(fallbackSwitch()?.disabled).toBe(true);
+    expect(fallbackSwitch()?.getAttribute("aria-checked")).toBe("false");
+    expect(fallbackProvider()?.selectedOptions[0]?.textContent).toBe("Choose a model");
+  });
+
   test("behind Codex it is the offline fallback, and turning it on picks Apple Intelligence", async () => {
     appleFmStatus = { state: "ready" };
     await renderPage("2026-10-01T00:00:00.000Z", lunaPrimary);
@@ -366,7 +450,7 @@ describe("AIFeaturesPage — caption fallback", () => {
     expect(order?.textContent).toContain("1 Codex · gpt-6-luna");
     expect(order?.textContent).toContain("2 Apple Intelligence when offline");
     expect(container?.textContent).toContain("Sign-in, plan limits, timeouts, bad output and Codex setup problems still fail");
-    expect(container?.textContent).toContain("Runs on this Mac · captures are not sent anywhere");
+    expect(container?.textContent).toContain("This model runs on this Mac");
     expect(container?.querySelector(".pss__role-fallback-note--warn")).toBeNull();
   });
 
@@ -447,7 +531,7 @@ describe("AIFeaturesPage — caption fallback", () => {
       fallbackSwitch()?.click();
       await Promise.resolve();
     });
-    expect(patchMock).toHaveBeenCalledWith({ ai: { enrichmentFallback: null } });
+    expect(patchMock).toHaveBeenCalledWith({ ai: { enrichmentFallbackPaused: true } });
   });
 
   test("a field change patches the fallback, not the primary", async () => {

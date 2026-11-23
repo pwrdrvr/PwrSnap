@@ -242,13 +242,13 @@ export function describeAppleFmStatus(status: AppleFmStatus, inUse: boolean): Ai
   };
 }
 
-/** Whether a job's stored `provider` (or the caption fallback's) names the
+/** Whether the caption primary or its active fallback names the
  *  on-device model. */
 export function appleFmInUse(settings: Settings | null | undefined): boolean {
   if (settings === null || settings === undefined) return false;
   return (
     isAppleFmProvider(settings.ai.defaults.enrichment.provider) ||
-    isAppleFmProvider(settings.ai.enrichmentFallback?.provider)
+    (settings.ai.enrichmentFallbackPaused !== true && isAppleFmProvider(settings.ai.enrichmentFallback?.provider))
   );
 }
 

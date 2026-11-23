@@ -8,7 +8,7 @@ import type {
   ShortcutPlatform,
   VideoRange
 } from "@pwrsnap/shared";
-import { normalizeTagLabel, capturesFolderDisplayPath } from "@pwrsnap/shared";
+import { normalizeTagLabel, capturesFolderDisplayPath, isAppleFmProvider } from "@pwrsnap/shared";
 import { PwrSnapMark } from "../shared/BrandMark";
 import {
   CopyButton,
@@ -532,8 +532,7 @@ export function FloatOver({
   enrichmentProviderLabel?: string | undefined;
   /** Optional model id shown in parens in the status pill. */
   enrichmentModelLabel?: string | undefined;
-  /** The primary backend's label when the caption fallback answered this
-   *  run because the primary could not be reached. */
+  /** The primary backend's label when the caption run moved to its fallback. */
   enrichmentFallbackFromLabel?: string | undefined;
   /** Mirrors `settings.ai.autoAcceptSuggestions`. When true, the
    *  toast renders the checkbox in the "checked" state and trusts
@@ -1450,6 +1449,7 @@ export function FloatOver({
               needsConsent={aiNeedsConsent}
               safetyDisabled={aiSafetyDisabled}
               error={enrichment?.error}
+              fallbackAfterRefusal={isAppleFmProvider(enrichment?.fallbackFrom)}
               clock={enrichmentRunClock(enrichment)}
               {...(enrichmentProviderLabel !== undefined
                 ? { providerLabel: enrichmentProviderLabel }

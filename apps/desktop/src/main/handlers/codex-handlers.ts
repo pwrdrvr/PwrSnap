@@ -34,6 +34,7 @@ import {
   APPLE_FM_DISPLAY_NAME,
   APPLE_FM_MODEL_ID,
   APPLE_FM_PROVIDER,
+  appleRefusalFallbackRoute,
   isAppleFmProvider
 } from "@pwrsnap/shared";
 import type {
@@ -400,6 +401,23 @@ function enrichmentModelForSettings(
 /** One live Codex catalog: the installation + auth profile it was listed for. */
 function codexCatalogKey(settings: Settings): string {
   return JSON.stringify([codexCommandForSettings(settings), settings.codex.profile]);
+}
+
+function appleFallbackImageSendGuard(settings: Settings, readSettings: SettingsReader): (() => Promise<void>) | undefined {
+  const consentKey = appleRefusalFallbackRoute(settings.ai)?.consentKey;
+  if (consentKey == null) return undefined;
+  const provider = settings.ai.enrichmentFallback?.provider;
+  const codexKey = !provider || provider === "codex" ? codexCatalogKey(settings) : null;
+  return async () => {
+    const current = await readSettings();
+    const { ai } = current;
+    if (!ai.enabled || ai.consentAcceptedAt === null || ai.budgetSafetyDisabledAt !== null ||
+        ai.enrichmentFallbackPaused === true || ai.appleRefusalFallbackConsent !== consentKey ||
+        appleRefusalFallbackRoute(ai)?.consentKey !== consentKey ||
+        (codexKey !== null && codexCatalogKey(current) !== codexKey)) {
+      throw new Error("the approved caption fallback is no longer enabled for this capture.");
+    }
+  };
 }
 
 /** Enrich a usage detail with friendly model labels for the UI. `lookupLabel`
@@ -874,9 +892,11 @@ export function registerCodexHandlers(params?: {
     const fallbackSettings = fallbackDefault === null
       ? null
       : settingsWithEnrichmentDefault(settings, fallbackDefault);
+    const authorizeFallbackImageSend = fallbackDefault === null ? undefined : appleFallbackImageSendGuard(settings, settingsReader);
     const resolveFallback = fallbackSettings === null
       ? undefined
       : async (): Promise<EnrichmentBackendPlan> => {
+        if (authorizeFallbackImageSend !== undefined) await authorizeFallbackImageSend();
         const catalogKey = codexCatalogKey(fallbackSettings);
         const { provider, model } = fallbackSettings.ai.defaults.enrichment;
         const codexBacked = enrichmentAcpAgentId(fallbackSettings) === undefined &&
@@ -939,6 +959,7 @@ export function registerCodexHandlers(params?: {
       settingsReader,
       primary,
       ...(resolveFallback !== undefined ? { resolveFallback } : {}),
+      ...(authorizeFallbackImageSend !== undefined ? { authorizeFallbackImageSend } : {}),
       primaryHealth,
       onPrimaryRecovered,
       triggerSource,
@@ -1297,11 +1318,11 @@ async function runCaptureEnrichment(params: {
   settingsReader: SettingsReader;
   /** The backend `ai.defaults.enrichment` selects. */
   primary: EnrichmentBackendPlan;
-  /** `ai.enrichmentFallback`, armed only when it names another backend than
-   *  the primary. The run moves here once, and only when the primary could
-   *  not be reached (`isEnrichmentBackendUnavailable`: for Codex, a Mac with
-   *  no network). */
+  /** The eligible `ai.enrichmentFallback`. The run moves here once, for an
+   *  unreachable primary or a typed refusal from Apple's native primary. */
   resolveFallback?: () => Promise<EnrichmentBackendPlan>;
+  /** Recheck off-device approval again at the transport's image-send boundary. */
+  authorizeFallbackImageSend?: () => Promise<void>;
   /** Which primaries are down right now; one per registration. */
   primaryHealth: EnrichmentPrimaryHealth;
   /** A primary that runs could not reach answered again. */
@@ -1329,15 +1350,14 @@ async function runCaptureEnrichment(params: {
   const scratchMedia: Array<PreparedEnrichmentImage | PreparedEnrichmentVideoFrames> = [];
   let client: EnrichmentBackend | null = null;
   let slot: ReturnType<EnrichmentQueue["acquire"]> | undefined;
+  const savePendingUsage = (modelProvider: string): void => {
+    saveAiRunUsage({ aiRunId: params.runId, modelProvider,
+      usageStatus: "unavailable", usageUnavailableReason: "Run queued or in progress",
+      cost: { status: "unavailable", reason: "usage unavailable" } });
+  };
   // A Direct API backend shares its connection's concurrency slots with every
   // other run on that endpoint; wait for one before talking to it.
   const enterBackend = async (plan: EnrichmentBackendPlan): Promise<void> => {
-    if (plan.selectedProvider !== undefined &&
-        (plan.selectedProvider.startsWith("custom:") || plan.appleFm)) {
-      saveAiRunUsage({ aiRunId: params.runId, modelProvider: plan.selectedProvider,
-        usageStatus: "unavailable", usageUnavailableReason: "Run queued or in progress",
-        cost: { status: "unavailable", reason: "usage unavailable" } });
-    }
     if (plan.customConnection) {
       slot = directEnrichmentQueue.acquire(plan.customConnection.id,
         customEnrichmentConcurrency(plan.customConnection), abortController.signal);
@@ -1372,6 +1392,7 @@ async function runCaptureEnrichment(params: {
     client = null;
     slot?.release();
     slot = undefined;
+    abortController.signal.throwIfAborted();
     const fallback = await withTurnTimeout(resolve(), active.turnTimeoutMs, () => abortController.abort());
     abortController.signal.throwIfAborted();
     log.debug("capture enrichment fallback resolved", {
@@ -1383,6 +1404,7 @@ async function runCaptureEnrichment(params: {
     active = fallback;
     provider = fallback.provider;
     const moved = markAiRunFallback(params.runId, primaryProvider, fallback.selectedModel);
+    savePendingUsage(fallback.provider);
     broadcastAiRunUpdated({ run: moved, enrichment: getCaptureEnrichment(captureId) });
     await enterBackend(fallback);
   };
@@ -1412,6 +1434,7 @@ async function runCaptureEnrichment(params: {
       });
       await moveToFallback(resolveFallback);
     } else {
+      if (active.selectedProvider !== undefined) savePendingUsage(active.provider);
       await enterBackend(active);
     }
     if (params.ctx.signal.aborted) abortController.abort();
@@ -1455,7 +1478,8 @@ async function runCaptureEnrichment(params: {
     };
 
     const runTurn = async (
-      plan: EnrichmentBackendPlan
+      plan: EnrichmentBackendPlan,
+      authorizeImageSend?: () => Promise<void>
     ): Promise<Result<CaptureEnrichmentResponse, unknown>> => {
       const acpAgentId = plan.acpAgentId;
       let stillFormat: EnrichmentStillFormat = "jpeg";
@@ -1535,6 +1559,7 @@ async function runCaptureEnrichment(params: {
               : {}),
             effort: plan.effort,
             abortSignal: abortController.signal,
+            ...(authorizeImageSend !== undefined ? { authorizeImageSend } : {}),
             // Attribution for a denied sandbox escalation. Enrichment never
             // legitimately asks for a tool / file / network, so if this run does,
             // the error log needs to name the capture that provoked it.
@@ -1558,7 +1583,8 @@ async function runCaptureEnrichment(params: {
       } else {
         const primaryError = attempt.error;
         const aborted = abortController.signal.aborted;
-        if (aborted || !isEnrichmentBackendUnavailable(primaryError)) {
+        const appleRefusal = active.appleFm && primaryError instanceof AppleFmError && primaryError.code === "refusal";
+        if (aborted || (!appleRefusal && !isEnrichmentBackendUnavailable(primaryError))) {
           // It answered, just not with a caption: it is up.
           if (!aborted && health.markUp(active.provider)) {
             log.info("capture enrichment primary reachable again", { runId: params.runId, provider });
@@ -1568,32 +1594,29 @@ async function runCaptureEnrichment(params: {
           // failure). The outage ends on the first caption it returns.
           throw primaryError;
         }
-        // Nothing answered. Recorded with or without a fallback: without
-        // one, this capture's caption fails, and the Library offers to
-        // re-run what failed once the primary answers again.
-        health.noteUnreachable(active.provider);
+        // A refusal only affects this capture. Reachability failures still
+        // track an outage and can put later captures straight on the fallback.
+        if (!appleRefusal) health.noteUnreachable(active.provider);
         if (resolveFallback === undefined) throw primaryError;
-        // Nothing answered at the primary: move the same run to the
-        // fallback, once. Warned once per outage, then quiet
-        // until the primary answers again. Logged before resolving, so the
-        // primary's failure is on record even if resolution fails.
-        const details = {
-          runId: params.runId,
-          captureId,
-          triggerSource: params.triggerSource,
-          provider,
-          message: agentErrorMessage(primaryError)
-        };
-        if (health.markDown(active.provider)) {
-          log.warn("capture enrichment primary unreachable; using fallback until it answers", {
-            ...details,
-            recheckAfterMs: ENRICHMENT_PRIMARY_DOWN_MS
-          });
-        } else {
-          log.debug("capture enrichment primary still unreachable; using fallback", details);
+        if (!appleRefusal) {
+          const details = {
+            runId: params.runId,
+            captureId,
+            triggerSource: params.triggerSource,
+            provider,
+            message: agentErrorMessage(primaryError)
+          };
+          if (health.markDown(active.provider)) {
+            log.warn("capture enrichment primary unreachable; using fallback until it answers", {
+              ...details,
+              recheckAfterMs: ENRICHMENT_PRIMARY_DOWN_MS
+            });
+          } else {
+            log.debug("capture enrichment primary still unreachable; using fallback", details);
+          }
         }
         await moveToFallback(resolveFallback);
-        attempt = await runTurn(active);
+        attempt = await runTurn(active, params.authorizeFallbackImageSend);
       }
     }
     if (!attempt.ok) throw attempt.error;
@@ -1692,9 +1715,7 @@ async function runCaptureEnrichment(params: {
     try {
       saveAiRunUsage({
         aiRunId: params.runId,
-        ...(active.selectedProvider !== undefined && (active.selectedProvider.startsWith("custom:") || active.appleFm)
-          ? { modelProvider: active.selectedProvider }
-          : {}),
+        ...(active !== params.primary || active.selectedProvider !== undefined ? { modelProvider: active.provider } : {}),
         usageStatus: "unavailable",
         usageUnavailableReason: isAbort
           ? "AI run was cancelled before token usage was reported"

@@ -292,16 +292,18 @@ describe("Apple's on-device model", () => {
   });
 
   test("in use means captions or their fallback, never chat", () => {
-    const settings = (enrichment: string | undefined, fallback: string | null | undefined): Settings =>
+    const settings = (enrichment: string | undefined, fallback: string | null | undefined, paused = false): Settings =>
       ({
         ai: {
           defaults: { enrichment: enrichment === undefined ? {} : { provider: enrichment }, libraryChat: {}, sizzleChat: {} },
           enrichmentFallback: fallback === null || fallback === undefined ? fallback ?? null : { provider: fallback },
+          enrichmentFallbackPaused: paused,
           acp: { enabledAgentIds: [] }
         }
       }) as unknown as Settings;
     expect(appleFmInUse(settings("apple:system", null))).toBe(true);
     expect(appleFmInUse(settings("acp:kimi", "apple:system"))).toBe(true);
+    expect(appleFmInUse(settings("acp:kimi", "apple:system", true))).toBe(false);
     expect(appleFmInUse(settings(undefined, null))).toBe(false);
     expect(appleFmInUse(null)).toBe(false);
   });

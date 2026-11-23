@@ -133,6 +133,30 @@ describe("runPooledAcpOneShot", () => {
     expect(response.model).toBe("gemini-2.5-pro");
   });
 
+  test.each(["gemini-2.5-pro", "gemini-2.5-flash", undefined])(
+    "sends an explicitly approved image only when ACP confirms the model (%s)", async (model) => {
+      const client = makeFakeClient();
+      client.startThread.mockResolvedValue({ threadId: "th-1", modelProvider: "acp:gemini", serviceTier: null,
+        ...(model !== undefined ? { model } : {}) });
+      client.startTurn.mockImplementation(async () => {
+        client.emit({ kind: "turn_completed", threadId: "th-1", status: "completed" });
+        return { turnId: "turn-1" };
+      });
+      acquireAcpAgentClient.mockResolvedValue(client);
+      const request = { prompt: "p", model: "gemini-2.5-pro", imagePaths: ["/scratch/fixture.jpg"],
+        requireSelectedModel: true };
+      const result = runPooledAcpOneShot({ agent: AGENT, request });
+      if (model === request.model) {
+        await expect(result).resolves.toMatchObject({ model });
+        expect(client.startTurn).toHaveBeenCalledTimes(1);
+      } else {
+        await expect(result).rejects.toThrow("did not confirm the approved model");
+        expect(client.startTurn).not.toHaveBeenCalled();
+      }
+      expect(client.archiveThread).toHaveBeenCalledWith("th-1");
+    }
+  );
+
   test.each([
     ["an empty string", ""],
     ["null", null]

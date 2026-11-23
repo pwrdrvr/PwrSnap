@@ -312,6 +312,9 @@ export class AcpCaptureEnrichmentClient {
           // never send a bare "medium" the agent would drop. Default Fast.
           effort: acpReasoningEffort(request.effort ?? "low"),
           ...(request.abortSignal !== undefined ? { abortSignal: request.abortSignal } : {}),
+          ...(request.authorizeImageSend !== undefined
+            ? { authorizeImageSend: request.authorizeImageSend, requireSelectedModel: true }
+            : {}),
           ...(request.diagnostics !== undefined ? { diagnostics: request.diagnostics } : {})
         }
       });

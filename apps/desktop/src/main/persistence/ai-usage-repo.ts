@@ -27,6 +27,7 @@ type AiRunJoinedRow = {
   task: string;
   trigger_source: AiEnrichmentTriggerSource;
   selected_model: string | null;
+  fallback_from: string | null;
   status: AiRunStatus;
   error: string | null;
   latency_ms: number | null;
@@ -164,6 +165,7 @@ function rowToRun(row: AiRunJoinedRow): AiRunSnapshot {
     task: row.task,
     triggerSource: row.trigger_source,
     selectedModel: row.selected_model,
+    ...(row.fallback_from ? { fallbackFrom: row.fallback_from } : {}),
     status: row.status,
     error: row.error,
     latencyMs: row.latency_ms,
@@ -617,6 +619,7 @@ export function listAiUsageRuns(input: { limit?: number; offset?: number } = {})
         r.task,
         r.trigger_source,
         r.selected_model,
+        r.fallback_from,
         r.status,
         r.error,
         r.latency_ms,
@@ -645,6 +648,7 @@ export function listAiUsageRuns(input: { limit?: number; offset?: number } = {})
         t.task,
         t.trigger_source,
         NULL AS selected_model,
+        NULL AS fallback_from,
         'completed' AS status,
         NULL AS error,
         NULL AS latency_ms,

@@ -145,7 +145,9 @@ private func runCaptionCommand(_ command: String) async {
       tags: caption.tags, anchors: caption.textAnchors, ocrEvidence: ocr
     ))
     print(String(decoding: output, as: UTF8.self))
-  } catch LanguageModelError.guardrailViolation, LanguageModelError.refusal {
+  } catch LanguageModelError.refusal {
+    fail(command == "caption" ? "refusal" : "guardrail")
+  } catch LanguageModelError.guardrailViolation {
     fail("guardrail")
   } catch LanguageModelError.timeout {
     fail("timeout")

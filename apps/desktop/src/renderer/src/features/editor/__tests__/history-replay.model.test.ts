@@ -186,11 +186,16 @@ class EditorCommand implements fc.AsyncCommand<Model, Real> {
     return [this.action, this.count, this.kind, this.value, this.failure].join(":");
   }
 }
+const layerFields = [
+  fc.integer({ min: 1, max: 3 }),
+  fc.constantFrom<LayerKind>("vector", "raster", "effect"),
+  fc.integer({ min: 0, max: 100 })
+] as const;
+const replyOutcomes = ["none", "result", "reject-before", "reject-after"] as const;
 const command = fc.tuple(
   fc.constantFrom<Action>("create", "delete", "replace", "external", "undo", "redo", "doubleUndo", "doubleRedo"),
-  fc.integer({ min: 1, max: 3 }), fc.constantFrom<LayerKind>("vector", "raster", "effect"),
-  fc.integer({ min: 0, max: 100 }),
-  fc.constantFrom<Failure>("none", "result", "reject-before", "reject-after")
+  ...layerFields,
+  fc.constantFrom(...replyOutcomes)
 ).map((args) => new EditorCommand(...args));
 
 async function withHarness(run: (real: Real) => Promise<void>): Promise<void> {
@@ -249,33 +254,33 @@ function drainPropertyOnFinish(context: TestContext, work: Promise<void>): Promi
   return work;
 }
 
-test("generated edit sessions agree with document/history stacks across rollback and lost replies", async (context) => {
+// Each case migrates real SQLite and settles React work after each command.
+// Give each reply outcome its own 5s deadline and 13 runs (52 total).
+test.for(replyOutcomes)("generated edit sessions match document and history stacks (reply outcome %s)", async (failure, context) => {
   const error = console.error;
   const errors = vi.spyOn(console, "error").mockImplementation((message, ...args: unknown[]) => {
     if (message !== "editor undo failed" && message !== "editor redo failed" && message !== "Editor history replay failed") error(message, ...args);
   });
   try {
-    // Each case migrates/queries real SQLite and may replay a group twice.
-    // Bound the workload for the default 5s CI timeout; shrinking stays on.
     await drainPropertyOnFinish(context, fc.assert(fc.asyncProperty(
       fc.constantFrom<Action>("external", "delete", "replace"),
-      command,
+      fc.tuple(...layerFields),
       fc.commands([command], { maxCommands: 16 }),
-      async (intervening, generated, commands) => {
+      async (intervening, [count, kind, value], commands) => {
         context.signal.throwIfAborted();
         await withHarness(async (real) => {
           const model: Model = { live: new Map(), past: [], future: [], serial: 0 };
           // Generate complete user workflows as well as arbitrary suffixes, so
           // every run reaches a grouped restore instead of mostly skipped undo
-          // commands on an empty document. Counts, kinds, fields and reply loss
-          // remain generated and shrink with the command sequence.
+          // commands on an empty document. Reply outcomes still vary in the
+          // suffix, and the workflow inputs and suffix both shrink.
           for (const action of ["create", intervening, "undo", "redo"] as const) {
-            await new EditorCommand(action, generated.count, generated.kind, generated.value, generated.failure).run(model, real);
+            await new EditorCommand(action, count, kind, value, failure).run(model, real);
           }
           await fc.asyncModelRun(() => ({ model, real }), commands);
         });
       }
-    ), { numRuns: 50 }));
+    ), { numRuns: 13 }));
   } finally { errors.mockRestore(); }
 });
 

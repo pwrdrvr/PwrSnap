@@ -1,11 +1,11 @@
 // The real thing: the production probe and the production enrichment
-// backend against /usr/bin/fm and Apple's on-device model.
+// backend against the bundled helper or /usr/bin/fm and Apple's on-device model.
 //
 // OPT-IN. It runs a model on the machine it is on, so it is skipped unless
-// PWRSNAP_APPLE_FM_REAL=1 and the host is macOS. CI never sets it. The image
-// is synthetic (drawn here), so no real capture is ever sent to the model:
+// PWRSNAP_APPLE_FM_NATIVE_REAL=1 (bundled) or PWRSNAP_APPLE_FM_REAL=1 (CLI)
+// and the host is macOS. CI never sets either. The images are synthetic.
 //
-//   PWRSNAP_APPLE_FM_REAL=1 npx vitest run --config vitest.workspace.ts \
+//   PWRSNAP_APPLE_FM_NATIVE_REAL=1 pnpm exec vitest run \
 //     apps/desktop/src/main/ai/apple-fm/__tests__/apple-fm-real.test.ts
 
 import { mkdtemp, rm } from "node:fs/promises";
@@ -24,7 +24,10 @@ const enabled = process.env.PWRSNAP_APPLE_FM_REAL === "1" && process.platform ==
 const nativeEnabled = process.env.PWRSNAP_APPLE_FM_NATIVE_REAL === "1" &&
   process.platform === "darwin" && process.arch === "arm64";
 
-test.skipIf(!nativeEnabled)("the bundled Apple helper captions a synthetic screen on-device", async () => {
+test.skipIf(!nativeEnabled).each([
+  { fixture: "invoice", expectedOcr: "Payment pending approval" },
+  { fixture: "shapes", expectedOcr: "" }
+] as const)("the bundled Apple helper captions a synthetic $fixture on-device", async ({ expectedOcr }) => {
   const binary = fileURLToPath(new URL("../../../../../build/native/apple-caption", import.meta.url));
   const run = createNativeCaptionRunner(binary);
   expect(await probeNativeCaptionStatus(run, null)).toMatchObject({
@@ -35,10 +38,12 @@ test.skipIf(!nativeEnabled)("the bundled Apple helper captions a synthetic scree
     const source = join(dir, "synthetic.png");
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700">
       <rect width="100%" height="100%" fill="#ffffff"/>
-      <rect width="1200" height="105" fill="#183150"/>
-      <text x="40" y="74" font-size="48" fill="#fff">Freight invoice</text>
-      <text x="40" y="240" font-size="56" fill="#182a42">Payment pending approval</text>
-      <text x="40" y="330" font-size="32" fill="#182a42">Scheduled payment for Harbor Freight Services</text>
+      ${expectedOcr ? `
+        <rect width="1200" height="105" fill="#183150"/>
+        <text x="40" y="74" font-size="48" fill="#fff">Freight invoice</text>
+        <text x="40" y="240" font-size="56" fill="#182a42">${expectedOcr}</text>
+        <text x="40" y="330" font-size="32" fill="#182a42">Scheduled payment for Harbor Freight Services</text>
+      ` : '<circle cx="600" cy="350" r="220" fill="#183150"/>'}
     </svg>`;
     await sharp(Buffer.from(svg)).png().toFile(source);
     const prepared = await prepareEnrichmentImage(source, { tempRoot: dir });
@@ -55,8 +60,12 @@ test.skipIf(!nativeEnabled)("the bundled Apple helper captions a synthetic scree
         }
       });
     expect(response.userAgent).toMatch(/\(native\)$/);
-    expect(`${response.result.title} ${response.result.description}`).toMatch(/invoice|payment/i);
-    expect(response.result.ocrText).toBe("");
+    if (expectedOcr) {
+      expect(`${response.result.title} ${response.result.description}`).toMatch(/invoice|payment/i);
+      expect(response.result.ocrText.split("\n")).toContain(expectedOcr);
+    } else {
+      expect(response.result.ocrText).toBe("");
+    }
     expect(response.result.textAnchors).toBeUndefined();
   } finally {
     await rm(dir, { recursive: true, force: true });

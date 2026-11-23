@@ -1,9 +1,10 @@
 # Captions on Apple's on-device model
 
 On a Mac running macOS 27 or later, PwrSnap can write a capture's title,
-description, tags and file name with the language model built into macOS. The
-capture is read on the Mac. It is not sent to a server, and there is no
-account, key or bill.
+description, tags and file name with the language model built into macOS.
+For still captures it can also save short snippets of visible text for
+Library search. All processing stays on the Mac. There is no account, key or
+bill.
 
 Choose Apple Intelligence as the caption model or as a fallback in AI
 Features. PwrSnap asks macOS whether the model can run when you open
@@ -60,8 +61,12 @@ On Windows and Linux the provider does not appear anywhere.
 - PwrSnap prepares a bounded image with a longest edge of 1024 px, or three
   sampled frames for a recording. For still images, Apple's Vision framework
   reads screen text on the Mac. The model sees the image, capture metadata,
-  and a short amount of that text together. PwrSnap saves the generated caption
-  fields and discards the OCR evidence used by the model.
+  and a bounded amount of that text together. The model selects useful,
+  verbatim snippets for search. PwrSnap saves up to five snippets of at most
+  120 UTF-8 bytes each, alongside the caption fields. Each snippet must
+  match text within a single line of the Vision evidence. PwrSnap discards
+  the evidence after captioning. If Vision misses or misreads small text,
+  the corresponding search term may be absent.
 - **Captions only.** It is not offered for Library chat or Sizzle Reel chat.
 - **A small model.** Descriptions are shorter than a cloud model's, and it can
   misread small text. In testing it read `pnpm` in a terminal as `npm`.
@@ -88,10 +93,11 @@ CLI. PwrSnap only opens an empty Terminal when asked. An administrator can
 review and agree to the CLI terms separately.
 
 To test the bundled path on an Apple Silicon Mac with macOS 27 and a ready
-model, build the helper and run the opt-in synthetic caption test.
+model, build the native helpers and run the opt-in synthetic caption and
+search test.
 
 ```sh
-node apps/desktop/scripts/build-apple-caption.mjs
+pnpm build:native
 PWRSNAP_APPLE_FM_NATIVE_REAL=1 pnpm exec vitest run apps/desktop/src/main/ai/apple-fm/__tests__/apple-fm-real.test.ts
 ```
 

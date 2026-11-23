@@ -500,8 +500,9 @@ effort or usage accounting. Main sends bounded image paths and capture
 metadata together on stdin to the bundled, signed `PwrSnapAppleCaption`
 helper. It uses a fresh `SystemLanguageModel.default` session without tools.
 Vision recognizes text from still images before the one model turn.
-The recognized text is bounded prompt evidence and only caption fields are
-returned. Runs queue one at a time.
+The helper checks the model's selected search snippets against the bounded
+Vision evidence and returns them as `ocrText` with the caption fields. The
+raw Vision evidence is discarded. Runs queue one at a time.
 
 Readiness comes from the model's typed availability. Settings explains the
 state, reads on request and caches the answer with no timer. An Apple safety

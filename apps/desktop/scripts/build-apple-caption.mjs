@@ -6,7 +6,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const desktop = fileURLToPath(new URL("..", import.meta.url));
-const source = join(desktop, "native", "apple-caption", "main.swift");
+const sourceDir = join(desktop, "native", "apple-caption");
+const sources = [join(sourceDir, "main.swift"), join(sourceDir, "search-text.swift")];
 const output = join(desktop, "build", "native", "apple-caption");
 const universal = process.argv.includes("--universal");
 const optional = process.argv.includes("--if-supported");
@@ -38,7 +39,7 @@ try {
     const binary = join(work, arch);
     execFileSync("xcrun", [
       "swiftc", "-O", "-warnings-as-errors",
-      "-target", `${arch}-apple-macosx26.0`, source, "-o", binary
+      "-target", `${arch}-apple-macosx26.0`, ...sources, "-o", binary
     ], { stdio: "inherit" });
     return binary;
   });

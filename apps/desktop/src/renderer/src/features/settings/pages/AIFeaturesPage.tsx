@@ -7,7 +7,7 @@
 // `settings-nav.ts`): a section sub keeps this page rendered and scrolls to
 // that card, the way PwrAgnt's Messaging → Routes does.
 
-import { useCallback, useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactElement, type ReactNode } from "react";
 import type {
   AcpAgentDiscovery,
   AcpAgentModelOption,
@@ -28,6 +28,7 @@ import {
   APPLE_FM_MODEL_ID,
   APPLE_FM_PROVIDER,
   appleFmStateCopy,
+  appleRefusalFallbackRoute,
   isAppleFmOffered,
   isAppleFmProvider,
   isAppleFmReady,
@@ -250,6 +251,7 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
   const enrichmentPrimary = settings?.ai.defaults.enrichment.provider ?? "";
   const enrichmentFallback = settings?.ai.enrichmentFallback ?? null;
   const primaryOnCodex = runsOnCodex(enrichmentPrimary, enabledAgentIds);
+  const primaryOnApple = isAppleFmProvider(enrichmentPrimary);
   const isLocalProvider = (provider: string | undefined): boolean => {
     if (provider?.startsWith("custom:") !== true) return false;
     const resolved = resolveCustomModel(settings?.ai.customConnections, settings?.ai.customModels,
@@ -266,7 +268,11 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
       ...customProviderOptions("enrichment")]
       .filter((o) => o.value !== enrichmentPrimary);
     const onValue = captionFallbackOnValue({ primaryOnCodex, options, onDevice: isOnDevice });
-    const on = enrichmentFallback !== null;
+    const refusalRoute = appleRefusalFallbackRoute(settings.ai);
+    const refusalConsentKey = refusalRoute?.consentKey ?? null;
+    const on = primaryOnApple
+      ? refusalRoute !== null && (refusalConsentKey === null || refusalConsentKey === settings.ai.appleRefusalFallbackConsent)
+      : enrichmentFallback !== null;
     // A disabled ACP agent's captions run on Codex: name what runs.
     const primary = primaryOnCodex
       ? { providerLabel: "Codex", modelLabel: undefined }
@@ -301,16 +307,25 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
         primaryLabel={primary.providerLabel}
         primaryModelLabel={primaryModel}
         offline={primaryOnCodex}
+        appleRefusal={primaryOnApple}
         on={on}
-        canTurnOn={onValue !== null}
+        canTurnOn={primaryOnApple ? refusalRoute !== null : onValue !== null}
         appleUnavailable={appleNotReady !== null && isAppleFmOffered(appleFm)
           ? `${APPLE_FM_DISPLAY_NAME} isn't ready on this Mac (${appleNotReady})`
           : `${APPLE_FM_DISPLAY_NAME} isn't available on this computer`}
-        // A local primary with a fallback that isn't: say where images go.
-        leavesThisMac={isLocalProvider(enrichmentPrimary) && !isLocalProvider(fallbackProvider)}
+        offDeviceNotice={refusalConsentKey !== null
+          ? `If Apple Intelligence refuses a caption, PwrSnap will send the capture to ${fallbackLabel} for processing off this Mac.` +
+            (on ? "" : " Turn on the fallback to allow this.")
+          : on && isLocalProvider(enrichmentPrimary) && !isOnDevice(fallbackProvider)
+            ? `While ${primary.providerLabel} is down, each new capture's image goes to ${fallbackLabel} instead of staying on this Mac.`
+            : null}
         fallbackLabel={fallbackLabel}
         warning={warning}
         onToggle={(next) => {
+          if (primaryOnApple && next) {
+            if (refusalConsentKey !== null) void patch({ ai: { appleRefusalFallbackConsent: refusalConsentKey } });
+            return;
+          }
           if (next && onValue === null) return;
           void patch({ ai: { enrichmentFallback: next ? onValue : null } });
         }}
@@ -321,6 +336,7 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
           name="Caption fallback"
           sub=""
           value={value}
+          providerUnselected={primaryOnApple && refusalRoute === null}
           offerCodex={!primaryOnCodex}
           models={codexModels?.models ?? []}
           modelsLoading={codexModelsLoading}
@@ -577,6 +593,8 @@ export type AiSurfaceDefaultControlProps = {
   /** False leaves Codex out of the Provider picker: the caption fallback
    *  behind a Codex primary, which Codex can't stand in for. */
   offerCodex?: boolean;
+  /** A fallback needs an explicit provider before its model can be chosen. */
+  providerUnselected?: boolean;
   /** Rendered inside the job row, under its fields. */
   children?: ReactNode;
 };
@@ -631,6 +649,7 @@ export function AiSurfaceDefaultControl({
   onChange,
   embedded = false,
   offerCodex = true,
+  providerUnselected = false,
   children
 }: AiSurfaceDefaultControlProps): ReactElement {
   const providerValue = value.provider ?? "";
@@ -714,7 +733,7 @@ export function AiSurfaceDefaultControl({
   // non-empty id that isn't in it. Codex isn't normalized — its picker already
   // shows Default for an unknown id and the App Server resolves server-side.
   const staleAcpModel =
-    isAcpProvider && !modelLoading && modelChoices.length > 0 && modelValue !== "" && !modelInChoices;
+    !providerUnselected && isAcpProvider && !modelLoading && modelChoices.length > 0 && modelValue !== "" && !modelInChoices;
   const normalizedKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!staleAcpModel) return;
@@ -799,6 +818,7 @@ export function AiSurfaceDefaultControl({
   // transient `codex:models` failure and must never mutate persisted settings.
   const staleCodexReasoning =
     offerCodex &&
+    !providerUnselected &&
     !isAcpProvider &&
     !modelsLoading &&
     liveCodexReasoningEfforts.length > 0 &&
@@ -819,7 +839,7 @@ export function AiSurfaceDefaultControl({
           <span className="pss__ai-surface-field-label">Provider</span>
           <select
             className="pss__select pss__ai-surface-select"
-            value={chatProviderValue}
+            value={providerUnselected ? "__choose__" : chatProviderValue}
             aria-label={`${name} provider`}
             onChange={(e) => {
               // "" is the Codex default (the merge drops the key on "").
@@ -830,6 +850,7 @@ export function AiSurfaceDefaultControl({
               onChange({ provider: e.target.value, model: "", ...(isCustomProvider || e.target.value.startsWith("custom:") || isAppleFmProvider(e.target.value) ? { reasoning: "" } : {}) });
             }}
           >
+            {providerUnselected ? <option value="__choose__" disabled>Choose a model</option> : null}
             {offerCodex
               ? <option value="">Codex</option>
               : !isAcpProvider ? <option value="" disabled>Choose a model</option> : null}
@@ -838,7 +859,7 @@ export function AiSurfaceDefaultControl({
                 {o.label}
               </option>
             ))}
-            {showsStaleAcp ? (
+            {showsStaleAcp && !providerUnselected ? (
               <option value={chatProviderValue}>
                 {isAppleProvider
                   ? `${APPLE_FM_DISPLAY_NAME} (not available)`
@@ -847,7 +868,7 @@ export function AiSurfaceDefaultControl({
             ) : null}
           </select>
         </label>
-        {!offerCodex && !isAcpProvider ? null : <>
+        {providerUnselected || (!offerCodex && !isAcpProvider) ? null : <>
         {isAcpProvider && acpModelError !== undefined ? (
           <div className="pss__ai-surface-error" role="alert">
             {acpProviderOptions.find((o) => o.value === chatProviderValue)?.label ??
@@ -930,7 +951,7 @@ export function AiSurfaceDefaultControl({
           </select>
         </label>}
         {isCustomProvider && <span className="pss__opt-sub">{isAppleProvider
-          ? "Runs on this Mac · captures are not sent anywhere"
+          ? "This model runs on this Mac"
           : "Direct API · no tools, reasoning controls or pricing estimate"}</span>}
         </>}
       </div>
@@ -953,19 +974,17 @@ export function AiSurfaceDefaultControl({
   );
 }
 
-/** "If <primary> can't be reached" (or, behind Codex, "is offline"): the
- *  caption fallback, nested in the Captions job. Off by default. Turning it
- *  on starts at `{}` (Codex on PwrSnap's managed caption default) behind a
- *  local or agent primary, and at a model on this Mac behind Codex. */
+/** The fallback picker, trigger, and off-device disclosure for Captions. */
 function EnrichmentFallbackControl({
   primaryLabel,
   primaryModelLabel,
   fallbackLabel,
   offline,
+  appleRefusal,
   on,
   canTurnOn,
   appleUnavailable,
-  leavesThisMac,
+  offDeviceNotice,
   warning,
   onToggle,
   children
@@ -975,20 +994,26 @@ function EnrichmentFallbackControl({
   fallbackLabel: string;
   /** The primary is Codex: the fallback covers a Mac with no network. */
   offline: boolean;
+  appleRefusal: boolean;
   on: boolean;
   /** False when nothing could stand in (behind Codex: no model on this Mac). */
   canTurnOn: boolean;
   /** Why Apple's on-device model can't be picked, for the disabled state. */
   appleUnavailable: string;
-  leavesThisMac: boolean;
+  offDeviceNotice: string | null;
   warning: string | null;
   onToggle: (on: boolean) => void;
   children: ReactNode;
 }): ReactElement {
-  const condition = offline ? "is offline" : "can't be reached";
+  const offDeviceNoticeId = useId();
+  const condition = appleRefusal ? "refuses a caption" : offline ? "is offline" : "can't be reached";
   const disabled = !on && !canTurnOn;
   let sub: string;
-  if (disabled) {
+  if (appleRefusal) {
+    sub = disabled
+      ? "Choose a fallback provider below."
+      : "PwrSnap can retry that capture once. Guardrail violations, setup errors, and timeouts still fail.";
+  } else if (disabled) {
     sub = `Nothing here captions without a network. ${appleUnavailable}, ` +
       "and no Direct API model on this Mac reads images.";
   } else if (!on) {
@@ -1011,7 +1036,13 @@ function EnrichmentFallbackControl({
           </span>
           <span className="pss__role-fallback-sub">{sub}</span>
         </div>
-        <Switch on={on} onChange={onToggle} disabled={disabled} label={`Fall back when ${primaryLabel} ${condition}`} />
+        <Switch
+          on={on}
+          onChange={onToggle}
+          disabled={disabled}
+          label={`Fall back when ${primaryLabel} ${condition}`}
+          descriptionId={offDeviceNotice !== null ? offDeviceNoticeId : undefined}
+        />
       </div>
       {on ? (
         <ol className="pss__role-fallback-order" aria-label="Caption order">
@@ -1019,18 +1050,18 @@ function EnrichmentFallbackControl({
           <li className="pss__role-fallback-order-sep" aria-hidden="true">→</li>
           <li>
             <b>2</b> {fallbackLabel}{" "}
-            <span className="pss__role-fallback-order-when">{offline ? "when offline" : "when unreachable"}</span>
+            <span className="pss__role-fallback-order-when">
+              {appleRefusal ? "when Apple refuses" : offline ? "when offline" : "when unreachable"}
+            </span>
           </li>
         </ol>
       ) : null}
-      {on ? children : null}
+      {on || appleRefusal ? children : null}
       {warning !== null ? (
         <p className="pss__role-fallback-note pss__role-fallback-note--warn" role="status">{warning}</p>
       ) : null}
-      {on && leavesThisMac ? (
-        <p className="pss__role-fallback-note">
-          While {primaryLabel} is down, each new capture's image goes to {fallbackLabel} instead of staying on this Mac.
-        </p>
+      {offDeviceNotice !== null ? (
+        <p id={offDeviceNoticeId} className="pss__role-fallback-note">{offDeviceNotice}</p>
       ) : null}
     </div>
   );

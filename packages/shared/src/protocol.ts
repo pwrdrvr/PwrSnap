@@ -3032,12 +3032,14 @@ export type Settings = {
      *  Codex default" (no `model` / `modelProvider` / `effort` is sent on
      *  thread/start or turn/start). */
     defaults: AiSurfaceDefaults;
-    /** Second choice for capture enrichment, used only when the primary
-     *  (`defaults.enrichment`, a Direct API model or an ACP agent) can't be
-     *  reached — see `isEnrichmentBackendUnavailable` in main. Same field
+    /** Second choice for capture enrichment, used when the primary can't
+     *  be reached or Apple's native caption model returns a typed refusal. Same field
      *  semantics as a surface default (`{}` = Codex on its managed default).
      *  null / absent = off: an unreachable primary fails the run. Additive. */
     enrichmentFallback?: AiSurfaceDefault | null;
+    /** Approval for the selected off-device Apple refusal fallback, keyed
+     *  to its destination. Missing or null keeps this route off. */
+    appleRefusalFallbackConsent?: string | null;
     /** ACP-agent enablement (Settings → AI → ACP agents). The set of
      *  locally-installed ACP agents the user has opted into. Additive;
      *  defaults to empty. Discovery is the `acp:discover` verb; enabling
@@ -4076,6 +4078,8 @@ export type SettingsPatch = {
     /** `null` turns the enrichment fallback off. An object turns it on (from
      *  `{}` when it was off) and merges leaf-by-leaf like a surface default. */
     enrichmentFallback?: AiSurfaceDefaultPatch | null;
+    /** Approve the currently selected destination, or clear with null. */
+    appleRefusalFallbackConsent?: string | null;
     /** ACP-agent enablement patch. `enabledAgentIds` REPLACES the stored
      *  set wholesale (the renderer ships the full desired set on each
      *  toggle, mirroring `ai.chat.sensitiveDataPatterns`). An empty array

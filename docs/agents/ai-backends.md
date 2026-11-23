@@ -27,11 +27,13 @@ them only through the `customModels:*` verbs — `ai.customConnections` and
 Never route a custom model through Codex/ACP as a silent fallback. The one
 fallback that exists is `ai.enrichmentFallback`
 ([enrichment-fallback.ts](../../apps/desktop/src/main/ai/enrichment-fallback.ts)):
-opt-in in Settings, captions only, and taken only when the primary could not be
+opt-in in Settings, captions only. For reachability failures it is taken when the primary could not be
 reached (connection refused, HTTP 404/502/503, ACP agent not installed; for a
 Codex primary, a `CodexTurnFailedError` whose `codexErrorInfo` is a connection
 failure with no HTTP status — `isCodexNetworkUnavailable` in
-[codex-turn-error.ts](../../apps/desktop/src/main/ai/codex-turn-error.ts)). A
+[codex-turn-error.ts](../../apps/desktop/src/main/ai/codex-turn-error.ts)). A native
+Apple primary can also fall back for a typed refusal of that capture, through
+the rules below. A
 401/403, a bad answer, a timeout (504 included), a Codex stream that
 disconnected mid-answer, a Codex sign-in, plan, policy or setup failure, or a
 removed or repointed custom model still fails closed. It is never armed on the
@@ -301,9 +303,17 @@ a tool that the model can call.
 The transport owners are
 [`native.ts`](../../apps/desktop/src/main/ai/apple-fm/native.ts) and
 [`enrichment.ts`](../../apps/desktop/src/main/ai/apple-fm/enrichment.ts).
-The real Mac image probe is opt-in. Caption and readiness paths never
-agree to a license, change system settings, or select a different backend
-after an `AppleFmError`.
+The real Mac image probe is opt-in. Caption and readiness paths never agree
+to a license or change system settings. Only the bundled helper's typed
+`LanguageModelError.refusal` in `caption` emits the fixed `refusal` code. The
+production handler can retry that capture once if Apple is the primary and
+an eligible alternate is saved. Off-device fallback requires explicit approval
+in Settings for the selected provider and model or endpoint. A refusal leaves
+outage tracking alone and the next capture starts with Apple. A refusal while
+Apple is already the fallback ends the run. A `guardrailViolation`, readiness,
+setup, timeout, cancellation or malformed result follows its usual failure
+route, as does an ambiguous refusal from the development CLI. Caption text
+cannot trigger a retry.
 
 ### Legacy development CLI
 

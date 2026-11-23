@@ -302,6 +302,35 @@ describe("DesktopSettingsService.write", () => {
     expect((await new DesktopSettingsService({ filePath }).read()).ai.enrichmentFallback).toEqual({});
   });
 
+  test("Apple refusal upload approval follows the saved caption route across reads and writes", async () => {
+    const filePath = join(workDir, "settings.json");
+    const approval = '["codex",""]';
+    const apple = { provider: "apple:system" };
+    const old = defaultSettings();
+    old.ai.enrichmentFallback = {};
+    old.ai.defaults.enrichment = { provider: "acp:kimi" };
+    delete old.ai.appleRefusalFallbackConsent;
+    writeFileSync(filePath, JSON.stringify(old), "utf8");
+    const svc = new DesktopSettingsService({ filePath });
+    expect((await svc.read()).ai).toMatchObject({ enrichmentFallback: {}, appleRefusalFallbackConsent: null });
+    await svc.write({ ai: { defaults: { enrichment: apple } } });
+    expect((await svc.read()).ai).toMatchObject({ enrichmentFallback: {}, appleRefusalFallbackConsent: null });
+    await svc.write({ ai: { appleRefusalFallbackConsent: approval } });
+    expect((await new DesktopSettingsService({ filePath }).read()).ai).toMatchObject({ appleRefusalFallbackConsent: approval });
+    await svc.write({ ai: { enrichmentFallback: { reasoning: "low" } } });
+    expect(JSON.parse(readFileSync(filePath, "utf8")).ai.appleRefusalFallbackConsent).toBe(approval);
+    // A stale click for the former model must not approve the new destination.
+    await svc.write({ ai: { enrichmentFallback: { model: "synthetic-model" } } });
+    await svc.write({ ai: { appleRefusalFallbackConsent: approval } });
+    expect(JSON.parse(readFileSync(filePath, "utf8")).ai.appleRefusalFallbackConsent).toBeNull();
+    const newApproval = '["codex","synthetic-model"]';
+    await svc.write({ ai: { appleRefusalFallbackConsent: newApproval } });
+    expect(JSON.parse(readFileSync(filePath, "utf8")).ai.appleRefusalFallbackConsent).toBe(newApproval);
+    await svc.write({ ai: { defaults: { enrichment: { provider: "codex" } } } });
+    await svc.write({ ai: { defaults: { enrichment: apple } } });
+    expect((await new DesktopSettingsService({ filePath }).read()).ai).toMatchObject({ appleRefusalFallbackConsent: null });
+  });
+
   test("write + read round-trips", async () => {
     const svc = makeService();
     const merged = await svc.write({

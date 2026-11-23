@@ -301,6 +301,16 @@ export function validateSettingsWrite(
       const fallbackErr = validateAiSurfaceDefault("enrichmentFallback", ai.enrichmentFallback);
       if (fallbackErr) return { ok: false, error: fallbackErr };
     }
+    if (!isUndefined(ai.appleRefusalFallbackConsent) && ai.appleRefusalFallbackConsent !== null &&
+        !isString(ai.appleRefusalFallbackConsent)) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_ai_appleRefusalFallbackConsent",
+          "settings:write: ai.appleRefusalFallbackConsent must be a string or null"
+        )
+      };
+    }
     if (!isUndefined(ai.acp)) {
       const acpErr = validateAcpPatch(ai.acp, platform);
       if (acpErr) return { ok: false, error: acpErr };

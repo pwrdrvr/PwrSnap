@@ -60,6 +60,7 @@ import type {
   UpdateTrain
 } from "@pwrsnap/shared";
 import {
+  appleRefusalFallbackRoute,
   isAppleFmProvider,
   isAiEnrichmentRateLimit,
   isOverlayOutlineMode,
@@ -199,6 +200,7 @@ export function defaultSettings(
       // Off: an unreachable caption backend fails the run unless the user
       // picked somewhere else to send it.
       enrichmentFallback: null,
+      appleRefusalFallbackConsent: null,
       // No ACP agents enabled on a fresh install. The user opts agents
       // into the enabled set from Settings → AI → ACP agents (additive,
       // no schemaVersion bump).
@@ -981,6 +983,7 @@ function parseV1(
       enrichmentFallback: isRecord(ai.enrichmentFallback)
         ? parseAiSurfaceDefault(ai.enrichmentFallback)
         : null,
+      appleRefusalFallbackConsent: pickStringOrNull(ai.appleRefusalFallbackConsent, null),
       // `ai.acp.*` is additive — older files won't have it. Falls through
       // to an empty enabled set; only recognized built-in agent ids
       // survive the parse so a stale/forged file can't enable an unknown
@@ -2141,7 +2144,7 @@ export function mergeSettings(current: Settings, patch: SettingsPatch): Settings
  *  Mirrors `mergeEditor` / `mergeLibrary`. */
 function mergeAi(current: Settings["ai"], patch: SettingsPatch["ai"]): Settings["ai"] {
   if (patch === undefined) return current;
-  return {
+  const next: Settings["ai"] = {
     enabled: patch.enabled !== undefined ? patch.enabled : current.enabled,
     consentAcceptedAt:
       patch.consentAcceptedAt !== undefined ? patch.consentAcceptedAt : current.consentAcceptedAt,
@@ -2170,6 +2173,13 @@ function mergeAi(current: Settings["ai"], patch: SettingsPatch["ai"]): Settings[
     customModels: patch.customModels ?? current.customModels ?? [],
     acp: mergeAcp(current.acp, patch.acp)
   };
+  const consent = patch.appleRefusalFallbackConsent === undefined
+    ? current.appleRefusalFallbackConsent ?? null
+    : patch.appleRefusalFallbackConsent;
+  // Evaluate against the merged settings, so a stale Settings click cannot
+  // authorize a provider, model or endpoint changed by another write.
+  next.appleRefusalFallbackConsent = appleRefusalFallbackRoute(next)?.consentKey === consent ? consent : null;
+  return next;
 }
 
 /** Merge `ai.acp`. `enabledAgentIds` REPLACES the stored set wholesale

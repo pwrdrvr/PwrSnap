@@ -4,6 +4,7 @@ name = "PwrSnap"
 
 [setup]
 script = '''
+unset PREFIX
 nvm install
 corepack enable
 pnpm install

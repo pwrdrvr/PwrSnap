@@ -10,7 +10,34 @@ ENVIRONMENT = Path(__file__).resolve().parents[1] / ".codex/environments/environ
 
 
 @unittest.skipIf(os.name == "nt", "requires a POSIX shell")
-class CodexDevActionTests(unittest.TestCase):
+class CodexEnvironmentTests(unittest.TestCase):
+    def test_setup_runs_with_or_without_an_inherited_prefix(self):
+        with ENVIRONMENT.open("rb") as config:
+            setup = tomllib.load(config)["setup"]["script"]
+
+        # Model nvm's exit 11 when the parent shell supplies a Git prefix.
+        commands = r'''
+nvm() {
+    [ -z "${PREFIX:-}" ] || return 11
+    printf 'nvm %s\n' "$*"
+}
+corepack() { printf 'corepack %s\n' "$*"; }
+pnpm() { printf 'pnpm %s\n' "$*"; }
+'''
+        for prefix in (None, "", "/opt/PwrAgent/resources/git", "/opt/git with spaces"):
+            with self.subTest(prefix=prefix):
+                result = subprocess.run(
+                    ["/bin/sh", "-ec", commands + setup],
+                    env={} if prefix is None else {"PREFIX": prefix},
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    result.stdout.splitlines(),
+                    ["nvm install", "corepack enable", "pnpm install"],
+                )
+
     def test_dev_runs_only_after_the_native_build_succeeds(self):
         with ENVIRONMENT.open("rb") as config:
             actions = tomllib.load(config)["actions"]

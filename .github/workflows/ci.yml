@@ -357,6 +357,26 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+      - name: Test recording audio with Ubuntu FFmpeg 6.1.1
+        timeout-minutes: 5
+        run: |
+          # Newer FFmpeg builds keep the tail even without the #766 fix.
+          # Run the decoded-audio oracle on the affected build in isolation.
+          docker build --platform linux/amd64 --tag pwrsnap-ci-noble-ffmpeg - <<'DOCKERFILE'
+          FROM ubuntu:24.04
+          RUN apt-get update \
+            && apt-get install -y --no-install-recommends ffmpeg=7:6.1.1-3ubuntu5 \
+            && rm -rf /var/lib/apt/lists/*
+          DOCKERFILE
+          docker run --rm --platform linux/amd64 --network none \
+            --user "$(id -u):$(id -g)" --workdir /workspace --env HOME=/tmp \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspace" \
+            --mount "type=bind,source=$(readlink -f "$(command -v node)"),target=/usr/local/bin/node,readonly" \
+            --env PWRSNAP_FFMPEG_PATH=/usr/bin/ffmpeg --env PWRSNAP_REQUIRE_AUDIO_FFMPEG=1 \
+            pwrsnap-ci-noble-ffmpeg node node_modules/vitest/vitest.mjs run \
+            --config vitest.workspace.ts --project desktop-main --testTimeout=30000 \
+            apps/desktop/src/main/recording/__tests__/recording-exporter-audio-ffmpeg.test.ts
+
   desktop-e2e:
     # Renamed from "Desktop E2E": that name is now the aggregate job at the
     # bottom of this file, which is what the branch-protection ruleset

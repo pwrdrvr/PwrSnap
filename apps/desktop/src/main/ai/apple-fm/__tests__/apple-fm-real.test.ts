@@ -24,10 +24,7 @@ const enabled = process.env.PWRSNAP_APPLE_FM_REAL === "1" && process.platform ==
 const nativeEnabled = process.env.PWRSNAP_APPLE_FM_NATIVE_REAL === "1" &&
   process.platform === "darwin" && process.arch === "arm64";
 
-test.skipIf(!nativeEnabled).each([
-  { fixture: "invoice", expectedOcr: "Payment pending approval" },
-  { fixture: "shapes", expectedOcr: "" }
-] as const)("the bundled Apple helper captions a synthetic $fixture on-device", async ({ expectedOcr }) => {
+async function captionSyntheticStill(svg: string, appName: string, width: number, height: number) {
   const binary = fileURLToPath(new URL("../../../../../build/native/apple-caption", import.meta.url));
   const run = createNativeCaptionRunner(binary);
   expect(await probeNativeCaptionStatus(run, null)).toMatchObject({
@@ -36,40 +33,68 @@ test.skipIf(!nativeEnabled).each([
   const dir = await mkdtemp(join(tmpdir(), "pwrsnap-apple-caption-real-"));
   try {
     const source = join(dir, "synthetic.png");
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700">
-      <rect width="100%" height="100%" fill="#ffffff"/>
-      ${expectedOcr ? `
-        <rect width="1200" height="105" fill="#183150"/>
-        <text x="40" y="74" font-size="48" fill="#fff">Freight invoice</text>
-        <text x="40" y="240" font-size="56" fill="#182a42">${expectedOcr}</text>
-        <text x="40" y="330" font-size="32" fill="#182a42">Scheduled payment for Harbor Freight Services</text>
-      ` : '<circle cx="600" cy="350" r="220" fill="#183150"/>'}
-    </svg>`;
     await sharp(Buffer.from(svg)).png().toFile(source);
     const prepared = await prepareEnrichmentImage(source, { tempRoot: dir });
     const response = await new AppleFmEnrichmentBackend({ scratchDir: dir, nativeRun: run })
       .enrichCapture({
         imagePaths: [prepared.path],
         metadata: {
-          sourceAppName: "Fixture Ledger",
-          sourceAppBundleId: "example.fixture.ledger",
+          sourceAppName: appName,
+          sourceAppBundleId: null,
           captureKind: "image",
-          widthPx: 1200,
-          heightPx: 700,
+          widthPx: width,
+          heightPx: height,
           capturedAt: "2026-11-22T10:00:00.000Z"
         }
       });
     expect(response.userAgent).toMatch(/\(native\)$/);
-    if (expectedOcr) {
-      expect(`${response.result.title} ${response.result.description}`).toMatch(/invoice|payment/i);
-      expect(response.result.ocrText.split("\n")).toContain(expectedOcr);
-    } else {
-      expect(response.result.ocrText).toBe("");
-    }
     expect(response.result.textAnchors).toBeUndefined();
+    return response.result;
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+test.skipIf(!nativeEnabled).each([
+  { fixture: "invoice", expectedOcr: "Payment pending approval" },
+  { fixture: "shapes", expectedOcr: "" }
+] as const)("the bundled Apple helper captions a synthetic $fixture on-device", async ({ expectedOcr }) => {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700">
+    <rect width="100%" height="100%" fill="#ffffff"/>
+    ${expectedOcr ? `
+      <rect width="1200" height="105" fill="#183150"/>
+      <text x="40" y="74" font-size="48" fill="#fff">Freight invoice</text>
+      <text x="40" y="240" font-size="56" fill="#182a42">${expectedOcr}</text>
+      <text x="40" y="330" font-size="32" fill="#182a42">Scheduled payment for Harbor Freight Services</text>
+    ` : '<circle cx="600" cy="350" r="220" fill="#183150"/>'}
+  </svg>`;
+  const result = await captionSyntheticStill(svg, "Fixture Ledger", 1200, 700);
+  if (expectedOcr) {
+    expect(`${result.title} ${result.description}`).toMatch(/invoice|payment/i);
+    expect(result.ocrText.split("\n")).toContain(expectedOcr);
+  } else {
+    expect(result.ocrText).toBe("");
+  }
+}, 180_000);
+
+test.skipIf(!nativeEnabled)("the bundled Apple helper keeps the filename and function name from a synthetic editor", async () => {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900">
+    <rect width="100%" height="100%" fill="#171a1f"/>
+    <path d="M0 0h1440v108H0z M0 864h1440v36H0z" fill="#303743"/>
+    <g font-family="Menlo" font-size="23" fill="#e4e9f2">
+      <text x="540" y="32">Fixture Code Editor</text>
+      <text x="44" y="83">pond-schedule.swift</text>
+      <text x="44" y="172">import Foundation</text>
+      <text x="44" y="237">func calculatePondSchedule() {</text>
+      <text x="76" y="272">print("Reservoir review overdue")</text>
+      <text x="44" y="307">}</text>
+      <text x="1050" y="891">Ln 5, Col 1   UTF-8</text>
+    </g>
+  </svg>`;
+  const { ocrText } = await captionSyntheticStill(svg, "Fixture Code Editor", 1440, 900);
+  expect(ocrText).toContain("pond-schedule.swift");
+  expect(ocrText).toContain("calculatePondSchedule");
+  expect(ocrText).not.toMatch(/Fixture Code Editor|\b(?:Ln 5|Col 1|UTF-8)\b/i);
 }, 180_000);
 
 describe.skipIf(!enabled)("Apple on-device model, for real", () => {

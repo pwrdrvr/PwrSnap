@@ -61,12 +61,14 @@ On Windows and Linux the provider does not appear anywhere.
 - PwrSnap prepares a bounded image with a longest edge of 1024 px, or three
   sampled frames for a recording. For still images, Apple's Vision framework
   reads screen text on the Mac. The model sees the image, capture metadata,
-  and a bounded amount of that text together. The model selects useful,
-  verbatim snippets for search. PwrSnap saves up to five snippets of at most
-  120 UTF-8 bytes each, alongside the caption fields. Each snippet must
-  match text within a single line of the Vision evidence. PwrSnap discards
-  the evidence after captioning. If Vision misses or misreads small text,
-  the corresponding search term may be absent.
+  and a bounded amount of that text together. The model looks for distinctive
+  search terms such as complete filenames, identifiers and error messages.
+  Vision runs with language correction off to better preserve filenames and
+  identifiers. PwrSnap saves up to five verbatim snippets of at most 120 UTF-8
+  bytes each, alongside the caption fields. Each snippet must match text
+  within a single line of the Vision evidence. PwrSnap discards the evidence
+  after captioning. If Vision misses or misreads small text, the corresponding
+  search term may be absent or misspelled.
 - **Captions only.** It is not offered for Library chat or Sizzle Reel chat.
 - **A small model.** Descriptions are shorter than a cloud model's, and it can
   misread small text. In testing it read `pnpm` in a terminal as `npm`.

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +28,30 @@ describe("CI dependency cache contract", () => {
     );
     expect(resolution?.slice(1)).toEqual([version, version]);
     expect(managerDocument).toContain(`  pnpm@${version}:`);
+  });
+
+  test("the lockfile records the hook metadata emitted by pnpm install", () => {
+    const directory = mkdtempSync(join(tmpdir(), "pwrsnap-pnpm-hooks-"));
+    try {
+      for (const file of ["pnpm-workspace.yaml", ".pnpmfile.cjs", ".pnpmfile-global.cjs"]) {
+        copyFileSync(resolve(root, file), join(directory, file));
+      }
+      // Hook metadata depends on the workspace config, so resolve an empty
+      // project with the same pnpm pin to keep the oracle offline.
+      const { packageManager } = JSON.parse(read("package.json"));
+      writeFileSync(join(directory, "package.json"), JSON.stringify({ private: true, packageManager }));
+      const result = spawnSync("pnpm", [
+        "install", "--lockfile-only", "--ignore-scripts", "--offline", "--no-frozen-lockfile"
+      ], { cwd: directory, encoding: "utf8", shell: process.platform === "win32" });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+
+      const hookMetadata = (lockfile) => lockfile.match(/^(?:pnpmfileChecksum|untrackedPnpmfileReadPackageHook): .+$/gm);
+      const generated = readFileSync(join(directory, "pnpm-lock.yaml"), "utf8");
+      expect(hookMetadata(read("pnpm-lock.yaml"))).toEqual(hookMetadata(generated));
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test.each([

@@ -181,6 +181,8 @@ overrides:
 
 pnpmfileChecksum: sha256-0yn1Uqytqut/elypYRfsWuDPVsWZj1YJ00R31+hde1o=
 
+untrackedPnpmfileReadPackageHook: false
+
 importers:
 
   .:

@@ -12,12 +12,12 @@ import { ensureEffectiveSrcPath } from "../persistence/source-store";
  *  renderer's copy-card labels and this render path can never drift.
  *  `strategy` defaults to `legacy` for callers that haven't threaded the
  *  setting through yet. */
-export function targetWidthForImagePreset(
+export function imagePresetRung(
   preset: RenderPreset,
   record: Pick<CaptureRecord, "width_px" | "height_px" | "device_pixel_ratio">,
   strategy: ExportStrategy = "legacy"
-): number {
-  const rung = resolveExportRung(
+): ReturnType<typeof resolveExportRung> {
+  return resolveExportRung(
     {
       widthPx: record.width_px,
       heightPx: record.height_px,
@@ -26,7 +26,14 @@ export function targetWidthForImagePreset(
     strategy,
     preset
   );
-  return rung?.widthPx ?? Math.max(1, record.width_px);
+}
+
+export function targetWidthForImagePreset(
+  preset: RenderPreset,
+  record: Pick<CaptureRecord, "width_px" | "height_px" | "device_pixel_ratio">,
+  strategy: ExportStrategy = "legacy"
+): number {
+  return imagePresetRung(preset, record, strategy)?.widthPx ?? Math.max(1, record.width_px);
 }
 
 export type ImagePresetFile = {

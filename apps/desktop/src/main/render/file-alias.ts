@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { copyFile, link, mkdir, rename, rm } from "node:fs/promises";
+import { copyFile, link, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, parse } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -24,7 +24,10 @@ async function publishAlias(stagingPath: string, aliasPath: string): Promise<voi
  * (drag-and-drop, file-promise clipboard writes) whose visible
  * filename comes from the source path basename. The alias points at
  * the exact render-cache bytes — hardlink when the filesystem
- * supports it (zero extra storage), copy fallback otherwise.
+ * supports it (zero extra storage), copy fallback otherwise. A caller
+ * may supply replacement bytes for the alias without modifying the render.
+ * For a cache alias with replacement bytes, hold cache-write admission
+ * from the source read through publication.
  *
  * Layout: `<cache-dir-of-source>/clipboard/<source-basename-stem>/<displayName>`.
  * The intermediate `<source-basename-stem>` directory disambiguates
@@ -38,7 +41,8 @@ async function publishAlias(stagingPath: string, aliasPath: string): Promise<voi
  */
 export async function prepareRenderedFileAlias(
   cachePath: string,
-  displayName: string
+  displayName: string,
+  contents?: Buffer
 ): Promise<string> {
   const aliasDir = join(dirname(cachePath), "clipboard", parse(cachePath).name);
   const aliasPath = join(aliasDir, displayName);
@@ -47,10 +51,14 @@ export async function prepareRenderedFileAlias(
   const stagingPath = join(aliasDir, `.pwrsnap-alias-${randomUUID()}`);
 
   try {
-    try {
-      await link(cachePath, stagingPath);
-    } catch {
-      await copyFile(cachePath, stagingPath);
+    if (contents !== undefined) {
+      await writeFile(stagingPath, contents);
+    } else {
+      try {
+        await link(cachePath, stagingPath);
+      } catch {
+        await copyFile(cachePath, stagingPath);
+      }
     }
     await publishAlias(stagingPath, aliasPath);
   } finally {

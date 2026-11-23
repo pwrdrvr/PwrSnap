@@ -23,8 +23,7 @@
 //
 // ## What it covers, and what it does not
 //
-// GATED — the per-capture derived-video lanes, each an ffmpeg run whose
-// output is published by `rename`:
+// GATED — these per-capture writes publish their output by `rename`:
 //   • the playback rendition   (`ensureVideoPlaybackAsset`)
 //   • the waveform asset       (`ensureVideoAudioAsset`)
 //   • the contact strip        (`ensureVideoFrames`)
@@ -33,13 +32,15 @@
 //     full decode of the source, so seconds of writer in the window
 //   • presenter masks and compositions (`prepareAvatarVideo`) — shared by
 //     ordinary exports and reel scenes, always in the video owner process
+//   • named still clipboard aliases (`clipboard:copy`) — reads the source
+//     before staging a replacement PNG with density metadata
 //
 // NOT GATED, on purpose:
 //   • MP4/GIF exports (`recording-exporter.ts`), which also write this
 //     directory. They carry their own cancellation and progress, and a user
 //     who asked for an export should not have it killed by a background
 //     cache trim. An orphaned export is the better outcome.
-//   • Render bakes (`compose-tree.ts`) and the other `<cacheRoot>` buckets.
+//   • Render bakes (`compose-tree.ts`) and other ungated cache outputs.
 //     A bake re-derives on demand in milliseconds and is small, so an
 //     orphan costs little and the next Clear collects it — not worth
 //     putting a cleanup in the way of the editor's paint path.

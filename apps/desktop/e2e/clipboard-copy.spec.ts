@@ -228,7 +228,7 @@ test.describe("clipboard copy preset widths", () => {
   const SRC_W = 2400;
   const SRC_H = 1500;
 
-  test("fresh AppKit consumers read PNG after each one-shot writer exits", async () => {
+  test("fresh AppKit and PwrSnap consumers read the selected PNG density", async () => {
     // Each read is a new process: no producer-owned NSImage or provider can
     // hide a lifetime bug. A stuck native read is killed outside Electron.
     const dir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-pasteboard-reader-"));
@@ -237,28 +237,59 @@ test.describe("clipboard copy preset widths", () => {
     await writeFile(source, `import AppKit
 import Foundation
 let board = NSPasteboard.general
+let metaType = NSPasteboard.PasteboardType("com.pwrdrvr.pwrsnap.clip-meta")
+guard let item = board.pasteboardItems?.first else { exit(2) }
+let types = item.types.map { $0.rawValue }
 guard let png = board.data(forType: .png), !png.isEmpty,
       let image = NSImage(pasteboard: board),
-      let meta = board.string(forType: NSPasteboard.PasteboardType("com.pwrdrvr.pwrsnap.clip-meta"))
+      let fileURL = item.string(forType: .fileURL).flatMap(URL.init(string:)),
+      let fileBytes = try? Data(contentsOf: fileURL),
+      let meta = item.string(forType: metaType)
 else { exit(2) }
 let result: [String: Any] = ["pngBytes": png.count, "width": image.size.width,
-  "height": image.size.height, "meta": meta]
+  "height": image.size.height, "meta": meta, "sameFileBytes": png == fileBytes,
+  "types": types]
 FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: result))
 `);
     await execFileAsync("swiftc", [source, "-o", reader], { timeout: 30_000, killSignal: "SIGKILL" });
     const app = await launchPwrSnap();
     try {
-      const { captureId } = await makeCapture(app, SRC_W, SRC_H);
-      for (const preset of ["low", "med", "high"] as const) {
+      const sourceWidth = 1800;
+      const { captureId } = await makeCapture(app, sourceWidth, 1125);
+      const checkCopy = async (preset: "low" | "med" | "high", width: number, dpr: number) => {
         const copied = await app.dispatch("clipboard:copy", { captureId, preset });
         expect(copied.ok).toBe(true);
         const { stdout } = await execFileAsync(reader, [], { timeout: 5_000, killSignal: "SIGKILL" });
-        const result = JSON.parse(stdout) as { pngBytes: number; width: number; height: number; meta: string };
+        const result = JSON.parse(stdout) as {
+          pngBytes: number;
+          width: number;
+          height: number;
+          meta: string;
+          sameFileBytes: boolean;
+          types: string[];
+        };
         expect(result.pngBytes).toBeGreaterThan(0);
-        expect(result.width).toBeGreaterThan(0);
+        // NSImage reports points. Allow for rounding of PNG pixels/metre.
+        expect(Math.abs(result.width - width / dpr)).toBeLessThan(1);
         expect(result.height).toBeGreaterThan(0);
+        expect(result.sameFileBytes).toBe(true);
+        expect(result.types).toEqual(expect.arrayContaining(["public.png", "public.file-url"]));
+        expect(result.types).not.toContain("public.tiff");
         expect(JSON.parse(result.meta)).toMatchObject({ captureId, preset });
-      }
+        const pasted = await app.dispatch("capture:pasteFromClipboard", {});
+        expect(pasted).toMatchObject({
+          ok: true,
+          value: { width_px: width, device_pixel_ratio: dpr }
+        });
+      };
+      await checkCopy("low", 800, 1);
+      await checkCopy("med", 1440, 1);
+      await checkCopy("high", sourceWidth, 2);
+      const settings = await app.dispatch("settings:write", {
+        experimental: { dpiAwareExport: true, allowRetinaExport: false }
+      });
+      expect(settings.ok).toBe(true);
+      await checkCopy("high", sourceWidth / 2, 1);
     } finally {
       await app.close();
     }

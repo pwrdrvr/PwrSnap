@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.4.1 - 2026-11-23
+
+- Apple Intelligence Captions - Fixed Library search for text recognized by
+  Apple Intelligence captions. You can now find those captures by on-screen
+  text, including names and identifiers that may be absent from the caption.
+
 ## v1.4.0 - 2026-11-22
 
 - Recording - Added live audio meters and controls to mute individual sources

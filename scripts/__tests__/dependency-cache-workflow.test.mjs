@@ -36,19 +36,31 @@ describe("CI dependency cache contract", () => {
       for (const file of ["pnpm-workspace.yaml", ".pnpmfile.cjs", ".pnpmfile-global.cjs"]) {
         copyFileSync(resolve(root, file), join(directory, file));
       }
-      // Hook metadata depends on the workspace config, so resolve an empty
-      // project with the same pnpm pin to keep the oracle offline.
+      // Seed only the package-manager document so pnpm can resolve an empty
+      // project with a cold cache and generate the project metadata itself.
       const { packageManager } = JSON.parse(read("package.json"));
       writeFileSync(join(directory, "package.json"), JSON.stringify({ private: true, packageManager }));
+      const lockfile = read("pnpm-lock.yaml");
+      const [, managerDocument] = lockfile.split(/^---\s*$/m, 2);
+      writeFileSync(join(directory, "pnpm-lock.yaml"), `---${managerDocument}`);
       const result = spawnSync("pnpm", [
         "install", "--lockfile-only", "--ignore-scripts", "--offline", "--no-frozen-lockfile"
-      ], { cwd: directory, encoding: "utf8", shell: process.platform === "win32" });
+      ], {
+        cwd: directory,
+        encoding: "utf8",
+        shell: process.platform === "win32",
+        env: {
+          ...process.env,
+          PNPM_CONFIG_CACHE_DIR: join(directory, "cache"),
+          PNPM_CONFIG_STORE_DIR: join(directory, "store")
+        }
+      });
       expect(result.error).toBeUndefined();
       expect(result.status, result.stdout + result.stderr).toBe(0);
 
       const hookMetadata = (lockfile) => lockfile.match(/^(?:pnpmfileChecksum|untrackedPnpmfileReadPackageHook): .+$/gm);
       const generated = readFileSync(join(directory, "pnpm-lock.yaml"), "utf8");
-      expect(hookMetadata(read("pnpm-lock.yaml"))).toEqual(hookMetadata(generated));
+      expect(hookMetadata(lockfile)).toEqual(hookMetadata(generated));
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

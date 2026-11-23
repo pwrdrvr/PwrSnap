@@ -16,6 +16,7 @@ import { ENRICHMENT_QUEUE_MAX_AGE_MS } from "../ai/direct-api/enrichment-queue";
 import * as appleFmCli from "../ai/apple-fm/fm-cli";
 import * as appleFmNative from "../ai/apple-fm/native";
 import { getAppleFmStatusService } from "../ai/apple-fm/service";
+import { projectLocalAgentSearchRows, toCaptureSearchRequest } from "../local-agents/local-agent-search";
 import { buildInitialV2Tree, packBundleV2 } from "../persistence/bundle-store";
 import { getCacheSourcePath } from "../persistence/paths";
 import { purgeCacheForCapture } from "../persistence/source-store";
@@ -61,6 +62,7 @@ const {
   withUsageModelLabels
 } = await import("../handlers/codex-handlers");
 const { getAiRun } = await import("../persistence/ai-runs-repo");
+const { searchCaptures } = await import("../persistence/captures-repo");
 const { getCaptureEnrichment } = await import("../persistence/enrichment-repo");
 const { defaultSettings } = await import("../settings/desktop-settings-service");
 const { DesktopSettingsStore, __setDesktopSettingsStoreForTests } =
@@ -540,15 +542,20 @@ describe("Codex handlers", () => {
 
   // Production wiring for Apple's on-device model: the real handler, plan
   // resolution, image preparation, queue and run persistence; only the fm
-  // process itself is scripted. Three rules ride on this: the on-device
-  // selector never reaches Codex, the tool is run with the fixed argv, and a
-  // failure is never moved to the caption fallback.
+  // process itself is scripted. The on-device selector never reaches Codex,
+  // the tool is run with the fixed argv, and a failure is never moved to the
+  // caption fallback. Native OCR reaches the Library index and MCP projection.
   test.each([
     { scenario: "success", expected: "completed" },
     { scenario: "native-success", expected: "completed" },
+    { scenario: "native-no-text", expected: "completed" },
     { scenario: "guardrail", expected: "failed" },
     { scenario: "terms-with-fallback-armed", expected: "failed" }
   ] as const)("on-device Apple enrichment: $scenario → $expected", async ({ scenario, expected }) => {
+    const native = scenario === "native-success" || scenario === "native-no-text";
+    const query = "Zephyr 2749"; // Present only in the native helper's OCR field.
+    const ocrText = scenario === "native-success" ? query : "";
+    if (native) testDb.exec(migration("0032_capture_source_window_title.sql"));
     let finish!: (run: { id: string; status: string }) => void;
     const finished = new Promise<{ id: string; status: string }>((resolve) => { finish = resolve; });
     electronMock.windows.push({
@@ -575,12 +582,11 @@ describe("Codex handlers", () => {
         return { code: 1, signal: null, stdout: "", stderr: "Not agreed. Run 'sudo fm license' to review and agree.\n" };
       }
       return { code: 0, signal: null, stderr: "", stdout: JSON.stringify({
-        title: "On-device fixture", description: "Synthetic image captioned on this Mac", ocrText: "",
-        filenameStem: "on-device-fixture", textAnchors: [], tags: []
+        title: "On-device fixture", description: "Synthetic image captioned on this Mac", ocrText,
+        filenameStem: "on-device-fixture", tags: []
       }) };
     };
     const runSpy = vi.spyOn(appleFmCli, "runAppleFm").mockImplementation(scriptedRun);
-    const native = scenario === "native-success";
     const nativeSpy = vi.spyOn(appleFmNative, "resolveNativeCaptionRunner")
       .mockResolvedValue(native ? scriptedRun : null);
     // The tool is macOS-only; the wiring under test is not.
@@ -631,6 +637,18 @@ describe("Codex handlers", () => {
         expect(getCaptureEnrichment("cap_1")?.suggestedDescription).toBe("Synthetic image captioned on this Mac");
         expect(usage).toMatchObject({ ok: true, value: { modelLabel: "Apple Intelligence (on-device)" } });
         expect(invalidate).not.toHaveBeenCalled();
+        if (native) {
+          const hasOcr = ocrText.length > 0;
+          const mcpRequest = toCaptureSearchRequest({ query, hasOcr: true });
+          expect(getCaptureEnrichment("cap_1")?.ocrText).toBe(ocrText);
+          expect(searchCaptures({ query }).map(({ record }) => record.id))
+            .toEqual(hasOcr ? ["cap_1"] : []);
+          expect(projectLocalAgentSearchRows(searchCaptures(mcpRequest)))
+            .toMatchObject(hasOcr ? [{ id: "cap_1", hasOcr: true }] : []);
+          expect(searchCaptures(toCaptureSearchRequest({ hasOcr: true }))).toHaveLength(hasOcr ? 1 : 0);
+          expect(projectLocalAgentSearchRows(searchCaptures({})))
+            .toMatchObject([{ id: "cap_1", hasOcr }]);
+        }
       } else if (scenario === "guardrail") {
         expect(run?.error).toContain("Apple's safety checks declined it");
         expect(invalidate).not.toHaveBeenCalled();

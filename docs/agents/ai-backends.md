@@ -286,10 +286,17 @@ The signed app treats a missing helper as unavailable.
 
 The `caption` request sends bounded app-prepared image paths and capture
 metadata together over stdin. Vision reads still-image text before the model
-turn as bounded, untrusted evidence. The helper publishes only caption fields
-and fixed error codes. Keep raw OCR, filesystem paths and model errors out of
-the library's persisted result, diagnostics and process arguments. Do not
-expose Vision as a tool that the model can call.
+turn as bounded, untrusted evidence. The helper publishes caption fields and
+the model's selected search snippets in `ocrText`. Publish at most five
+distinct snippets of at most 120 UTF-8 bytes each, each an exact substring of
+a single Vision evidence line. Keep short lines eligible and cap the evidence
+at 3,500 characters by dropping whole lines. Remove recognized credential
+labels and values before both prompting and grounding, including other lines
+that repeat the value. Leave `ocrText` empty when none qualify.
+Diagnostics use fixed error codes. Keep the raw Vision evidence, model
+candidate list, filesystem paths and model errors out of the library's
+persisted result, diagnostics and process arguments. Do not expose Vision as
+a tool that the model can call.
 
 The transport owners are
 [`native.ts`](../../apps/desktop/src/main/ai/apple-fm/native.ts) and

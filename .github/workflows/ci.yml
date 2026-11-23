@@ -43,6 +43,8 @@ env:
     apps/desktop/scripts/build-native.mjs
     apps/desktop/scripts/build-apple-caption.mjs
     apps/desktop/native/apple-caption/main.swift
+    apps/desktop/native/apple-caption/search-text.swift
+    apps/desktop/native/apple-caption/tests/search-text-test.swift
     apps/desktop/native/pasteboard-writer/main.swift
     apps/desktop/native/preview-extension/Info.plist
     apps/desktop/native/preview-extension/preview-provider.swift
@@ -528,6 +530,9 @@ jobs:
 
       - name: Build native helpers
         run: pnpm rebuild:electron-native
+
+      - name: Test native Apple caption publication
+        run: pnpm exec vitest run apps/desktop/scripts/native-apple-search-text.test.mjs
 
       - name: Prepare E2E report directory
         run: |

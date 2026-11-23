@@ -55,4 +55,18 @@ describe("native recorder audio contract", () => {
     expect(recorderSource).toMatch(/let written = systemAudioTelemetry\.bufferForWriting\(buf\),\s+ai\.append\(written\) \{\s+audioSamplesAppended \+= 1\s+systemAudioTelemetry\.appended\(written\)/);
     expect(microphoneSource).toMatch(/let written = audioTelemetry\.bufferForWriting\(sampleBuffer\),\s+input\.append\(written\) \{\s+samplesAppended \+= 1\s+audioTelemetry\.appended\(written\)/);
   });
+
+  test("audio telemetry age is anchored when capture starts, even before the writer receives a frame", () => {
+    const announcedAt = recorderSource.match(
+      /func announceStarted[\s\S]*?\b(\w+) = DispatchTime\.now\(\)\.uptimeNanoseconds[\s\S]*?"event": "started"/
+    )?.[1];
+    expect(announcedAt).toBeDefined();
+    expect(recorderSource).toContain(`"elapsedMs": Double(now - ${announcedAt}) / 1_000_000`);
+  });
+
+  test("the recorder checks the deadline on the write queue before changing either source", () => {
+    expect(recorderSource).toMatch(
+      /func muteAudio\([\s\S]*?writeQueue\.sync \{\s*let applied = request\.applyIfCurrent \{[\s\S]*?systemAudioTelemetry\.setMuted[\s\S]*?micForwarder\.setMuted/
+    );
+  });
 });

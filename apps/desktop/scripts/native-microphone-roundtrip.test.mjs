@@ -50,7 +50,12 @@ test.skipIf(process.platform !== "darwin")("microphone samples survive a real AV
     await run("xcrun", ["swiftc", "-parse-as-library", "-o", binary,
       join(native, "microphone.swift"), join(native, "audio-level.swift"),
       join(native, "tests", "microphone-roundtrip.swift")], { timeout: 90_000 });
+    const before = process.hrtime.bigint();
     const result = await runWithDiagnostics(binary, [join(dir, "microphone.mp4")], { timeout: 30_000, env });
+    const after = process.hrtime.bigint();
+    const helperClock = BigInt(/recorder-clock-ns=(\d+)/.exec(result.stdout)?.[1] ?? "0");
+    expect(helperClock).toBeGreaterThanOrEqual(before);
+    expect(helperClock).toBeLessThanOrEqual(after);
     expect(result.stdout).toContain("microphone AAC roundtrip: appended=48");
     expect(result.stderr).toContain("roundtrip: device IO guard active");
     expect(result.stderr).toContain("roundtrip: tone writer completed");

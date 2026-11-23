@@ -531,7 +531,7 @@ describe("RecordingController source chips", () => {
     expect(notice()).toBe("Microphone back at 00:18 · 6 s missing");
   });
 
-  test("a mute presents the pending target, follows the recorder, and never carries to the next take", async () => {
+  test("only recorder telemetry changes the visible and accessible mute state", async () => {
     const capabilities = { systemAudio: false, microphone: true };
     const backend = {
       ...macCapabilities,
@@ -554,21 +554,56 @@ describe("RecordingController source chips", () => {
     await act(async () => button.click());
     expect(mocks.dispatch).toHaveBeenCalledWith("recording:muteAudio", { sessionId: "rec-1", source: "microphone", muted: true });
     expect(chip.getAttribute("aria-busy")).toBe("true");
-    expect(chip.getAttribute("data-state")).toBe("muted");
+    expect(chip.getAttribute("data-state")).toBe("live");
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    expect(chip.querySelector(".ps-chip__mute")).toBeNull();
+    expect(notice()).toBe("Muting microphone…");
     await act(async () => button.click());
     expect(mocks.dispatch.mock.calls.filter(([name]) => name === "recording:muteAudio")).toHaveLength(1);
-    await act(async () => { publish(true); settle({ ok: true }); });
+    await act(async () => settle({ ok: true }));
+    expect(chip.getAttribute("data-state")).toBe("live");
+    await act(async () => publish(true));
     expect(chip.getAttribute("aria-busy")).toBeNull();
     expect(button.getAttribute("aria-pressed")).toBe("false");
     expect(notice()).toContain("Microphone muted");
     expect(container.querySelector(".sr-only[role=status]")?.textContent).toBe("");
     await act(async () => button.click());
+    expect(chip.getAttribute("data-state")).toBe("muted");
+    expect(button.getAttribute("aria-pressed")).toBe("false");
+    expect(notice()).toBe("Unmuting microphone…");
     await act(async () => settle({ ok: false }));
-    expect(notice()).toBe("Couldn’t unmute microphone · it is still muted");
+    expect(notice()).toBe("Couldn’t confirm unmuting microphone");
     expect(container.querySelector(".sr-only[role=status]")?.textContent).toBe(notice());
     await act(async () => publish(false, "replacement"));
     expect(button.getAttribute("aria-pressed")).toBe("true");
     expect(notice()).toContain("not visible");
+  });
+
+  test("the shared gap caption only reports a time that applies to both sources", async () => {
+    const capabilities = { systemAudio: true, microphone: true };
+    await renderWithCapabilities(capabilities, {
+      ...macCapabilities,
+      sources: { ...macCapabilities.sources, liveAudioLevels: true, liveDisconnectDetection: true, midRecordingToggles: true }
+    });
+    const emit = mocks.listeners.get(EVENT_CHANNELS.recordingState)!;
+    const notice = () => container.querySelector("[data-recording-caption]")?.textContent;
+    const chip = (source: string) => container.querySelector(`[data-testid="rc-source-${source}"]`);
+    for (const micTime of [10, 42, 50]) {
+      for (const systemTime of [10, 42, 50]) {
+        await act(async () => emit({
+          ...recordingState(), capabilities,
+          audioTelemetry: {
+            microphone: { state: "no-input", lastSampleAtMs: micTime * 1000 },
+            systemAudio: { state: "no-input", lastSampleAtMs: systemTime * 1000 }
+          }
+        }));
+        expect(chip("microphone")?.getAttribute("title")).toContain(`00:${micTime}`);
+        expect(chip("systemAudio")?.getAttribute("title")).toContain(`00:${systemTime}`);
+        expect(notice()).toBe(micTime === systemTime ?
+          `Microphone and system audio stopped at 00:${micTime} · recording continues` :
+          "Microphone and system audio have sample gaps · recording continues");
+      }
+    }
   });
 
   test.each([

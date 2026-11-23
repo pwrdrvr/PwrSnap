@@ -412,9 +412,39 @@ test("mute requests go only to the armed source in the current take and settle o
     }
   }), { numRuns: 25 });
 
+  const restoreMute = adjust(true);
+  const muteId = JSON.parse(child.stdin.write.mock.calls.at(-1)![0]).requestId;
+  child.emitLine({ event: "audioTelemetry", elapsedMs: 200, microphone: {
+    lastInputAgeMs: 5, lastSampleAgeMs: 5, rms: 0, muted: true
+  } });
+  child.emitLine({ event: "audioMuteResult", requestId: muteId, applied: true });
+  await restoreMute;
+
+  const beforeSend = process.hrtime.bigint();
   const timedOut = expect(adjust(false)).rejects.toThrow("recorder_mute_timeout");
+  const afterSend = process.hrtime.bigint();
+  const unmute = JSON.parse(child.stdin.write.mock.calls.at(-1)![0]) as {
+    requestId: number; expiresAtNs: string;
+  };
+  expect(typeof unmute.expiresAtNs).toBe("string");
+  const deadline = BigInt(unmute.expiresAtNs);
+  expect(deadline).toBeGreaterThanOrEqual(beforeSend + 1_500_000_000n);
+  expect(deadline).toBeLessThanOrEqual(afterSend + 1_500_000_000n);
   await vi.advanceTimersByTimeAsync(1_500);
   await timedOut;
+
+  // The helper's queue drains after the original request has expired. The
+  // native fixture checks that the rejection does not apply the command.
+  // Its late rejection must also leave a newer in-flight request alone.
+  const replacementSettled = vi.fn();
+  const replacement = adjust(false).then(replacementSettled);
+  const replacementId = JSON.parse(child.stdin.write.mock.calls.at(-1)![0]).requestId;
+  child.emitLine({ event: "audioMuteResult", requestId: unmute.requestId, applied: false });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(replacementSettled).not.toHaveBeenCalled();
+  expect(mocks.currentState).toMatchObject({ audioTelemetry: { microphone: { muted: true } } });
+  child.emitLine({ event: "audioMuteResult", requestId: replacementId, applied: true });
+  await replacement;
 
   const inFlight = expect(adjust(true)).rejects.toThrow("cancelled");
   const cancelled = service.cancel();

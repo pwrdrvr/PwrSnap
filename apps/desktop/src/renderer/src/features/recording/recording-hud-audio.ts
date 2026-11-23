@@ -40,14 +40,29 @@ function faultSummary(source: RecordingAudioSource, fault: Fault): string {
   return `${name} stopped sending audio at ${takeTime(fault.lastSampleAtMs)}`;
 }
 
-function audioNotice(state: Take, detect: boolean, toggles: boolean, failed: RecordingAudioMuteRequest | null): Notice | null {
+function pendingAction(request: RecordingAudioMuteRequest): string {
+  return `${request.muted ? "Muting" : "Unmuting"} ${NAMES[request.source]}`;
+}
+
+function audioNotice(
+  state: Take,
+  detect: boolean,
+  toggles: boolean,
+  failed: RecordingAudioMuteRequest | null,
+  pending: Requests
+): Notice | null {
+  const actions = SOURCES.flatMap((source) => {
+    const request = pending[source];
+    return request?.sessionId === state.sessionId ? [pendingAction(request)] : [];
+  });
+  if (actions.length > 0) {
+    return { tone: "info", announce: true, text: `${actions.join(" · ")}…` };
+  }
   const telemetry = state.audioTelemetry;
   if (failed?.sessionId === state.sessionId && (telemetry?.[failed.source]?.muted === true) !== failed.muted) {
     const name = NAMES[failed.source];
-    const fault = sourceFault(telemetry?.[failed.source], detect);
-    const text = failed.muted ? `Couldn’t mute ${name} · it is still ${fault === undefined ? "being recorded" : "enabled"}` :
-      `Couldn’t unmute ${name} · it is still muted`;
-    return { tone: "warn", announce: true, text };
+    const action = failed.muted ? "muting" : "unmuting";
+    return { tone: "warn", announce: true, text: `Couldn’t confirm ${action} ${name}` };
   }
   const faults = SOURCES.flatMap((source) => {
     const fault = sourceFault(telemetry?.[source], detect && state.capabilities[source]);
@@ -55,6 +70,7 @@ function audioNotice(state: Take, detect: boolean, toggles: boolean, failed: Rec
   });
   if (faults.length > 0) {
     const first = faults[0]!;
+    const sharedTime = first.fault.lastSampleAtMs === null ? null : takeTime(first.fault.lastSampleAtMs);
     let text: string;
     if (faults.length === 1) {
       const { source, fault } = first;
@@ -64,9 +80,11 @@ function audioNotice(state: Take, detect: boolean, toggles: boolean, failed: Rec
         : `${faultSummary(source, fault)} · recording continues`;
     } else if (faults.every(({ fault }) => fault.state === "no-input" && fault.lastSampleAtMs === null)) {
       text = "Microphone and system audio haven’t sent any audio · recording continues";
-    } else if (faults.every(({ fault }) => fault.state === "no-input" && fault.lastSampleAtMs !== null)) {
-      const time = Math.min(...faults.map(({ fault }) => fault.lastSampleAtMs!));
-      text = `Microphone and system audio stopped at ${takeTime(time)} · recording continues`;
+    } else if (sharedTime !== null && faults.every(({ fault }) =>
+      fault.state === "no-input" && fault.lastSampleAtMs !== null &&
+      takeTime(fault.lastSampleAtMs) === sharedTime
+    )) {
+      text = `Microphone and system audio stopped at ${sharedTime} · recording continues`;
     } else {
       text = "Microphone and system audio have sample gaps · recording continues";
     }
@@ -136,7 +154,7 @@ export function useRecordingHudAudio(state: Take | null, backend: RecordingBacke
     const reading = state?.audioTelemetry?.[source];
     const request = pending[source];
     const busy = request !== undefined && request.sessionId === state?.sessionId;
-    const muted = toggles && (busy ? request.muted : reading?.muted === true);
+    const muted = toggles && reading?.muted === true;
     const fault = sourceFault(reading, detect);
     const level = monitor && reading?.state === "writing" ? reading.level : null;
     const clipping = monitor && reading?.state === "writing" && reading.clipping === true;
@@ -159,11 +177,12 @@ export function useRecordingHudAudio(state: Take | null, backend: RecordingBacke
       clipping: !muted && clipping,
       ...(canToggle ? {
         onToggle: () => void toggle(source, !muted),
-        controlTitle: !muted && fault !== undefined ? `${faultSummary(source, fault)} · ${title}` : title,
-        why: description
+        controlTitle: busy ? `${pendingAction(request)}…` :
+          !muted && fault !== undefined ? `${faultSummary(source, fault)} · ${title}` : title,
+        why: busy ? `${description} · ${pendingAction(request)}…` : description
       } : {})
     };
   }
 
-  return { chip, notice: state === null ? null : audioNotice(state, detect, toggles, failure) };
+  return { chip, notice: state === null ? null : audioNotice(state, detect, toggles, failure, pending) };
 }

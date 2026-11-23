@@ -1,5 +1,21 @@
 import AVFoundation
 import CoreMedia
+import Darwin
+
+struct MuteAudioRequest: Decodable {
+    enum Source: String, Decodable { case systemAudio, microphone }
+    let requestId: Int
+    let source: Source
+    let muted: Bool
+    /// Decimal nanoseconds on the same continuous monotonic clock as libuv.
+    let expiresAtNs: String
+
+    /// Call on the write queue, when the command can actually change a track.
+    func applyIfCurrent(nowNs: UInt64 = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW), _ apply: () -> Bool) -> Bool {
+        guard let deadline = UInt64(expiresAtNs), nowNs < deadline else { return false }
+        return apply()
+    }
+}
 
 /// Amplitude below which a buffer is treated as silence, ~-60 dBFS.
 ///

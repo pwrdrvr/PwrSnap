@@ -2,6 +2,7 @@
 // No screen capture, microphone device, or TCC access is used.
 import AVFoundation
 import CoreMedia
+import Darwin
 import Foundation
 
 func check(_ condition: Bool, _ message: String) throws {
@@ -112,6 +113,7 @@ func checkPlanarStereo() throws {
 @main
 struct MicrophoneRoundtrip {
     static func main() async throws {
+        print("recorder-clock-ns=\(clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW))")
         let url = URL(fileURLWithPath: CommandLine.arguments[1])
         try checkPlanarStereo()
         var clipping = AudioSampleTelemetry()
@@ -147,6 +149,18 @@ struct MicrophoneRoundtrip {
                           "accepted samples must reflect the active mute interval")
                 try check(observed["muted"] as? Bool == (packet == 36), "report carries the writer's mute state")
                 forwarder.setMuted(packet == 12)
+            }
+            if packet == 24 {
+                // Unmute arrived on time, but the write queue reached it
+                // after the deadline. The decoded interval must stay quiet.
+                let unmute = MuteAudioRequest(requestId: 1, source: .microphone, muted: false, expiresAtNs: "2000")
+                for now in [2_000, 2_001, 3_000] as [UInt64] {
+                    let applied = unmute.applyIfCurrent(nowNs: now) {
+                        forwarder.setMuted(unmute.muted)
+                        return true
+                    }
+                    try check(!applied, "the write queue must reject a deadline that has passed")
+                }
             }
             let deadline = Date().addingTimeInterval(5)
             while !input.isReadyForMoreMediaData && Date() < deadline {

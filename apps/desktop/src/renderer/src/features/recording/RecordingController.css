@@ -237,7 +237,7 @@
   width: 10px;
   height: 10px;
 }
-.rc__caption[data-tone="warn"] { color: var(--warn-text); }
+.rc__caption[data-tone="warn"] { color: #e8c890; /* on-scrim */ }
 .rc__caption[data-tone="info"] { color: rgba(255, 255, 255, 0.8); /* on-scrim */ }
 
 .rc__finalizing {

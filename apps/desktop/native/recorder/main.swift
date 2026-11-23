@@ -10,7 +10,7 @@
 //             "systemAudio": true, "microphone": false,
 //             "showsCursor": true }   // optional; omitted ⇒ true
 //   muteAudio → { "type": "muteAudio", "requestId": 1,
-//                 "source": "microphone", "muted": true }
+//                 "source": "microphone", "muted": true, "expiresAtNs": "..." }
 //   stop   → { "type": "stop" }
 //
 // Notifies main:
@@ -99,13 +99,6 @@ struct RectPayload: Decodable {
     let h: Int
 }
 
-struct MuteAudioRequest: Decodable {
-    enum Source: String, Decodable { case systemAudio, microphone }
-    let requestId: Int
-    let source: Source
-    let muted: Bool
-}
-
 enum Inbound: Decodable {
     case start(StartRequest)
     case muteAudio(MuteAudioRequest)
@@ -175,7 +168,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private var startedAtWallClock: Date = Date()
     private var outputURL: URL?
     private var firstSampleWritten = false
-    private var firstSampleAt: UInt64?
+    private var captureAnnouncedAt: UInt64 = 0
     private let writeQueue = DispatchQueue(label: "pwrsnap.recorder.write")
     /// Sample counters for end-of-recording diagnostics. The
     /// "popover shows nothing / file is 0 bytes" failure mode is
@@ -827,7 +820,6 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             diag("first sample: type=\(type) startWriting()->\(ok) writer.status=\(writer.status.rawValue) error=\(writer.error?.localizedDescription ?? "nil")")
             writer.startSession(atSourceTime: startedAtCMTime)
             firstSampleWritten = true
-            firstSampleAt = DispatchTime.now().uptimeNanoseconds
         }
 
         switch type {
@@ -917,6 +909,9 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private func announceStarted(rect: RectPayload) {
         writeQueue.sync {
             startedAtWallClock = Date()
+            // The audio startup grace period advances even if nothing ever
+            // starts the writer session.
+            captureAnnouncedAt = DispatchTime.now().uptimeNanoseconds
             emit([
                 "event": "started",
                 "physicalRect": ["x": rect.x, "y": rect.y, "w": rect.w, "h": rect.h]
@@ -934,22 +929,19 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
     func muteAudio(_ request: MuteAudioRequest) {
         writeQueue.sync {
-            var applied = false
-            if audioTelemetryTimer != nil {
+            let applied = request.applyIfCurrent {
+                guard audioTelemetryTimer != nil else { return false }
                 switch request.source {
                 case .systemAudio:
-                    if audioInput != nil {
-                        systemAudioTelemetry.setMuted(request.muted)
-                        applied = true
-                    }
+                    guard audioInput != nil else { return false }
+                    systemAudioTelemetry.setMuted(request.muted)
                 case .microphone:
-                    if let micForwarder {
-                        micForwarder.setMuted(request.muted)
-                        applied = true
-                    }
+                    guard let micForwarder else { return false }
+                    micForwarder.setMuted(request.muted)
                 }
-                if applied { reportAudio(source: request.source) }
+                return true
             }
+            if applied { reportAudio(source: request.source) }
             emit(["event": "audioMuteResult", "requestId": request.requestId, "applied": applied])
         }
     }
@@ -958,7 +950,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         let now = DispatchTime.now().uptimeNanoseconds
         var payload: [String: Any] = [
             "event": "audioTelemetry",
-            "elapsedMs": Double(now - (firstSampleAt ?? now)) / 1_000_000
+            "elapsedMs": Double(now - captureAnnouncedAt) / 1_000_000
         ]
         if audioInput != nil && (source == nil || source == .systemAudio) {
             payload["systemAudio"] = systemAudioTelemetry.report(at: now)

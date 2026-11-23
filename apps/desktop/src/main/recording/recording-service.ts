@@ -221,6 +221,7 @@ type RecorderStoppedEvent = {
 };
 type RecorderErrorEvent = { event: "error"; code: string; message: string };
 type RecorderMuteResult = { event: "audioMuteResult"; requestId?: number; applied?: boolean };
+const AUDIO_MUTE_TIMEOUT_MS = 1_500;
 type RecorderEvent = RecorderStartedEvent | RecorderStoppedEvent | RecorderErrorEvent | RecorderAudioTelemetryEvent | RecorderMuteResult | { event: "timeline"; utcTimeMs?: number } | { event: "cameraPreview"; excluded: boolean } | { event: "burstProgress"; kept?: number; written?: number };
 
 // Resources and waiters belong to one admitted attempt, including the period
@@ -705,8 +706,10 @@ class NativeRecorderService extends AttemptRecorderService {
     const result = deferred<boolean>();
     attempt.audioMuteRequests.set(source, { id: requestId, result });
     try {
-      child.stdin.write(JSON.stringify({ type: "muteAudio", requestId, source, muted }) + "\n");
-      const applied = await withDeadline(attempt.wait(result.promise), 1_500, "recorder_mute_timeout");
+      // On macOS the helper and libuv share the continuous monotonic clock.
+      const expiresAtNs = (process.hrtime.bigint() + BigInt(AUDIO_MUTE_TIMEOUT_MS) * 1_000_000n).toString();
+      child.stdin.write(JSON.stringify({ type: "muteAudio", requestId, source, muted, expiresAtNs }) + "\n");
+      const applied = await withDeadline(attempt.wait(result.promise), AUDIO_MUTE_TIMEOUT_MS, "recorder_mute_timeout");
       if (!applied) throw new Error("control_unavailable");
     } finally {
       attempt.audioMuteRequests.delete(source);

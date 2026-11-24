@@ -14,14 +14,14 @@ export function ProviderDefaultsStrip({
 }): ReactElement {
   return (
     <div className="pss__prov-strip">
-      <span className="pss__prov-strip-eyebrow">Default for</span>
+      <span className="pss__prov-strip-eyebrow">Jobs</span>
       <span className="pss__prov-strip-items">
         {routed.length > 0
           ? routed.map((surface) => AI_SURFACE_LABELS[surface]).join(" · ")
           : "No jobs yet"}
       </span>
       <button className="pss__top-btn" type="button" onClick={onEdit}>
-        Change defaults
+        Change in AI Features
       </button>
     </div>
   );

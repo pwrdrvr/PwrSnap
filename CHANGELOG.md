@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.4.2 - 2026-11-23
+
+- Apple Intelligence Captions - Fixed captioning stopping when the on-device
+  model declines a capture. PwrSnap can retry with your configured fallback.
+  Sending a capture off-device requires your approval for that destination.
+
 ## v1.4.1 - 2026-11-23
 
 - Apple Intelligence Captions - Fixed Library search for text recognized by

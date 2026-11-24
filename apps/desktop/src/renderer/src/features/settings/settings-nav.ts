@@ -41,7 +41,9 @@ export const SETTINGS_NAV_GROUPS: ReadonlySet<SettingsPage> = new Set(
 /** Sidebar label for each AI Features section. The page titles its cards
  *  from this too, so a jump link always names the card it lands on. */
 export const AI_FEATURE_SECTION_LABELS: Readonly<Record<AiFeaturesSettingsSub, string>> = {
-  "default-agents": "Default agents",
+  // "Jobs", not "Default agents": it lists jobs, and an agent is only one
+  // kind of provider. The `default-agents` id stays for deep links.
+  "default-agents": "Jobs",
   enrichment: "Enrichment",
   usage: "Usage",
   guidance: "Guidance"

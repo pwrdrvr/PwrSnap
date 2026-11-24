@@ -17,6 +17,7 @@
 import type { ReactElement } from "react";
 import { Card, Row, Switch } from "../components";
 import { useSettingsContext } from "../SettingsContext";
+import { settingsGroupOf, settingsPageName } from "../settings-categories";
 
 export function ExperimentalPage(): ReactElement {
   const { settings, patch } = useSettingsContext();
@@ -54,8 +55,8 @@ export function ExperimentalPage(): ReactElement {
     <>
       <div className="pss__main-hdr">
         <div className="pss__main-hdr-l">
-          <div className="pss__main-eyebrow">Experimental</div>
-          <h1 className="pss__main-title">Experimental</h1>
+          <div className="pss__main-eyebrow">{settingsGroupOf("experimental")}</div>
+          <h1 className="pss__main-title">{settingsPageName("experimental")}</h1>
           <p className="pss__main-sub">
             Opt-in features that are still soaking — they may change shape or
             be removed without notice.
@@ -68,7 +69,6 @@ export function ExperimentalPage(): ReactElement {
           <Row
             label="Run the capture agent and Library as separate processes"
             sub="The menu-bar capture agent and the Library window run as separate apps, so capture overlays never disturb the Library or flash the Dock. Turn off to revert to single-process mode. Takes effect after PwrSnap is quit and relaunched."
-            tag="process-split"
           >
             <Switch on={processSplit} onChange={onProcessSplitChange} />
           </Row>
@@ -79,7 +79,6 @@ export function ExperimentalPage(): ReactElement {
         <Row
           label="Scale exports by display resolution"
           sub={`Maps Low / Med / High to useful fractions of the capture's pixels instead of fixed widths. On a ${densityName} display, High keeps the full-density image and Med normally lands at the on-screen size. Tiny captures offer one Actual-size export instead of illegible downscales. Off by default — flip it on to try the new sizing.`}
-          tag="experimental"
         >
           <Switch on={dpiAwareExport} onChange={onDpiAwareExportChange} />
         </Row>
@@ -87,7 +86,6 @@ export function ExperimentalPage(): ReactElement {
           <Row
             label={`Allow ${densityName} export`}
             sub={`When on, High keeps the full ${densityName} pixels. Turn off to cap exports at the on-screen 1× resolution, with smaller useful sizes below it.`}
-            tag={isMac ? "retina" : "high dpi"}
           >
             <Switch on={allowRetinaExport} onChange={onAllowRetinaExportChange} />
           </Row>

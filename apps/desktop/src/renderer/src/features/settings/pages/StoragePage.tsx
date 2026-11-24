@@ -10,6 +10,7 @@ import { useCapturesLocationDisplayState } from "../../../lib/useCapturesLocatio
 import { useStorageSnapshot } from "../../../lib/useStorageSnapshot";
 import { useSettingsContext } from "../SettingsContext";
 import { rendererShortcutPlatform } from "../../../lib/shortcut-platform";
+import { settingsGroupOf, settingsPageName } from "../settings-categories";
 
 const FILENAME_TIMESTAMP_ZONE_OPTIONS: readonly SegmentOption<FilenameTimestampZone>[] = [
   { id: "local", label: "Local" },
@@ -70,8 +71,8 @@ export function StoragePage(): ReactElement {
     <>
       <div className="pss__main-hdr">
         <div className="pss__main-hdr-l">
-          <div className="pss__main-eyebrow">Library</div>
-          <h1 className="pss__main-title">Storage & retention</h1>
+          <div className="pss__main-eyebrow">{settingsGroupOf("storage")}</div>
+          <h1 className="pss__main-title">{settingsPageName("storage")}</h1>
           <p className="pss__main-sub">
             Local source captures, rendered derivatives, and Electron cache data.
           </p>
@@ -201,7 +202,6 @@ export function StoragePage(): ReactElement {
         <Row
           label="Timestamp zone"
           sub="Local matches the date and time you saw on screen. UTC is useful for shared drives across time zones."
-          tag={timestampZone === "utc" ? "UTC" : "local"}
         >
           <SegmentedControl
             options={FILENAME_TIMESTAMP_ZONE_OPTIONS}
@@ -215,7 +215,6 @@ export function StoragePage(): ReactElement {
         <Row
           label="Confirm before moving to Trash"
           sub={`Show a quick confirmation next to the delete button. Turn off (or untick “Don’t ask again” in the popover) to delete in one click — moves are still recoverable from the Undo toast, ${undoChord}, and the Trash view.`}
-          tag={confirmBeforeTrash ? "on" : "off"}
         >
           <Switch on={confirmBeforeTrash} onChange={onConfirmBeforeTrashChange} />
         </Row>

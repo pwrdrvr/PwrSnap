@@ -85,7 +85,6 @@ function ChatSettingsCardBody({
       <Row
         label="User Guidance"
         sub="Free-form instructions injected into every chat with the agent. Tell it your conventions once — redaction style, preferred colors, domain terms — instead of repeating them each turn."
-        tag="per-user"
       >
         <UserGuidanceEditor
           value={chat.userGuidance}
@@ -96,7 +95,6 @@ function ChatSettingsCardBody({
       <Row
         label="Sensitive-data patterns"
         sub="Shape-only regexes the agent uses to find and redact secrets. NEVER paste a real secret — only the shape (e.g. 123-45-6789 for an SSN, sk-XXXXXXXX for an API key). Stored in plain text and included in Settings export."
-        tag="per-user"
       >
         <PatternsEditor
           patterns={chat.sensitiveDataPatterns}

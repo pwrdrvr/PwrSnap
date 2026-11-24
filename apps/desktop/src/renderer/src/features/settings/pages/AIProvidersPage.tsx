@@ -1,6 +1,7 @@
 import { ChatgptOffer } from "./ChatgptConnection";
 import { ConnectionIndex } from "./ConnectionIndex";
 import { ConnectionPage } from "./ConnectionPage";
+import { JobsSummaryCard } from "./JobsSummaryCard";
 import { AppleIntelligenceCard } from "./AppleIntelligenceCard";
 import { CodexUpgradeStrip } from "../CodexUpgradeHelp";
 // The "Using" pill follows `snapshot.resolvedPath`, NOT
@@ -34,6 +35,7 @@ import { dispatch } from "../../../lib/pwrsnap";
 import { rendererShortcutPlatform } from "../../../lib/shortcut-platform";
 import {
   Card,
+  JobChips,
   ProviderDefaultsStrip,
   OptionRow,
   Row,
@@ -43,14 +45,17 @@ import {
 import { useAiProvidersContext, useInUseAcpModelProbes } from "../AiProvidersContext";
 import {
   appleFmInUse,
+  jobRunners,
   routedSurfaces,
   statusBadgeClass,
   type AiProviderStatus,
-  type AiProviderSub
+  type AiProviderSub,
+  type JobRunner
 } from "../ai-provider-status";
 import { useSettingsContext } from "../SettingsContext";
 import { setActivePage } from "../useActivePage";
 import { formatLastSetAt } from "./ai-format";
+import { settingsGroupOf, settingsPageName } from "../settings-categories";
 
 const CODEX_MODE_OPTIONS: readonly SegmentOption<"auto" | "pinned">[] = [
   { id: "auto", label: "Auto Discovery — Use Newest" },
@@ -103,6 +108,7 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
     acpDiscoveryLoading,
     acpDiscoveryError,
     refreshAcpDiscovery,
+    acpModels,
     acpModelErrors,
     fetchAcpModels,
     appleFm,
@@ -230,7 +236,6 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
           <Row
             label="API Key"
             sub="OpenAI API key. Used by the Sizzle Reels composer for text-to-speech voiceover. Stored in the system keychain via Electron safeStorage."
-            tag="keychain"
           >
             <SecretKeyControl
               status={secrets?.openaiApiKey ?? null}
@@ -248,7 +253,7 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
     } else {
       const agentId = focused.sub;
       help =
-        "An ACP agent CLI. Once it is enabled, you can pick it for any job in AI Features → Default agents.";
+        "An ACP agent CLI. Once it is enabled, you can pick it for any job in AI Features → Jobs.";
       body = (
         <AcpAgentCard
           agentId={agentId}
@@ -319,20 +324,24 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
   // agents, then the Direct API connections PwrSnap calls itself.
 
   const onThisMac = statuses.filter((status) => status.sub === APPLE_FM_SETTINGS_SUB);
+  const runners = jobRunners(settings);
   const addConnection = (): void => {
     setActivePage("ai", NEW_CONNECTION_SETTINGS_SUB);
+  };
+  const openProvider = (next: string): void => {
+    setActivePage("ai", next);
   };
   return (
     <>
       <div className="pss__main-hdr">
         <div className="pss__main-hdr-l">
-          <div className="pss__main-eyebrow">General</div>
-          <h1 className="pss__main-title">AI Providers</h1>
+          <div className="pss__main-eyebrow">{settingsGroupOf("ai")}</div>
+          <h1 className="pss__main-title">{settingsPageName("ai")}</h1>
           <p className="pss__main-sub">
             {onThisMac.length > 0
-              ? "Three ways to run AI. Installed agents are CLIs you already use, signed in to your own account. The on-device model is built into macOS. Direct API connections are called by PwrSnap itself, with your ChatGPT plan or a key on your provider's bill. "
-              : "Two ways to run AI. Installed agents are CLIs you already use, signed in to your own account. Direct API connections are called by PwrSnap itself, with your ChatGPT plan or a key on your provider's bill. "}
-            Pick which one does each job in{" "}
+              ? "Where AI runs: agents you already have installed and signed in, the model built into macOS, and API connections PwrSnap calls itself with your ChatGPT plan or API key. "
+              : "Where AI runs: agents you already have installed and signed in, and API connections PwrSnap calls itself with your ChatGPT plan or API key. "}
+            Which one does each job is set in{" "}
             <button
               type="button"
               className="pss__text-link"
@@ -347,32 +356,35 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
         </div>
       </div>
 
+      <JobsSummaryCard
+        settings={settings}
+        runners={runners}
+        statuses={statuses}
+        connections={connections}
+        acpModels={acpModels}
+      />
       <Card eyebrow="INSTALLED AGENTS" title="Agents">
-        <Row
-          label="Ready to use?"
-          sub="Green is ready. Amber needs attention, usually a sign-in. Red is turned on but can't run. Grey is off or not installed. The same list sits under AI Providers in the sidebar."
-        >
+        <div className="pss__card-pad">
+          <p className="pss__card-caption">
+            Green is ready. Amber needs attention, usually a sign-in. Red is
+            turned on but can't run. Grey is off or not installed.
+          </p>
           <ProviderIndex
             statuses={statuses.filter((status) => status.sub !== APPLE_FM_SETTINGS_SUB)}
-            onOpen={(next) => {
-              setActivePage("ai", next);
-            }}
+            runners={runners}
+            onOpen={openProvider}
           />
-        </Row>
+        </div>
       </Card>
       {onThisMac.length > 0 ? (
         <Card eyebrow="ON THIS MAC" title="Built into macOS">
-          <Row
-            label="No account, no key"
-            sub="Apple's on-device model. Captions run on this Mac and the capture is not sent anywhere. Captions only."
-          >
-            <ProviderIndex
-              statuses={onThisMac}
-              onOpen={(next) => {
-                setActivePage("ai", next);
-              }}
-            />
-          </Row>
+          <div className="pss__card-pad">
+            <p className="pss__card-caption">
+              Apple's on-device model. No account and no key: captions run on
+              this Mac and the capture is not sent anywhere. Captions only.
+            </p>
+            <ProviderIndex statuses={onThisMac} runners={runners} onOpen={openProvider} />
+          </div>
         </Card>
       ) : null}
       <Card
@@ -384,26 +396,22 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
           </button>
         }
       >
-        <Row
-          label="One endpoint, one credential"
-          sub="Each connection is a base URL, a protocol and a key or sign-in. Add as many of that endpoint's models as you like; they share the credential. Chat through a connection has no editing tools; captions need a model that accepts images."
-        >
-          {/* Until there is a ChatGPT connection, the plan is offered first:
-              for anyone without an API key it is the shortest way to AI. */}
+        <div className="pss__card-pad">
+          <p className="pss__card-caption">
+            Each connection is a base URL, a protocol and a key or sign-in,
+            shared by as many of that endpoint's models as you add. Chat
+            through a connection has no editing tools; captions need a model
+            that accepts images.
+          </p>
           {connections.some((c) => c.connection.auth.type === "chatgpt") ? null : <ChatgptOffer />}
           {connections.length > 0 ? (
-            <ConnectionIndex
-              connections={connections}
-              onOpen={(next) => {
-                setActivePage("ai", next);
-              }}
-            />
+            <ConnectionIndex connections={connections} runners={runners} onOpen={openProvider} />
           ) : (
             <button type="button" className="pss__dapi-empty" onClick={addConnection}>
               + Add connection
             </button>
           )}
-        </Row>
+        </div>
       </Card>
     </>
   );
@@ -447,7 +455,6 @@ function CodexCard({
       <Row
         label="Codex selection"
         sub="Pick the Codex binary to invoke for captions. Auto Discovery tracks the newest version on disk; Specified Path pins a single binary."
-        tag="config"
       >
         <SegmentedControl
           options={CODEX_MODE_OPTIONS}
@@ -459,7 +466,6 @@ function CodexCard({
       <Row
         label="Available paths"
         sub="Detected on this machine. The resolved binary is highlighted; the test below spawns it with --version to confirm it runs."
-        tag="config"
       >
         <CodexCandidates snapshot={snapshot} loading={snapshotLoading} onPin={onPin} />
         {snapshot !== null && snapshot.resolvedPath !== null ? (
@@ -500,7 +506,6 @@ function CodexCard({
       <Row
         label="Auth profile"
         sub="Each profile is a separate Codex home (auth, config, sessions, state). Switch accounts, add a profile, or re-login. The selected profile is used for AI features."
-        tag="default"
       >
         <CodexProfilesControl
           selectedProfile={settings?.codex.profile ?? ""}
@@ -517,9 +522,12 @@ function CodexCard({
  *  children — both render `statuses` from `AiProvidersContext`. */
 export function ProviderIndex({
   statuses,
+  runners = [],
   onOpen
 }: {
   statuses: readonly AiProviderStatus[];
+  /** Every job's runner, so each row can name the jobs it runs. */
+  runners?: readonly JobRunner[];
   onOpen: (sub: AiProviderSub) => void;
 }): ReactElement {
   return (
@@ -544,6 +552,7 @@ export function ProviderIndex({
               {status.meta}
             </span>
           </span>
+          <JobChips runners={runners} sub={status.sub} />
           <span className={"pss__badge" + statusBadgeClass(status.tone)}>{status.badge}</span>
           <span className="pss__prov-chev" aria-hidden="true">
             ›
@@ -1013,7 +1022,7 @@ function CodexProfilesControl({
 // Installed agents get an enable checkbox that patches
 // `ai.acp.enabledAgentIds`; not-installed agents show an install hint and a
 // disabled checkbox. Enabling an agent makes it selectable in AI Features →
-// Default agents.
+// Jobs.
 
 type AcpAgentCardProps = {
   agentId: string;
@@ -1066,7 +1075,6 @@ function AcpAgentCard({
       <Row
         label="Install"
         sub="Where PwrSnap found this agent's CLI. Pick which install to use when several are found, or set a manual path."
-        tag="config"
       >
         <AcpAgentList
           only={agentId}

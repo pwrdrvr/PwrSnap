@@ -409,14 +409,14 @@
   grid-row: 2;
   overflow-y: auto;
   background: var(--bg-app);
-  padding: 36px 56px 56px;
+  padding: 32px 48px 48px;
 }
 .pss__main-hdr {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 24px;
-  margin-bottom: 28px;
+  margin-bottom: 24px;
 }
 .pss__main-hdr-l { flex: 1; min-width: 0; }
 .pss__main-eyebrow {
@@ -427,7 +427,7 @@
   margin-bottom: 8px;
 }
 .pss__main-title {
-  font: 700 26px/1.15 var(--font-display);
+  font: 700 24px/1.15 var(--font-display);
   letter-spacing: -0.01em;
   color: var(--text-primary);
   margin: 0 0 8px;
@@ -498,55 +498,72 @@ a.pss__top-btn[aria-disabled="true"]:hover {
   background: var(--bg-panel);
   border: 1px solid var(--border-subtle);
   border-radius: 10px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
   overflow: hidden;
 }
+/* The header strip. Its toggle button stretches over the whole strip
+   (`::after` below), so a click anywhere on it toggles the card, while an
+   action (Refresh, + Add connection) sits beside the button, stacked above
+   that overlay — never nested inside it. */
+.pss__card-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px 11px 18px;
+  background: var(--bg-panel-elevated);
+  border-bottom: 1px solid var(--border-subtle);
+  user-select: none;
+}
+.pss__card.is-collapsed .pss__card-head {
+  border-bottom-color: transparent;
+}
+.pss__card-head:hover {
+  background: var(--bg-panel-hover);
+}
 .pss__card-hdr {
-  /* button-reset — the header is a real <button> so the entire row
-     is a click target (good a11y), then we paint it like a card
-     header. */
+  /* button-reset — painted by `.pss__card-head`. */
   appearance: none;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   margin: 0;
+  padding: 0;
   border: 0;
+  background: transparent;
   text-align: left;
   font: inherit;
   color: inherit;
-
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 20px 14px;
-  background: var(--bg-panel-elevated);
-  border-bottom: 1px solid var(--border-subtle);
   cursor: pointer;
-  user-select: none;
 }
-.pss__card.is-collapsed .pss__card-hdr {
-  border-bottom-color: transparent;
+.pss__card-hdr::after {
+  content: "";
+  position: absolute;
+  inset: 0;
 }
-.pss__card-hdr:hover {
-  background: var(--bg-panel-hover);
-}
-/* Keyboard focus, and where a sidebar jump link parks focus. The house
-   ring, inset because `.pss__card` clips its overflow. The radius follows
-   the card's inner corners (10px less its 1px border) so the clip does
-   not cut the ring's corners. */
 .pss__card-hdr:focus-visible {
+  outline: none;
+}
+/* Keyboard focus, and where a sidebar jump link parks focus: the house
+   ring around the whole strip, inset because `.pss__card` clips its
+   overflow. The radius follows the card's inner corners (10px less its
+   1px border) so the clip does not cut the ring's corners. */
+.pss__card-head:has(.pss__card-hdr:focus-visible) {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
   border-radius: 9px 9px 0 0;
 }
-.pss__card.is-collapsed .pss__card-hdr:focus-visible {
+.pss__card.is-collapsed .pss__card-head:has(.pss__card-hdr:focus-visible) {
   border-radius: 9px;
 }
 .pss__card-hdr-action {
+  position: relative;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
-  margin-left: auto;
-  margin-right: 8px;
+  gap: 6px;
+  flex-shrink: 0;
 }
-.pss__card-hdr-l { display: flex; flex-direction: column; gap: 2px; }
+.pss__card-hdr-l { display: flex; flex-direction: column; gap: 3px; }
 .pss__card-eyebrow {
   font: 700 9px/1 var(--font-sans);
   letter-spacing: 0.16em;
@@ -554,13 +571,14 @@ a.pss__top-btn[aria-disabled="true"]:hover {
   color: var(--accent);
 }
 .pss__card-title {
-  font: 700 17px/1.2 var(--font-display);
+  font: 700 15px/1.25 var(--font-display);
   letter-spacing: -0.005em;
   color: var(--text-primary);
 }
 .pss__card-chev {
-  width: 28px;
-  height: 28px;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -610,9 +628,9 @@ a.pss__top-btn[aria-disabled="true"]:hover {
    ============================================================ */
 .pss__row {
   display: grid;
-  grid-template-columns: 240px 1fr;
-  gap: 28px;
-  padding: 20px 20px;
+  grid-template-columns: 220px 1fr;
+  gap: 24px;
+  padding: 16px 18px;
   border-bottom: 1px solid var(--border-subtle);
   align-items: flex-start;
 }
@@ -710,6 +728,14 @@ a.pss__top-btn[aria-disabled="true"]:hover {
   gap: 10px;
   min-width: 0;
 }
+/* Buttons that sit side by side in a Row (Open Logs · Reveal Log File). */
+.pss__btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.pss__btn-row > .pss__top-btn + .pss__top-btn { margin-left: 0; }
 .pss__update-note {
   font: 500 12px/1.35 var(--font-sans);
   color: var(--text-secondary);
@@ -1039,7 +1065,7 @@ a.pss__top-btn[aria-disabled="true"]:hover {
 .pss__prov-row:hover .pss__prov-chev { color: var(--accent-bright); }
 
 /* Provider screen — which jobs actually run on this provider, with a link
-   to AI Features → Default agents. Sits between the page header and the
+   to AI Features → Jobs. Sits between the page header and the
    card. */
 .pss__prov-strip {
   display: flex;
@@ -2165,28 +2191,129 @@ a.pss__top-btn[aria-disabled="true"]:hover {
   color: var(--text-muted);
 }
 
-/* "Role assignment" rows — left: role label, right: provider chip */
-.pss__role {
+/* AI Features → Jobs: each job is an ordinary `.pss__row` (name +
+   description in the label column), with its Provider / Model / Reasoning
+   pickers on the right in one equal-width grid, so the pickers line up down
+   the card. The caption fallback is a panel under the Captions pickers. */
+.pss__job-fields {
+  display: grid;
+  /* Always three tracks, even for a provider with no Reasoning picker, so
+     Provider and Model sit in the same columns on every job. */
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  align-items: end;
+}
+.pss__job-fields .pss__ai-surface-select {
+  width: 100%;
+  min-width: 0;
+}
+/* A message or note that spans the grid rather than taking a cell. */
+.pss__job-fields > .pss__ai-surface-error,
+.pss__job-fields > .pss__opt-sub {
+  grid-column: 1 / -1;
+}
+
+/* A card's own body text when it holds more than Rows: an intro above
+   them, or a full-width panel (`.pss__card-pad`) such as Usage or a
+   provider list. `.pss__card-body` has no padding of its own because every
+   Row pads itself; these carry the same inset a Row does. */
+.pss__card-intro {
+  margin: 0;
+  padding: 14px 18px 0;
+  max-width: 72ch;
+  font: 400 12px/1.5 var(--font-sans);
+  color: var(--text-secondary);
+}
+.pss__card-pad {
+  padding: 14px 18px 16px;
+}
+.pss__card-caption {
+  margin: 0 0 12px;
+  max-width: 72ch;
+  font: 400 12px/1.5 var(--font-sans);
+  color: var(--text-muted);
+}
+
+/* A badge, then what it means — a status in place of a control. */
+.pss__status-line {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 10px 14px;
-  background: var(--bg-input);
-  border: 1px solid var(--border-default);
-  border-radius: 7px;
+  gap: 10px;
+  font: 400 12px/1.45 var(--font-sans);
+  color: var(--text-secondary);
 }
-.pss__role + .pss__role { margin-top: 6px; }
-.pss__role-icon {
-  width: 28px;
-  height: 28px;
+.pss__status-line > .pss__badge { flex: none; }
+/* `.pss__row-r` is a stretch column; a lone button in it hugs its label,
+   as `.pss__top-btn` does. */
+.pss__row-r > .pss__key-btn { align-self: flex-start; }
+
+/* AI Providers hub → Jobs: each job, who runs it, and its fallback. */
+.pss__jobs-summary {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.pss__jobs-summary-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 220px) 20px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  font: 400 12px/1.4 var(--font-sans);
+}
+.pss__jobs-summary-row:first-child { padding-top: 0; }
+.pss__jobs-summary-row:last-child { border-bottom: 0; padding-bottom: 0; }
+.pss__jobs-summary-job { color: var(--text-secondary); }
+.pss__jobs-summary-arrow { color: var(--text-muted); }
+.pss__jobs-summary-who {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  min-width: 0;
+}
+.pss__jobs-summary-name { font-weight: 600; }
+.pss__jobs-summary-model {
+  font: 500 11px/1.3 var(--font-mono);
+  color: var(--text-muted);
+}
+.pss__jobs-summary-fallback {
+  font: 500 11px/1.3 var(--font-sans);
+  color: var(--text-muted);
+}
+
+/* The jobs a provider runs, on its AI Providers row. */
+.pss__job-chips {
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg-panel-elevated);
-  border: 1px solid var(--accent-border);
-  border-radius: 6px;
-  color: var(--accent);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
   flex-shrink: 0;
+  max-width: 40%;
+}
+.pss__job-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--accent-border);
+  border-radius: 999px;
+  color: var(--accent-bright);
+  font: 600 10px/1.4 var(--font-sans);
+  white-space: nowrap;
+}
+.pss__job-chip.is-fallback {
+  border-color: var(--border-default);
+  color: var(--text-secondary);
+}
+
+/* Caption fallback, nested under the Captions job's pickers. */
+.pss__role-fallback {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
 }
 .pss__role-l {
   flex: 1;
@@ -2199,126 +2326,10 @@ a.pss__top-btn[aria-disabled="true"]:hover {
   font: 600 12px/1.3 var(--font-sans);
   color: var(--text-primary);
 }
-.pss__role-sub {
-  font: 500 11px/1.3 var(--font-mono);
-  color: var(--text-muted);
-}
-.pss__role-arrow {
-  color: var(--text-subtle);
-  font: 700 12px/1 var(--font-mono);
-}
-.pss__role-provider {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  height: 30px;
-  padding: 0 12px;
-  background: var(--bg-panel);
-  border: 1px solid var(--accent-border);
-  border-radius: 6px;
-  color: var(--accent-bright);
-  font: 600 12px/1 var(--font-sans);
-  cursor: pointer;
-  flex-shrink: 0;
-  min-width: 168px;
-}
-.pss__role-provider:hover { background: var(--bg-row-active); }
-.pss__role-provider svg { color: var(--text-muted); margin-left: auto; }
-.pss__role-provider b { font: 600 12px/1 var(--font-sans); color: var(--accent-bright); }
-/* Model-ID label inside a static (read-only) provider chip. Mono font
-   marks it as an identifier; muted color keeps the provider name
-   dominant. */
-.pss__role-model {
-  color: var(--text-muted);
-  font: 500 11px/1 var(--font-mono);
-  margin-left: 2px;
-}
-
-/* Right-edge slot when a Job-routing row hosts a real control (e.g. a
-   <select>) instead of a static "Provider model" label. We intentionally
-   do NOT wrap in .pss__role-provider here — the control inside (e.g.
-   .pss__select) already carries its own border + padding, and nesting
-   would produce double chrome. The provider name sits next to the
-   control with the same accent color so the row still reads as one
-   coherent unit. */
-.pss__role-control {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-.pss__role-control b { font: 600 12px/1 var(--font-sans); color: var(--accent-bright); }
-
-/* AI Features → Default agents body. `.pss__card-body` has no padding of
-   its own (every other card child is a self-padding Row), so the intro and
-   the job rows carry the same 20px inset a Row does — without it the intro
-   text sat flush against the card's left edge. */
-.pss__roles {
-  padding: 16px 20px 20px;
-}
-
-/* Short intro line at the top of the Default agents card. */
-.pss__role-intro {
-  margin: 0 0 12px;
-  font: 500 12px/1.5 var(--font-sans);
-  color: var(--text-secondary);
-  max-width: 64ch;
-}
-
-/* A ROUTABLE job row: name + description on top, the Provider / Model /
-   Reasoning controls on a full-width row below (more space than the inline
-   right-edge chip the read-only rows use). */
-.pss__role--routable {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 10px;
-}
-.pss__role-head {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-.pss__role-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  /* Align with the text column (icon width + its gap). */
-  padding-left: 42px;
-}
-.pss__role-controls .pss__ai-surface-field {
-  flex: 1 1 0;
-  min-width: 150px;
-}
-.pss__role-controls .pss__ai-surface-select {
-  width: 100%;
-  min-width: 0;
-}
-
-/* Caption fallback, nested under the Captions job's own fields and aligned
-   with them. Its fields reuse .pss__role-controls; the padding-left that
-   aligns a job's fields with its text column is already applied by this box. */
-.pss__role-fallback {
-  margin-left: 42px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 10px 12px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-subtle);
-  border-radius: 7px;
-}
-.pss__role-fallback .pss__role-controls { padding-left: 0; }
 .pss__role-fallback-head {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-}
-/* Both sit on the heading's line, not centred against the explanation. */
-.pss__role-fallback-arrow {
-  flex: none;
-  margin-top: 2px;
-  color: var(--text-muted);
-  font: 600 12px/1 var(--font-mono);
 }
 .pss__role-fallback-head > .pss__switch { flex: none; }
 .pss__role-fallback-sub {

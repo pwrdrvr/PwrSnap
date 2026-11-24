@@ -482,6 +482,45 @@ describe("AI Providers page — hub and provider screens", () => {
     expect(window.location.hash).toBe("#stage=settings&page=ai&sub=qwen");
   });
 
+  test("the hub opens on the Jobs card, which says who runs each job and links to AI Features", async () => {
+    const s = settings({
+      defaults: { libraryChat: { provider: "acp:kimi" }, sizzleChat: {}, enrichment: {} }
+    });
+    const page = await render(createElement(AIProvidersPage, { sub: null }), s);
+    const jobsCard = page.querySelector(".pss__card");
+    expect(jobsCard?.querySelector(".pss__card-title")?.textContent).toBe("Jobs");
+    const rows = Array.from(jobsCard?.querySelectorAll(".pss__jobs-summary-row") ?? []).map((row) => [
+      row.querySelector(".pss__jobs-summary-job")?.textContent,
+      row.querySelector(".pss__jobs-summary-name")?.textContent
+    ]);
+    expect(rows).toEqual([
+      ["Capture captions, tags & OCR", "Codex"],
+      ["Library chat", "Kimi Code CLI"],
+      ["Sizzle Reel chat", "Codex"]
+    ]);
+    // The action sits beside the header's toggle, never inside it.
+    const change = button(jobsCard, "Change in AI Features");
+    expect(change.closest(".pss__card-hdr")).toBeNull();
+    await click(change);
+    expect(window.location.hash).toBe("#stage=settings&page=ai-features&sub=default-agents");
+  });
+
+  test("each provider row names the jobs it runs; an idle one names none", async () => {
+    const s = settings({
+      defaults: { libraryChat: { provider: "acp:kimi" }, sizzleChat: {}, enrichment: {} }
+    });
+    const page = await render(createElement(AIProvidersPage, { sub: null }), s);
+    const chips = (name: string): string[] => {
+      const row = Array.from(page.querySelectorAll(".pss__prov-row")).find(
+        (el) => el.querySelector(".pss__prov-name")?.textContent === name
+      );
+      return Array.from(row?.querySelectorAll(".pss__job-chip") ?? []).map((el) => el.textContent ?? "");
+    };
+    expect(chips("Codex")).toEqual(["Captions", "Sizzle Reel chat"]);
+    expect(chips("Kimi Code CLI")).toEqual(["Library chat"]);
+    expect(chips("Qwen Code")).toEqual([]);
+  });
+
   test("the Codex screen shows Codex controls and the jobs that run on it", async () => {
     const page = await render(createElement(AIProvidersPage, { sub: "codex" }));
 
@@ -509,7 +548,7 @@ describe("AI Providers page — hub and provider screens", () => {
     expect(page.querySelector(".pss__prov-strip-items")?.textContent).toBe("Library chat");
 
     await click(
-      Array.from(page.querySelectorAll("button")).find((b) => b.textContent === "Change defaults")
+      Array.from(page.querySelectorAll("button")).find((b) => b.textContent === "Change in AI Features")
     );
     expect(window.location.hash).toBe("#stage=settings&page=ai-features&sub=default-agents");
   });
@@ -596,7 +635,7 @@ describe("AI Features — jump-to sections", () => {
       container?.querySelectorAll("#pss-sb-sublist-ai-features .pss__sb-sub") ?? []
     );
     expect(rows.map((row) => row.querySelector(".pss__sb-sublabel")?.textContent)).toEqual([
-      "Default agents",
+      "Jobs",
       "Enrichment",
       "Usage",
       "Guidance"
@@ -638,11 +677,18 @@ describe("AI Features — jump-to sections", () => {
     expect(document.activeElement).toBe(header());
   });
 
-  test("the Default agents intro sits inside the padded body, not on the card edge", async () => {
+  test("Jobs is one settings row per job, after the card's intro", async () => {
     const page = await render(createElement(AIFeaturesPage, { sub: null, request: 0 }));
-    const intro = page.querySelector(".pss__role-intro");
-    expect(intro?.parentElement?.classList.contains("pss__roles")).toBe(true);
-    expect(intro?.closest(".pss__card-body")).not.toBeNull();
+    const body = page.querySelector(
+      `#${settingsSectionId("ai-features", "default-agents")} .pss__card-body`
+    );
+    expect(body?.firstElementChild?.classList.contains("pss__card-intro")).toBe(true);
+    const jobs = Array.from(body?.querySelectorAll(":scope > .pss__row.pss__job") ?? []);
+    expect(jobs.map((row) => row.querySelector(".pss__row-label")?.textContent)).toEqual([
+      "Capture captions, tags & OCR",
+      "Library chat",
+      "Sizzle Reel chat"
+    ]);
   });
 
   test("a section opened from another page lands on its card; a later jump travels there", async () => {
@@ -878,15 +924,15 @@ describe("Direct API connections", () => {
     withCloudKey();
     const page = await render(createElement(AIProvidersPage, { sub: null }), directSettings());
     const cards = Array.from(page.querySelectorAll(".pss__card"));
-    expect(cards.map((c) => c.querySelector(".pss__card-title")?.textContent)).toEqual(["Agents", "Connections"]);
-    const rows = Array.from(cards[1]?.querySelectorAll(".pss__prov-row") ?? []);
+    expect(cards.map((c) => c.querySelector(".pss__card-title")?.textContent)).toEqual(["Jobs", "Agents", "Connections"]);
+    const rows = Array.from(cards[2]?.querySelectorAll(".pss__prov-row") ?? []);
     expect(rows.map((r) => r.querySelector(".pss__dapi-cap")?.textContent)).toEqual(["api.fixture-cloud.example", "THIS COMPUTER"]);
     expect(rows.map((r) => r.querySelector(".pss__prov-meta")?.textContent)).toEqual([
       "Anthropic Messages · API key · 1 model", "Chat Completions · no auth · 1 model"]);
     // IMG only where the saved answer is Yes — never for Unknown.
     expect(rows.map((r) => r.querySelector(".pss__dapi-mchip")?.textContent)).toEqual(["Granola LargeIMG", "muesli-8b"]);
     expect(rows.map((r) => r.querySelector(".pss__badge")?.textContent)).toEqual(["Ready", "Ready"]);
-    await click(button(cards[1], "+ Add connection"));
+    await click(button(cards[2], "+ Add connection"));
     expect(window.location.hash).toBe("#stage=settings&page=ai&sub=new-connection");
   });
 

@@ -4,13 +4,17 @@
 
 import type { ReactElement } from "react";
 import { monogram, whereLabel, type ConnectionStatus } from "../direct-api-status";
-import { statusBadgeClass } from "../ai-provider-status";
+import { statusBadgeClass, type JobRunner } from "../ai-provider-status";
+import { JobChips } from "../components";
 
 export function ConnectionIndex({
   connections,
+  runners = [],
   onOpen
 }: {
   connections: readonly ConnectionStatus[];
+  /** Every job's runner, so each row can name the jobs it runs. */
+  runners?: readonly JobRunner[];
   onOpen: (sub: string) => void;
 }): ReactElement {
   return (
@@ -52,6 +56,7 @@ export function ConnectionIndex({
                 </span>
               ) : null}
             </span>
+            <JobChips runners={runners} sub={status.sub} />
             <span className={"pss__badge" + statusBadgeClass(status.tone)}>{status.badge}</span>
             <span className="pss__prov-chev" aria-hidden="true">
               ›

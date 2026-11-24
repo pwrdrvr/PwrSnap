@@ -20,6 +20,7 @@ import type {
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { Card, Row } from "../components";
 import { dispatch } from "../../../lib/pwrsnap";
+import { settingsGroupOf, settingsPageName } from "../settings-categories";
 
 type RowSpec = {
   permission: RecordingPermission;
@@ -300,8 +301,8 @@ export function SystemPermissionsPage(): ReactElement {
     <>
       <div className="pss__main-hdr">
         <div className="pss__main-hdr-l">
-          <div className="pss__main-eyebrow">Capture</div>
-          <h1 className="pss__main-title">System Permissions</h1>
+          <div className="pss__main-eyebrow">{settingsGroupOf("system-permissions")}</div>
+          <h1 className="pss__main-title">{settingsPageName("system-permissions")}</h1>
           <p className="pss__main-sub">
             {isDarwin ? (
               <>

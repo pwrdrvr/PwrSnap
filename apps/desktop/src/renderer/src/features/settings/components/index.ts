@@ -12,3 +12,4 @@ export {
   type HotkeyChange,
   type HotkeyResetModalProps
 } from "./HotkeyResetModal";
+export { JobChips } from "./JobChips";

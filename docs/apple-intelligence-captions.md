@@ -16,7 +16,7 @@ The check reads model availability without generating a response.
 1. Open **Settings → AI Providers → Apple Intelligence**. The screen says what
    macOS reports about the model.
 2. When it reads **Ready**, choose **Use for captions**. That sets
-   *Capture captions, tags & OCR* in **AI Features → Default agents** to
+   *Capture captions, tags & OCR* in **AI Features → Jobs** to
    *Apple Intelligence · on this Mac*. Library chat and Sizzle Reel chat are
    unchanged.
 

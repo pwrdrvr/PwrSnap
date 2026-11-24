@@ -41,6 +41,7 @@ import { Card, Row } from "../components";
 import { ReleaseNotesLink } from "../../update/ReleaseNotesLink";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import { useSettingsContext } from "../SettingsContext";
+import { settingsGroupOf, settingsPageName } from "../settings-categories";
 
 const TRAIN_LABEL: Record<UpdateTrain, string> = {
   stable: "Stable",
@@ -415,8 +416,8 @@ export function UpdatesPage(): ReactElement {
     <>
       <div className="pss__main-hdr">
         <div className="pss__main-hdr-l">
-          <div className="pss__main-eyebrow">Updates</div>
-          <h1 className="pss__main-title">Updates</h1>
+          <div className="pss__main-eyebrow">{settingsGroupOf("updates")}</div>
+          <h1 className="pss__main-title">{settingsPageName("updates")}</h1>
           <p className="pss__main-sub">
             Which published build PwrSnap follows, and when it installs one.
           </p>

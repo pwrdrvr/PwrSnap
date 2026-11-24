@@ -166,20 +166,48 @@ afterEach(async () => {
 });
 
 describe("DeveloperPage", () => {
-  test("hosts developer mode and hot CPU diagnostics under Advanced", async () => {
+  test("is Troubleshooting under Support, in PwrAgent's and PwrGit's card order", async () => {
     await renderDeveloper();
-    expect(container?.textContent).toContain("Advanced");
-    expect(container?.textContent).toContain("Developer");
-    expect(container?.textContent).toContain("Show developer menu items");
-    expect(container?.textContent).toContain("Hot CPU profiling");
+    expect(container?.querySelector(".pss__main-eyebrow")?.textContent).toBe("Support");
+    expect(container?.querySelector("h1")?.textContent).toBe("Troubleshooting");
+    expect(
+      Array.from(container!.querySelectorAll(".pss__card-title")).map((el) => el.textContent)
+    ).toEqual(["Chrome DevTools", "Logs", "CPU and heap monitoring"]);
   });
 
   test("developer mode patches the existing general setting", async () => {
     await renderDeveloper();
     await act(async () => {
-      switchIn("Show developer menu items").click();
+      switchIn("Developer Mode").click();
     });
     expect(patchMock).toHaveBeenCalledWith({ general: { developerMode: true } });
+  });
+
+  test("the Logs card opens the Logs window and reveals the log file", async () => {
+    await renderDeveloper();
+    await act(async () => {
+      buttonByText("Open Logs").click();
+    });
+    await act(async () => {
+      buttonByText("Reveal Log File").click();
+    });
+    expect(dispatchCalls.map((call) => call.name)).toEqual(
+      expect.arrayContaining(["logs:openWindow", "logs:revealFile"])
+    );
+  });
+
+  test("a Logs failure is said beside the buttons", async () => {
+    await renderDeveloper(baseSettings, async (name) =>
+      name === "logs:openWindow"
+        ? { ok: false, error: { message: "window refused" } }
+        : { ok: true, value: undefined }
+    );
+    await act(async () => {
+      buttonByText("Open Logs").click();
+    });
+    expect(container?.querySelector('[role="status"]')?.textContent).toBe(
+      "Couldn't open the Logs window: window refused"
+    );
   });
 
   test("start capture arms hot CPU profiling through settings", async () => {

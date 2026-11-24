@@ -47,6 +47,7 @@ import { Card, Row, SegmentedControl, Switch, type SegmentOption } from "../comp
 import { dispatch } from "../../../lib/pwrsnap";
 import { useSettingsContext } from "../SettingsContext";
 import { setActivePage } from "../useActivePage";
+import { settingsGroupOf, settingsPageName } from "../settings-categories";
 
 /** Shared by both audio rows off macOS. One constant, not two literals:
  *  only one of the two is pinned by a test, so a copy edit to the other
@@ -227,14 +228,14 @@ export function GeneralPage(): ReactElement {
     <>
       <div className="pss__main-hdr">
         <div className="pss__main-hdr-l">
-          <div className="pss__main-eyebrow">General</div>
-          <h1 className="pss__main-title">General</h1>
+          <div className="pss__main-eyebrow">{settingsGroupOf("general")}</div>
+          <h1 className="pss__main-title">{settingsPageName("general")}</h1>
           <p className="pss__main-sub">Appearance, capture defaults, and startup.</p>
         </div>
       </div>
 
       <Card eyebrow="APPEARANCE" title="Appearance">
-        <Row label="Color scheme" sub={themeHelp} tag="theme">
+        <Row label="Color scheme" sub={themeHelp}>
           <SegmentedControl<AppearanceTheme>
             options={THEME_OPTIONS}
             value={theme}
@@ -247,7 +248,6 @@ export function GeneralPage(): ReactElement {
         <Row
           label="Which mode the selector starts in"
           sub="Ask offers both and starts on Snap: ↵ snaps, or press R to switch to Record and then ↵. Snap hides the Record action entirely. Record starts on Record, and S switches back to Snap. The Video Capture hotkey always records, whichever you pick."
-          tag="action"
         >
           <SegmentedControl<QuickCaptureAction>
             options={QUICK_CAPTURE_ACTION_OPTIONS}
@@ -261,7 +261,6 @@ export function GeneralPage(): ReactElement {
         <Row
           label="Selector controls"
           sub="Shutter is a Snap | Record switch beside one round shutter, with each source as a round button that names its device. Clapperboard puts every source in a fixed slate under the bar. Both work the same way."
-          tag="hud"
         >
           <SegmentedControl<SelectorHudStyle>
             options={SELECTOR_HUD_OPTIONS}
@@ -278,7 +277,6 @@ export function GeneralPage(): ReactElement {
         <Row
           label="Keep recent captures on the screen edge"
           sub="When a capture's popup closes, the capture stays as a tab on the edge of the screen until you dismiss it. A tab shows what the AI did: ✓ done, ! failed. Turning this off hides the tabs. Your captures and AI are not affected."
-          tag="popup"
         >
           <Switch
             on={showRecentCaptureSidebar}
@@ -295,7 +293,6 @@ export function GeneralPage(): ReactElement {
         <Row
           label="Capture the cursor in screenshots"
           sub="Adds the mouse pointer to new screenshots as its own layer — select, move, or delete it in the editor like any annotation."
-          tag="images"
         >
           <Switch
             on={imageCaptureCursor}
@@ -308,7 +305,6 @@ export function GeneralPage(): ReactElement {
         <Row
           label="Capture the cursor in recordings"
           sub="Bakes the pointer into new video recordings. Press C in the recording selector to override per-recording."
-          tag="video"
         >
           <Switch
             on={videoCaptureCursor}
@@ -324,7 +320,6 @@ export function GeneralPage(): ReactElement {
         <Row
           label="Outline the area being recorded"
           sub="Draws a tangerine frame around the recorded region while a video capture runs. Never appears in the recording itself."
-          tag="video"
         >
           <Switch
             on={showRegionFrame}
@@ -344,7 +339,6 @@ export function GeneralPage(): ReactElement {
               ? "The default for new recordings — captures what your Mac is playing alongside the screen. Rides the Screen Recording grant you already gave PwrSnap, so there is no second permission to enable. Press A in the capture selector to change it for one recording without changing this default."
               : AUDIO_UNSUPPORTED_SUB
           }
-          tag="video"
         >
           <Switch
             on={includeSystemAudio}
@@ -361,7 +355,6 @@ export function GeneralPage(): ReactElement {
               ? "The default for new recordings — captures your voice alongside the screen, for narration and walkthroughs. macOS asks for access the first time you switch this on. Press M in the capture selector to change it for one recording without changing this default."
               : AUDIO_UNSUPPORTED_SUB
           }
-          tag="video"
         >
           <Switch
             on={includeMicrophone}
@@ -377,7 +370,6 @@ export function GeneralPage(): ReactElement {
           <Row
             label="macOS hasn't granted microphone access"
             sub="macOS won't prompt from here twice. Turn Microphone on for PwrSnap in System Settings → Privacy & Security; this row clears itself when you come back."
-            tag="optional"
           >
             <button
               className="pss__top-btn"
@@ -394,7 +386,6 @@ export function GeneralPage(): ReactElement {
         <Row
           label="Start PwrSnap when you sign in"
           sub="Starts in the background — the tray icon and capture hotkeys are ready immediately, without opening the Library."
-          tag="login"
         >
           <Switch on={launchAtLogin} onChange={onLaunchAtLoginChange} />
         </Row>
@@ -404,7 +395,6 @@ export function GeneralPage(): ReactElement {
           <Row
             label="Development build"
             sub="OS registration is skipped in unpackaged builds — the preference is saved, but only packaged builds add the login item."
-            tag="dev"
           >
             <span className="pss__opt-sub">Saved only</span>
           </Row>

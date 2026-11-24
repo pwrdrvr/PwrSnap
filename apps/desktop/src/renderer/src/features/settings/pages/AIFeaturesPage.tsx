@@ -54,7 +54,7 @@ import { Card, Row, Switch } from "../components";
 import { AiConsentDialog } from "../../shared/AiConsentDialog";
 import { enrichmentBackendLabel } from "../../shared/CodexStatusPill";
 import { useAiProvidersContext, useInUseAcpModelProbes } from "../AiProvidersContext";
-import { acpAgentIdOfProvider, AI_SURFACE_LABELS } from "../ai-provider-status";
+import { acpAgentIdOfProvider, AI_SURFACE_LABELS, captionFallbackOn } from "../ai-provider-status";
 import { captionFallbackOnValue, runsOnCodex } from "../caption-fallback";
 import { AI_FEATURE_SECTION_LABELS, settingsSectionId } from "../settings-nav";
 import { useSettingsContext } from "../SettingsContext";
@@ -69,6 +69,7 @@ import {
 } from "./ai-format";
 import { ChatSettingsCard } from "./ChatSettingsCard";
 import { useEnrichmentRepairCounts } from "../../library/enrichment-repair/use-enrichment-repair-counts";
+import { settingsGroupOf, settingsPageName } from "../settings-categories";
 
 type AIFeaturesPageProps = {
   /** Section to bring into view, or `null` for the top of the page.
@@ -274,7 +275,8 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
     const refusalConsentKey = refusalRoute?.consentKey ?? null;
     const needsApproval = refusalConsentKey !== null && refusalConsentKey !== settings.ai.appleRefusalFallbackConsent;
     const hasFallback = enrichmentFallback !== null;
-    const on = !paused && (primaryOnApple ? refusalRoute !== null && !needsApproval : hasFallback);
+    // The same answer the AI Providers hub shows for this fallback.
+    const on = captionFallbackOn(settings.ai);
     const canTurnOn = primaryOnApple ? refusalRoute !== null : hasFallback
       ? enrichmentProviderBackend(fallbackProvider, enabledAgentIds) !== enrichmentProviderBackend(enrichmentPrimary, enabledAgentIds)
       : onValue !== null;
@@ -393,12 +395,12 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
     <>
       <div className="pss__main-hdr">
         <div className="pss__main-hdr-l">
-          <div className="pss__main-eyebrow">General</div>
-          <h1 className="pss__main-title">AI Features</h1>
+          <div className="pss__main-eyebrow">{settingsGroupOf("ai-features")}</div>
+          <h1 className="pss__main-title">{settingsPageName("ai-features")}</h1>
           <p className="pss__main-sub">
             What PwrSnap uses AI for — captions and tags for new captures, and
             chatting about a snap or a Sizzle Reel — and which provider does
-            each job. None of it runs until a provider is set up in{" "}
+            each job. A provider can be picked here once it is set up in{" "}
             <button
               type="button"
               className="pss__text-link"
@@ -415,7 +417,7 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
 
       <Card
         {...section("default-agents")}
-        eyebrow="JOBS"
+        eyebrow="DEFAULTS"
         title={AI_FEATURE_SECTION_LABELS["default-agents"]}
         headerAction={
           <button
@@ -428,27 +430,23 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
           </button>
         }
       >
-        <div className="pss__roles">
-          <p className="pss__role-intro">
-            Pick the agent, model, and reasoning effort for each job. Leave a
-            field on Default to let PwrSnap choose. Changes apply to new
-            captures and new chats; conversations already under way keep what
-            they started with.
-          </p>
-          {surfaceControl(
-            "enrichment",
-            "Caption, tags + extracted text — one turn per capture, shown in Library detail + Float-Over"
-          )}
-          {surfaceControl("libraryChat", "Ask the agent about a snap")}
-          {surfaceControl("sizzleChat", "Composer agent for the reel")}
-        </div>
+        <p className="pss__card-intro">
+          Which provider, model and reasoning effort each job uses. Default lets
+          PwrSnap choose. Changes apply to new captures and new chats;
+          conversations already under way keep what they started with.
+        </p>
+        {surfaceControl(
+          "enrichment",
+          "One turn per capture. Shown in Library detail and the Float-Over."
+        )}
+        {surfaceControl("libraryChat", "Ask the agent about a snap.")}
+        {surfaceControl("sizzleChat", "The composer agent for a reel.")}
       </Card>
 
       <Card {...section("enrichment")} eyebrow="CAPTURES" title={AI_FEATURE_SECTION_LABELS.enrichment}>
         <Row
           label="Enrich new captures"
-          sub="Writes a caption, tags, a filename, and the text it can read in each new capture, using the agent chosen for captions above."
-          tag={settings?.ai.enabled ? "on" : "off"}
+          sub="Writes a caption, tags, a filename, and the text it can read in each new capture, using the Captions job above."
         >
           <Switch
             on={settings?.ai.enabled ?? false}
@@ -470,29 +468,22 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
         </Row>
         <Row
           label="Budget"
-          sub="Enrichment runs draw from a small budget that refills over time, so a burst of captures can't run up a bill. If it keeps running dry, PwrSnap turns enrichment off; switch it back on above. A Library re-run you start doesn't draw on it."
+          sub="A small budget that refills over time, so a burst of captures can't run up a bill. If it keeps running dry, PwrSnap turns enrichment off; switch it back on above. A Library re-run you start doesn't draw on it."
         >
-          <div className="pss__test">
-            <span className="pss__test-icon">AI</span>
-            <div className="pss__test-l">
-              <span className="pss__test-cmd">
-                {safetyDisabled ? "Turned off for cost safety" : "Enrichment budget"}
-              </span>
-              <span className="pss__test-sub">
-                {budgetStatusSubLine(budgetStatus, settings?.ai.budgetSafetyDisabledAt ?? null)}
-              </span>
-            </div>
-            <div className="pss__test-r">
-              <span className={"pss__badge " + budgetBadgeClass(budgetStatus)}>
-                {budgetBadgeLabel(budgetStatus)}
-              </span>
-            </div>
+          <div className="pss__status-line" aria-live="polite">
+            <span className={"pss__badge " + budgetBadgeClass(budgetStatus)}>
+              {budgetBadgeLabel(budgetStatus)}
+            </span>
+            <span>
+              {safetyDisabled ? "Turned off for cost safety. " : ""}
+              {budgetStatusSubLine(budgetStatus, settings?.ai.budgetSafetyDisabledAt ?? null)}
+            </span>
           </div>
         </Row>
         <Row
           label="Rate limit"
-          sub={`How fast enrichment may start: a burst back to back, then a steady rate. The default (${AI_ENRICHMENT_RATE_LIMIT_DEFAULT.burst} at once, ${AI_ENRICHMENT_RATE_LIMIT_DEFAULT.perMinute} a minute) is cautious; raise it for a fast hosted model or to work through a backlog. A Library re-run starts at the steady rate on its own, alongside new captures. The cost-safety cutoff still applies.`}
-          tag={settings?.ai.enrichmentRateLimit != null ? "custom" : "default"}
+          sub={`A burst back to back, then a steady rate. The default (${AI_ENRICHMENT_RATE_LIMIT_DEFAULT.burst} at once, ${AI_ENRICHMENT_RATE_LIMIT_DEFAULT.perMinute} a minute) is cautious; raise it for a fast hosted model or a backlog. A Library re-run runs at the steady rate alongside new captures. The cost-safety cutoff still applies.`}
+          {...(settings?.ai.enrichmentRateLimit != null ? { tag: "custom" } : {})}
         >
           <EnrichmentRateLimitControl
             value={settings?.ai.enrichmentRateLimit ?? null}
@@ -526,13 +517,13 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
           </button>
         }
       >
-        <Row
-          label="PwrSnap usage"
-          sub="AI runs from this app, on Codex and on ACP agents. Cost is what the tokens would cost at public list prices, not what your account is billed."
-          tag="30 days"
-        >
+        <div className="pss__card-pad">
+          <p className="pss__card-caption">
+            AI runs from this app, on every provider. Cost is what the tokens
+            would cost at public list prices, not what your account is billed.
+          </p>
           <AiUsagePanel summary={usageSummary} runs={usageRuns} loading={usageLoading} />
-        </Row>
+        </div>
       </Card>
 
       <ChatSettingsCard {...section("guidance")} />
@@ -550,7 +541,7 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
   );
 }
 
-// ---- Default agents: one row per job -----------------------------------
+// ---- Jobs: one row per job ---------- -----------------------------------
 
 /** Friendly model name for a picker option. Prefer the display name; only fall
  *  back to the raw id when there's no friendlier name. (We used to append the id
@@ -843,7 +834,7 @@ export function AiSurfaceDefaultControl({
   }, [modelValue, onChange, reasoningValue, staleCodexReasoning]);
 
   const controls = (
-      <div className="pss__role-controls">
+      <div className="pss__job-fields">
         <label className="pss__ai-surface-field">
           <span className="pss__ai-surface-field-label">Provider</span>
           <select
@@ -966,19 +957,19 @@ export function AiSurfaceDefaultControl({
       </div>
   );
   if (embedded) return controls;
+  // One settings row per job, like every other page: the job's name and
+  // what it does in the label column, its pickers (and, for captions, the
+  // fallback) on the right.
   return (
-    <div className="pss__role pss__role--routable" data-surface={surface}>
-      <div className="pss__role-head">
-        <span className="pss__role-icon" aria-hidden="true">
-          ◆
-        </span>
-        <div className="pss__role-l">
-          <span className="pss__role-name">{name}</span>
-          <span className="pss__role-sub">{sub}</span>
-        </div>
+    <div className="pss__row pss__job" data-surface={surface}>
+      <div className="pss__row-l">
+        <div className="pss__row-label">{name}</div>
+        {sub.length > 0 ? <div className="pss__row-sub">{sub}</div> : null}
       </div>
-      {controls}
-      {children}
+      <div className="pss__row-r">
+        {controls}
+        {children}
+      </div>
     </div>
   );
 }
@@ -1044,7 +1035,6 @@ function EnrichmentFallbackControl({
   return (
     <div className="pss__role-fallback" data-on={on ? "true" : "false"}>
       <div className="pss__role-fallback-head">
-        <span className="pss__role-fallback-arrow" aria-hidden="true">↳</span>
         <div className="pss__role-l">
           <span className="pss__role-name">
             If {primaryLabel} {condition}{on ? ", use" : ""}

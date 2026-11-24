@@ -104,9 +104,6 @@ export function HotCpuCaptureRulesRow({ rules: savedRules, environment, disabled
   const high = rules[rules.high.mode];
   const highIsLast = rules.high.enabled && !rules.slowburn.enabled;
   const slowburnIsLast = rules.slowburn.enabled && !rules.high.enabled;
-  const names = environment?.renderer.map(({ id }) => id) ??
-    [rules.high.enabled ? rules.high.mode : null, rules.slowburn.enabled ? "slowburn" as const : null]
-      .filter((id) => id !== null);
   const clauses = [
     ...(rules.high.enabled ? [`at least ${high.thresholdPercent}% of one core over ${durationLabel(high.durationMs, high.durationMs / cadenceMs)}`] : []),
     ...(rules.slowburn.enabled ? [`at least ${rules.slowburn.thresholdPercent}% of one core over ${durationLabel(rules.slowburn.durationMs, rules.slowburn.durationMs / cadenceMs)}`] : [])
@@ -136,8 +133,7 @@ export function HotCpuCaptureRulesRow({ rules: savedRules, environment, disabled
 
   return (
     <Row label="Capture rules" labelId={labelId}
-      sub="Start a capture when any checked rule matches. Rules apply independently to the main process and the Library renderer."
-      tag={names.map((id) => formatHotCpuProfileTriggerMode(id).toLowerCase()).join(" + ")}>
+      sub="Start a capture when any checked rule matches. Rules apply independently to the main process and the Library renderer.">
       <div className="pss__capture-rules" role="group" aria-busy={pendingRules !== null} aria-labelledby={labelId} aria-describedby={summaryId}>
         <div className="pss__capture-rule">
           <div className="pss__rule-heading">

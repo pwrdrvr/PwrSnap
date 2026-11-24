@@ -7,6 +7,7 @@ import { useEffect, useState, type ReactElement } from "react";
 import { PWRSNAP_RELEASES_URL, releaseNotesUrl } from "@pwrsnap/shared";
 import { Card, Row } from "../components";
 import { dispatch } from "../../../lib/pwrsnap";
+import { settingsGroupOf, settingsPageName } from "../settings-categories";
 
 type VersionInfo = {
   version: string;
@@ -67,8 +68,8 @@ export function AboutPage(): ReactElement {
     <>
       <div className="pss__main-hdr">
         <div className="pss__main-hdr-l">
-          <div className="pss__main-eyebrow">Advanced</div>
-          <h1 className="pss__main-title">About PwrSnap</h1>
+          <div className="pss__main-eyebrow">{settingsGroupOf("about")}</div>
+          <h1 className="pss__main-title">{settingsPageName("about")}</h1>
           <p className="pss__main-sub">
             Build metadata, license terms, and links to the project. PwrSnap is
             open-source software from PwrDrvr LLC, released under the MIT
@@ -78,16 +79,16 @@ export function AboutPage(): ReactElement {
       </div>
 
       <Card eyebrow="BUILD" title="Build">
-        <Row label="App version" sub="Reported by Electron at runtime." tag="version">
+        <Row label="App version" sub="Reported by Electron at runtime.">
           <span className="pss__opt-primary">{info?.version ?? "—"}</span>
         </Row>
-        <Row label="Electron" sub="Runtime version." tag="electron">
+        <Row label="Electron" sub="Runtime version.">
           <span className="pss__opt-primary">{info?.electronVersion ?? "—"}</span>
         </Row>
-        <Row label="Node" sub="Bundled with Electron." tag="node">
+        <Row label="Node" sub="Bundled with Electron.">
           <span className="pss__opt-primary">{info?.nodeVersion ?? "—"}</span>
         </Row>
-        <Row label="Chromium" sub="Renderer engine." tag="chrome">
+        <Row label="Chromium" sub="Renderer engine.">
           <span className="pss__opt-primary">{info?.chromeVersion ?? "—"}</span>
         </Row>
         {error !== null ? (
@@ -101,14 +102,12 @@ export function AboutPage(): ReactElement {
         <Row
           label="Terms"
           sub="PwrSnap is released under the MIT License — free to use, modify, and redistribute. See the LICENSE file for the full terms."
-          tag="MIT"
         >
           <span className="pss__opt-primary">MIT · © 2026 PwrDrvr LLC</span>
         </Row>
         <Row
           label="Third-party notices"
           sub="Bundled dependency and font notices for this app build."
-          tag="notices"
         >
           <button
             className="pss__top-btn"
@@ -128,7 +127,7 @@ export function AboutPage(): ReactElement {
       </Card>
 
       <Card eyebrow="RELEASE NOTES" title="Changelog">
-        <Row label="Release notes" sub="Bundled changelog for this app build." tag="changelog">
+        <Row label="Release notes" sub="Bundled changelog for this app build.">
           <button
             className="pss__top-btn"
             type="button"
@@ -154,7 +153,6 @@ export function AboutPage(): ReactElement {
                 ? "Notes for every published build."
                 : "Notes for this version, plus everything published since."
           }
-          tag="github"
         >
           {/* An `<a href>`, unlike the two buttons above it, because this row
               reaches a URL and they open an in-app document window — there is
@@ -179,7 +177,7 @@ export function AboutPage(): ReactElement {
       </Card>
 
       <Card eyebrow="LINKS" title="Links">
-        <Row label="Website" sub="Product page." tag="link">
+        <Row label="Website" sub="Product page.">
           <a
             className="pss__opt-primary"
             href="https://pwrsnap.com"
@@ -191,7 +189,7 @@ export function AboutPage(): ReactElement {
             pwrsnap.com
           </a>
         </Row>
-        <Row label="Documentation" sub="Guides and reference." tag="link">
+        <Row label="Documentation" sub="Guides and reference.">
           <a
             className="pss__opt-primary"
             href="https://docs.pwrsnap.com"
@@ -203,7 +201,7 @@ export function AboutPage(): ReactElement {
             docs.pwrsnap.com
           </a>
         </Row>
-        <Row label="Repository" sub="Source on GitHub." tag="link">
+        <Row label="Repository" sub="Source on GitHub.">
           <a
             className="pss__opt-primary"
             href="https://github.com/pwrdrvr/PwrSnap"

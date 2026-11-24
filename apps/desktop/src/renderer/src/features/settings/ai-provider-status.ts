@@ -26,7 +26,10 @@ import {
   APPLE_FM_SETTINGS_SUB,
   BUILT_IN_ACP_AGENT_IDS,
   appleFmStateCopy,
+  appleRefusalFallbackRoute,
   builtInAcpAgentDisplayName,
+  connectionSettingsSub,
+  enrichmentProviderBackend,
   isAppleFmOffered,
   isAppleFmProvider,
   type AppleFmStatus
@@ -276,7 +279,7 @@ export function describeAiProviders(input: AiProviderStatusInput): AiProviderSta
   ];
 }
 
-/** Job names as AI Features → Default agents labels them. */
+/** Job names as AI Features → Jobs labels them. */
 export const AI_SURFACE_LABELS: Readonly<Record<AiSurfaceId, string>> = {
   enrichment: "Capture captions, tags & OCR",
   libraryChat: "Library chat",
@@ -293,26 +296,91 @@ export function acpAgentIdOfProvider(provider: string | undefined): string | nul
     : null;
 }
 
+/** Short job names, for a chip on a provider row. */
+export const AI_SURFACE_SHORT_LABELS: Readonly<Record<AiSurfaceId, string>> = {
+  enrichment: "Captions",
+  libraryChat: "Library chat",
+  sizzleChat: "Sizzle Reel chat"
+};
+
+/** One job and the provider screen that runs it: an AI Providers sub
+ *  (`codex`, an ACP agent id, `apple`) or a Direct API connection's sub
+ *  (`connection:<id>`). `fallback` is the caption fallback, which answers
+ *  only when the primary cannot. */
+export type JobRunner = { surface: AiSurfaceId; role: "primary" | "fallback"; sub: string };
+
 /**
- * The jobs that will actually RUN on `sub`, in Default agents order.
+ * The provider screen a stored job `provider` actually runs on.
  *
  * Mirrors the runtime's resolution, not the stored string: `""`, `"codex"`
- * and an `acp:<id>` whose agent is no longer enabled all land on Codex, so a
- * Codex screen that only counted literal "codex" would claim no jobs while
- * every capture was running through it. OpenAI is not a job backend (it
- * serves Sizzle voiceover), so it never has routed jobs.
+ * and an `acp:<id>` whose agent is no longer enabled all land on Codex, so
+ * a Codex screen that only counted literal "codex" would claim no jobs
+ * while every capture was running through it. The on-device model answers
+ * captions only, so a chat surface naming it runs on Codex. A Direct API
+ * model whose saved model is gone has no screen to name: `null`.
+ */
+function runnerSubOf(settings: Settings, surface: AiSurfaceId, provider: string | undefined): string | null {
+  if (isAppleFmProvider(provider)) return surface === "enrichment" ? APPLE_FM_SETTINGS_SUB : "codex";
+  if (provider?.startsWith("custom:") === true) {
+    const id = provider.slice("custom:".length);
+    const model = settings.ai.customModels?.find((m) => m.id === id);
+    return model !== undefined ? connectionSettingsSub(model.connectionId) : null;
+  }
+  const agentId = acpAgentIdOfProvider(provider);
+  return agentId !== null && settings.ai.acp.enabledAgentIds.includes(agentId) ? agentId : "codex";
+}
+
+/**
+ * Whether the caption fallback would answer today. Behind Apple's model it
+ * is the refusal route, which an off-device destination may only take once
+ * the operator approved that exact destination; behind anything else it is
+ * the saved fallback. Paused is off either way. AI Features' switch shows
+ * this same answer.
+ */
+export function captionFallbackOn(ai: Settings["ai"]): boolean {
+  if (ai.enrichmentFallbackPaused === true) return false;
+  if (isAppleFmProvider(ai.defaults.enrichment.provider)) {
+    const route = appleRefusalFallbackRoute(ai);
+    return route !== null && (route.consentKey === null || route.consentKey === ai.appleRefusalFallbackConsent);
+  }
+  return ai.enrichmentFallback != null;
+}
+
+/** Every job's runner, in AI Features → Jobs order: one primary per job,
+ *  then the caption fallback right after Captions when main would arm it —
+ *  on, and not on the primary's own backend (main's `enrichmentFallbackFor`
+ *  drops that: a second try at what just failed is not a fallback). */
+export function jobRunners(settings: Settings | null): JobRunner[] {
+  if (settings === null) return [];
+  const runners: JobRunner[] = [];
+  for (const surface of AI_SURFACE_ORDER) {
+    const sub = runnerSubOf(settings, surface, settings.ai.defaults[surface].provider);
+    if (sub !== null) runners.push({ surface, role: "primary", sub });
+    const enabledIds = settings.ai.acp.enabledAgentIds;
+    if (
+      surface === "enrichment" &&
+      captionFallbackOn(settings.ai) &&
+      enrichmentProviderBackend(settings.ai.enrichmentFallback?.provider, enabledIds) !==
+        enrichmentProviderBackend(settings.ai.defaults.enrichment.provider, enabledIds)
+    ) {
+      const fallback = runnerSubOf(settings, surface, settings.ai.enrichmentFallback?.provider);
+      if (fallback !== null) runners.push({ surface, role: "fallback", sub: fallback });
+    }
+  }
+  return runners;
+}
+
+/**
+ * The jobs that will actually RUN on `sub`, in AI Features → Jobs order —
+ * as their primary provider; the caption fallback is not counted. OpenAI is
+ * not a job backend (it serves Sizzle voiceover), so it never has routed
+ * jobs.
  */
 export function routedSurfaces(settings: Settings | null, sub: AiProviderSub): AiSurfaceId[] {
-  if (settings === null || sub === "openai") return [];
-  const enabled = new Set(settings.ai.acp.enabledAgentIds);
-  return AI_SURFACE_ORDER.filter((surface) => {
-    const provider = settings.ai.defaults[surface].provider;
-    // Captions only: a chat surface cannot be set to the on-device model.
-    if (surface === "enrichment" && isAppleFmProvider(provider)) return sub === APPLE_FM_SETTINGS_SUB;
-    const agentId = acpAgentIdOfProvider(provider);
-    const backend = agentId !== null && enabled.has(agentId) ? agentId : "codex";
-    return backend === sub;
-  });
+  if (sub === "openai") return [];
+  return jobRunners(settings)
+    .filter((runner) => runner.role === "primary" && runner.sub === sub)
+    .map((runner) => runner.surface);
 }
 
 /**

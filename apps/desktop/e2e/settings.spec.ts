@@ -252,7 +252,7 @@ test("local-agent authorization graph renders named Sessions, roles, and limits"
     const opened = await app.dispatch("settings:open", { page: "local-agents" });
     expect(opened.ok).toBe(true);
     const settingsWindow = await waitForSettingsWindow(app);
-    await settingsWindow.locator('h1:has-text("Authorization graph")').waitFor();
+    await settingsWindow.locator('h1:has-text("Local Agents")').waitFor();
 
     await expect(settingsWindow.locator(".pss__auth-node.is-session")).toHaveCount(2);
     await expect(settingsWindow.locator(".pss__auth-node.is-role")).toHaveCount(6);

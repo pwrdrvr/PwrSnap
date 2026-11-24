@@ -35,6 +35,7 @@ import {
   type HotkeyRegistrationStatusSnapshot
 } from "@pwrsnap/shared";
 import { dispatch } from "../../../lib/pwrsnap";
+import { settingsGroupOf, settingsPageName } from "../settings-categories";
 
 /** The hotkey kinds this page edits — derived from the schema so a new
  *  `Settings["hotkeys"]` field is a compile error here until it gets a
@@ -417,8 +418,8 @@ export function HotkeysPage(): ReactElement {
     <>
       <div className="pss__main-hdr pss__hotkeys-header">
         <div className="pss__main-hdr-l">
-          <div className="pss__main-eyebrow">General</div>
-          <h1 className="pss__main-title">Hotkeys</h1>
+          <div className="pss__main-eyebrow">{settingsGroupOf("hotkeys")}</div>
+          <h1 className="pss__main-title">{settingsPageName("hotkeys")}</h1>
           <p className="pss__main-sub">
             PwrSnap is keyboard-first. Quick Capture is the &ldquo;smart&rdquo;
             trigger — picks region, window, or full-screen based on the cursor.
@@ -470,42 +471,36 @@ export function HotkeysPage(): ReactElement {
         <Row
           label="Quick Capture"
           sub="The smart trigger. Picks region, window, or full-screen based on the cursor."
-          tag="global"
         >
           {hotkeyControl("quickCapture", hk?.quickCapture ?? "")}
         </Row>
         <Row
           label="Region"
           sub="Drag a marquee on any display. Unbound by default — Quick Capture covers it."
-          tag="global"
         >
           {hotkeyControl("region", hk?.region ?? "")}
         </Row>
         <Row
           label="Window"
           sub="Click a window. Unbound by default — Quick Capture covers it."
-          tag="global"
         >
           {hotkeyControl("window", hk?.window ?? "")}
         </Row>
         <Row
           label="Full Screen"
           sub="Capture the display under the cursor — no selector. Unbound by default; also available from the tray."
-          tag="global"
         >
           {hotkeyControl("fullScreen", hk?.fullScreen ?? "")}
         </Row>
         <Row
           label="All Screens"
           sub="Stitch every connected display into a single image. Unbound by default; also available from the tray."
-          tag="global"
         >
           {hotkeyControl("allScreens", hk?.allScreens ?? "")}
         </Row>
         <Row
           label="Timed (5 s)"
           sub="5-second countdown, then the auto picker — useful for menus that close on focus loss. Unbound by default; also available from the tray."
-          tag="global"
         >
           {hotkeyControl("timed", hk?.timed ?? "")}
         </Row>
@@ -521,7 +516,6 @@ export function HotkeysPage(): ReactElement {
                   platform
                 )} — that's Paste & Match Style system-wide).`
           }`}
-          tag="global"
         >
           {hotkeyControl("videoCapture", hk?.videoCapture ?? "")}
         </Row>
@@ -537,7 +531,6 @@ export function HotkeysPage(): ReactElement {
               ? "choose a combination to enable it."
               : "rebind or unbind any time."
           }`}
-          tag="global"
         >
           {hotkeyControl("reshowFloatOver", hk?.reshowFloatOver ?? "")}
         </Row>
@@ -547,7 +540,6 @@ export function HotkeysPage(): ReactElement {
             "CommandOrControl+Shift+L",
             platform
           )} is taken by editors and by PwrSnap's own Sizzle window, and a global chord would shadow both.`}
-          tag="global"
         >
           {hotkeyControl("openLibrary", hk?.openLibrary ?? "")}
         </Row>

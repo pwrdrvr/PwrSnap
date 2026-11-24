@@ -167,7 +167,8 @@ describe("LocalAgentsPage", () => {
     const el = await renderPage();
     expect(el.textContent).toContain("MCP off");
     expect(el.textContent).toContain("PwrAgent");
-    expect(el.textContent).toContain("Authorization graph");
+    expect(el.querySelector("h1")?.textContent).toBe("Local Agents");
+    expect(el.querySelector(".pss__main-eyebrow")?.textContent).toBe("AI");
     expect(el.textContent).toContain("Full Media");
     expect(el.textContent).toContain("Read original images");
     expect(el.textContent).toContain("Last 30 days");

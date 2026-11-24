@@ -8,7 +8,9 @@ import type { SettingsPage } from "@pwrsnap/shared";
 import {
   SETTINGS_CATEGORIES,
   SETTINGS_PAGES_FLAT,
-  SETTINGS_PAGE_IDS
+  SETTINGS_PAGE_IDS,
+  settingsGroupOf,
+  settingsPageName
 } from "../settings-categories";
 
 // Mirrors packages/shared/src/protocol.ts's `SettingsPage` union.
@@ -50,28 +52,36 @@ describe("SETTINGS_CATEGORIES", () => {
 
   test("structure matches the catalog", () => {
     expect(SETTINGS_CATEGORIES.map((c) => c.group)).toEqual([
-      "General",
+      "App",
+      "AI",
       "Capture",
       "Library",
-      "Advanced"
+      "Support"
     ]);
 
     const byGroup = Object.fromEntries(
       SETTINGS_CATEGORIES.map((c) => [c.group, c.items.map((i) => i.id)])
     );
 
-    expect(byGroup["General"]).toEqual([
-      "general",
-      "updates",
-      "about",
-      "hotkeys",
-      "ai",
-      "ai-features",
-      "local-agents"
-    ]);
+    expect(byGroup["App"]).toEqual(["general", "hotkeys", "updates"]);
+    // The two AI pages sit side by side under one heading: one says what is
+    // installed, the other which of it does each job.
+    expect(byGroup["AI"]).toEqual(["ai", "ai-features", "local-agents"]);
     expect(byGroup["Capture"]).toEqual(["system-permissions"]);
     expect(byGroup["Library"]).toEqual(["storage"]);
-    expect(byGroup["Advanced"]).toEqual(["experimental", "developer"]);
+    // PwrAgent's Support group, in its order. Troubleshooting keeps the
+    // `developer` id so existing deep links land on it.
+    expect(byGroup["Support"]).toEqual(["experimental", "developer", "about"]);
+    expect(settingsPageName("developer")).toBe("Troubleshooting");
+  });
+
+  test("every page's eyebrow names the sidebar group it sits in", () => {
+    for (const cat of SETTINGS_CATEGORIES) {
+      for (const item of cat.items) {
+        expect(settingsGroupOf(item.id)).toBe(cat.group);
+        expect(settingsPageName(item.id)).toBe(item.name);
+      }
+    }
   });
 
   test("SETTINGS_PAGE_IDS exposes the same id set", () => {

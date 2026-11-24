@@ -25,6 +25,7 @@ import { dispatch } from "../../../lib/pwrsnap";
 import { useCopyText } from "../../../lib/useCopyText";
 import { Card, Row, Switch } from "../components";
 import { useSettingsContext } from "../SettingsContext";
+import { settingsGroupOf, settingsPageName } from "../settings-categories";
 
 const CAPABILITY_LABELS: Record<LocalAgentCapability, string> = {
   "library.read": "Search library",
@@ -515,8 +516,8 @@ export function LocalAgentsPage(): ReactElement {
     <>
       <div className="pss__main-hdr pss__main-hdr--agents">
         <div className="pss__main-hdr-l">
-          <div className="pss__main-eyebrow">Access control</div>
-          <h1 className="pss__main-title">Authorization graph</h1>
+          <div className="pss__main-eyebrow">{settingsGroupOf("local-agents")}</div>
+          <h1 className="pss__main-title">{settingsPageName("local-agents")}</h1>
           <p className="pss__main-sub">
             Bind each named MCP Session to one role. Permissions are additive inside a role; history
             and sliding-window limits narrow how much an agent can see or do. Click a Session or
@@ -537,7 +538,9 @@ export function LocalAgentsPage(): ReactElement {
         <Row
           label="Enable local-agent access"
           sub="When off, PwrSnap does not listen for MCP connections. Saved Sessions and roles remain available. When on, a relay connection gets the role named by its --role flag (Full Access when none), and direct IPC HTTP asks for approval."
-          tag={listenerCopy.tag}
+          // Off is already said by the switch and the header badge; on, the
+          // tag says which transport is listening (or why none is).
+          {...(mcpEnabled ? { tag: listenerCopy.tag } : {})}
         >
           <Switch
             on={mcpEnabled}

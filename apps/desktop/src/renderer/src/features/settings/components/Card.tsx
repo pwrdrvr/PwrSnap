@@ -1,11 +1,4 @@
-import {
-  useLayoutEffect,
-  useRef,
-  useState,
-  type MouseEvent,
-  type ReactElement,
-  type ReactNode
-} from "react";
+import { useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { settingsScrollBehavior } from "../settings-nav";
 
 type CardProps = {
@@ -13,11 +6,10 @@ type CardProps = {
   title: string;
   /** Initial collapsed state. The user can toggle from there. */
   defaultCollapsed?: boolean;
-  /** Optional trailing chunk inside the card header (right of the
-   *  chevron). The AI Providers Codex card uses this for the
-   *  Refresh button. The header click-to-toggle ignores clicks that
-   *  originate from inside this slot — so the Refresh button stays
-   *  clickable without flipping the card. */
+  /** Optional trailing chunk in the card header, before the chevron —
+   *  e.g. a Refresh button. It sits BESIDE the header's toggle button,
+   *  never inside it: a button nested in a button is invalid markup, and
+   *  a screen reader would read the action as part of the card's name. */
   headerAction?: ReactNode;
   /** DOM id, for a sidebar jump link to land on. */
   id?: string;
@@ -61,31 +53,28 @@ export function Card({
     headerRef.current?.focus({ preventScroll: true });
   }, [focusRequest]);
 
-  const onHeaderClick = (event: MouseEvent<HTMLButtonElement>): void => {
-    // Clicks that bubbled up from inside `headerAction` (e.g. the
-    // AI Providers Refresh button) shouldn't toggle the card.
-    const target = event.target as HTMLElement;
-    if (target.closest(".pss__card-hdr-action") !== null) return;
-    setCollapsed((prev) => !prev);
-  };
-
   return (
     <section
       ref={sectionRef}
       id={id}
       className={"pss__card" + (collapsed ? " is-collapsed" : "")}
     >
-      <button
-        ref={headerRef}
-        type="button"
-        className="pss__card-hdr"
-        onClick={onHeaderClick}
-        aria-expanded={!collapsed}
-      >
-        <div className="pss__card-hdr-l">
-          <span className="pss__card-eyebrow">{eyebrow}</span>
-          <span className="pss__card-title">{title}</span>
-        </div>
+      {/* The toggle button stretches over the whole header strip (see
+          `.pss__card-hdr::after`), so a click anywhere on it — chevron
+          included — toggles, while the action stacks above it. */}
+      <div className="pss__card-head">
+        <button
+          ref={headerRef}
+          type="button"
+          className="pss__card-hdr"
+          onClick={() => setCollapsed((prev) => !prev)}
+          aria-expanded={!collapsed}
+        >
+          <span className="pss__card-hdr-l">
+            <span className="pss__card-eyebrow">{eyebrow}</span>
+            <span className="pss__card-title">{title}</span>
+          </span>
+        </button>
         {headerAction !== undefined ? (
           <span className="pss__card-hdr-action">{headerAction}</span>
         ) : null}
@@ -103,7 +92,7 @@ export function Card({
             <path d="m6 9 6 6 6-6" />
           </svg>
         </span>
-      </button>
+      </div>
       <div className="pss__card-body">{children}</div>
     </section>
   );

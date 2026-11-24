@@ -1,10 +1,10 @@
-// Settings → Developer.
+// Settings → Support → Troubleshooting (page id `developer`, kept so deep
+// links that already name it keep working).
 //
-// Keeps developer-only application menu controls and hot CPU
-// diagnostics (renderer + main-process monitors) out of the default
-// General page. The backing settings
-// remain under `general.*` for compatibility with the existing menu
-// code and settings files; this page is just the advanced developer UI.
+// The same page PwrAgent and PwrGit call Troubleshooting, in the same
+// order: Chrome DevTools (Developer Mode) first, then logs, then CPU and
+// heap monitoring. The backing settings remain under `general.*` for
+// compatibility with the existing menu code and settings files.
 
 import { useEffect, useState, type ReactElement } from "react";
 import type {
@@ -15,6 +15,7 @@ import { dispatch } from "../../../lib/pwrsnap";
 import { Card, Row, Switch } from "../components";
 import { HotCpuCaptureRulesRow } from "./HotCpuCaptureRules";
 import { useSettingsContext } from "../SettingsContext";
+import { settingsGroupOf, settingsPageName } from "../settings-categories";
 
 const START_DELAY_OPTIONS: readonly {
   label: string;
@@ -93,6 +94,7 @@ export function DeveloperPage(): ReactElement {
   const [countdownRemainingMs, setCountdownRemainingMs] = useState(0);
   const [diagnosticsStatus, setDiagnosticsStatus] = useState<string | null>(null);
   const [revealingDiagnostics, setRevealingDiagnostics] = useState(false);
+  const [logsStatus, setLogsStatus] = useState<string | null>(null);
 
   useEffect(() => {
     if (countdownEndsAt === null) return;
@@ -146,22 +148,23 @@ export function DeveloperPage(): ReactElement {
     <>
       <div className="pss__main-hdr">
         <div className="pss__main-hdr-l">
-          <div className="pss__main-eyebrow">Advanced</div>
-          <h1 className="pss__main-title">Developer</h1>
+          <div className="pss__main-eyebrow">{settingsGroupOf("developer")}</div>
+          <h1 className="pss__main-title">{settingsPageName("developer")}</h1>
           <p className="pss__main-sub">
-            Developer menu controls and diagnostics for troubleshooting hot processes.
+            Developer tools, logs and CPU diagnostics, for when something is
+            slow or broken.
           </p>
         </div>
       </div>
 
-      <Card eyebrow="DEVELOPER" title="Developer mode">
+      <Card eyebrow="TROUBLESHOOTING" title="Chrome DevTools">
         <Row
-          label="Show developer menu items"
-          sub="Expose Reload, Force Reload, and Toggle Developer Tools in the View menu."
-          tag="developer"
+          label="Developer Mode"
+          sub="Adds Reload, Force Reload and Toggle Developer Tools to the View menu."
         >
           <Switch
             on={developerMode}
+            label="Developer Mode"
             onChange={
               ready
                 ? (next) => {
@@ -173,11 +176,51 @@ export function DeveloperPage(): ReactElement {
         </Row>
       </Card>
 
-      <Card eyebrow="DIAGNOSTICS" title="Hot CPU profiling">
+      <Card eyebrow="TROUBLESHOOTING" title="Logs">
+        <Row
+          label="App log"
+          sub="Recent events from PwrSnap. Include it when you report a problem."
+        >
+          <div className="pss__update-channel">
+            <div className="pss__btn-row">
+              <button
+                className="pss__top-btn"
+                type="button"
+                onClick={() => {
+                  setLogsStatus(null);
+                  void dispatch("logs:openWindow", {}).then((result) => {
+                    if (!result.ok) setLogsStatus(`Couldn't open the Logs window: ${result.error.message}`);
+                  });
+                }}
+              >
+                Open Logs
+              </button>
+              <button
+                className="pss__top-btn"
+                type="button"
+                onClick={() => {
+                  setLogsStatus(null);
+                  void dispatch("logs:revealFile", {}).then((result) => {
+                    if (!result.ok) setLogsStatus(`Couldn't reveal the log file: ${result.error.message}`);
+                  });
+                }}
+              >
+                Reveal Log File
+              </button>
+            </div>
+            {logsStatus !== null ? (
+              <span className="pss__update-note" role="status">
+                {logsStatus}
+              </span>
+            ) : null}
+          </div>
+        </Row>
+      </Card>
+
+      <Card eyebrow="TROUBLESHOOTING" title="CPU and heap monitoring">
         <Row
           label="CPU profile capture"
           sub="Arms the Library renderer and main-process monitors; writes a DevTools .cpuprofile when a capture rule matches, with per-process CPU (incl. GPU) in the session samples."
-          tag={hotCpuEnabled ? "monitoring" : "not armed"}
         >
           <div className="pss__update-channel">
             {hotCpuEnabled || countdownActive ? (
@@ -216,7 +259,6 @@ export function DeveloperPage(): ReactElement {
         <Row
           label="Profiling start delay"
           sub="Wait before sampling begins so you can switch to the scenario you want to capture."
-          tag={startDelayText.toLowerCase()}
         >
           <SegmentButtons
             ariaLabel="Profiling start delay"
@@ -235,7 +277,6 @@ export function DeveloperPage(): ReactElement {
         <Row
           label="Chromium trace"
           sub="Keep a rolling trace of renderer layout, paint, and compositor events while capture is armed. Saves a filtered trace beside the renderer profile when a trace is available."
-          tag="trace"
         >
           <Switch on={captureChromiumTrace} label="Chromium trace"
             disabled={!ready || environment?.chromiumTrace !== undefined}
@@ -250,10 +291,10 @@ export function DeveloperPage(): ReactElement {
         <Row
           label="Smart heap snapshots"
           sub="Capture bounded heap snapshots around the next hot CPU trigger, then turn this option back off."
-          tag="memory"
         >
           <Switch
             on={captureHeapSnapshot}
+            label="Smart heap snapshots"
             onChange={
               ready
                 ? (next) => {
@@ -269,7 +310,6 @@ export function DeveloperPage(): ReactElement {
         <Row
           label="Heap snapshot limit"
           sub="Keep emergency heap capture small enough to avoid filling disk or repeatedly stalling the app."
-          tag={`${heapSnapshotLimit}`}
         >
           <SegmentButtons
             ariaLabel="Heap snapshot limit"
@@ -285,7 +325,6 @@ export function DeveloperPage(): ReactElement {
         <Row
           label="Diagnostics folder"
           sub={`Reveal captured CPU profiles, heap snapshots, and sidecar logs in ${desktopFileManagerName(window.pwrsnapApi?.platform)}.`}
-          tag="folder"
         >
           <div className="pss__update-channel">
             <button

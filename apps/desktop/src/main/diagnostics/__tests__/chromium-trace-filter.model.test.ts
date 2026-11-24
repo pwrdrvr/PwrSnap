@@ -1,14 +1,23 @@
 import { EventEmitter } from "node:events";
-import { access, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import fs, { access, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import fc from "fast-check";
-import { expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ChromiumTrace } from "../chromium-trace";
 import type { ChromiumTraceFilterRequest } from "../chromium-trace-worker";
 
 const fork = vi.hoisted(() => vi.fn());
 vi.mock("electron", () => ({ utilityProcess: { fork } }));
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 class FakeUtility extends EventEmitter {
   pid: number | undefined;
@@ -39,6 +48,26 @@ class FakeUtility extends EventEmitter {
   }
 }
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+function mockFork(child: FakeUtility) {
+  const forked = deferred();
+  fork.mockReset().mockImplementation(() => {
+    forked.resolve();
+    return child;
+  });
+  return async (capture: ReturnType<ChromiumTrace["capture"]>) => {
+    await Promise.race([forked.promise, capture.then(({ status }) => {
+      throw new Error(`Capture settled as ${status} before the utility was forked`);
+    })]);
+    expect(fork).toHaveBeenCalledOnce();
+  };
+}
+
 test("a utility owns both staging paths until exit, and only a completed uncanceled filter publishes", async () => {
   await fc.assert(fc.asyncProperty(
     fc.constantFrom("success", "failed", "crashed", "before-spawn", "during-filter", "after-result"),
@@ -47,7 +76,7 @@ test("a utility owns both staging paths until exit, and only a completed uncance
       const dir = await mkdtemp(join(tmpdir(), "pwrsnap-filter-model-"));
       const artifact = join(dir, "final.trace.json");
       const child = new FakeUtility();
-      fork.mockReset().mockReturnValue(child);
+      const waitForFork = mockFork(child);
       let rawPath!: string;
       const trace = new ChromiumTrace(() => ({
         startRecording: async () => {},
@@ -61,7 +90,7 @@ test("a utility owns both staging paths until exit, and only a completed uncance
         await trace.setArmed(true);
         const capture = trace.capture(artifact, 1, Promise.resolve(true), 100);
         void trace.setArmed(false);
-        await vi.waitFor(() => expect(fork).toHaveBeenCalledOnce(), { interval: 1, timeout: 300 });
+        await waitForFork(capture);
         if (outcome === "before-spawn") trace.cancelCapture();
         child.spawn();
         if (outcome === "before-spawn") {
@@ -75,7 +104,7 @@ test("a utility owns both staging paths until exit, and only a completed uncance
           if (outcome === "during-filter" || outcome === "after-result") trace.cancelCapture();
         }
         if (outcome !== "crashed") {
-          await vi.waitFor(() => expect(child.killed).toBe(true), { interval: 1, timeout: 300 });
+          expect(child.killed).toBe(true);
         }
         await expect(access(rawPath)).resolves.toBeUndefined();
         await expect(access(artifact)).rejects.toHaveProperty("code", "ENOENT");
@@ -102,8 +131,15 @@ test("a utility owns both staging paths until exit, and only a completed uncance
 test("an unacknowledged filter kill bounds failure and holds staging until exit", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pwrsnap-filter-timeout-"));
   const child = new FakeUtility();
-  fork.mockReset().mockReturnValue(child);
+  const waitForFork = mockFork(child);
   const rawPaths: string[] = [];
+  const rawCleaned = deferred();
+  const remove = fs.rm;
+  vi.spyOn(fs, "rm").mockImplementation(async (path, options) => {
+    await remove(path, options);
+    const [first] = rawPaths;
+    if (first && path === dirname(first)) rawCleaned.resolve();
+  });
   const trace = new ChromiumTrace(() => ({
     startRecording: async () => {},
     stopRecording: async (raw) => {
@@ -120,21 +156,24 @@ test("an unacknowledged filter kill bounds failure and holds staging until exit"
   }
   try {
     const first = capture("first.trace.json");
-    await vi.waitFor(() => expect(fork).toHaveBeenCalledOnce(), { interval: 1, timeout: 300 });
+    await waitForFork(first);
     child.spawn();
     await writeFile(child.request!.filteredPath, "synthetic partial output");
-    expect(await first).toEqual({ status: "failed" });
+    await vi.advanceTimersByTimeAsync(99);
+    expect(child.killed).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
     expect(child.killed).toBe(true);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(await first).toEqual({ status: "failed" });
     expect(await capture("second.trace.json")).toEqual({ status: "failed" });
     expect(fork).toHaveBeenCalledOnce();
     await expect(access(rawPaths[0]!)).resolves.toBeUndefined();
     await expect(access(child.request!.filteredPath)).resolves.toBeUndefined();
     await expect(access(rawPaths[1]!)).rejects.toHaveProperty("code", "ENOENT");
     child.exit();
-    await vi.waitFor(async () => {
-      expect(await readdir(dir)).toEqual([]);
-      await expect(access(rawPaths[0]!)).rejects.toHaveProperty("code", "ENOENT");
-    }, { interval: 1, timeout: 300 });
+    await rawCleaned.promise;
+    expect(await readdir(dir)).toEqual([]);
+    await expect(access(rawPaths[0]!)).rejects.toHaveProperty("code", "ENOENT");
   } finally {
     child.exit();
     await trace.shutdown(100);

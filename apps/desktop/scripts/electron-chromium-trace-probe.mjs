@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { createPackage } from "@electron/asar";
 import { createServer } from "node:http";
-import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -13,9 +13,12 @@ import { app, BrowserWindow, contentTracing } from "electron";
 import { build } from "vite";
 import { checkTraceCpuAttribution } from "./electron-chromium-trace-cpu-probe.mjs";
 
-const scratch = await mkdtemp(join(tmpdir(), "pwrsnap-chromium-probe-"));
+const scratch = process.argv[2];
+assert(scratch?.startsWith(join(tmpdir(), "pwrsnap-chromium-probe-")), "Launch through pnpm probe:chromium-trace");
 app.setPath("userData", scratch);
 if (process.platform === "darwin") app.setActivationPolicy("accessory");
+// The probe exits explicitly after releasing its trace and server.
+app.on("window-all-closed", () => {});
 
 async function checkCombinedCapture({ HotCpuProfiler, createHotCpuProfileSession }, window, trace, privateMarker, traceStatus) {
   const config = {
@@ -248,13 +251,18 @@ async function run() {
     console.error(error);
     process.exitCode = 1;
   } finally {
-    clearTimeout(watchdog);
-    await trace?.shutdown(1_000);
-    window?.destroy();
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-    await rm(scratch, { recursive: true, force: true });
-    app.exit(process.exitCode ?? 0);
+    try {
+      await trace?.shutdown(1_000);
+      window?.destroy();
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    } catch (error) {
+      console.error(error);
+      process.exitCode = 1;
+    } finally {
+      clearTimeout(watchdog);
+      app.exit(process.exitCode ?? 0);
+    }
   }
 }
 

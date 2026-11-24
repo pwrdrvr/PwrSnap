@@ -30,7 +30,7 @@
     "verify:asar-contents": "node ./scripts/verify-asar-contents.mjs",
     "tray-icon": "node ./scripts/generate-tray-icon.mjs",
     "probe:linux-capture": "electron ./scripts/linux-capture-probe.mjs",
-    "probe:chromium-trace": "electron ./scripts/electron-chromium-trace-probe.mjs",
+    "probe:chromium-trace": "node ./scripts/run-electron-chromium-trace-probe.mjs",
     "probe:quit-reentry": "electron ./scripts/electron-quit-reentry-probe.mjs",
     "typecheck": "node ../../node_modules/typescript-native/bin/tsc --noEmit -p tsconfig.json",
     "test:camera": "pnpm build && node ./scripts/test-camera-pipeline.mjs",

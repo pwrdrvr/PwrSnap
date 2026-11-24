@@ -470,7 +470,7 @@ export function AIFeaturesPage({ sub, request }: AIFeaturesPageProps): ReactElem
           label="Budget"
           sub="A small budget that refills over time, so a burst of captures can't run up a bill. If it keeps running dry, PwrSnap turns enrichment off; switch it back on above. A Library re-run you start doesn't draw on it."
         >
-          <div className="pss__status-line" aria-live="polite">
+          <div className="pss__status-line">
             <span className={"pss__badge " + budgetBadgeClass(budgetStatus)}>
               {budgetBadgeLabel(budgetStatus)}
             </span>

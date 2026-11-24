@@ -10,7 +10,7 @@
 //   4. Use it for — optional job defaults.
 //
 // A SAVED connection is a provider screen like Codex's or an agent's (board
-// 3a): the "Default for" strip, then Endpoint, Credential and Models cards,
+// 3a): the "Jobs" strip, then Endpoint, Credential and Models cards,
 // each read-only until its Edit. The stepper is for getting somewhere; once
 // there, the page answers "what is this and is it working", and a card that
 // still needs something opens on its own.
@@ -254,7 +254,7 @@ function NewConnection(): ReactElement {
       </Step>
 
       <Step n={4} title="Use it for" state={stateOf("jobs", routedJobs.length > 0)}
-        summary={routedJobs.length > 0 ? `Default for ${routedJobs.map((s) => AI_SURFACE_LABELS[s]).join(" · ")}` : "optional — or later in AI Features"}>
+        summary={routedJobs.length > 0 ? `Jobs: ${routedJobs.map((s) => AI_SURFACE_LABELS[s]).join(" · ")}` : "optional — or later in AI Features"}>
         {expanded("jobs") && settings !== null ? <JobsStep models={models} settings={settings} patch={patch} /> : null}
       </Step>
 
@@ -450,7 +450,7 @@ function SavedModels({ models, settings }: { models: readonly CustomModel[]; set
   return (
     <div className="pss__dapi-models" role="table" aria-label="Models">
       <div className="pss__dapi-mrow is-view is-head" role="row">
-        <span>Model</span><span>Image input</span><span>Default for</span><span />
+        <span>Model</span><span>Image input</span><span>Jobs</span><span />
       </div>
       {models.map((m) => {
         const used = JOB_ORDER.filter((s) => settings.ai.defaults[s].provider === customProviderId(m.id));

@@ -100,10 +100,16 @@ describe("jobRunners (property)", () => {
     }), { numRuns: 500 });
   });
 
-  test("the caption fallback is listed exactly when it would answer, on its own provider", () => {
+  test("the caption fallback is listed exactly when main would arm it, on its own provider", () => {
     fc.assert(fc.property(settingsArb, (settings) => {
       const fallbacks = jobRunners(settings).filter((r) => r.role === "fallback");
-      const expected = captionFallbackOn(settings.ai)
+      // Main's `enrichmentFallbackFor`: on (and, behind Apple, approved),
+      // and not on the primary's own backend.
+      const enabled = settings.ai.acp.enabledAgentIds;
+      const sameBackend =
+        enrichmentProviderBackend(settings.ai.enrichmentFallback?.provider, enabled) ===
+        enrichmentProviderBackend(settings.ai.defaults.enrichment.provider, enabled);
+      const expected = captionFallbackOn(settings.ai) && !sameBackend
         ? oracleSub(settings, "enrichment", settings.ai.enrichmentFallback?.provider)
         : null;
       expect(fallbacks).toEqual(
@@ -122,6 +128,26 @@ describe("jobRunners (property)", () => {
         );
       }
     }), { numRuns: 300 });
+  });
+});
+
+describe("jobRunners (examples)", () => {
+  test("a fallback on the primary's own backend is not listed: main never arms it", () => {
+    const settings: Settings = {
+      ...baseSettings,
+      ai: {
+        ...baseSettings.ai,
+        acp: { enabledAgentIds: [] },
+        defaults: { ...baseSettings.ai.defaults, enrichment: {} },
+        // A disabled agent runs on Codex, the primary's own backend.
+        enrichmentFallback: { provider: "acp:kimi" }
+      }
+    };
+    expect(jobRunners(settings)).toEqual([
+      { surface: "enrichment", role: "primary", sub: "codex" },
+      { surface: "libraryChat", role: "primary", sub: "codex" },
+      { surface: "sizzleChat", role: "primary", sub: "codex" }
+    ]);
   });
 });
 

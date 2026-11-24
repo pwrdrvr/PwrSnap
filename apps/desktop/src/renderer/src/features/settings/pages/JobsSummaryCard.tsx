@@ -5,7 +5,7 @@
 
 import type { ReactElement } from "react";
 import type { AcpAgentModelOption, AiSurfaceId, Settings } from "@pwrsnap/shared";
-import { APPLE_FM_SETTINGS_SUB, connectionIdOfSettingsSub } from "@pwrsnap/shared";
+import { APPLE_FM_DISPLAY_NAME, APPLE_FM_SETTINGS_SUB, connectionIdOfSettingsSub } from "@pwrsnap/shared";
 import { Card } from "../components";
 import {
   acpAgentIdOfProvider,
@@ -32,7 +32,9 @@ export function JobsSummaryCard({
   const nameOf = (sub: string): string =>
     statuses.find((s) => s.sub === sub)?.label ??
     connections.find((c) => c.sub === sub)?.label ??
-    (sub === "codex" ? "Codex" : sub);
+    // No status row yet: macOS has not answered for Apple, or discovery is
+    // still running. Name it anyway rather than show the route id.
+    (sub === APPLE_FM_SETTINGS_SUB ? APPLE_FM_DISPLAY_NAME : sub === "codex" ? "Codex" : sub);
 
   /** What a primary runs, beside the provider's name. */
   const detailOf = (surface: AiSurfaceId, sub: string): string => {
@@ -50,7 +52,10 @@ export function JobsSummaryCard({
       if (picked !== undefined) return model !== "" ? picked.label : `default · ${picked.label}`;
       return model !== "" ? model : "default model";
     }
-    return model !== "" ? model : "default model";
+    // On Codex. A job that names a now-disabled agent runs here too, and its
+    // stored model is that agent's id, not a Codex model: don't print it.
+    const storedOnCodex = value.provider === undefined || value.provider === "" || value.provider === "codex";
+    return storedOnCodex && model !== "" ? model : "default model";
   };
 
   /** The fallback by its model when it is a Direct API model — a

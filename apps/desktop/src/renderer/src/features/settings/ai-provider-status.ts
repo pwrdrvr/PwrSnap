@@ -29,6 +29,7 @@ import {
   appleRefusalFallbackRoute,
   builtInAcpAgentDisplayName,
   connectionSettingsSub,
+  enrichmentProviderBackend,
   isAppleFmOffered,
   isAppleFmProvider,
   type AppleFmStatus
@@ -346,14 +347,22 @@ export function captionFallbackOn(ai: Settings["ai"]): boolean {
 }
 
 /** Every job's runner, in AI Features → Jobs order: one primary per job,
- *  then the caption fallback right after Captions when it is on. */
+ *  then the caption fallback right after Captions when main would arm it —
+ *  on, and not on the primary's own backend (main's `enrichmentFallbackFor`
+ *  drops that: a second try at what just failed is not a fallback). */
 export function jobRunners(settings: Settings | null): JobRunner[] {
   if (settings === null) return [];
   const runners: JobRunner[] = [];
   for (const surface of AI_SURFACE_ORDER) {
     const sub = runnerSubOf(settings, surface, settings.ai.defaults[surface].provider);
     if (sub !== null) runners.push({ surface, role: "primary", sub });
-    if (surface === "enrichment" && captionFallbackOn(settings.ai)) {
+    const enabledIds = settings.ai.acp.enabledAgentIds;
+    if (
+      surface === "enrichment" &&
+      captionFallbackOn(settings.ai) &&
+      enrichmentProviderBackend(settings.ai.enrichmentFallback?.provider, enabledIds) !==
+        enrichmentProviderBackend(settings.ai.defaults.enrichment.provider, enabledIds)
+    ) {
       const fallback = runnerSubOf(settings, surface, settings.ai.enrichmentFallback?.provider);
       if (fallback !== null) runners.push({ surface, role: "fallback", sub: fallback });
     }

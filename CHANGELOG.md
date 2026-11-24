@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.4.3 - 2026-11-24
+
+- AI Settings - Added a Jobs overview that shows which provider and model
+  runs each AI job and which caption fallback is configured. Provider pages
+  also show the jobs they handle.
+- Settings - Improved navigation and made DevTools, logs, and performance
+  monitoring easier to find under Support > Troubleshooting.
+
 ## v1.4.2 - 2026-11-23
 
 - Apple Intelligence Captions - Fixed captioning stopping when the on-device

@@ -3,8 +3,8 @@ import { addAbortListener } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { Worker } from "node:worker_threads";
 import type { TraceConfig } from "electron";
+import { startChromiumTraceFilter } from "./chromium-trace-filter";
 import { isManualChromiumTraceWaiting, onChromiumTraceLeaseChanged, tryAcquireChromiumTrace } from "./chromium-trace-lease";
 
 const TRACE_CATEGORIES = ["devtools.timeline", "blink.user_timing", "cc", "viz"];
@@ -14,6 +14,7 @@ const MAX_RAW_TRACE_BYTES = 288 * 1024 * 1024;
 const START_TIMEOUT_MS = 1_000;
 const STOP_TIMEOUT_MS = 4_000;
 const FILTER_TIMEOUT_MS = 15_000;
+const FILTER_EXIT_GRACE_MS = 1_000;
 const PROFILE_SETTLEMENT_GRACE_MS = 15_000;
 const RETRY_MS = 5_000;
 const CANCELED = new Error("Chromium trace canceled");
@@ -33,13 +34,14 @@ type NativeLease = {
 
 type NativeTrace = NativeLease & { rawPath: string; cleanup: () => Promise<void> };
 type Recording = NativeTrace & { wallMs: number; monotonicMs: number };
+type FilterCost = { filterCpuMs: number; filterWallMs: number };
 type CaptureResult =
-  | { status: "written"; recordingStartedAtMs: number; recordingStoppedAtMs: number; rawBytes: number }
+  | ({ status: "written"; recordingStartedAtMs: number; recordingStoppedAtMs: number; rawBytes: number } & Partial<FilterCost>)
   | { status: "skipped"; reason: "not-recording" | "trigger-predates-recording" | "canceled" }
   | { status: "failed" };
 
 type Options = {
-  workerModule: string | URL;
+  workerModule: string;
   wallNow?: () => number;
   monotonicNow?: () => number;
   startTimeoutMs?: number;
@@ -74,6 +76,7 @@ export class ChromiumTrace {
   private readonly quit = new AbortController();
   private shuttingDown = false;
   private captureJob: { controller: AbortController; done: Promise<CaptureResult> } | null = null;
+  private activeFilter: ReturnType<typeof startChromiumTraceFilter> | undefined;
   private readonly unlisten = onChromiumTraceLeaseChanged(() => this.reconcile());
 
   constructor(
@@ -232,6 +235,8 @@ export class ChromiumTrace {
   ): Promise<CaptureResult> {
     try {
       const frozen = await this.freeze(recording);
+      let staging: string | undefined;
+      let filter: ReturnType<typeof startChromiumTraceFilter> | undefined;
       try {
         signal.throwIfAborted();
         const { size: rawBytes } = await fs.stat(frozen.rawPath);
@@ -243,10 +248,44 @@ export class ChromiumTrace {
         if (!await withDeadline(profileWritten, waitMs, signal)) {
           return { status: "skipped", reason: "canceled" };
         }
-        await this.publish(frozen.rawPath, filePath, signal);
-        return { status: "written", recordingStartedAtMs: recording.wallMs, recordingStoppedAtMs, rawBytes };
+        signal.throwIfAborted();
+        // Keep the partial export on the destination filesystem for atomic rename.
+        staging = await fs.mkdtemp(path.join(path.dirname(filePath), ".pwrsnap-trace-"));
+        const filteredPath = path.join(staging, "filtered.json");
+        const timeoutMs = this.options.filterTimeoutMs ?? FILTER_TIMEOUT_MS;
+        let cost: FilterCost | undefined;
+        signal.throwIfAborted();
+        if (this.options.filterTrace) {
+          await withDeadline(this.options.filterTrace(frozen.rawPath, filteredPath, signal), timeoutMs, signal);
+        } else {
+          if (this.activeFilter) throw new Error("Previous Chromium trace filter is still exiting");
+          const started = performance.now();
+          filter = startChromiumTraceFilter(this.options.workerModule, {
+            rawPath: frozen.rawPath, filteredPath, allowedCategories: TRACE_CATEGORIES
+          }, signal);
+          this.activeFilter = filter;
+          void filter.exited.then(() => { this.activeFilter = undefined; });
+          const cpuMs = await withDeadline(filter.exited, timeoutMs, signal);
+          if (cpuMs === undefined) throw new Error("Chromium trace filter failed");
+          cost = { filterCpuMs: cpuMs, filterWallMs: performance.now() - started };
+        }
+        signal.throwIfAborted();
+        await fs.rename(filteredPath, filePath);
+        if (signal.aborted) {
+          await fs.rm(filePath, { force: true });
+          signal.throwIfAborted();
+        }
+        return { status: "written", recordingStartedAtMs: recording.wallMs, recordingStoppedAtMs, rawBytes, ...cost };
       } finally {
-        await frozen.cleanup();
+        const cleanup = async () => {
+          if (staging) {
+            await fs.rm(staging, { recursive: true, force: true }).catch(() => {
+              this.warn("Could not remove filtered Chromium trace staging");
+            });
+          }
+          await frozen.cleanup();
+        };
+        await this.cleanExport(filter, cleanup);
       }
     } catch {
       if (signal.aborted) return { status: "skipped", reason: "canceled" };
@@ -291,55 +330,20 @@ export class ChromiumTrace {
     }
   }
 
-  private async publish(rawPath: string, filePath: string, signal: AbortSignal): Promise<void> {
-    signal.throwIfAborted();
-    // Keep the partial export on the destination filesystem for atomic rename.
-    const staging = await fs.mkdtemp(path.join(path.dirname(filePath), ".pwrsnap-trace-"));
-    const filteredPath = path.join(staging, "filtered.json");
-    try {
-      if (this.options.filterTrace) {
-        await withDeadline(
-          this.options.filterTrace(rawPath, filteredPath, signal),
-          this.options.filterTimeoutMs ?? FILTER_TIMEOUT_MS, signal
-        );
-      } else {
-        await this.filterInWorker(rawPath, filteredPath, signal);
+  private async cleanExport(
+    filter: ReturnType<typeof startChromiumTraceFilter> | undefined, cleanup: () => Promise<void>
+  ): Promise<void> {
+    if (filter?.running) {
+      filter.stop();
+      try {
+        await withDeadline(filter.exited, FILTER_EXIT_GRACE_MS);
+      } catch {
+        // Leave both staging paths alone until the utility releases them.
+        // A late exit cannot hold up shutdown or start overlapping filters.
+        void filter.exited.then(cleanup);
+        return;
       }
-      signal.throwIfAborted();
-      await fs.rename(filteredPath, filePath);
-      if (signal.aborted) {
-        await fs.rm(filePath, { force: true });
-        signal.throwIfAborted();
-      }
-    } finally {
-      await fs.rm(staging, { recursive: true, force: true }).catch(() => {
-        this.warn("Could not remove filtered Chromium trace staging");
-      });
     }
-  }
-
-  private async filterInWorker(rawPath: string, filteredPath: string, signal: AbortSignal): Promise<void> {
-    const module = this.options.workerModule;
-    // The standalone worker lives in app.asar. Electron's fs can read that
-    // asset even where Node's worker module loader cannot resolve its path.
-    const entry = typeof module === "string"
-      ? new URL(`data:text/javascript;base64,${await fs.readFile(module, "base64")}`)
-      : module;
-    signal.throwIfAborted();
-    const worker = new Worker(entry, {
-      workerData: { rawPath, filteredPath, allowedCategories: TRACE_CATEGORIES },
-      resourceLimits: { maxOldGenerationSizeMb: 96 }
-    });
-    try {
-      await withDeadline(new Promise<void>((resolve, reject) => {
-        worker.once("error", reject);
-        worker.once("exit", (code) => {
-          if (code === 0) resolve();
-          else reject(new Error("Chromium trace filter failed"));
-        });
-      }), this.options.filterTimeoutMs ?? FILTER_TIMEOUT_MS, signal);
-    } finally {
-      await worker.terminate();
-    }
+    await cleanup();
   }
 }

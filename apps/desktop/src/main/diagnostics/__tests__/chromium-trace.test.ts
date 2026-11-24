@@ -2,6 +2,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 import fc from "fast-check";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ChromiumTrace } from "../chromium-trace";
@@ -14,7 +15,7 @@ function deferred<T>() {
 }
 
 let directory: string;
-const workerModule = new URL("../chromium-trace-worker.ts", import.meta.url);
+const workerModule = "unused-in-unit-tests";
 
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), "pwrsnap-test-trace-"));
@@ -240,7 +241,22 @@ test("the worker preserves timing and discards oversized private fields, unknown
       await writeFile(raw, input);
       return raw;
     }
-  }), warnings, { workerModule, monotonicNow: () => 0 });
+  }), warnings, {
+    workerModule, monotonicNow: () => 0,
+    // Exercise the worker entry with Node. The hidden Electron probe tests
+    // launching the same entry through Electron's utility process and ASAR.
+    filterTrace: (rawPath, filteredPath) => new Promise<void>((resolve, reject) => {
+      const worker = new Worker(new URL("../chromium-trace-worker.ts", import.meta.url), {
+        workerData: { rawPath, filteredPath, allowedCategories: ["devtools.timeline", "blink.user_timing"] },
+        resourceLimits: { maxOldGenerationSizeMb: 96 }
+      });
+      worker.once("error", reject);
+      worker.once("exit", (code) => {
+        if (code === 0) resolve();
+        else reject(new Error("Chromium trace filter failed"));
+      });
+    })
+  });
   const artifact = join(directory, "capture.trace.json");
   async function capture(output: string) {
     await trace.setArmed(true);

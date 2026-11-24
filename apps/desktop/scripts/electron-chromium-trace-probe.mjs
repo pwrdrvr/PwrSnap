@@ -2,20 +2,25 @@
 //   pnpm --filter @pwrsnap/desktop probe:chromium-trace
 // This standalone fixture never starts PwrSnap or opens a visible window.
 import assert from "node:assert/strict";
+import { createPackage } from "@electron/asar";
 import { createServer } from "node:http";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, contentTracing } from "electron";
 import { build } from "vite";
+import { checkTraceCpuAttribution } from "./electron-chromium-trace-cpu-probe.mjs";
 
-const scratch = await mkdtemp(join(tmpdir(), "pwrsnap-chromium-probe-"));
+const scratch = process.argv[2];
+assert(scratch?.startsWith(join(tmpdir(), "pwrsnap-chromium-probe-")), "Launch through pnpm probe:chromium-trace");
 app.setPath("userData", scratch);
 if (process.platform === "darwin") app.setActivationPolicy("accessory");
+// The probe exits explicitly after releasing its trace and server.
+app.on("window-all-closed", () => {});
 
-async function checkCombinedCapture({ HotCpuProfiler, createHotCpuProfileSession }, window, trace, privateMarker) {
+async function checkCombinedCapture({ HotCpuProfiler, createHotCpuProfileSession }, window, trace, privateMarker, traceStatus) {
   const config = {
     enabled: true, outputRoot: scratch, repoRoot: scratch, startDelayMs: 0, intervalMs: 2000,
     triggerMode: "sustained", thresholdPercent: 50, slowburnThresholdPercent: 15, consecutiveSamples: 2,
@@ -69,10 +74,19 @@ async function checkCombinedCapture({ HotCpuProfiler, createHotCpuProfileSession
     const profile = JSON.parse(await readFile(event.profilePath, "utf8"));
     assert(profile.nodes.some(({ callFrame }) => callFrame.functionName === "burnBeforeCombinedCpuTrigger"),
       "actual V8 profile must contain pre-trigger work");
-    assert.equal((await capture)?.status, "written");
-    await session.registerArtifact(basename(tracePath));
+    const result = await capture;
+    assert.equal(result?.status, traceStatus);
     const manifest = JSON.parse(await readFile(join(session.directoryPath, "session.json"), "utf8"));
-    assert.deepEqual(manifest.artifacts, ["renderer-hot-0001.cpuprofile", "renderer-hot-0001.trace.json"]);
+    assert.deepEqual(manifest.artifacts, ["renderer-hot-0001.cpuprofile"]);
+    if (traceStatus === "failed") {
+      await assert.rejects(stat(tracePath), { code: "ENOENT" });
+      console.log("A failed trace filter left the valid CPU profile in the session");
+      return;
+    }
+    assert(result.filterCpuMs > 0 && result.filterWallMs > 0);
+    await session.registerArtifact(basename(tracePath));
+    const registered = JSON.parse(await readFile(join(session.directoryPath, "session.json"), "utf8"));
+    assert.deepEqual(registered.artifacts, ["renderer-hot-0001.cpuprofile", "renderer-hot-0001.trace.json"]);
     const filtered = await readFile(tracePath, "utf8");
     assert(!filtered.includes(privateMarker));
     assert(JSON.parse(filtered).traceEvents.some(({ name }) => name === "Layout"));
@@ -86,7 +100,7 @@ async function run() {
   const watchdog = setTimeout(() => {
     console.error("Chromium trace probe timed out");
     app.exit(1);
-  }, 40_000).unref();
+  }, 75_000).unref();
   const privateMarker = "pwrsnap-synthetic-private-mark";
   const server = createServer((_request, response) => {
     response.setHeader("Access-Control-Allow-Origin", "*");
@@ -95,8 +109,14 @@ async function run() {
   let window;
   let trace;
   try {
-    const workerModule = join(import.meta.dirname, "../out/main/chromium-trace-worker.js");
-    await stat(workerModule);
+    const workerName = "chromium-trace-worker.js";
+    const archiveSource = join(scratch, "archive-source");
+    const archive = join(scratch, "app.asar");
+    await mkdir(archiveSource);
+    await copyFile(join(import.meta.dirname, "../out/main", workerName), join(archiveSource, workerName));
+    await writeFile(join(archiveSource, "package.json"), '{"type":"module"}');
+    await createPackage(archiveSource, archive);
+    const workerModule = join(archive, workerName);
     await build({
       configFile: false,
       logLevel: "warn",
@@ -115,7 +135,9 @@ async function run() {
         outDir: scratch,
         emptyOutDir: false,
         rollupOptions: {
-          input: Object.fromEntries(["chromium-trace", "hot-cpu-profiler", "hot-cpu-profile-session"].map((name) =>
+          input: Object.fromEntries([
+            "chromium-trace", "hot-cpu-profiler", "hot-cpu-profile-session", "main-process-hot-cpu-target"
+          ].map((name) =>
             [name, join(import.meta.dirname, `../src/main/diagnostics/${name}.ts`)]
           )),
           output: { entryFileNames: "[name].mjs" }
@@ -139,6 +161,12 @@ async function run() {
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     window.webContents.on("will-navigate", (event) => event.preventDefault());
     await window.loadURL("data:text/html,<main>Trace fixture</main>");
+    if (process.env.PWRSNAP_TRACE_CPU_PROBE === "1") {
+      await checkTraceCpuAttribution({
+        ChromiumTrace, ...cpuProfiler, ...cpuSession, ...await load("main-process-hot-cpu-target")
+      }, scratch, workerModule);
+      return;
+    }
     const execute = (script) => window.webContents.executeJavaScript(script);
     await execute("document.querySelector('main').insertAdjacentHTML('beforeend', '<div>Row</div>'.repeat(120))");
 
@@ -209,18 +237,32 @@ async function run() {
     assert(safeRendererEvents.some(({ name }) => name === "ResourceSendRequest"), "redacted network timing must survive");
     if (process.platform !== "win32") assert.equal((await stat(artifact)).mode & 0o777, 0o600);
     console.log(`Electron ${process.versions.electron} on ${process.platform}: rolling eviction, trigger freeze, renderer timing and redaction verified (${captured.rawBytes} raw bytes)`);
-    await checkCombinedCapture({ ...cpuProfiler, ...cpuSession }, window, trace, privateMarker);
+    await checkCombinedCapture({ ...cpuProfiler, ...cpuSession }, window, trace, privateMarker, "written");
+    await trace.shutdown(1_000);
+    trace = new ChromiumTrace(() => ({
+      startRecording: async () => {},
+      stopRecording: async (file) => {
+        await writeFile(file, '{"traceEvents":[{"args":"synthetic malformed trace"');
+        return file;
+      }
+    }), () => {}, { workerModule });
+    await checkCombinedCapture({ ...cpuProfiler, ...cpuSession }, window, trace, privateMarker, "failed");
   } catch (error) {
     console.error(error);
     process.exitCode = 1;
   } finally {
-    clearTimeout(watchdog);
-    await trace?.shutdown(1_000);
-    window?.destroy();
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-    await rm(scratch, { recursive: true, force: true });
-    app.exit(process.exitCode ?? 0);
+    try {
+      await trace?.shutdown(1_000);
+      window?.destroy();
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    } catch (error) {
+      console.error(error);
+      process.exitCode = 1;
+    } finally {
+      clearTimeout(watchdog);
+      app.exit(process.exitCode ?? 0);
+    }
   }
 }
 

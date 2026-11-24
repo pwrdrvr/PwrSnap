@@ -110,7 +110,7 @@ test.each([
   });
   const rolling = new ChromiumTrace(() => ({
     startRecording: rollingStart, stopRecording: rollingStop
-  }), vi.fn(), { workerModule: new URL("../chromium-trace-worker.ts", import.meta.url) });
+  }), vi.fn(), { workerModule: "unused-in-unit-tests" });
   mocks.startRecording.mockImplementation(async () => { calls.push("explicit start"); });
   mocks.stopRecording.mockImplementation(async () => { calls.push("explicit stop"); });
   const r = await recorder(reason === "autostart" ? "5" : "0");

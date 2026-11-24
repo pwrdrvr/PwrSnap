@@ -1,7 +1,14 @@
 import { createReadStream, createWriteStream } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
-import { workerData } from "node:worker_threads";
+import { isMainThread, Worker, workerData } from "node:worker_threads";
 import { traceJsonFragment } from "./chromium-trace-json.ts";
+
+export type ChromiumTraceFilterRequest = {
+  rawPath: string;
+  filteredPath: string;
+  allowedCategories: readonly string[];
+};
 
 // The native JSON exporter can include URLs, arbitrary User Timing names and
 // nested metadata regardless of enable_argument_filter. Rebuild the artifact
@@ -140,9 +147,34 @@ async function* filterTrace(rawPath: string, allowedCategories: readonly string[
   yield "]}";
 }
 
-const { rawPath, filteredPath, allowedCategories } = workerData as {
-  rawPath: string;
-  filteredPath: string;
-  allowedCategories: readonly string[];
-};
-await pipeline(filterTrace(rawPath, allowedCategories), createWriteStream(filteredPath, { flags: "wx", mode: 0o600 }));
+async function filterInUtility(request: ChromiumTraceFilterRequest): Promise<number> {
+  // Electron's ASAR-aware fs can read this self-contained bundle even when
+  // Node's worker module loader cannot resolve paths inside the archive.
+  const module = await readFile(import.meta.filename, "base64");
+  const worker = new Worker(new URL(`data:text/javascript;base64,${module}`), {
+    workerData: request,
+    resourceLimits: { maxOldGenerationSizeMb: 96 }
+  });
+  await new Promise<void>((resolve, reject) => {
+    worker.once("error", reject);
+    worker.once("exit", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error("Chromium trace filter failed"));
+    });
+  });
+  const { user, system } = process.cpuUsage();
+  return (user + system) / 1000;
+}
+
+if (isMainThread) {
+  process.parentPort.once("message", ({ data }: { data: ChromiumTraceFilterRequest }) => {
+    void filterInUtility(data).then(
+      (cpuMs) => process.parentPort.postMessage(cpuMs),
+      // Parser, filesystem and worker errors may contain private input.
+      () => process.parentPort.postMessage(null)
+    );
+  });
+} else {
+  const { rawPath, filteredPath, allowedCategories } = workerData as ChromiumTraceFilterRequest;
+  await pipeline(filterTrace(rawPath, allowedCategories), createWriteStream(filteredPath, { flags: "wx", mode: 0o600 }));
+}

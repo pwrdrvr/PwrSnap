@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.4.4 - 2026-11-24
+
+- Performance Diagnostics - Fixed Chromium trace redaction running on the
+  main process, where it could distort CPU profiles recorded at the same
+  time. Redaction now runs in a separate worker.
+
 ## v1.4.3 - 2026-11-24
 
 - AI Settings - Added a Jobs overview that shows which provider and model

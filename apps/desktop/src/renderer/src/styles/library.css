@@ -2642,42 +2642,256 @@
   display: flex; flex-direction: column; gap: 6px;
   position: relative;
 }
-/* Export as Zip — mirrors the per-capture Copy cards: the shared
-   `.psl__copy-eyebrow` header + a `.psl__copy-row` grid of `.fo__copy-btn`
-   cards (same component styling the single-capture export uses). Sits at
-   the BOTTOM of the cart footer, the way single-capture export sits at the
-   bottom of the rail. */
-.psl__cart-zip {
-  display: flex;
-  flex-direction: column;
+/* Cart export (Copy all / Zip / Contact sheet) — CartExportPanel.tsx.
+   NO LAYOUT SHIFT: the block is a grid of FIXED row heights — picker,
+   strip, card row, status line — identical in every mode. The status line
+   is always rendered (blank at rest), so progress / notes / errors never
+   push anything; the sheet's Layout… popover floats over the cart list.
+   The cards reuse the shared `.fo__copy-btn` look (the per-capture Copy
+   cards), so the batch and single exports read as one control. */
+.psl__cart-export {
+  position: relative;
+  display: grid;
+  grid-template-rows: 24px 24px 84px 18px;
   gap: 7px;
   margin-top: 4px;
   padding-top: 10px;
   border-top: 1px solid var(--border-subtle);
+  min-width: 0;
 }
-/* The zip cards reuse the shared `.fo__copy-btn` look; float-over.css has
+.psl__cart-export > * { min-width: 0; min-height: 0; }
+.psl__cart-export-modes {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 7px;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--border-subtle);
+}
+.psl__cart-export-mode {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  font: 600 9px/1 var(--font-sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 100ms var(--ease-out), color 100ms var(--ease-out);
+}
+.psl__cart-export-mode:hover { color: var(--text-primary); }
+.psl__cart-export-mode.is-on {
+  background: var(--bg-panel-hover);
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+}
+.psl__cart-export-mode:focus-visible,
+.psl__cart-export-strip-btn:focus-visible,
+.psl__sheet-seg-btn:focus-visible,
+.psl__sheet-pop-save-btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.psl__cart-export-strip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.psl__cart-export-strip-text {
+  flex: 1;
+  min-width: 0;
+  font: 500 10px/1.2 var(--font-mono);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.psl__cart-export-strip-text b { color: var(--text-secondary); font-weight: 600; }
+.psl__cart-export-strip-btn {
+  flex: none;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-panel-elevated);
+  color: var(--text-primary);
+  font: 600 10px/1 var(--font-sans);
+  cursor: pointer;
+}
+.psl__cart-export-strip-btn:hover:not(:disabled),
+.psl__cart-export-strip-btn.is-open {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+.psl__cart-export-strip-btn:disabled { opacity: 0.45; cursor: default; }
+/* The cards reuse the shared `.fo__copy-btn` look; float-over.css has
    no :disabled rule (its export cards are never disabled), so add one here
-   for the empty / mid-zip / no-images states. */
-.psl__cart-zip .fo__copy-btn:disabled {
+   for the empty / busy / no-images states. */
+.psl__cart-export .fo__copy-btn:disabled {
   opacity: 0.4;
   cursor: default;
 }
-.psl__cart-zip .fo__copy-btn:disabled:hover {
+.psl__cart-export .fo__copy-btn.is-running:disabled { opacity: 0.65; cursor: progress; }
+.psl__cart-export .fo__copy-btn:disabled:hover {
   background: var(--bg-panel-elevated);
   border-color: var(--border-default);
   transform: none;
 }
-/* A disabled card (empty cart / mid-zip / no images) can't be dragged out
-   either — dim its FILE chip and swallow the drag to match. */
-.psl__cart-zip .fo__copy-btn:disabled + .fo__copy-file {
+/* One line, never wrapped: a wrapped size would grow the card and move its
+   chip (the shift this block exists to prevent). */
+.psl__cart-export-sheet-dim {
+  font-size: 10px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+/* A disabled card can't be dragged out either — dim its chip to match. */
+.psl__cart-export .fo__copy-btn:disabled + .fo__copy-file {
   opacity: 0.4;
   pointer-events: none;
 }
-.psl__cart-zip-progress {
+.psl__cart-export-status {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  font: 500 11px/18px var(--font-sans);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
+.psl__cart-export-status.is-note,
+.psl__cart-export-status.is-error { display: block; }
+.psl__cart-export-status.is-error { color: var(--danger-text); }
+
+/* Contact sheet backgrounds — the bake's four, for the previews + swatches.
+   Theme-independent tokens: they draw the PNG, which has no theme. */
+.psl__sheet-bg--clear {
+  background-color: var(--sheet-clear-light);
+  background-image: conic-gradient(
+    var(--sheet-clear-dark) 25%,
+    var(--sheet-clear-light) 0 50%,
+    var(--sheet-clear-dark) 0 75%,
+    var(--sheet-clear-light) 0
+  );
+  background-size: 10px 10px;
+}
+.psl__sheet-bg--hatch {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--sheet-hatch-dark) 0 4px,
+    var(--sheet-hatch-light) 4px 8px
+  );
+}
+.psl__sheet-bg--black { background: var(--sheet-black); }
+.psl__sheet-bg--white { background: var(--sheet-white); }
+.psl__sheet-mini,
+.psl__sheet-preview {
+  position: relative;
+  display: block;
+  flex: none;
+  overflow: hidden;
+  box-sizing: border-box;
+  border: 1px solid var(--border-default);
+}
+/* Width + aspect-ratio come from SheetPreview (the sheet's own shape). */
+.psl__sheet-mini { border-radius: 3px; }
+.psl__sheet-preview { align-self: center; border-radius: 6px; }
+.psl__sheet-mini > img,
+.psl__sheet-preview > img {
+  position: absolute;
+  display: block;
+  object-fit: fill;
+}
+.psl__sheet-pop {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-panel-elevated);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--shadow-base) 45%, transparent);
+}
+.psl__sheet-field { display: flex; flex-direction: column; gap: 5px; }
+.psl__sheet-field-label {
+  font: 600 9px/1 var(--font-sans);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.psl__sheet-seg {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+}
+.psl__sheet-seg-btn {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 22px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 600 10px/1 var(--font-sans);
+  cursor: pointer;
+}
+.psl__sheet-seg-btn:hover { color: var(--text-primary); }
+.psl__sheet-seg-btn.is-on {
+  background: var(--bg-panel-hover);
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+}
+.psl__sheet-swatch {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  border: 1px solid var(--border-default);
+  background-size: 4px 4px;
+}
+.psl__sheet-pop-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+.psl__sheet-pop-note { font: 400 10px/1.4 var(--font-sans); color: var(--text-muted); }
+.psl__sheet-pop-save { display: flex; align-items: center; gap: 4px; }
+.psl__sheet-pop-save > .psl__sheet-field-label { flex: 1; }
+.psl__sheet-pop-save-btn {
+  height: 22px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font: 600 10px/1 var(--font-sans);
+  cursor: pointer;
+}
+.psl__sheet-pop-save-btn:hover:not(:disabled) {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+.psl__sheet-pop-save-btn:disabled { opacity: 0.45; cursor: default; }
 .psl__cart-zip-bar {
   flex: 1;
   height: 4px;
@@ -2707,14 +2921,6 @@
   background: var(--bg-panel-hover);
   border-color: var(--accent-border);
   color: var(--text-primary);
-}
-.psl__cart-zip-error {
-  font: 500 11px/1.4 var(--font-sans);
-  color: var(--danger-text);
-}
-.psl__cart-zip-note {
-  font: 500 11px/1.4 var(--font-sans);
-  color: var(--text-muted);
 }
 .psl__cart-btn {
   width: 100%;

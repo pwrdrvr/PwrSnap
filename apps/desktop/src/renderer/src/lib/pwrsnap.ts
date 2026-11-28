@@ -7,6 +7,8 @@
 import {
   createCaptureInvocation,
   type CaptureInvocationOrigin,
+  type ContactSheetLayout,
+  type ContactSheetSize,
   type CommandName,
   type PerfMarkPayload,
   type PwrSnapError,
@@ -135,6 +137,28 @@ export function startCartZipDrag(
   window.pwrsnapApi?.startCartZipDrag({
     captureIds,
     preset,
+    ...(suggestedName !== undefined ? { suggestedName } : {})
+  });
+}
+
+/** Drag Copy all's images out as separate PNG files (main renders them at
+ *  `preset` and hands every path to `webContents.startDrag`). */
+export function startCartFilesDrag(captureIds: string[], preset: RenderPreset): void {
+  window.pwrsnapApi?.startCartZipDrag({ kind: "files", captureIds, preset });
+}
+
+/** Drag the cart's contact sheet out as one PNG. */
+export function startCartSheetDrag(
+  captureIds: string[],
+  size: ContactSheetSize,
+  layout: ContactSheetLayout,
+  suggestedName?: string
+): void {
+  window.pwrsnapApi?.startCartZipDrag({
+    kind: "sheet",
+    captureIds,
+    size,
+    layout: { ...layout },
     ...(suggestedName !== undefined ? { suggestedName } : {})
   });
 }

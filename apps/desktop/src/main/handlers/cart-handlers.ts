@@ -7,10 +7,10 @@
 // The two commit verbs ALSO broadcast `events:sizzle:projects:changed`
 // because they create / mutate a project the sidebar renders.
 
-import { app, BrowserWindow, dialog, shell } from "electron";
+import { BrowserWindow, dialog, shell } from "electron";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream, existsSync, type ReadStream } from "node:fs";
-import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
+import { mkdir, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { Readable } from "node:stream";
@@ -20,7 +20,6 @@ import {
   err,
   ok,
   slugifyFilenameStem,
-  type CartExportProgressEvent,
   type CaptureRecord,
   type DraftCart,
   type EventPayloads,
@@ -31,9 +30,16 @@ import { bus } from "../command-bus";
 import { getCartStore } from "../cart/cart-store";
 import { getSizzleStore, SizzleProjectNotFoundError } from "../sizzle/sizzle-store";
 import { appendCapturesToScenes, newSequenceScenesForCaptures } from "../sizzle/scene-edits";
-import { getCaptureById } from "../persistence/captures-repo";
 import { getCaptureEnrichment } from "../persistence/enrichment-repo";
-import { resolveImagePresetFile } from "../render/image-presets";
+import { renderCartImages, resolveExportableImages } from "../cart/cart-render";
+import {
+  broadcastCartExportProgress,
+  cartDragTempDir,
+  CART_DRAG_TEMP_MAX_AGE_MS,
+  exportJobs,
+  pruneCartDragTemp
+} from "../cart/cart-export-jobs";
+import { registerCartCopyAndSheetHandlers } from "./cart-copy-sheet-handlers";
 import { composeCartDragIcon } from "../render/cart-drag-icon";
 import { exportFilenameStem } from "../render/export-filename";
 import { findMainLibraryWindow } from "../window";
@@ -51,82 +57,10 @@ import {
 
 const log = getMainLogger("pwrsnap:cart-handlers");
 
-/**
- * In-flight `cart:exportZip` jobs keyed by their renderer-minted `jobId`.
- * `cart:exportZip:cancel` aborts the matching controller; the export loop
- * checks `signal.aborted` between renders and bails. The handler deletes
- * its own entry in a `finally`, so a stale id never accumulates.
- */
-const exportJobs = new Map<string, AbortController>();
-
-function broadcastCartExportProgress(event: CartExportProgressEvent): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (win.isDestroyed()) continue;
-    win.webContents.send(EVENT_CHANNELS.cartExportProgress, event);
-  }
-}
-
-// Drag-out temp artifacts (zip + cursor thumbnail) live here. Named by a
-// content hash of (capture id + edits_version + preset), so re-dragging the
-// SAME cart reuses the file (instant, no re-render) and two different carts
-// never collide. Pruned by age on each prepare so they don't pile up — the
-// OS would eventually sweep $TMPDIR, but not promptly.
-function cartDragTempDir(): string {
-  return join(app.getPath("temp"), "pwrsnap-cart-export");
-}
-
-/** Drag temp files older than this are deleted on the next prepare. A drag's
- *  drop completes in seconds, so anything this old is certainly finished. */
-const CART_DRAG_TEMP_MAX_AGE_MS = 10 * 60_000;
-
 /** Content key for a (cart, preset) — same images+edits+preset → same file. */
 function cartDragKey(records: CaptureRecord[], preset: RenderPreset): string {
   const sig = records.map((r) => `${r.id}:${r.edits_version}`).join(",") + `:${preset}`;
   return createHash("sha1").update(sig).digest("hex").slice(0, 8);
-}
-
-/** Best-effort prune of drag temp files older than `maxAgeMs`. Never throws —
- *  a missing/unreadable dir or a racing delete just means nothing to do. */
-async function pruneCartDragTemp(dir: string, maxAgeMs: number): Promise<void> {
-  let entries: string[];
-  try {
-    entries = await readdir(dir);
-  } catch {
-    return; // dir doesn't exist yet / unreadable
-  }
-  const now = Date.now();
-  await Promise.all(
-    entries.map(async (name) => {
-      const p = join(dir, name);
-      try {
-        const s = await stat(p);
-        if (now - s.mtimeMs > maxAgeMs) await rm(p, { force: true });
-      } catch {
-        // racing delete / stat failure — ignore
-      }
-    })
-  );
-}
-
-/** Resolve cart ids to exportable image records, counting the ones filtered
- *  out (soft-deleted, purged, or non-image). Shared by the dialog export
- *  (`cart:exportZip`) and the drag-out (`cart:prepareZipDrag`) so both apply
- *  the identical skip rule. */
-function resolveExportableImages(captureIds: string[]): {
-  records: CaptureRecord[];
-  skipped: number;
-} {
-  const records: CaptureRecord[] = [];
-  let skipped = 0;
-  for (const id of captureIds) {
-    const rec = getCaptureById(id);
-    if (rec === null || rec.deleted_at !== null || rec.kind !== "image") {
-      skipped++;
-      continue;
-    }
-    records.push(rec);
-  }
-  return { records, skipped };
 }
 
 type CartZipProgress = { phase: "rendering" | "zipping"; completed: number; total: number };
@@ -156,57 +90,30 @@ async function writeCartZip(
   opts: { signal?: AbortSignal; onProgress?: (p: CartZipProgress) => void } = {}
 ): Promise<CartZipOutcome> {
   const total = records.length;
-  const entries: Array<{ path: string; name: string }> = [];
-  const usedNames = new Set<string>();
-  let fileCount = 0;
-  let failed = 0;
-  let firstPath: string | null = null;
-  opts.onProgress?.({ phase: "rendering", completed: 0, total });
-  for (let offset = 0; offset < records.length; offset += 2) {
-    if (opts.signal?.aborted) return { fileCount, failed, cancelled: true, firstPath };
-    // AllSettled observes every rejection and drains both non-abortable
-    // renders before returning to the caller, including after cancellation.
-    const batch = records.slice(offset, offset + 2);
-    const rendered = await Promise.allSettled(batch.map((rec) => {
-      if (opts.signal?.aborted) return Promise.resolve(null);
-      return resolveImagePresetFile(rec, preset);
-    }));
-    if (opts.signal?.aborted) return { fileCount, failed, cancelled: true, firstPath };
-    for (const [index, rec] of batch.entries()) {
-      try {
-        // Renders use the default (legacy) export ladder — same mapping the
-        // renderer's cart estimate uses, so the shown ~size matches the zip.
-        // (DPI-aware-export-for-zip is a future enhancement.)
-        const result = rendered[index]!;
-        if (result.status === "rejected") throw result.reason;
-        const file = result.value;
-        if (file === null) continue;
-        if (firstPath === null) firstPath = file.path;
-        const stem = slugifyFilenameStem(exportFilenameStem(rec, getCaptureEnrichment(rec.id)));
-        let entry = `${stem}-${preset}.png`;
-        let n = 2;
-        while (usedNames.has(entry)) {
-          entry = `${stem}-${preset}-${n}.png`;
-          n++;
-        }
-        usedNames.add(entry);
-        entries.push({ path: file.path, name: entry });
-        fileCount++;
-      } catch (cause) {
-        // One unrenderable image (corrupt source, etc.) must not sink the whole
-        // export — skip it, count it, keep going.
-        failed++;
-        log.warn("cart zip: skipping unrenderable capture", {
-          id: rec.id,
-          message: cause instanceof Error ? cause.message : String(cause)
-        });
-      }
-      opts.onProgress?.({ phase: "rendering", completed: fileCount + failed, total });
-    }
-  }
-  // A cancel landing after the last render but before the write still counts.
-  if (opts.signal?.aborted) return { fileCount, failed, cancelled: true, firstPath };
+  // Renders use the default (legacy) export ladder — same mapping the
+  // renderer's cart estimate uses, so the shown ~size matches the zip.
+  // (DPI-aware-export-for-zip is a future enhancement.)
+  const outcome = await renderCartImages(records, preset, {
+    ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+    onProgress: (p) => opts.onProgress?.({ phase: "rendering", ...p })
+  });
+  const firstPath = outcome.rendered[0]?.path ?? null;
+  const fileCount = outcome.rendered.length;
+  const failed = outcome.failed;
+  if (outcome.cancelled) return { fileCount, failed, cancelled: true, firstPath };
   if (fileCount === 0) return { fileCount, failed, cancelled: false, firstPath };
+  const usedNames = new Set<string>();
+  const entries = outcome.rendered.map(({ record, path }) => {
+    const stem = slugifyFilenameStem(exportFilenameStem(record, getCaptureEnrichment(record.id)));
+    let entry = `${stem}-${preset}.png`;
+    let n = 2;
+    while (usedNames.has(entry)) {
+      entry = `${stem}-${preset}-${n}.png`;
+      n++;
+    }
+    usedNames.add(entry);
+    return { path, name: entry };
+  });
   opts.onProgress?.({ phase: "zipping", completed: total, total });
   try {
     await writeCartArchive(entries, destPath, opts.signal);
@@ -314,6 +221,7 @@ function broadcastProjectsChanged(projects: SizzleProject[]): void {
 export function registerCartHandlers(): void {
   const cart = getCartStore();
   const sizzle = getSizzleStore();
+  registerCartCopyAndSheetHandlers();
 
   bus.register("cart:get", async () => {
     return ok(await cart.get());
@@ -445,9 +353,8 @@ export function registerCartHandlers(): void {
     }
   });
 
-  // Export the cart's images as one Zip at a chosen preset size. Does NOT
-  // mutate the cart (you can zip, then still build a reel from the same
-  // selection). Image-only — videos/trashed/missing are skipped + counted.
+  // Cancel ANY in-flight cart export (Zip, Copy all, Contact sheet) by its
+  // jobId — every export registers in the same `exportJobs` map.
   bus.register("cart:exportZip:cancel", async (req) => {
     const v = validateCartExportZipCancel(req);
     if (!v.ok) return err(v.error);
@@ -457,6 +364,9 @@ export function registerCartHandlers(): void {
     return ok({ cancelled: true });
   });
 
+  // Export the cart's images as one Zip at a chosen preset size. Does NOT
+  // mutate the cart (you can zip, then still build a reel from the same
+  // selection). Image-only — videos/trashed/missing are skipped + counted.
   bus.register("cart:exportZip", async (req, ctx) => {
     const v = validateCartExportZip(req);
     if (!v.ok) return err(v.error);

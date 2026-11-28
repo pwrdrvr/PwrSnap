@@ -6,49 +6,16 @@ import {
   useState,
   type ReactElement
 } from "react";
-import {
-  acceleratorToDisplayText,
-  EVENT_CHANNELS,
-  sizzleProjectCaptureIds
-} from "@pwrsnap/shared";
-import type {
-  CaptureRecord,
-  CaptureEnrichment,
-  CartExportProgressEvent,
-  RenderPreset
-} from "@pwrsnap/shared";
-import {
-  cacheUrl,
-  captureSrcUrl,
-  dispatch,
-  startCartZipDrag,
-  subscribe
-} from "../../lib/pwrsnap";
-import { formatBytes } from "../../lib/format-bytes";
+import { acceleratorToDisplayText, sizzleProjectCaptureIds } from "@pwrsnap/shared";
+import type { CaptureRecord, CaptureEnrichment } from "@pwrsnap/shared";
+import { cacheUrl, captureSrcUrl, dispatch } from "../../lib/pwrsnap";
 import { useCart } from "./CartContext";
+import { CartExportPanel } from "./CartExportPanel";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
 import { DeleteConfirm } from "../shared/DeleteConfirm";
 import { useDismissable } from "../../lib/useDismissable";
 import { useFocusReturn } from "../../lib/useFocusReturn";
-import { FoIcon } from "../float-over/FoIcons";
 import { rendererShortcutPlatform } from "../../lib/shortcut-platform";
-
-const ZIP_PRESETS: readonly RenderPreset[] = ["low", "med", "high"];
-const ZIP_PRESET_LABELS: Record<RenderPreset, string> = {
-  low: "Low",
-  med: "Med",
-  high: "High"
-};
-
-/** Rough per-image byte estimate at a preset — mirrors the legacy
- *  800/1440/source width mapping `presetMetrics` (CopyButton) uses, but
- *  returns the raw number so the cart can SUM across images. Approximate
- *  by design (a batch has no single pixel size to report). */
-function estimatePresetBytes(preset: RenderPreset, srcW: number, srcBytes: number): number {
-  const targetW = preset === "low" ? 800 : preset === "med" ? 1440 : srcW;
-  const scale = Math.min(1, targetW / Math.max(1, srcW));
-  return Math.round(srcBytes * scale * scale);
-}
 
 export interface CartPanelProps {
   /** Jump the grid to a collected capture (select it + scroll it into
@@ -133,20 +100,6 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
     dismissOnFocusLeave: true
   });
   useFocusReturn({ open: pickerOpen, containerRef: pickerRef, returnFocusRef: pickerTriggerRef });
-  const [zipping, setZipping] = useState<RenderPreset | null>(null);
-  const [zipError, setZipError] = useState<string | null>(null);
-  const [zipNote, setZipNote] = useState<string | null>(null);
-  // Live progress for the in-flight export, fed by the main-side
-  // `cartExportProgress` broadcasts (matched by jobId). null until the
-  // first render beat arrives (the save dialog is still up before then).
-  const [zipProgress, setZipProgress] = useState<{
-    phase: "rendering" | "zipping";
-    completed: number;
-    total: number;
-  } | null>(null);
-  // The jobId of the export currently owned by THIS panel — gates which
-  // progress broadcasts we react to and what `Cancel` aborts.
-  const activeJobIdRef = useRef<string | null>(null);
   const listEndRef = useRef<HTMLLIElement | null>(null);
   const prevCountRef = useRef(cart.captureIds.length);
 
@@ -184,7 +137,7 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
         }
         // Requested ids that came back empty (purged / trashed-and-gone)
         // get an explicit null row so they count as HYDRATED, not pending.
-        // Without this the Zip estimate would read "still loading" forever
+        // Without this the export estimates would read "still loading" forever
         // whenever the cart holds a since-deleted capture.
         for (const id of missing) {
           if (!returned.has(id) && !next.has(id)) {
@@ -212,29 +165,6 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
     prevCountRef.current = cart.captureIds.length;
   }, [cart.captureIds.length]);
 
-
-  // Listen for export progress. Only the broadcast matching our active
-  // jobId moves the bar; a `done` beat (success / cancel / error) clears it.
-  useEffect(() => {
-    const unsubscribe = subscribe(EVENT_CHANNELS.cartExportProgress, (payload) => {
-      const ev = payload as CartExportProgressEvent | null;
-      if (ev === null || typeof ev !== "object" || ev.jobId !== activeJobIdRef.current) {
-        return;
-      }
-      if (ev.phase === "done") {
-        setZipProgress(null);
-        return;
-      }
-      setZipProgress({ phase: ev.phase, completed: ev.completed, total: ev.total });
-    });
-    return unsubscribe;
-  }, []);
-
-  const onCancelZip = useCallback(() => {
-    const jobId = activeJobIdRef.current;
-    if (jobId === null) return;
-    void dispatch("cart:exportZip:cancel", { jobId });
-  }, []);
 
   const onRemove = useCallback((captureId: string) => {
     void dispatch("cart:remove", { captureId });
@@ -272,67 +202,21 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
     void dispatch("cart:clear", {});
   }, []);
 
-  // Aggregate byte estimate per preset across the collected IMAGES (videos
-  // are skipped by the zip). Approximate + grows as metadata hydrates.
-  const zipEstimates = useMemo(() => {
-    const totals: Record<RenderPreset, number> = { low: 0, med: 0, high: 0 };
-    let imageCount = 0;
-    for (const id of cart.captureIds) {
-      const rec = rowsById.get(id)?.record;
-      if (rec == null || rec.kind !== "image") continue;
-      imageCount += 1;
-      for (const p of ZIP_PRESETS) {
-        totals[p] += estimatePresetBytes(p, rec.width_px, rec.byte_size);
-      }
-    }
-    return { totals, imageCount };
-  }, [cart.captureIds, rowsById]);
-
   // True while some cart ids haven't hydrated their metadata yet — the
-  // aggregate estimate only sums the rows it has, so it's still climbing.
-  // We mark the shown size as provisional rather than print a confident
-  // number that will jump up once the rest load. (The export itself
-  // re-resolves every id main-side, so a provisional estimate never
-  // affects what actually gets zipped.)
+  // export estimates only sum the rows they have, so they're still climbing.
+  // (Every export re-resolves its ids main-side, so a provisional estimate
+  // never affects what is actually exported.)
   const estimateSettling = useMemo(
     () => cart.captureIds.some((id) => !rowsById.has(id)),
     [cart.captureIds, rowsById]
   );
-
-  const onExportZip = useCallback(
-    (preset: RenderPreset) => {
-      setZipError(null);
-      setZipNote(null);
-      setZipProgress(null);
-      setZipping(preset);
-      const jobId = crypto.randomUUID();
-      activeJobIdRef.current = jobId;
-      // Seed the save filename from the first item's title if we have it.
-      const firstRow = rowsById.get(cart.captureIds[0] ?? "");
-      const suggestedName = firstRow !== undefined ? previewText(firstRow) : undefined;
-      void dispatch("cart:exportZip", {
-        captureIds: cart.captureIds,
-        preset,
-        jobId,
-        ...(suggestedName !== undefined ? { suggestedName } : {})
-      }).then((r) => {
-        setZipping(null);
-        setZipProgress(null);
-        activeJobIdRef.current = null;
-        if (r.ok) {
-          // Tell the user if some captures didn't make it into the zip.
-          const leftOut = r.value.skipped + r.value.failed;
-          setZipNote(
-            leftOut > 0 ? `Zipped ${r.value.fileCount} · ${leftOut} left out` : null
-          );
-        } else if (r.error.code !== "cancelled") {
-          // `cancelled` = the user dismissed the save dialog; not an error.
-          setZipError(r.error.message);
-        }
-      });
-    },
-    [cart.captureIds, rowsById]
-  );
+  const recordsById = useMemo(() => {
+    const out = new Map<string, CaptureRecord | null>();
+    for (const [id, row] of rowsById) out.set(id, row.record);
+    return out;
+  }, [rowsById]);
+  const firstRow = rowsById.get(cart.captureIds[0] ?? "");
+  const suggestedName = firstRow !== undefined ? previewText(firstRow) : undefined;
 
   const isEmpty = cart.captureIds.length === 0;
 
@@ -361,7 +245,8 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
       {isEmpty ? (
         <p className="psl__cart-empty">
           Hover a capture in the Library and click its checkbox to start
-          collecting it here — then zip, delete, or build a Sizzle Reel.
+          collecting it here — then copy them all, zip them, make a contact
+          sheet, delete them, or build a Sizzle Reel.
         </p>
       ) : (
         <ol className="psl__cart-list">
@@ -525,103 +410,15 @@ export function CartPanel({ onJumpTo, onTrashAll }: CartPanelProps = {}): ReactE
           ) : null}
         </div>
 
-        {/* Export as Zip — same visual language as the per-capture Copy
-            cards (shared eyebrow + `.fo__copy-btn` card grid), pinned to the
-            bottom of the footer the way single-capture export sits at the
-            bottom of the rail. The shown size is the aggregate estimate
-            across the collected images (a batch has no single pixel
-            dimension to report); one flat zip at the chosen size. */}
-        <div className="psl__cart-zip">
-          <div className="psl__copy-eyebrow">
-            <span>Export as Zip</span>
-            <span className="psl__copy-eyebrow-line" />
-            <span className="psl__copy-eyebrow-meta">
-              {estimateSettling ? "estimating" : "estimated"}
-            </span>
-          </div>
-          <div className="psl__copy-row">
-            {ZIP_PRESETS.map((p) => {
-              const busy = zipping === p;
-              const disabled = isEmpty || zipping !== null || zipEstimates.imageCount === 0;
-              const sizeLabel = !busy
-                ? `~${formatBytes(zipEstimates.totals[p])}${estimateSettling ? "…" : ""}`
-                : zipProgress !== null && zipProgress.phase === "rendering"
-                  ? `${zipProgress.completed}/${zipProgress.total}`
-                  : "Zipping…";
-              return (
-                <div className="fo__copy-card" key={p}>
-                  <button
-                    type="button"
-                    className="fo__copy-btn"
-                    disabled={disabled}
-                    onClick={() => onExportZip(p)}
-                  >
-                    <div className="fo__copy-btn-row1">
-                      <span className="fo__copy-label">{ZIP_PRESET_LABELS[p]}</span>
-                    </div>
-                    <div className="fo__copy-meta">
-                      <span className="fo__copy-dim" aria-hidden="true" />
-                      <span className="fo__copy-bytes">
-                        <span>{sizeLabel}</span>
-                      </span>
-                    </div>
-                  </button>
-                  <a
-                    className="fo__copy-file"
-                    draggable={!disabled}
-                    href="#"
-                    data-tip={`Drag the ${ZIP_PRESET_LABELS[p]} Zip out`}
-                    aria-label={`Drag the ${ZIP_PRESET_LABELS[p]} Zip file out`}
-                    role="button"
-                    onClick={(e) => e.preventDefault()}
-                    onDragStart={(e) => {
-                      e.preventDefault();
-                      if (disabled) return;
-                      const firstRow = rowsById.get(cart.captureIds[0] ?? "");
-                      const suggestedName =
-                        firstRow !== undefined ? previewText(firstRow) : undefined;
-                      startCartZipDrag(cart.captureIds, p, suggestedName);
-                    }}
-                  >
-                    <FoIcon name="hand" size={10} />
-                    File
-                  </a>
-                </div>
-              );
-            })}
-          </div>
-          {zipping !== null ? (
-            <div className="psl__cart-zip-progress">
-              <div className="psl__cart-zip-bar" aria-hidden="true">
-                <div
-                  className="psl__cart-zip-bar-fill"
-                  style={{
-                    width:
-                      zipProgress === null
-                        ? "8%"
-                        : zipProgress.phase === "zipping"
-                          ? "100%"
-                          : `${Math.round(
-                              (zipProgress.completed / Math.max(1, zipProgress.total)) * 100
-                            )}%`
-                  }}
-                />
-              </div>
-              <button type="button" className="psl__cart-zip-cancel" onClick={onCancelZip}>
-                Cancel
-              </button>
-            </div>
-          ) : null}
-          {zipError !== null ? (
-            <div className="psl__cart-zip-error" role="alert">
-              {zipError}
-            </div>
-          ) : zipNote !== null ? (
-            <div className="psl__cart-zip-note" role="status">
-              {zipNote}
-            </div>
-          ) : null}
-        </div>
+        {/* Export: Copy all / Zip / Contact sheet, one fixed-height block
+            pinned to the bottom of the footer, the way single-capture export
+            sits at the bottom of the rail. */}
+        <CartExportPanel
+          captureIds={cart.captureIds}
+          records={recordsById}
+          settling={estimateSettling}
+          suggestedName={suggestedName}
+        />
       </div>
     </div>
   );

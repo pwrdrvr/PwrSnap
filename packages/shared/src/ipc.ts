@@ -10,8 +10,10 @@ import type {
   AppUpdateStatus,
   CaptureRecord,
   FloatOverDockSide,
+  RenderPreset,
   VideoPreset
 } from "./protocol";
+import type { ContactSheetLayout, ContactSheetSize } from "./contact-sheet";
 
 export const IPC_CMD = "cmd" as const;
 
@@ -35,6 +37,20 @@ export const IPC_VIDEO_DRAG_START = "video:drag-start" as const;
  *  then calls startDrag with the resulting `.zip`. Payload identifies the
  *  `(captureIds, preset, suggestedName?)` to zip-and-drag. */
 export const IPC_CART_ZIP_DRAG_START = "cart:zip-drag-start" as const;
+
+/** Payload for `IPC_CART_ZIP_DRAG_START`. `kind` picks what is dragged: the
+ *  Zip (also when absent, the original payload), Copy all's separate PNGs
+ *  (`files`), or the contact sheet (`sheet`). */
+export type CartDragPayload =
+  | { kind?: "zip"; captureIds: string[]; preset: RenderPreset; suggestedName?: string }
+  | { kind: "files"; captureIds: string[]; preset: RenderPreset }
+  | {
+      kind: "sheet";
+      captureIds: string[];
+      size: ContactSheetSize;
+      layout: ContactSheetLayout;
+      suggestedName?: string;
+    };
 
 /** Permission guide → main: start dragging the running app bundle. No
  *  payload; main drags the path it resolved itself, and only for the guide

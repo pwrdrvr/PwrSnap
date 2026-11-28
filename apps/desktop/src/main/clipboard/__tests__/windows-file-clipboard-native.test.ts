@@ -7,7 +7,9 @@
 // custom-format impostor, malformed DROPFILES, or broken packaged subcommand
 // fails before release.
 
+import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
@@ -74,6 +76,35 @@ test.skipIf(
     });
 
     expect(result).toEqual({ ok: true, path: imagePath });
+  },
+  15_000
+);
+
+test.skipIf(
+  process.platform !== "win32" ||
+    process.env.PWRSNAP_WINDOWS_NATIVE_CLIPBOARD_SMOKE !== "1"
+)(
+  "native helper writes several files as one CF_HDROP, in order (cart Copy all)",
+  async () => {
+    const helperPath = resolve(
+      import.meta.dirname,
+      "..",
+      "..",
+      "..",
+      "..",
+      "build",
+      "native",
+      "window-list.exe"
+    );
+    workRoot = await mkdtemp(join(tmpdir(), "pwrsnap-cf-hdrop-multi-"));
+    const paths = ["Granola grid.png", "Oat milk checkout.png", "Bran banner.png"].map((name) =>
+      resolve(workRoot!, name)
+    );
+    for (const path of paths) await writeFile(path, Buffer.from("PNG"));
+
+    await runWindowsFileClipboardHelper(helperPath, paths);
+    const { stdout } = await promisify(execFile)(helperPath, ["--read-file-clipboard"]);
+    expect(JSON.parse(stdout)).toMatchObject({ ok: true, format: "CF_HDROP", files: paths });
   },
   15_000
 );

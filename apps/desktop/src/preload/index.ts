@@ -73,7 +73,7 @@ import type {
   RenderPreset,
   VideoPreset
 } from "@pwrsnap/shared/protocol";
-import type { PerfMarkPayload } from "@pwrsnap/shared/ipc";
+import type { CartDragPayload, PerfMarkPayload } from "@pwrsnap/shared/ipc";
 import { parseAppearanceArg } from "@pwrsnap/shared/appearance-arg";
 import { resolveDroppedFilePath } from "./dropped-file-path";
 import { createEventSubscriber, LATCHED_EVENT_CHANNELS } from "./latched-events";
@@ -623,17 +623,13 @@ const pwrsnapApi = {
     ipcRenderer.send(IPC_VIDEO_DRAG_START, payload);
   },
   /**
-   * Renderer -> main native file drag for the Project Asset Cart's Zip
-   * export. Sibling of `startCaptureDrag`. Payload identifies the cart's
-   * captureIds + preset (+ a suggested filename); main renders the images,
-   * zips them to a temp file, and calls WebContents.startDrag with the
-   * `.zip`. No save dialog — this is the drag-out path.
+   * Renderer -> main native file drag for the Project Asset Cart's exports.
+   * Sibling of `startCaptureDrag`. `kind` picks the Zip (default), Copy
+   * all's separate PNGs, or the contact sheet; main renders, prepares the
+   * file(s) in a temp dir, and calls WebContents.startDrag. No save dialog —
+   * this is the drag-out path.
    */
-  startCartZipDrag(payload: {
-    captureIds: string[];
-    preset: RenderPreset;
-    suggestedName?: string;
-  }): void {
+  startCartZipDrag(payload: CartDragPayload): void {
     ipcRenderer.send(IPC_CART_ZIP_DRAG_START, payload);
   },
   /**

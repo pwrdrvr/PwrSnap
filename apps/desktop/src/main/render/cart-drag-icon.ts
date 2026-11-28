@@ -31,22 +31,24 @@ function roundedMaskSvg(): Buffer {
   );
 }
 
-/** ZIP chip (top-left) + image-count badge (bottom-right) + a faint inner
- *  hairline so the card reads as a tile on any background. `count` is clamped
- *  to a 2-glyph label (`99+`). */
-function overlaySvg(count: number): Buffer {
+/** Kind chip (top-left: ZIP, PNG, SHEET) + image-count badge (bottom-right)
+ *  + a faint inner hairline so the card reads as a tile on any background.
+ *  `count` is clamped to a 2-glyph label (`99+`). */
+function overlaySvg(count: number, chip: string): Buffer {
   const label = count > 99 ? "99+" : String(count);
   const badgeR = 18;
   const cx = CARD_W - 8 - badgeR;
   const cy = CARD_H - 8 - badgeR;
   const countFont = label.length > 2 ? 13 : 17;
+  // 40 px fits "ZIP"; wider labels grow by ~8 px a glyph.
+  const chipW = Math.max(40, 16 + chip.length * 8);
   return Buffer.from(
     `<svg width="${CARD_W}" height="${CARD_H}" xmlns="http://www.w3.org/2000/svg">` +
       // faint inner border
       `<rect x="0.75" y="0.75" width="${CARD_W - 1.5}" height="${CARD_H - 1.5}" rx="${CORNER_RADIUS - 0.75}" ry="${CORNER_RADIUS - 0.75}" fill="none" stroke="#ffffff" stroke-opacity="0.18" stroke-width="1.5"/>` +
-      // ZIP chip
-      `<rect x="8" y="8" width="40" height="19" rx="6" ry="6" fill="#000000" fill-opacity="0.62"/>` +
-      `<text x="28" y="21.5" font-family="Helvetica, Arial, sans-serif" font-size="11" font-weight="700" letter-spacing="0.5" fill="${ACCENT}" text-anchor="middle">ZIP</text>` +
+      // kind chip
+      `<rect x="8" y="8" width="${chipW}" height="19" rx="6" ry="6" fill="#000000" fill-opacity="0.62"/>` +
+      `<text x="${8 + chipW / 2}" y="21.5" font-family="Helvetica, Arial, sans-serif" font-size="11" font-weight="700" letter-spacing="0.5" fill="${ACCENT}" text-anchor="middle">${chip}</text>` +
       // count badge
       `<circle cx="${cx}" cy="${cy}" r="${badgeR}" fill="${ACCENT}" stroke="${ON_ACCENT}" stroke-width="2.5"/>` +
       `<text x="${cx}" y="${cy + countFont / 2 - 1.5}" font-family="Helvetica, Arial, sans-serif" font-size="${countFont}" font-weight="800" fill="${ON_ACCENT}" text-anchor="middle">${label}</text>` +
@@ -65,6 +67,8 @@ export async function composeCartDragIcon(opts: {
   imagePath: string;
   count: number;
   destPath: string;
+  /** Top-left chip text — a fixed literal (it is spliced into SVG). */
+  chip?: "ZIP" | "PNG" | "SHEET";
 }): Promise<void> {
   const cover = (): Sharp =>
     sharp(opts.imagePath).resize(CARD_W, CARD_H, { fit: "cover", position: "centre" });
@@ -72,7 +76,7 @@ export async function composeCartDragIcon(opts: {
     const png = await cover()
       .composite([
         { input: roundedMaskSvg(), blend: "dest-in" },
-        { input: overlaySvg(opts.count), blend: "over" }
+        { input: overlaySvg(opts.count, opts.chip ?? "ZIP"), blend: "over" }
       ])
       .png()
       .toBuffer();

@@ -47,6 +47,7 @@ export * from "./capture-duplicate";
 export * from "./video-activity";
 export * from "./float-over-sizing";
 export * from "./popover-sizing";
+export * from "./contact-sheet";
 export * from "./ai-enrichment-rate-limit";
 
 export * from "./custom-models";

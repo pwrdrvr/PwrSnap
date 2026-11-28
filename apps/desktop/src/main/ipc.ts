@@ -11,7 +11,14 @@ import {
   IPC_PERMISSION_GUIDE_DRAG_START,
   IPC_VIDEO_DRAG_START
 } from "@pwrsnap/shared";
-import type { RenderPreset, VideoExportCoordinates, VideoPreset } from "@pwrsnap/shared";
+import {
+  CONTACT_SHEET_SIZES,
+  type ContactSheetLayout,
+  type ContactSheetSize,
+  type RenderPreset,
+  type VideoExportCoordinates,
+  type VideoPreset
+} from "@pwrsnap/shared";
 import { bus } from "./command-bus";
 import { getMainLogger } from "./log";
 import { admitHotkeyRecorderDocument } from "./hotkeys/hotkey-recorder-document";
@@ -199,40 +206,88 @@ export function registerIpcDispatcher(): void {
   // not surfaced — a native drag handle has no protocol for "prepare failed."
   ipcMain.on(IPC_CART_ZIP_DRAG_START, (event, req: unknown) => {
     void (async () => {
-      const parsed = parseCartZipDragRequest(req);
+      const parsed = parseCartDragRequest(req);
       if (parsed === null) {
-        log.warn("cart zip drag: invalid request");
+        log.warn("cart drag: invalid request");
         return;
       }
 
-      const result = await bus.dispatch("cart:prepareZipDrag", parsed, { principal: "ipc" });
-      if (!result.ok) {
-        log.warn("cart zip drag: prepare failed", {
+      const prepared = await prepareCartDrag(parsed);
+      if (!prepared.ok) {
+        log.warn("cart drag: prepare failed", {
+          kind: parsed.kind,
           count: parsed.captureIds.length,
-          preset: parsed.preset,
-          code: result.error.code,
-          message: result.error.message
+          code: prepared.error.code,
+          message: prepared.error.message
         });
         return;
       }
       if (event.sender.isDestroyed()) return;
 
       // The icon is the macOS drag cursor image. The handler composes a
-      // badged thumbnail (cover photo + count badge + ZIP chip) at
+      // badged thumbnail (cover photo + count badge + kind chip) at
       // CART_DRAG_ICON_WIDTH; resizing to the same width is a no-op for it.
       // The resize is the safety net for the rare fallback where iconPath is
       // the raw first image at FULL resolution — without it that would paint
       // a giant, legible screenshot (a ghost of the app) under the cursor.
       const raw =
-        result.value.iconPath !== null
-          ? nativeImage.createFromPath(result.value.iconPath)
+        prepared.iconPath !== null
+          ? nativeImage.createFromPath(prepared.iconPath)
           : nativeImage.createEmpty();
       const icon = raw.isEmpty()
         ? nativeImage.createEmpty()
         : raw.resize({ width: CART_DRAG_ICON_WIDTH, quality: "better" });
-      event.sender.startDrag({ file: result.value.path, icon });
+      if (prepared.files.length === 1) {
+        event.sender.startDrag({ file: prepared.files[0]!, icon });
+      } else {
+        event.sender.startDrag({ file: prepared.files[0]!, files: prepared.files, icon });
+      }
     })();
   });
+}
+
+type CartDragPrepared =
+  | { ok: true; files: string[]; iconPath: string | null }
+  | { ok: false; error: { code: string; message: string } };
+
+/** Route a cart drag to its prepare verb: the Zip, Copy all's separate
+ *  files, or the contact sheet. */
+async function prepareCartDrag(parsed: CartDragRequest): Promise<CartDragPrepared> {
+  switch (parsed.kind) {
+    case "zip": {
+      const r = await bus.dispatch(
+        "cart:prepareZipDrag",
+        {
+          captureIds: parsed.captureIds,
+          preset: parsed.preset,
+          ...(parsed.suggestedName !== undefined ? { suggestedName: parsed.suggestedName } : {})
+        },
+        { principal: "ipc" }
+      );
+      return r.ok ? { ok: true, files: [r.value.path], iconPath: r.value.iconPath } : { ok: false, error: r.error };
+    }
+    case "files": {
+      const r = await bus.dispatch(
+        "cart:prepareFilesDrag",
+        { captureIds: parsed.captureIds, preset: parsed.preset },
+        { principal: "ipc" }
+      );
+      return r.ok ? { ok: true, files: r.value.paths, iconPath: r.value.iconPath } : { ok: false, error: r.error };
+    }
+    case "sheet": {
+      const r = await bus.dispatch(
+        "cart:prepareSheetDrag",
+        {
+          captureIds: parsed.captureIds,
+          size: parsed.size,
+          layout: parsed.layout,
+          ...(parsed.suggestedName !== undefined ? { suggestedName: parsed.suggestedName } : {})
+        },
+        { principal: "ipc" }
+      );
+      return r.ok ? { ok: true, files: [r.value.path], iconPath: r.value.iconPath } : { ok: false, error: r.error };
+    }
+  }
 }
 
 /** Drag cursor thumbnail width for the cart Zip drag-out — matches the
@@ -248,22 +303,57 @@ export function disposeIpcDispatcher(): void {
   ipcMain.removeAllListeners(IPC_CART_ZIP_DRAG_START);
 }
 
-function parseCartZipDragRequest(
-  req: unknown
-): { captureIds: string[]; preset: RenderPreset; suggestedName?: string } | null {
+type CartDragRequest =
+  | { kind: "zip"; captureIds: string[]; preset: RenderPreset; suggestedName?: string }
+  | { kind: "files"; captureIds: string[]; preset: RenderPreset }
+  | {
+      kind: "sheet";
+      captureIds: string[];
+      size: ContactSheetSize;
+      layout: ContactSheetLayout;
+      suggestedName?: string;
+    };
+
+/** Shape-check a cart drag payload. `kind` absent means the Zip (the
+ *  original payload). The prepare verbs validate the rest in depth. */
+export function parseCartDragRequest(req: unknown): CartDragRequest | null {
   if (typeof req !== "object" || req === null) return null;
-  const value = req as { captureIds?: unknown; preset?: unknown; suggestedName?: unknown };
+  const value = req as {
+    kind?: unknown;
+    captureIds?: unknown;
+    preset?: unknown;
+    suggestedName?: unknown;
+    size?: unknown;
+    layout?: unknown;
+  };
   if (!Array.isArray(value.captureIds) || value.captureIds.length === 0) return null;
   if (!value.captureIds.every((id) => typeof id === "string" && id.length > 0)) return null;
+  const captureIds = value.captureIds as string[];
+  const suggestedName = typeof value.suggestedName === "string" ? value.suggestedName : undefined;
+  const kind = value.kind ?? "zip";
+  if (kind === "sheet") {
+    if (!(CONTACT_SHEET_SIZES as readonly unknown[]).includes(value.size)) return null;
+    if (typeof value.layout !== "object" || value.layout === null) return null;
+    return {
+      kind,
+      captureIds,
+      size: value.size as ContactSheetSize,
+      // Deep-checked by the cart:prepareSheetDrag validator.
+      layout: value.layout as ContactSheetLayout,
+      ...(suggestedName !== undefined ? { suggestedName } : {})
+    };
+  }
+  if (kind !== "zip" && kind !== "files") return null;
   if (value.preset !== "low" && value.preset !== "med" && value.preset !== "high") {
     return null;
   }
-  const out: { captureIds: string[]; preset: RenderPreset; suggestedName?: string } = {
-    captureIds: value.captureIds as string[],
-    preset: value.preset
+  if (kind === "files") return { kind, captureIds, preset: value.preset };
+  return {
+    kind,
+    captureIds,
+    preset: value.preset,
+    ...(suggestedName !== undefined ? { suggestedName } : {})
   };
-  if (typeof value.suggestedName === "string") out.suggestedName = value.suggestedName;
-  return out;
 }
 
 function parseDragRequest(req: unknown): { captureId: string; preset: RenderPreset } | null {

@@ -14,6 +14,7 @@ import { APPLE_FM_SETTINGS_SUB, type AppleFmStatus, type AppleFmTestResult } fro
 
 import type { BundleLayerNode } from "./bundle-manifest-schema-v2";
 import type { CaptureDuplicateJob, CaptureEditSummary } from "./capture-duplicate";
+import type { ContactSheetLayout, ContactSheetSize } from "./contact-sheet";
 import type { CaptureEnrichment, AiRunStatus } from "./ai-enrichment-schemas";
 import type { AiEnrichmentRateLimit } from "./ai-enrichment-rate-limit";
 import type { SizzleTimeline, SizzleTimelineInput, SizzleAsset } from "./sizzle-timeline";
@@ -2210,14 +2211,16 @@ export type SizzleRenderProgressEvent = {
 };
 
 /**
- * Main → every BrowserWindow during a `cart:exportZip`. The renderer that
- * started the job (matched by `jobId`) shows a determinate bar + a Cancel
- * button. `rendering` fires once per image as it's rasterized; `zipping`
- * fires once the render loop finishes and the archive is being written;
- * `done` is the terminal beat (the dispatch result carries the real
- * outcome, so subscribers only need this to clear their UI).
+ * Main → every BrowserWindow during a cart export (`cart:exportZip`,
+ * `cart:copyAll`, `cart:contactSheet`). The renderer that started the job
+ * (matched by `jobId`) shows a determinate bar + a Cancel button.
+ * `rendering` fires once per image as it's rasterized; `zipping` fires once
+ * the render loop finishes and the archive is being written; `composing`
+ * once a contact sheet's tiles are being laid onto the sheet; `done` is the
+ * terminal beat (the dispatch result carries the real outcome, so
+ * subscribers only need this to clear their UI).
  */
-export type CartExportProgressPhase = "rendering" | "zipping" | "done";
+export type CartExportProgressPhase = "rendering" | "zipping" | "composing" | "done";
 
 export type CartExportProgressEvent = {
   jobId: string;
@@ -6399,6 +6402,71 @@ export type Commands = {
   "cart:prepareZipDrag": {
     req: { captureIds: string[]; preset: RenderPreset; suggestedName?: string };
     res: { path: string; fileCount: number; iconPath: string | null };
+  };
+  /**
+   * Copy every image in the cart to the clipboard at one preset, as separate
+   * files, so one paste delivers all of them: one pasteboard item per image
+   * (PNG + file URL) on macOS, one CF_HDROP listing every file on Windows,
+   * `text/uri-list` on Linux X11. Renders everything first and writes the
+   * clipboard once; a cancel or an all-failed render leaves it untouched.
+   * Same skip-filter as the Zip. Cancel with `cart:exportZip:cancel`.
+   */
+  "cart:copyAll": {
+    req: { captureIds: string[]; preset: RenderPreset; jobId: string };
+    res: {
+      fileCount: number;
+      /** Captures filtered out before rendering (video / trashed / missing). */
+      skipped: number;
+      /** Images that errored during render and were left out. */
+      failed: number;
+    };
+  };
+  /**
+   * Lay the cart's images out on one PNG contact sheet (cart order, see
+   * `planContactSheet`) and either copy it to the clipboard (`copy`) or save
+   * it through a save dialog (`save`, `cancelled` when dismissed). Same
+   * skip-filter as the Zip. Cancel with `cart:exportZip:cancel`.
+   */
+  "cart:contactSheet": {
+    req: {
+      captureIds: string[];
+      size: ContactSheetSize;
+      layout: ContactSheetLayout;
+      action: "copy" | "save";
+      jobId: string;
+      /** Slug used as the default save / file name. */
+      suggestedName?: string;
+    };
+    res: {
+      width: number;
+      height: number;
+      imageCount: number;
+      skipped: number;
+      failed: number;
+      /** True when the size caps forced a narrower sheet than asked for. */
+      scaledDown: boolean;
+      /** The saved file (`save`) or the copied alias (`copy`). */
+      path: string;
+    };
+  };
+  /**
+   * Drag-out for Copy all's FILES chip: render the images at `preset` to
+   * friendly-named PNGs and return their paths for `WebContents.startDrag`.
+   */
+  "cart:prepareFilesDrag": {
+    req: { captureIds: string[]; preset: RenderPreset };
+    res: { paths: string[]; iconPath: string | null };
+  };
+  /** Drag-out for the contact sheet's FILE chip: bake the sheet to a temp
+   *  PNG and return it for `WebContents.startDrag`. */
+  "cart:prepareSheetDrag": {
+    req: {
+      captureIds: string[];
+      size: ContactSheetSize;
+      layout: ContactSheetLayout;
+      suggestedName?: string;
+    };
+    res: { path: string; iconPath: string | null };
   };
 };
 

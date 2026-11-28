@@ -96,12 +96,13 @@
 //     and encodes it as PNG with Windows Imaging Component. This is the
 //     Windows counterpart to the Swift helper's NSWorkspace-backed command.
 //
-//   --write-file-clipboard <absolute-file-path>
-//     Writes one existing file to the Windows clipboard as the predefined
-//     numeric CF_HDROP format (DROPFILES + UTF-16 path list) plus the
-//     registered Preferred DropEffect=COPY format. Reads CF_HDROP back with
-//     DragQueryFileW before returning success, so the Electron caller never
-//     reports a copy that produced an empty/custom-format-only clipboard.
+//   --write-file-clipboard <absolute-file-path> [<absolute-file-path> ...]
+//     Writes one or more existing files to the Windows clipboard as the
+//     predefined numeric CF_HDROP format (DROPFILES + UTF-16 path list) plus
+//     the registered Preferred DropEffect=COPY format. Reads CF_HDROP back
+//     with DragQueryFileW before returning success (every path, in order), so
+//     the Electron caller never reports a copy that produced an
+//     empty/custom-format-only clipboard. The ack's `files` is the count.
 //
 //   --read-file-clipboard
 //     Reads the predefined numeric CF_HDROP format and returns every
@@ -336,30 +337,41 @@ std::wstring FullyQualifiedPath(const std::wstring &input) {
   }
 }
 
-int WriteFileClipboard(const std::wstring &inputPath) {
-  if (inputPath.empty()) {
-    std::fputs("clipboard file path is empty\n", stderr);
+int WriteFileClipboard(const std::vector<std::wstring> &inputPaths) {
+  if (inputPaths.empty()) {
+    std::fputs("no clipboard file paths\n", stderr);
     return 2;
   }
-
-  const std::wstring filePath = FullyQualifiedPath(inputPath);
-  if (filePath.empty()) {
-    std::fputs("clipboard file path could not be made absolute\n", stderr);
-    return 2;
+  std::vector<std::wstring> filePaths;
+  filePaths.reserve(inputPaths.size());
+  for (const std::wstring &inputPath : inputPaths) {
+    if (inputPath.empty()) {
+      std::fputs("clipboard file path is empty\n", stderr);
+      return 2;
+    }
+    const std::wstring filePath = FullyQualifiedPath(inputPath);
+    if (filePath.empty()) {
+      std::fputs("clipboard file path could not be made absolute\n", stderr);
+      return 2;
+    }
+    const DWORD attrs = GetFileAttributesW(filePath.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES ||
+        (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+      std::fputs("clipboard file is unavailable or is not a regular file\n",
+                 stderr);
+      return 3;
+    }
+    filePaths.push_back(filePath);
   }
-  const DWORD attrs = GetFileAttributesW(filePath.c_str());
-  if (attrs == INVALID_FILE_ATTRIBUTES ||
-      (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-    std::fputs("clipboard file is unavailable or is not a regular file\n",
-               stderr);
-    return 3;
-  }
 
-  // DROPFILES is followed immediately by one NUL-terminated path and an
+  // DROPFILES is followed immediately by each NUL-terminated path and an
   // additional NUL terminator for the end of the list. GMEM_ZEROINIT supplies
-  // both terminators once the path bytes are copied.
-  const SIZE_T dropBytes =
-      sizeof(DROPFILES) + (filePath.size() + 2) * sizeof(wchar_t);
+  // every terminator once the path bytes are copied.
+  SIZE_T pathChars = 1;  // the list's final NUL
+  for (const std::wstring &filePath : filePaths) {
+    pathChars += filePath.size() + 1;
+  }
+  const SIZE_T dropBytes = sizeof(DROPFILES) + pathChars * sizeof(wchar_t);
   HGLOBAL dropMemory = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, dropBytes);
   if (dropMemory == nullptr) {
     std::fputs("CF_HDROP allocation failed\n", stderr);
@@ -379,8 +391,11 @@ int WriteFileClipboard(const std::wstring &inputPath) {
   drop->fWide = TRUE;
   wchar_t *pathList = reinterpret_cast<wchar_t *>(
       static_cast<unsigned char *>(dropRaw) + sizeof(DROPFILES));
-  std::memcpy(pathList, filePath.c_str(),
-              (filePath.size() + 1) * sizeof(wchar_t));
+  for (const std::wstring &filePath : filePaths) {
+    std::memcpy(pathList, filePath.c_str(),
+                (filePath.size() + 1) * sizeof(wchar_t));
+    pathList += filePath.size() + 1;
+  }
   GlobalUnlock(dropMemory);
 
   const UINT preferredDropEffectFormat =
@@ -480,17 +495,21 @@ int WriteFileClipboard(const std::wstring &inputPath) {
   }
   HDROP writtenDrop = static_cast<HDROP>(GetClipboardData(CF_HDROP));
   if (writtenDrop == nullptr ||
-      DragQueryFileW(writtenDrop, 0xFFFFFFFF, nullptr, 0) != 1) {
-    return failAfterOpen("CF_HDROP readback contained no single file");
+      DragQueryFileW(writtenDrop, 0xFFFFFFFF, nullptr, 0) !=
+          static_cast<UINT>(filePaths.size())) {
+    return failAfterOpen("CF_HDROP readback file count mismatch");
   }
-  const UINT pathLength = DragQueryFileW(writtenDrop, 0, nullptr, 0);
-  std::vector<wchar_t> readback(static_cast<size_t>(pathLength) + 1, L'\0');
-  if (pathLength == 0 ||
-      DragQueryFileW(writtenDrop, 0, readback.data(),
-                     static_cast<UINT>(readback.size())) != pathLength ||
-      std::wstring(readback.data(), static_cast<size_t>(pathLength)) !=
-          filePath) {
-    return failAfterOpen("CF_HDROP readback path mismatch");
+  for (size_t index = 0; index < filePaths.size(); ++index) {
+    const UINT fileIndex = static_cast<UINT>(index);
+    const UINT pathLength = DragQueryFileW(writtenDrop, fileIndex, nullptr, 0);
+    std::vector<wchar_t> readback(static_cast<size_t>(pathLength) + 1, L'\0');
+    if (pathLength == 0 ||
+        DragQueryFileW(writtenDrop, fileIndex, readback.data(),
+                       static_cast<UINT>(readback.size())) != pathLength ||
+        std::wstring(readback.data(), static_cast<size_t>(pathLength)) !=
+            filePaths[index]) {
+      return failAfterOpen("CF_HDROP readback path mismatch");
+    }
   }
   HGLOBAL writtenEffect =
       static_cast<HGLOBAL>(GetClipboardData(preferredDropEffectFormat));
@@ -513,10 +532,10 @@ int WriteFileClipboard(const std::wstring &inputPath) {
     return 6;
   }
   DestroyWindow(owner);
-  std::fputs(
-      "{\"ok\":true,\"format\":\"CF_HDROP\",\"files\":1,"
-      "\"dropEffect\":\"copy\"}",
-      stdout);
+  std::fprintf(stdout,
+               "{\"ok\":true,\"format\":\"CF_HDROP\",\"files\":%zu,"
+               "\"dropEffect\":\"copy\"}",
+               filePaths.size());
   std::fflush(stdout);
   return 0;
 }
@@ -905,12 +924,17 @@ int wmain(int argc, wchar_t *argv[]) {
   }
 
   if (argc >= 2 && std::wstring(argv[1]) == L"--write-file-clipboard") {
-    if (argc != 3) {
-      std::fputs("usage: --write-file-clipboard <absolute-file-path>\n",
-                 stderr);
+    if (argc < 3) {
+      std::fputs(
+          "usage: --write-file-clipboard <absolute-file-path> [<path> ...]\n",
+          stderr);
       return 2;
     }
-    return WriteFileClipboard(argv[2]);
+    std::vector<std::wstring> paths;
+    for (int index = 2; index < argc; ++index) {
+      paths.emplace_back(argv[index]);
+    }
+    return WriteFileClipboard(paths);
   }
 
   if (argc >= 2 && std::wstring(argv[1]) == L"--extract-app-icon") {

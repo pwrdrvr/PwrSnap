@@ -62,16 +62,46 @@ export async function writeNamedPngToPasteboard(args: {
    *  specific copy with what a remote Mac receives. */
   metaJson?: string;
 }): Promise<boolean> {
+  return writeNamedPngsToPasteboard({
+    items: [{ pngPath: args.pngPath, fileUrlPath: args.fileUrlPath }],
+    ...(args.metaJson !== undefined ? { metaJson: args.metaJson } : {})
+  });
+}
+
+/** The helper argv for one write: a `--png`/`--file-url` pair per item, in
+ *  order, then the optional `--meta`. Each pair becomes its own
+ *  NSPasteboardItem, so several images paste as several files. */
+export function namedPngPasteboardArgs(args: {
+  items: ReadonlyArray<{ pngPath: string; fileUrlPath: string }>;
+  metaJson?: string;
+}): string[] {
+  const helperArgs: string[] = [];
+  for (const item of args.items) {
+    helperArgs.push("--png", item.pngPath, "--file-url", item.fileUrlPath);
+  }
+  if (args.metaJson !== undefined && args.metaJson.length > 0) {
+    helperArgs.push("--meta", args.metaJson);
+  }
+  return helperArgs;
+}
+
+/**
+ * Replace the pasteboard with one item per image (PNG bytes + a file URL to
+ * the named PNG). Resolves false when there is no helper or it failed, so the
+ * caller can decide on a fallback; throws PasteboardTimeoutError on a hang.
+ */
+export async function writeNamedPngsToPasteboard(args: {
+  items: ReadonlyArray<{ pngPath: string; fileUrlPath: string }>;
+  metaJson?: string;
+}): Promise<boolean> {
   const helperPath = resolvePasteboardWriterPath();
   if (helperPath === null) return false;
+  if (args.items.length === 0) return false;
 
   const startedAt = Date.now();
   let helperPid: number | undefined;
   try {
-    const helperArgs = ["--png", args.pngPath, "--file-url", args.fileUrlPath];
-    if (args.metaJson !== undefined && args.metaJson.length > 0) {
-      helperArgs.push("--meta", args.metaJson);
-    }
+    const helperArgs = namedPngPasteboardArgs(args);
     // NSPasteboard can block inside pboard indefinitely. Kill the one-shot
     // writer so it cannot complete a stale copy later, and keep that failure
     // out of the synchronous Electron fallback on the main thread.
@@ -84,6 +114,7 @@ export async function writeNamedPngToPasteboard(args: {
     const timedOut = failure.killed === true && failure.signal === "SIGKILL" && failure.code === null;
     const diagnostics = {
       helperPid,
+      items: args.items.length,
       elapsedMs: Date.now() - startedAt,
       timedOut,
       exitCode: failure.code ?? null,

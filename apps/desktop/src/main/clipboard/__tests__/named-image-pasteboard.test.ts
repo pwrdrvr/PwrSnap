@@ -26,9 +26,11 @@ vi.mock("electron", () => ({
   }
 }));
 
-const { writeNamedPngToPasteboard, __setNamedImagePasteboardHelperForTests } = await import(
-  "../named-image-pasteboard"
-);
+const {
+  writeNamedPngToPasteboard,
+  writeNamedPngsToPasteboard,
+  __setNamedImagePasteboardHelperForTests
+} = await import("../named-image-pasteboard");
 
 let workDir: string;
 let argsPath: string;
@@ -175,4 +177,28 @@ describe.skipIf(process.platform !== "darwin")("writeNamedPngToPasteboard", () =
       await recover();
     }
   }, 16_000);
+});
+
+describe.skipIf(process.platform !== "darwin")("writeNamedPngsToPasteboard (Copy all)", () => {
+  test("one --png/--file-url pair per image, in cart order, then --meta once", async () => {
+    __setNamedImagePasteboardHelperForTests(await installFakeHelper());
+    const items = [
+      { pngPath: "/tmp/PwrSnap-granola.png", fileUrlPath: "/tmp/PwrSnap-granola.png" },
+      { pngPath: "/tmp/PwrSnap oat milk.png", fileUrlPath: "/tmp/PwrSnap oat milk.png" },
+      { pngPath: "/tmp/PwrSnap-bran.png", fileUrlPath: "/tmp/PwrSnap-bran.png" }
+    ];
+
+    expect(await writeNamedPngsToPasteboard({ items, metaJson: "{\"count\":3}" })).toBe(true);
+    expect(await recordedArgs()).toEqual([
+      ...items.flatMap((item) => ["--png", item.pngPath, "--file-url", item.fileUrlPath]),
+      "--meta",
+      "{\"count\":3}"
+    ]);
+  });
+
+  test("no items never spawns the helper", async () => {
+    __setNamedImagePasteboardHelperForTests(await installFakeHelper());
+    expect(await writeNamedPngsToPasteboard({ items: [] })).toBe(false);
+    await expect(readFile(argsPath, "utf8")).rejects.toThrow();
+  });
 });

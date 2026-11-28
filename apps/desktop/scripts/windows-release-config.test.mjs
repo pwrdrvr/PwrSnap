@@ -134,7 +134,7 @@ describe("Windows release configuration", () => {
     expect(source).toContain("CF_HDROP contains no files");
 
     expect(fileClipboard).toContain('format: "CF_HDROP"');
-    expect(fileClipboard).toContain('["--write-file-clipboard", filePath]');
+    expect(fileClipboard).toContain('["--write-file-clipboard", ...filePaths]');
     expect(fileClipboard).not.toContain('writeBuffer("CF_HDROP"');
 
     // The same binary is already a required, packaged extraResource; the

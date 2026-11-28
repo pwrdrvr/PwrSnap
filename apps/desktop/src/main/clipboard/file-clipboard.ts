@@ -30,7 +30,8 @@ const WINDOWS_HELPER_TIMEOUT_MS = 10_000;
 type FileClipboardAck = {
   ok: true;
   format: "CF_HDROP";
-  files: 1;
+  /** How many paths the helper read back from CF_HDROP. */
+  files: number;
   dropEffect: "copy";
 };
 
@@ -154,7 +155,7 @@ function uriListFilePath(payload: Buffer): string | null {
   }
 }
 
-function parseWindowsAck(stdout: string): FileClipboardAck {
+function parseWindowsAck(stdout: string, expectedFiles: number): FileClipboardAck {
   let parsed: unknown;
   try {
     parsed = JSON.parse(stdout.trim());
@@ -168,7 +169,7 @@ function parseWindowsAck(stdout: string): FileClipboardAck {
     parsed === null ||
     (parsed as Partial<FileClipboardAck>).ok !== true ||
     (parsed as Partial<FileClipboardAck>).format !== "CF_HDROP" ||
-    (parsed as Partial<FileClipboardAck>).files !== 1 ||
+    (parsed as Partial<FileClipboardAck>).files !== expectedFiles ||
     (parsed as Partial<FileClipboardAck>).dropEffect !== "copy"
   ) {
     throw new Error("Windows clipboard helper did not verify a CF_HDROP file copy");
@@ -184,13 +185,17 @@ function parseWindowsAck(stdout: string): FileClipboardAck {
  */
 export async function runWindowsFileClipboardHelper(
   helperPath: string,
-  filePath: string,
+  filePath: string | readonly string[],
   spawnHelper: SpawnFileClipboardHelper = spawn
 ): Promise<void> {
+  const filePaths = typeof filePath === "string" ? [filePath] : [...filePath];
+  if (filePaths.length === 0) {
+    throw new Error("Windows clipboard helper needs at least one file");
+  }
   await new Promise<void>((resolve, reject) => {
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawnHelper(helperPath, ["--write-file-clipboard", filePath], {
+      child = spawnHelper(helperPath, ["--write-file-clipboard", ...filePaths], {
         shell: false,
         windowsHide: true
       });
@@ -242,7 +247,7 @@ export async function runWindowsFileClipboardHelper(
           return;
         }
         try {
-          parseWindowsAck(stdout);
+          parseWindowsAck(stdout, filePaths.length);
           resolve();
         } catch (cause) {
           reject(cause);
@@ -251,6 +256,84 @@ export async function runWindowsFileClipboardHelper(
     });
     child.stdin.end();
   });
+}
+
+/** The X11 flavors a file manager writes for a copy of `filePaths`: an RFC
+ *  2483 `text/uri-list` (CRLF lines) and GNOME's `x-special/gnome-copied-files`
+ *  (the verb, then one URI per line), which Nautilus and its kin paste from. */
+export function linuxFileListFlavors(filePaths: readonly string[]): Record<string, Buffer> {
+  const uris = filePaths.map((filePath) => pathToFileURL(filePath).toString());
+  return {
+    "text/uri-list": Buffer.from(uris.map((uri) => `${uri}\r\n`).join(""), "utf8"),
+    "x-special/gnome-copied-files": Buffer.from(["copy", ...uris].join("\n"), "utf8")
+  };
+}
+
+/** Every file a `text/uri-list` payload names, in order. */
+export function uriListFilePaths(payload: Buffer): string[] {
+  const paths: string[] = [];
+  for (const line of payload.toString("utf8").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0 || trimmed.startsWith("#")) continue;
+    if (!trimmed.toLowerCase().startsWith("file:")) continue;
+    try {
+      paths.push(fileURLToPath(trimmed));
+    } catch {
+      // not a local file URL — not ours
+    }
+  }
+  return paths;
+}
+
+/**
+ * Linux (X11) multi-file write with a readback, through Electron's raw
+ * clipboard flavors. Wayland is not shipped; X11 is the target.
+ */
+export async function writeLinuxFilesToClipboard(
+  filePaths: readonly string[],
+  clipboardApi: {
+    write(raw: Record<string, Buffer>): Promise<void>;
+    readBuffer(format: string): Promise<Buffer>;
+  } = {
+    write: (raw) => writeClipboard({ raw }),
+    readBuffer: async (format) => (await readClipboard()).readBuffer(format)
+  }
+): Promise<void> {
+  await clipboardApi.write(linuxFileListFlavors(filePaths));
+  const listed = uriListFilePaths(await clipboardApi.readBuffer("text/uri-list"));
+  if (
+    listed.length !== filePaths.length ||
+    listed.some((listedPath, index) => listedPath !== filePaths[index])
+  ) {
+    throw new Error("Linux clipboard did not retain the copied files");
+  }
+}
+
+/**
+ * Copy several exported files at once, so a paste delivers every one of them.
+ * Windows: one CF_HDROP listing all of them. Linux: `text/uri-list`. macOS
+ * goes through the named-PNG pasteboard helper instead (one pasteboard item
+ * per image, PNG + file URL), which the caller owns — see the cart's Copy all.
+ */
+export async function writeFilesToClipboard(filePaths: readonly string[]): Promise<void> {
+  if (filePaths.length === 0) throw new Error("No files to copy");
+  for (const filePath of filePaths) await assertClipboardFile(filePath);
+
+  if (process.platform === "win32") {
+    const helper = resolveWindowsHelper();
+    if (helper === null) {
+      throw new Error(
+        "Windows file clipboard helper is unavailable; reinstall PwrSnap or rebuild native helpers"
+      );
+    }
+    await runWindowsFileClipboardHelper(helper, filePaths);
+    return;
+  }
+  if (process.platform === "linux") {
+    await writeLinuxFilesToClipboard(filePaths);
+    return;
+  }
+  throw new Error(`Copying several files is unsupported on ${process.platform}`);
 }
 
 /** Copy one validated exported file using the platform's native file flavor. */

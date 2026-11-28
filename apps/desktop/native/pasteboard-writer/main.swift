@@ -11,7 +11,7 @@ enum PasteboardWriterError: Error, CustomStringConvertible {
   var description: String {
     switch self {
     case .usage:
-      return "usage: pasteboard-writer --png <path> --file-url <path> [--meta <json>]\n"
+      return "usage: pasteboard-writer --png <path> --file-url <path> [--png <path> --file-url <path> ...] [--meta <json>]\n"
         + "       pasteboard-writer --list-types"
     case .unreadablePng(let path):
       return "could not read PNG data at \(path)"
@@ -25,10 +25,19 @@ enum PasteboardWriterError: Error, CustomStringConvertible {
   }
 }
 
-func parseArgs(_ args: [String]) throws -> (pngPath: String, fileUrlPath: String, metaJson: String?)
+struct PasteboardWriteItem {
+  let pngPath: String
+  let fileUrlPath: String
+}
+
+/// `--png A --file-url A [--png B --file-url B ...] [--meta <json>]`.
+/// Each `--png` opens an item and the `--file-url` after it closes that item,
+/// so one invocation can write several images (the cart's Copy all) as
+/// separate pasteboard items, the shape a Finder multi-file copy has.
+func parseArgs(_ args: [String]) throws -> (items: [PasteboardWriteItem], metaJson: String?)
 {
-  var pngPath: String?
-  var fileUrlPath: String?
+  var items: [PasteboardWriteItem] = []
+  var pendingPng: String?
   var metaJson: String?
   var index = 1
 
@@ -37,12 +46,13 @@ func parseArgs(_ args: [String]) throws -> (pngPath: String, fileUrlPath: String
     switch arg {
     case "--png":
       index += 1
-      guard index < args.count else { throw PasteboardWriterError.usage }
-      pngPath = args[index]
+      guard index < args.count, pendingPng == nil else { throw PasteboardWriterError.usage }
+      pendingPng = args[index]
     case "--file-url":
       index += 1
-      guard index < args.count else { throw PasteboardWriterError.usage }
-      fileUrlPath = args[index]
+      guard index < args.count, let png = pendingPng else { throw PasteboardWriterError.usage }
+      items.append(PasteboardWriteItem(pngPath: png, fileUrlPath: args[index]))
+      pendingPng = nil
     case "--meta":
       index += 1
       guard index < args.count else { throw PasteboardWriterError.usage }
@@ -53,23 +63,22 @@ func parseArgs(_ args: [String]) throws -> (pngPath: String, fileUrlPath: String
     index += 1
   }
 
-  guard let pngPath, let fileUrlPath else { throw PasteboardWriterError.usage }
-  return (pngPath, fileUrlPath, metaJson)
+  guard pendingPng == nil, !items.isEmpty else { throw PasteboardWriterError.usage }
+  return (items, metaJson)
 }
 
-func run() throws {
-  let parsed = try parseArgs(CommandLine.arguments)
-  let pngUrl = URL(fileURLWithPath: parsed.pngPath)
+func makeItem(_ item: PasteboardWriteItem, metaJson: String?) throws -> NSPasteboardItem {
+  let pngUrl = URL(fileURLWithPath: item.pngPath)
   guard let pngData = try? Data(contentsOf: pngUrl) else {
-    throw PasteboardWriterError.unreadablePng(parsed.pngPath)
+    throw PasteboardWriterError.unreadablePng(item.pngPath)
   }
 
-  guard FileManager.default.fileExists(atPath: parsed.fileUrlPath) else {
-    throw PasteboardWriterError.missingFileUrlPath(parsed.fileUrlPath)
+  guard FileManager.default.fileExists(atPath: item.fileUrlPath) else {
+    throw PasteboardWriterError.missingFileUrlPath(item.fileUrlPath)
   }
-  let fileUrl = NSURL(fileURLWithPath: parsed.fileUrlPath)
+  let fileUrl = NSURL(fileURLWithPath: item.fileUrlPath)
   guard fileUrl.isFileURL, let fileUrlString = fileUrl.absoluteString else {
-    throw PasteboardWriterError.invalidFileUrl(parsed.fileUrlPath)
+    throw PasteboardWriterError.invalidFileUrl(item.fileUrlPath)
   }
 
   // Write `public.png` + `public.file-url` ONLY — never an eager
@@ -101,16 +110,27 @@ func run() throws {
   // as PwrSnap-originated and correlate a specific copy (captureId +
   // seq) with what a remote Mac receives. A few hundred bytes, eager
   // by design — unlike TIFF (see above) it costs nothing.
-  if let metaJson = parsed.metaJson, let metaData = metaJson.data(using: .utf8), !metaData.isEmpty {
+  if let metaJson, let metaData = metaJson.data(using: .utf8), !metaData.isEmpty {
     imageItem.setData(
       metaData,
       forType: NSPasteboard.PasteboardType("com.pwrdrvr.pwrsnap.clip-meta")
     )
   }
+  return imageItem
+}
+
+func run() throws {
+  let parsed = try parseArgs(CommandLine.arguments)
+  // Build every item before touching the pasteboard: an unreadable file
+  // must fail the copy without clearing what the user had copied before.
+  let items = try parsed.items.map { try makeItem($0, metaJson: parsed.metaJson) }
 
   let pasteboard = NSPasteboard.general
   pasteboard.clearContents()
-  guard pasteboard.writeObjects([imageItem]) else {
+  guard pasteboard.writeObjects(items) else {
+    throw PasteboardWriterError.pasteboardWriteFailed
+  }
+  guard pasteboard.pasteboardItems?.count == items.count else {
     throw PasteboardWriterError.pasteboardWriteFailed
   }
   _ = pasteboard.types

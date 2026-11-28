@@ -262,7 +262,8 @@ export async function runWindowsFileClipboardHelper(
  *  2483 `text/uri-list` (CRLF lines) and GNOME's `x-special/gnome-copied-files`
  *  (the verb, then one URI per line), which Nautilus and its kin paste from. */
 export function linuxFileListFlavors(filePaths: readonly string[]): Record<string, Buffer> {
-  const uris = filePaths.map((filePath) => pathToFileURL(filePath).toString());
+  // POSIX rules whatever OS runs this, so the encoding is the one Linux reads.
+  const uris = filePaths.map((filePath) => pathToFileURL(filePath, { windows: false }).toString());
   return {
     "text/uri-list": Buffer.from(uris.map((uri) => `${uri}\r\n`).join(""), "utf8"),
     "x-special/gnome-copied-files": Buffer.from(["copy", ...uris].join("\n"), "utf8")
@@ -277,7 +278,7 @@ export function uriListFilePaths(payload: Buffer): string[] {
     if (trimmed.length === 0 || trimmed.startsWith("#")) continue;
     if (!trimmed.toLowerCase().startsWith("file:")) continue;
     try {
-      paths.push(fileURLToPath(trimmed));
+      paths.push(fileURLToPath(trimmed, { windows: false }));
     } catch {
       // not a local file URL — not ours
     }

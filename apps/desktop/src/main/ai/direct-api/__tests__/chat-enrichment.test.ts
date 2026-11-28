@@ -2,6 +2,10 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, test, vi } from "vitest";
+import { ok, type Req } from "@pwrsnap/shared";
+import { dispatchToAgentProcess, forwardCancellationToAgent } from "../../../process-split/agent-bridge";
+import { CHATGPT_CHAT_DELTA_CHANNEL, deliverRelayedProcessEvent } from "../../../process-split/event-relay";
+import { setRuntimeProcessRole } from "../../../process-role";
 import type { NormalizedThreadRecord, ThreadStore } from "@pwrdrvr/agent-core";
 import { PwrSnapChatSessionController } from "../../chat-session-controller";
 import { DirectChatBackend } from "../chat-backend";
@@ -10,6 +14,11 @@ import { DIRECT_ENRICHMENT_TIMEOUT_MS } from "../enrichment-queue";
 import type { CustomModelService } from "../service";
 import { body, IMAGE, json, model, server, stream } from "./fixtures";
 import { estimateAiUsageCost } from "../../ai-usage-cost";
+vi.mock("../../../process-split/agent-bridge", () => ({
+  dispatchToAgentProcess: vi.fn(),
+  forwardCancellationToAgent: vi.fn()
+}));
+
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { await Promise.all(cleanup.splice(0).map((f) => f())); });
 function memoryStore(): ThreadStore {
@@ -32,7 +41,7 @@ test("existing chat controller streams and persists direct replies, resumes jour
   }); cleanup.push(http.close);
   const entry = model(`${http.url}/v1`); entry.enrichmentReasoning = "off"; const store = memoryStore();
   // Main-only service seam; real protocol transport and production controller.
-  const service = { selected: async () => entry, credentials: { headers: async () => ({}) } } as unknown as CustomModelService;
+  const service = { selected: async () => entry, credentials: { headers: async () => ({}), noteFailure: async () => undefined } } as unknown as CustomModelService;
   const backend = new DirectChatBackend(entry, service, (id) => store.readJournal(id)); cleanup.push(() => backend.close());
   const controller = new PwrSnapChatSessionController({ client: backend, store, readSettings: async () => ({}),
     broadcast: () => undefined, buildSystemPrompt: () => "Agent tools must not be forwarded", toolLabels: {} });
@@ -65,7 +74,7 @@ test("opted-in loopback enrichment disables llama.cpp thinking", async () => {
       usage: { prompt_tokens: 9, completion_tokens: 3, total_tokens: 12 } });
   }); cleanup.push(http.close);
   const entry = model(`${http.url}/v1`); entry.capabilities.streaming = false; entry.enrichmentReasoning = "off";
-  const service = { credentials: { headers: async () => ({}) } } as unknown as CustomModelService;
+  const service = { credentials: { headers: async () => ({}), noteFailure: async () => undefined } } as unknown as CustomModelService;
   const result = await new DirectEnrichmentBackend(entry, service).enrichCapture({ imagePaths: [path],
     metadata: { captureKind: "image", sourceAppName: null, sourceAppBundleId: null, widthPx: 1, heightPx: 1, capturedAt: "2026-01-01T00:00:00Z" } });
   expect(request).toMatchObject({ chat_template_kwargs: { enable_thinking: false } });
@@ -77,7 +86,7 @@ test("direct enrichment sends only prepared image bytes and validates the existi
   let request: unknown;
   const http = await server(async (req, res) => { request = JSON.parse(await body(req)); json(res, { content: [{ type: "text", text: JSON.stringify({ title: "Fixture image", description: "One synthetic pixel", ocrText: "", filenameStem: "fixture", textAnchors: [], tags: [] }) }] }); }); cleanup.push(http.close);
   const entry = model(`${http.url}/v1`, "anthropic-messages"); entry.capabilities.streaming = false;
-  const service = { credentials: { headers: async () => ({}) } } as unknown as CustomModelService;
+  const service = { credentials: { headers: async () => ({}), noteFailure: async () => undefined } } as unknown as CustomModelService;
   const client = new DirectEnrichmentBackend(entry, service);
   const timeout = vi.spyOn(AbortSignal, "timeout");
   let result;
@@ -92,4 +101,46 @@ test("direct enrichment sends only prepared image bytes and validates the existi
 test("custom model names matching built-in models do not inherit catalog pricing", () => {
   expect(estimateAiUsageCost({ model: "gpt-5.4", provider: "custom:fixture", serviceTier: null,
     tokens: { inputTokens: 100, outputTokens: 50, totalTokens: 150, cachedInputTokens: 0, reasoningOutputTokens: 0, modelContextWindow: null } })).toEqual({ status: "unavailable", reason: "Custom endpoint pricing is not configured" });
+});
+
+test("split plan chat correlates deltas, relays cancellation, and never requests headers locally", async () => {
+  const entry = { ...model("https://api.openai.com/v1", "openai-responses"), auth: { type: "chatgpt" as const } };
+  const headers = vi.fn();
+  const service = { selected: async () => entry, credentials: { headers } } as unknown as CustomModelService;
+  const backend = new DirectChatBackend(entry, service, async () => []);
+  const { threadId } = await backend.startThread();
+  const events: unknown[] = [];
+  backend.onEvent((event) => events.push(event));
+  const broadcast = vi.fn();
+  const send = vi.mocked(dispatchToAgentProcess);
+  const cancel = vi.mocked(forwardCancellationToAgent);
+  let settle!: (result: ReturnType<typeof ok<{ text: string; tokens: null }>>) => void;
+  const pending = new Promise<ReturnType<typeof ok<{ text: string; tokens: null }>>>((resolve) => { settle = resolve; });
+  send.mockImplementation(async (name, raw, { cancellationKey }) => {
+    expect(name).toBe("chatgptPlan:chat");
+    const req = raw as Req<"chatgptPlan:chat">;
+    expect(cancellationKey).toBe(`chatgpt-chat:${req.requestId}`);
+    expect(req.messages).toEqual([{ role: "user", text: "hello", images: [IMAGE] }]);
+    deliverRelayedProcessEvent(CHATGPT_CHAT_DELTA_CHANNEL, { requestId: "unrelated", delta: "wrong" }, broadcast);
+    deliverRelayedProcessEvent(CHATGPT_CHAT_DELTA_CHANNEL, { requestId: req.requestId, delta: "right" }, broadcast);
+    return pending;
+  });
+  cancel.mockImplementation(() => settle(ok({ text: "right", tokens: null })));
+  setRuntimeProcessRole("library");
+  try {
+    await backend.startTurn({ threadId, input: { text: "hello", imagePaths: [IMAGE] } });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+    await backend.interruptTurn(threadId);
+    expect(cancel).toHaveBeenCalledWith(send.mock.calls[0]?.[2].cancellationKey);
+    expect(events.filter((event) => (event as { kind: string }).kind === "agent_message_delta"))
+      .toEqual([expect.objectContaining({ delta: "right" })]);
+    expect(broadcast).not.toHaveBeenCalled();
+    expect(headers).not.toHaveBeenCalled();
+  } finally {
+    settle(ok({ text: "", tokens: null }));
+    await backend.close();
+    setRuntimeProcessRole("combined");
+    send.mockReset();
+    cancel.mockReset();
+  }
 });

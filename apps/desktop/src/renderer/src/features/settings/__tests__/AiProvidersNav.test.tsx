@@ -81,7 +81,7 @@ let modelsProbeFails = false;
 let discoveryResponse: AcpAgentDiscovery = DISCOVERY;
 /** When set, the next `acp:models` call answers with this instead. */
 let heldModelsProbe: Promise<unknown> | null = null;
-/** Answers for the `customModels:*` verbs, by verb name. */
+/** Answers for the `customModels:*` and `chatgptPlan:*` verbs, by verb name. */
 let customAnswers: Record<string, unknown> = {};
 
 /** What `appleFm:status` answers. The default says "not offered", so the
@@ -120,7 +120,7 @@ function installFakeApi(): void {
           return next ?? { ok: true, value: APPLE_NOT_OFFERED };
         }
         if (name === "acp:discover") return { ok: true, value: discoveryResponse };
-        if (name.startsWith("customModels:")) {
+        if (name.startsWith("customModels:") || name.startsWith("chatgptPlan:") || name === "app:openExternal") {
           return name in customAnswers
             ? customAnswers[name]
             : { ok: true, value: undefined };
@@ -1033,6 +1033,85 @@ describe("Direct API connections", () => {
   });
 });
 
+describe("Sign in with ChatGPT", () => {
+  const PLAN = "12345678-1234-4234-8234-1234567890e1";
+  const PLAN_MODEL = "12345678-1234-4234-8234-1234567890e2";
+  function planSettings(plan: NonNullable<Settings["ai"]["chatgptPlan"]>, withModel = true): Settings {
+    const s = directSettings();
+    s.ai.customConnections = [...(s.ai.customConnections ?? []),
+      { id: PLAN, name: "ChatGPT", baseUrl: "https://api.openai.com/v1", protocol: "openai-responses", auth: { type: "chatgpt" } }];
+    if (withModel) s.ai.customModels = [...(s.ai.customModels ?? []),
+      { id: PLAN_MODEL, connectionId: PLAN, displayName: "Fixture Oat", modelId: "fixture-oat", capabilities: { vision: true, streaming: true }, maxOutputTokens: 4096 }];
+    s.ai.chatgptPlan = plan;
+    return s;
+  }
+  const SIGNED_OUT = { accountLabel: "", planGranted: false, backgroundConsent: false, welcomeSeen: false };
+  const READY = { accountLabel: "fixture@example.com", planGranted: true, backgroundConsent: false, welcomeSeen: true };
+
+  test("the hub offers the plan until a ChatGPT connection exists, and signing in lands on it", async () => {
+    customAnswers["chatgptPlan:login"] = { ok: true, value: { ...READY, signedIn: true, connectionId: PLAN } };
+    const page = await render(createElement(AIProvidersPage, { sub: null }), directSettings());
+    const offer = page.querySelector(".pss__chatgpt-offer");
+    expect(offer?.textContent).toContain("Use your ChatGPT plan");
+    await click(button(offer, "Continue with ChatGPT"));
+    expect(callsTo("chatgptPlan:login")).toEqual([{}]);
+    expect(window.location.hash).toBe(`#stage=settings&page=ai&sub=connection%3A${PLAN}`);
+    contextValue = { ...contextValue, settings: planSettings(READY) };
+    await rerender(createElement(AIProvidersPage, { sub: null }));
+    expect(page.querySelector(".pss__chatgpt-offer")).toBeNull();
+  });
+
+  test("signed out: sign-in, the required disclosure, and nothing that would use the plan", async () => {
+    const page = await render(createElement(AIProvidersPage, { sub: `connection:${PLAN}` }), planSettings(SIGNED_OUT, false));
+    expect(page.querySelector(".pss__main-hdr .pss__badge")?.textContent).toBe("Sign in");
+    const account = card("Sign in");
+    expect(button(account, "Continue with ChatGPT")).toBeDefined();
+    expect(account.textContent).toContain("Eligible usage in this app uses your ChatGPT plan.");
+    expect(account.textContent).toContain("Manage usage in your ChatGPT settings.");
+    expect(page.querySelector('[role="switch"]')).toBeNull();
+    expect(page.querySelector('[role="dialog"]')).toBeNull();
+    expect(page.textContent).not.toMatch(/Codex|app-server|subscription_sharing/);
+  });
+
+  test("first ready visit shows the welcome with Got it focused; consent and links dispatch", async () => {
+    const page = await render(createElement(AIProvidersPage, { sub: `connection:${PLAN}` }), planSettings({ ...READY, welcomeSeen: false }));
+    expect(page.querySelector(".pss__main-hdr .pss__badge")?.textContent).toBe("Using ChatGPT plan");
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog?.textContent).toContain("You’re using your ChatGPT plan");
+    expect(document.activeElement?.textContent).toBe("Got it");
+    await click(button(dialog, "Got it"));
+    expect(callsTo("chatgptPlan:configure")).toEqual([{ welcomeSeen: true }]);
+
+    const account = card("Using ChatGPT plan");
+    expect(account.textContent).toContain("fixture@example.com");
+    await click(button(account, "Manage usage ↗"));
+    expect(callsTo("app:openExternal")).toEqual([{ url: "https://chatgpt.com/settings/usage" }]);
+    await click(page.querySelector('[role="switch"]'));
+    expect(callsTo("chatgptPlan:configure").at(-1)).toEqual({ backgroundConsent: true });
+    // The plan route fixes streaming and the output limit.
+    expect(page.querySelector(".pss__dapi-details")).toBeNull();
+    expect(page.textContent).not.toMatch(/Codex|app-server|subscription_sharing/);
+  });
+
+  test("plan limits provide explicit resume and account replacement requests", async () => {
+    customAnswers["chatgptPlan:login"] = { ok: true, value: { ...READY, signedIn: true, connectionId: PLAN } };
+    const page = await render(createElement(AIProvidersPage, { sub: `connection:${PLAN}` }),
+      planSettings({ ...READY, backgroundConsent: true, usagePaused: true }));
+    expect(page.textContent).toContain("Automatic captions paused");
+    await click(button(page, "Resume automatic captions"));
+    expect(callsTo("chatgptPlan:configure")).toEqual([{ resumeAutomatic: true }]);
+    await click(button(page, "Use a different account"));
+    expect(callsTo("chatgptPlan:login")).toEqual([{ replaceAccount: true }]);
+  });
+
+  test("sign out reports an unconfirmed revocation instead of claiming it", async () => {
+    customAnswers["chatgptPlan:logout"] = { ok: true, value: { revocationConfirmed: false } };
+    await render(createElement(AIProvidersPage, { sub: `connection:${PLAN}` }), planSettings(READY));
+    await click(button(card("Using ChatGPT plan"), "Sign out"));
+    expect(callsTo("chatgptPlan:logout")).toEqual([{}]);
+    expect(card("Using ChatGPT plan").textContent).toContain("OpenAI didn't confirm the revocation");
+  });
+});
 // The on-device Apple model: what Settings shows when the status READ fails,
 // and how it follows a status that changed somewhere else.
 describe("Apple on-device model — failed reads and followed changes", () => {
@@ -1146,4 +1225,3 @@ describe("Apple on-device model — failed reads and followed changes", () => {
     expect(statusReads()).toEqual([]);
   });
 });
-

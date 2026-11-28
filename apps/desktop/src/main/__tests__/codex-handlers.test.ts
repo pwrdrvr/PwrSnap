@@ -1,3 +1,4 @@
+import fc from "fast-check";
 import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -7,11 +8,11 @@ import { tmpdir } from "node:os";
 import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
-import type { AiSurfaceDefault, CodexModelOption, EnrichmentResult, Settings } from "@pwrsnap/shared";
+import type { AiSurfaceDefault, CodexModelOption, EnrichmentResult, ResolvedCustomModel, Settings } from "@pwrsnap/shared";
 import { CustomModelService } from "../ai/direct-api/service";
 import { CaptureEnrichmentClient, type CaptureEnrichmentRequest } from "../ai/capture-enrichment-client";
 import type { CustomCredentials } from "../ai/direct-api/credentials";
-import { body, json, model, server } from "../ai/direct-api/__tests__/fixtures";
+import { body, json, model, server, stream } from "../ai/direct-api/__tests__/fixtures";
 import { ENRICHMENT_QUEUE_MAX_AGE_MS } from "../ai/direct-api/enrichment-queue";
 import * as appleFmCli from "../ai/apple-fm/fm-cli";
 import * as appleFmNative from "../ai/apple-fm/native";
@@ -502,7 +503,7 @@ describe("Codex handlers", () => {
       // selection, image preparation, protocol transport and run persistence run.
       const service = new CustomModelService({ read: async () => settings,
         write: async () => { throw new Error("Unexpected settings write"); } },
-      { headers: async () => ({}) } as unknown as CustomCredentials, async () => undefined);
+      { headers: async () => ({}), noteFailure: async () => undefined } as unknown as CustomCredentials, async () => undefined);
       const serviceSpy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
       const clientFactory = vi.fn(() => { throw new Error("Custom selection reached Codex"); });
       try {
@@ -664,6 +665,140 @@ describe("Codex handlers", () => {
       invalidate.mockRestore();
     }
   }, 10_000);
+  async function checkPlanConsentPath(fallback: boolean, consent: boolean, automatic: boolean, change: "none" | "revoke" | "switch" | "limit" = "none"): Promise<void> {
+    let requests = 0;
+    let current: Settings;
+    const revokeConsent = (): void => {
+      const plan = current.ai.chatgptPlan!;
+      current = { ...current, ai: { ...current.ai, chatgptPlan: { ...plan, backgroundConsent: false } } };
+    };
+    const http = await server(async (req, res) => {
+      if (req.url?.startsWith("/unavailable")) {
+        if (change === "revoke") revokeConsent();
+        res.writeHead(503).end();
+        return;
+      }
+      requests++; await body(req);
+      stream(res, [{ type: "response.output_text.delta", delta: JSON.stringify({
+        title: "Fixture", description: "Fixture", ocrText: "", filenameStem: "fixture", textAnchors: [], tags: []
+      }) }, { type: "response.completed", response: {} }]);
+    });
+    const plan: ResolvedCustomModel = { ...model(`${http.url}/v1`, "openai-responses"), auth: { type: "chatgpt" } };
+    const primary = { ...model(`${http.url}/unavailable`, "openai-responses"), id: "primary", connectionId: "primary-connection" };
+    const settings = testSettings();
+    settings.ai.enabled = true;
+    settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+    settings.ai.chatgptPlan = { accountLabel: "Fixture", planGranted: true, backgroundConsent: consent, welcomeSeen: true };
+    settings.ai.customModels = [plan, primary];
+    settings.ai.customConnections = [plan, primary].map(m => ({ id: m.connectionId, name: m.id,
+      baseUrl: m.baseUrl, protocol: m.protocol, auth: m.auth }));
+    settings.ai.defaults.enrichment = { provider: `custom:${fallback ? primary.id : plan.id}` };
+    if (change === "limit") settings.ai.chatgptPlan.usagePaused = true;
+    settings.ai.enrichmentFallback = fallback ? { provider: `custom:${plan.id}` } : null;
+    current = change === "switch" ? { ...settings, ai: { ...settings.ai,
+      defaults: { ...settings.ai.defaults, enrichment: {} } } } : settings;
+    const service = new CustomModelService({ read: async () => current,
+      write: async () => { throw new Error("Unexpected settings write"); } },
+      { headers: async () => {
+        if (change === "revoke" && !fallback) revokeConsent();
+        return {};
+      }, noteFailure: async () => undefined } as unknown as CustomCredentials, async () => undefined);
+    const spy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
+    const modelLister = vi.fn(async () => {
+      current = settings;
+      return fakeCodexModels();
+    });
+    try {
+      registerCodexHandlers({ settingsReader: async () => current,
+        ...(change === "switch" ? { modelLister, modelDefaultsReconciler: async () => current } : {}),
+        budget: new AiEnrichmentBudget(),
+        primaryHealth: new EnrichmentPrimaryHealth(), clientFactory: () => { throw new Error("Unexpected Codex call"); } });
+      const result = await bus.dispatch("codex:enrich", { captureId: "cap_1",
+        triggerSource: automatic ? "auto-enrichment" : "library-regenerate" }, { principal: "ipc" });
+      if (result.ok) await waitFor(() => ["completed", "failed"].includes(getAiRun(result.value.runId)?.status ?? ""));
+      if (change === "switch") {
+        expect(modelLister).toHaveBeenCalledOnce();
+        expect(result).toMatchObject({ ok: false, error: { code: "chatgpt_background_consent_required" } });
+      }
+      // Oracle: observe the actual HTTP boundary, independent of selection and run status.
+      expect(requests).toBe(automatic && (!consent || change === "revoke" || change === "limit") ? 0 : 1);
+    } finally {
+      unregisterCodexHandlers(); spy.mockRestore(); await http.close();
+    }
+  }
+
+  test("automatic enrichment cannot spend a ChatGPT fallback without consent", async () => {
+    await checkPlanConsentPath(true, false, true);
+  });
+
+  test("generated provider paths never spend ChatGPT plan usage automatically without consent", async () => {
+    await fc.assert(fc.asyncProperty(fc.boolean(), fc.boolean(), fc.boolean(),
+      (fallback, consent, automatic) => checkPlanConsentPath(fallback, consent, automatic)), { numRuns: 30 });
+  });
+
+  test.each([false, true])("withdrawn consent prevents sending on a waiting plan attempt (fallback=%s)", async (fallback) => {
+    await checkPlanConsentPath(fallback, true, true, "revoke");
+  });
+
+  test("a plan limit blocks an automatic attempt but leaves an explicit action available", async () => {
+    await checkPlanConsentPath(false, true, true, "limit");
+    await checkPlanConsentPath(false, true, false, "limit");
+  });
+
+  test("switching to the ChatGPT plan during catalog discovery still requires consent", async () => {
+    await checkPlanConsentPath(false, false, true, "switch");
+  });
+
+  test("automatic enrichment on the ChatGPT plan waits for its own consent; a clicked action does not", async () => {
+    let requests = 0;
+    const http = await server(async (req, res) => {
+      requests++; await body(req);
+      stream(res, [{ type: "response.output_text.delta", delta: JSON.stringify({
+        title: "Plan fixture", description: "Synthetic plan caption", ocrText: "", filenameStem: "fixture", textAnchors: [], tags: []
+      }) }, { type: "response.completed", response: {} }]);
+    });
+    // The loopback address stands in for api.openai.com; the credential seam
+    // that pins the real address is replaced here.
+    const entry: ResolvedCustomModel = { ...model(`${http.url}/v1`, "openai-responses"), auth: { type: "chatgpt" } };
+    const settings = testSettings();
+    settings.ai.enabled = true;
+    settings.ai.consentAcceptedAt = "2026-05-12T12:00:00.000Z";
+    settings.ai.defaults.enrichment = { provider: `custom:${entry.id}`, model: entry.modelId };
+    settings.ai.customConnections = [{ id: entry.connectionId, name: "ChatGPT",
+      baseUrl: entry.baseUrl, protocol: entry.protocol, auth: entry.auth }];
+    settings.ai.customModels = [entry];
+    settings.ai.chatgptPlan = { accountLabel: "Fixture", planGranted: true, backgroundConsent: false, welcomeSeen: true };
+    const service = new CustomModelService({ read: async () => settings,
+      write: async () => { throw new Error("Unexpected settings write"); } },
+    { headers: async () => ({}), noteFailure: async () => undefined } as unknown as CustomCredentials, async () => undefined);
+    const serviceSpy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
+    const clientFactory = vi.fn(() => { throw new Error("Custom selection reached Codex"); });
+    try {
+      registerCodexHandlers({ clientFactory, settingsReader: async () => settings, budget: new AiEnrichmentBudget() });
+      const refused = await bus.dispatch("codex:enrich", { captureId: "cap_1", triggerSource: "auto-enrichment" }, { principal: "ipc" });
+      expect(refused).toMatchObject({ ok: false, error: { code: "chatgpt_background_consent_required" } });
+      expect(requests).toBe(0);
+
+      const clicked = await bus.dispatch("codex:enrich", { captureId: "cap_1", triggerSource: "library-regenerate" }, { principal: "ipc" });
+      expect(clicked.ok).toBe(true);
+      if (!clicked.ok) return;
+      await waitFor(() => getAiRun(clicked.value.runId)?.status === "completed");
+      expect(requests).toBe(1);
+
+      settings.ai.chatgptPlan.backgroundConsent = true;
+      const allowed = await bus.dispatch("codex:enrich", { captureId: "cap_1", triggerSource: "auto-enrichment" }, { principal: "ipc" });
+      expect(allowed.ok).toBe(true);
+      if (!allowed.ok) return;
+      // Dispatch only schedules enrichment; keep its service and HTTP fixture
+      // alive until completion, before afterEach closes the database.
+      await waitFor(() => getAiRun(allowed.value.runId)?.status === "completed");
+      expect(requests).toBe(2);
+      expect(clientFactory).not.toHaveBeenCalled();
+    } finally {
+      serviceSpy.mockRestore();
+      await http.close();
+    }
+  });
 
   describe("native Apple caption refusal routing", () => {
     const caption = JSON.stringify({ title: "Refusal fixture", description: "Synthetic refusal example" });
@@ -936,7 +1071,7 @@ describe("Codex handlers", () => {
       settings.ai.customModels = [entry];
       const service = new CustomModelService({ read: async () => settings,
         write: async () => { throw new Error("Unexpected settings write"); } },
-      { headers: async () => ({}) } as unknown as CustomCredentials, async () => undefined);
+      { headers: async () => ({}), noteFailure: async () => undefined } as unknown as CustomCredentials, async () => undefined);
       const serviceSpy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
       const codex = new FakeCodexClient();
       const clientFactory = vi.fn(() => codex as never);
@@ -992,7 +1127,7 @@ describe("Codex handlers", () => {
     settings.ai.customModels = [entry];
     const service = new CustomModelService({ read: async () => settings,
       write: async () => { throw new Error("Unexpected settings write"); } },
-    { headers: async () => ({}) } as unknown as CustomCredentials, async () => undefined);
+    { headers: async () => ({}), noteFailure: async () => undefined } as unknown as CustomCredentials, async () => undefined);
     const serviceSpy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
     const codex = new FakeCodexClient();
     const modelLister = vi.fn(async () => [{ ...fakeCodexModels()[0]!, id: "gpt-6-luna", model: "gpt-6-luna",
@@ -1032,7 +1167,7 @@ describe("Codex handlers", () => {
     settings.ai.customModels = [entry];
     const service = new CustomModelService({ read: async () => settings,
       write: async () => { throw new Error("Unexpected settings write"); } },
-    { headers: async () => ({}) } as unknown as CustomCredentials, async () => undefined);
+    { headers: async () => ({}), noteFailure: async () => undefined } as unknown as CustomCredentials, async () => undefined);
     const serviceSpy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
     let now = 0;
     const primaryHealth = new EnrichmentPrimaryHealth(() => now, 60_000);
@@ -1076,7 +1211,7 @@ describe("Codex handlers", () => {
     settings.ai.customModels = [entry];
     const service = new CustomModelService({ read: async () => settings,
       write: async () => { throw new Error("Unexpected settings write"); } },
-    { headers: async () => ({}) } as unknown as CustomCredentials, async () => undefined);
+    { headers: async () => ({}), noteFailure: async () => undefined } as unknown as CustomCredentials, async () => undefined);
     const serviceSpy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
     const failing = {
       enrichCapture: async () => { throw new Error("model overloaded"); },
@@ -1407,7 +1542,7 @@ describe("Codex handlers", () => {
     settings.ai.customModels = [entry, second];
     const service = new CustomModelService({ read: async () => settings,
       write: async () => { throw new Error("Unexpected write"); } },
-    { headers: async () => ({}) } as unknown as CustomCredentials, async () => undefined);
+    { headers: async () => ({}), noteFailure: async () => undefined } as unknown as CustomCredentials, async () => undefined);
     const serviceSpy = vi.spyOn(customModelHandlers, "getCustomModelService").mockReturnValue(service);
     const clientFactory = vi.fn(() => { throw new Error("Custom selection reached Codex"); });
     const runs: string[] = [];

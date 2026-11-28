@@ -1,3 +1,4 @@
+import { ChatgptOffer } from "./ChatgptConnection";
 import { ConnectionIndex } from "./ConnectionIndex";
 import { ConnectionPage } from "./ConnectionPage";
 import { JobsSummaryCard } from "./JobsSummaryCard";
@@ -338,8 +339,8 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
           <h1 className="pss__main-title">{settingsPageName("ai")}</h1>
           <p className="pss__main-sub">
             {onThisMac.length > 0
-              ? "Where AI runs: agents you already have installed and signed in, the model built into macOS, and API connections PwrSnap calls itself with your key. "
-              : "Where AI runs: agents you already have installed and signed in, and API connections PwrSnap calls itself with your key. "}
+              ? "Where AI runs: agents you already have installed and signed in, the model built into macOS, and API connections PwrSnap calls itself with your ChatGPT plan or API key. "
+              : "Where AI runs: agents you already have installed and signed in, and API connections PwrSnap calls itself with your ChatGPT plan or API key. "}
             Which one does each job is set in{" "}
             <button
               type="button"
@@ -402,6 +403,7 @@ export function AIProvidersPage({ sub }: AIProvidersPageProps): ReactElement {
             through a connection has no editing tools; captions need a model
             that accepts images.
           </p>
+          {connections.some((c) => c.connection.auth.type === "chatgpt") ? null : <ChatgptOffer />}
           {connections.length > 0 ? (
             <ConnectionIndex connections={connections} runners={runners} onOpen={openProvider} />
           ) : (

@@ -8,7 +8,8 @@ import { DirectApiError, invokeApi } from "./transport";
 import { DIRECT_ENRICHMENT_TIMEOUT_MS } from "./enrichment-queue";
 
 export class DirectEnrichmentBackend implements EnrichmentBackend {
-  constructor(private readonly model: ResolvedCustomModel, private readonly service: CustomModelService) {}
+  constructor(private readonly model: ResolvedCustomModel, private readonly service: CustomModelService,
+    private readonly beforeRequest?: () => Promise<void>) {}
   async enrichCapture(req: CaptureEnrichmentRequest): Promise<CaptureEnrichmentResponse> {
     req.abortSignal?.throwIfAborted();
     if (this.model.capabilities.vision !== true) throw new DirectApiError("Captions need a model marked as accepting images. Set Image input to Yes for this model in Settings → AI Providers.");
@@ -19,20 +20,32 @@ export class DirectEnrichmentBackend implements EnrichmentBackend {
       const mime = bytes[0] === 0xff && bytes[1] === 0xd8 ? "image/jpeg" : "image/png";
       images.push(`data:${mime};base64,${bytes.toString("base64")}`);
     }
-    const headers = await this.service.credentials.headers(this.model, req.abortSignal);
-    if (req.authorizeImageSend !== undefined) await req.authorizeImageSend();
-    req.abortSignal?.throwIfAborted();
-    const result = await invokeApi({ model: this.model, headers,
-      timeoutMs: DIRECT_ENRICHMENT_TIMEOUT_MS,
-      ...(this.model.enrichmentReasoning ? { reasoningMode: this.model.enrichmentReasoning } : {}),
-      system: `${CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS}\nReturn ONLY a JSON object conforming to this schema:\n${JSON.stringify(CAPTURE_ENRICHMENT_SCHEMA)}`,
-      messages: [{ role: "user", text: buildCaptureEnrichmentPrompt(req.metadata), images }],
-      ...(req.abortSignal ? { signal: req.abortSignal } : {}) });
+    const result = await this.invoke(images, req);
     let parsed: CaptureEnrichmentResponse["result"];
     try { parsed = parseCaptureEnrichmentResponse(result.text); }
     catch { throw new DirectApiError("Model returned invalid enrichment JSON. Try another model or increase the output token limit."); }
     return { result: parsed, threadId: `direct-${randomUUID()}`, turnId: randomUUID(),
       userAgent: "PwrSnap Direct API", model: this.model.modelId, modelProvider: `custom:${this.model.id}`, serviceTier: null, tokens: result.tokens };
+  }
+  private async invoke(images: string[], req: CaptureEnrichmentRequest): ReturnType<typeof invokeApi> {
+    // Check before waiting for a refresh, and again after it. Either the
+    // primary or fallback could have waited while consent changed.
+    await this.beforeRequest?.();
+    const headers = await this.service.credentials.headers(this.model, req.abortSignal);
+    await req.authorizeImageSend?.();
+    await this.beforeRequest?.();
+    req.abortSignal?.throwIfAborted();
+    try {
+      return await invokeApi({ model: this.model, headers,
+        timeoutMs: DIRECT_ENRICHMENT_TIMEOUT_MS,
+        ...(this.model.enrichmentReasoning ? { reasoningMode: this.model.enrichmentReasoning } : {}),
+        system: `${CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS}\nReturn ONLY a JSON object conforming to this schema:\n${JSON.stringify(CAPTURE_ENRICHMENT_SCHEMA)}`,
+        messages: [{ role: "user", text: buildCaptureEnrichmentPrompt(req.metadata), images }],
+        ...(req.abortSignal ? { signal: req.abortSignal } : {}) });
+    } catch (e) {
+      await this.service.credentials.noteFailure(this.model, e, headers);
+      throw e;
+    }
   }
   async close(): Promise<void> {}
 }

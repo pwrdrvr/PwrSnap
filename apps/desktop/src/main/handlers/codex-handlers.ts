@@ -1,3 +1,4 @@
+import { automaticPlanBlock } from "../ai/chatgpt-plan/errors";
 import { DirectEnrichmentBackend } from "../ai/direct-api/enrichment";
 import { resolveNativeCaptionRunner } from "../ai/apple-fm/native";
 import {
@@ -796,6 +797,15 @@ export function registerCodexHandlers(params?: {
       }
     }
 
+    if (triggerSource === "auto-enrichment") {
+      const provider = settings.ai.defaults.enrichment.provider;
+      const model = provider?.startsWith("custom:")
+        ? resolveCustomModel(settings.ai.customConnections, settings.ai.customModels, provider.slice("custom:".length))
+        : null;
+      const blocked = model?.auth.type === "chatgpt" ? automaticPlanBlock(settings) : null;
+      if (blocked) return validationError(blocked.code, blocked.message);
+    }
+
     const managedEnrichment = managedEnrichmentByCatalog.get(codexCatalogKey(settings)) ?? undefined;
     const codexCommand = codexCommandForSettings(settings);
     let bucketBefore: AiEnrichmentBudgetStatus;
@@ -1496,7 +1506,12 @@ async function runCaptureEnrichment(params: {
             || JSON.stringify(selected.auth) !== JSON.stringify(plan.customModel.auth))) {
             throw new DirectApiError("The connection changed while enrichment was queued. Regenerate to use its new configuration.");
           }
-          client = new DirectEnrichmentBackend(selected, service);
+          client = new DirectEnrichmentBackend(selected, service,
+            selected.auth.type === "chatgpt" && params.triggerSource === "auto-enrichment"
+              ? async () => {
+                const blocked = automaticPlanBlock(await params.settingsReader());
+                if (blocked) throw new DirectApiError(blocked.message);
+              } : undefined);
         } else if (acpAgentId !== undefined) {
           const acpClient = await buildAcpEnrichmentClient(
             acpAgentId,

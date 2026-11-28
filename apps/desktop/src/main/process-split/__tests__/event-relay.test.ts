@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
+  CHATGPT_CHAT_DELTA_CHANNEL,
   deliverRelayedProcessEvent,
   installRendererEventForwarder,
   onRelayedRendererEvent,
@@ -27,17 +28,18 @@ describe("split-process discovery publication relay", () => {
     );
   });
 
-  test("delivers discovery publications to main without exposing them to renderers", () => {
+  test.each([SETTINGS_DISCOVERY_PUBLICATION_CHANNEL, CHATGPT_CHAT_DELTA_CHANNEL])(
+    "delivers private bridge event %s to main only", (channel) => {
     const broadcast = vi.fn();
     const listener = vi.fn();
     const publication = { kind: "acp" };
     const unsubscribe = onRelayedRendererEvent(
-      SETTINGS_DISCOVERY_PUBLICATION_CHANNEL,
+      channel,
       listener
     );
 
     deliverRelayedProcessEvent(
-      SETTINGS_DISCOVERY_PUBLICATION_CHANNEL,
+      channel,
       publication,
       broadcast
     );

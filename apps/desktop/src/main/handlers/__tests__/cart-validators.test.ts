@@ -12,8 +12,7 @@ import {
   validateCartCopyAll,
   validateCartPrepareFilesDrag,
   validateCartPrepareSheetDrag,
-  MAX_CONTACT_SHEET_IDS,
-  MAX_COPY_ALL_IDS
+  MAX_EXPORT_IDS
 } from "../cart-validators";
 
 describe("validateCartExportZip", () => {
@@ -302,8 +301,10 @@ describe("validateCartCopyAll", () => {
     expect(r).toEqual({ ok: true, captureIds: ["b", "a"], preset: "low", jobId: "j" });
   });
 
-  it("caps distinct ids at MAX_COPY_ALL_IDS (duplicates do not count)", () => {
-    const ids = Array.from({ length: MAX_COPY_ALL_IDS }, (_, i) => `c${i}`);
+  // The image cap (MAX_COPY_ALL_IMAGES) is the handler's: it counts images
+  // after the skip rule. The validator only bounds the payload.
+  it("caps distinct ids at MAX_EXPORT_IDS (duplicates do not count)", () => {
+    const ids = Array.from({ length: MAX_EXPORT_IDS }, (_, i) => `c${i}`);
     expect(validateCartCopyAll({ captureIds: [...ids, ...ids], preset: "med", jobId: "j" }).ok).toBe(true);
     const r = validateCartCopyAll({ captureIds: [...ids, "one-more"], preset: "med", jobId: "j" });
     expect(r.ok ? null : r.error.code).toBe("too_many");
@@ -356,8 +357,8 @@ describe("validateCartContactSheet", () => {
     expect(validateCartContactSheet({ ...base, action: "print" }).ok).toBe(false);
   });
 
-  it("caps distinct ids at MAX_CONTACT_SHEET_IDS and trims the suggested name", () => {
-    const ids = Array.from({ length: MAX_CONTACT_SHEET_IDS + 1 }, (_, i) => `c${i}`);
+  it("caps distinct ids at MAX_EXPORT_IDS and trims the suggested name", () => {
+    const ids = Array.from({ length: MAX_EXPORT_IDS + 1 }, (_, i) => `c${i}`);
     const r = validateCartPrepareSheetDrag({ captureIds: ids, size: "s", layout: LAYOUT });
     expect(r.ok ? null : r.error.code).toBe("too_many");
     const named = validateCartPrepareSheetDrag({

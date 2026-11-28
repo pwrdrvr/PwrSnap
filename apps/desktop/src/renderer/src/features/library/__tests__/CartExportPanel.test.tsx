@@ -131,6 +131,19 @@ describe("CartExportPanel", () => {
     );
   });
 
+  test("a trashed image is left out, as main's skip rule leaves it out", async () => {
+    records.set("oat_checkout", rec("oat_checkout", { deleted_at: "2026-11-01T00:00:00.000Z" }));
+    try {
+      const block = await mount();
+      await act(async () => modeButton("Copy all").click());
+      expect(block.querySelector(".psl__cart-export-strip-text")?.textContent).toBe(
+        "2 images · paste as files · 2 left out"
+      );
+    } finally {
+      records.set("oat_checkout", rec("oat_checkout"));
+    }
+  });
+
   test("contact sheet cards are the three sheet widths and copy the sheet with the current layout", async () => {
     const block = await mount();
     await act(async () => modeButton("Contact sheet").click());

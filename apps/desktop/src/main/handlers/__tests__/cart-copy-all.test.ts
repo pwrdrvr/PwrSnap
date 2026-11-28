@@ -47,6 +47,7 @@ vi.mock("../../render/export-filename", () => ({
 vi.mock("../../render/cart-drag-icon", () => ({ composeCartDragIcon: vi.fn() }));
 vi.mock("../../cart/contact-sheet-bake", () => ({ bakeContactSheet: vi.fn() }));
 vi.mock("../../clipboard/named-image-pasteboard", () => ({
+  resolvePasteboardWriterPath: () => "/test/pasteboard-writer",
   writeNamedPngToPasteboard: vi.fn(),
   writeNamedPngsToPasteboard: mocks.writeNamedPngsToPasteboard
 }));
@@ -57,6 +58,7 @@ vi.mock("../../window", () => ({ findMainLibraryWindow: () => null }));
 
 import { registerCartCopyAndSheetHandlers } from "../cart-copy-sheet-handlers";
 import { exportJobs } from "../../cart/cart-export-jobs";
+import { MAX_COPY_ALL_IMAGES } from "../cart-validators";
 
 function record(id: string, over: Partial<CaptureRecord> = {}): CaptureRecord {
   return {
@@ -82,9 +84,9 @@ function clipboardWrites(): string[][] {
 
 type CopyRes = { fileCount: number; skipped: number; failed: number };
 
-async function copyAll(captureIds: string[], signal = new AbortController().signal): Promise<Result<CopyRes, { code: string }>> {
+async function copyAll(captureIds: string[], signal = new AbortController().signal): Promise<Result<CopyRes, { code: string; message: string }>> {
   const handler = mocks.handlers.get("cart:copyAll")!;
-  return (await handler({ captureIds, preset: "med", jobId: "job-1" }, { signal })) as Result<CopyRes, { code: string }>;
+  return (await handler({ captureIds, preset: "med", jobId: "job-1" }, { signal })) as Result<CopyRes, { code: string; message: string }>;
 }
 
 beforeEach(() => {
@@ -164,6 +166,47 @@ describe("cart:copyAll", () => {
     const r = await copyAll(["clip"]);
     expect(r.ok ? null : r.error.code).toBe("nothing_to_export");
     expect(clipboardWrites()).toHaveLength(0);
+  });
+
+  // The cap is on IMAGES, the same count the panel shows and caps on: videos
+  // and gone captures in the cart never push a copy over it.
+  test("the cap counts exportable images, not every id in the cart", async () => {
+    const images = Array.from({ length: MAX_COPY_ALL_IMAGES }, (_, i) => `img${i}`);
+    const videos = Array.from({ length: 20 }, (_, i) => `vid${i}`);
+    mocks.getCaptureById.mockImplementation((id) =>
+      id.startsWith("img") ? record(id) : id.startsWith("vid") ? record(id, { kind: "video" }) : null
+    );
+    const r = await copyAll([...images, ...videos]);
+    expect(r).toEqual({ ok: true, value: { fileCount: MAX_COPY_ALL_IMAGES, skipped: 20, failed: 0 } });
+
+    vi.clearAllMocks();
+    const over = await copyAll([...images, "img-one-more"]);
+    expect(over.ok ? null : over.error.code).toBe("too_many");
+    expect(mocks.resolveImagePresetFile).not.toHaveBeenCalled();
+    expect(clipboardWrites()).toHaveLength(0);
+  });
+
+  // Only the clipboard write is a clipboard failure; a failure preparing
+  // the files never touched the clipboard.
+  test("a failure before the clipboard write is an export error, not a clipboard one", async () => {
+    mocks.prepareRenderedFileAlias.mockRejectedValueOnce(new Error("ENOSPC"));
+    const r = await copyAll(["granola", "oat"]);
+    expect(r.ok ? null : r.error).toMatchObject({ kind: "render", code: "export_failed" });
+    expect(clipboardWrites()).toHaveLength(0);
+  });
+
+  test("a failed write is a clipboard error", async () => {
+    mocks.writeNamedPngsToPasteboard.mockResolvedValueOnce(false);
+    mocks.writeFilesToClipboard.mockRejectedValueOnce(new Error("clipboard busy"));
+    const r = await copyAll(["granola", "oat"]);
+    expect(r.ok ? null : r.error).toMatchObject({ kind: "clipboard", code: "copy_failed" });
+  });
+
+  // `false` from an installed helper is a failed write, not a missing helper.
+  test.runIf(process.platform === "darwin")("an installed helper that fails does not say reinstall", async () => {
+    mocks.writeNamedPngsToPasteboard.mockResolvedValueOnce(false);
+    const r = await copyAll(["granola", "oat"]);
+    expect(r.ok ? null : r.error.message).toBe("Could not put the images on the clipboard.");
   });
 
   test("progress ends with a done beat whatever happened", async () => {

@@ -33,6 +33,13 @@ export function cartDragTempDir(): string {
   return join(app.getPath("temp"), "pwrsnap-cart-export");
 }
 
+/** Where a COPIED contact sheet lives while it is on the clipboard: outside
+ *  the drag temp dir, so the age prune never deletes a file the pasteboard
+ *  still points at. Holds only the latest copied sheet. */
+export function cartClipboardDir(): string {
+  return join(app.getPath("temp"), "pwrsnap-cart-clipboard");
+}
+
 /** Drag temp entries older than this are deleted on the next prepare. A
  *  drag's drop completes in seconds, so anything this old is finished. */
 export const CART_DRAG_TEMP_MAX_AGE_MS = 10 * 60_000;

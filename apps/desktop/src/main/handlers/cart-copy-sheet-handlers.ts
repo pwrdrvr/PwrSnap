@@ -5,7 +5,7 @@
 
 import { BrowserWindow, dialog, nativeImage, shell } from "electron";
 import { createHash, randomUUID } from "node:crypto";
-import { copyFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import {
   err,
@@ -27,6 +27,7 @@ import {
 } from "../cart/cart-render";
 import {
   broadcastCartExportProgress,
+  cartClipboardDir,
   cartDragTempDir,
   CART_DRAG_TEMP_MAX_AGE_MS,
   exportJobs,
@@ -37,6 +38,7 @@ import { prepareRenderedFileAlias } from "../render/file-alias";
 import { buildPastedImageDisplayName } from "../render/export-filename";
 import { composeCartDragIcon } from "../render/cart-drag-icon";
 import {
+  resolvePasteboardWriterPath,
   writeNamedPngToPasteboard,
   writeNamedPngsToPasteboard
 } from "../clipboard/named-image-pasteboard";
@@ -47,6 +49,8 @@ import { notifyClipboardChanged } from "../clipboard-events";
 import { findMainLibraryWindow } from "../window";
 import { getMainLogger } from "../log";
 import {
+  MAX_CONTACT_SHEET_IMAGES,
+  MAX_COPY_ALL_IMAGES,
   validateCartContactSheet,
   validateCartCopyAll,
   validateCartPrepareFilesDrag,
@@ -61,6 +65,13 @@ const NOTHING_TO_EXPORT: PwrSnapError = {
   message: "No exportable images in the cart"
 };
 const CANCELLED: PwrSnapError = { kind: "validation", code: "cancelled", message: "Export cancelled" };
+
+/** The image caps count what survives the skip rule — the same number the
+ *  cart panel shows and caps on — so videos in the cart never trip them. */
+function tooManyImages(count: number, max: number, what: string): PwrSnapError | null {
+  if (count <= max) return null;
+  return { kind: "validation", code: "too_many", message: `${what} takes up to ${max} images` };
+}
 
 /** Friendly-named copies of the rendered PNGs (the names a paste shows), made
  *  unique so pasting several into one folder never asks to replace a file. */
@@ -92,7 +103,13 @@ async function writeImageFilesToClipboard(paths: readonly string[], metaJson: st
       metaJson
     });
     if (!written) {
-      throw new Error("Copying several images needs PwrSnap's pasteboard helper. Reinstall PwrSnap.");
+      // False means either no helper at all or a helper that ran and failed;
+      // only the first is fixed by reinstalling.
+      throw new Error(
+        resolvePasteboardWriterPath() === null
+          ? "Copying several images needs PwrSnap's pasteboard helper. Reinstall PwrSnap."
+          : "Could not put the images on the clipboard."
+      );
     }
     return;
   }
@@ -166,6 +183,11 @@ async function buildSheet(args: {
   try {
     const info = JSON.parse(await readFile(infoPath, "utf8")) as Omit<BuiltSheet, "path">;
     await stat(sheetPath);
+    // Reusing the sheet restarts its prune clock: the age prune reads the
+    // folder's mtime, which a reuse would otherwise leave at the first build,
+    // so a sheet reused at minute 9 could vanish mid-drag.
+    const now = new Date();
+    await utimes(dir, now, now).catch(() => undefined);
     return { ...info, path: sheetPath };
   } catch {
     // not built yet (or half-built) — build it
@@ -242,6 +264,25 @@ async function askSavePath(defaultName: string): Promise<string | null> {
   return result.filePath;
 }
 
+/** Copy the sheet out of the age-pruned build folder into the clipboard
+ *  folder, which holds only the latest copied sheet and is never pruned by
+ *  age — a pasteboard file URL must outlive the 10-minute drag-temp prune.
+ *  Returns the clipboard copy's path. */
+async function stageClipboardSheet(path: string): Promise<string> {
+  const dir = cartClipboardDir();
+  await mkdir(dir, { recursive: true });
+  const name = basename(path);
+  const dest = join(dir, name);
+  await publishTo(path, dest);
+  // One sheet fits on the clipboard: drop the earlier ones. Dot files are
+  // another copy's in-flight temp files.
+  for (const entry of await readdir(dir).catch(() => [] as string[])) {
+    if (entry === name || entry.startsWith(".")) continue;
+    await rm(join(dir, entry), { force: true }).catch(() => undefined);
+  }
+  return dest;
+}
+
 /** Copy one PNG as an image: named PNG + file URL on macOS (pastes with its
  *  name, like a single snap), image bytes elsewhere. */
 async function copySheetImage(path: string, imageCount: number): Promise<void> {
@@ -253,15 +294,24 @@ async function copySheetImage(path: string, imageCount: number): Promise<void> {
   await writeClipboardImage(image);
 }
 
+/** Errors before the clipboard write are export failures; only the write
+ *  itself is a clipboard failure. */
+function exportError(message: string): PwrSnapError {
+  return { kind: "render", code: "export_failed", message };
+}
+
 export function registerCartCopyAndSheetHandlers(): void {
   bus.register("cart:copyAll", async (req, ctx) => {
     const v = validateCartCopyAll(req);
     if (!v.ok) return err(v.error);
     const { records, skipped } = resolveExportableImages(v.captureIds);
     if (records.length === 0) return err(NOTHING_TO_EXPORT);
+    const overCap = tooManyImages(records.length, MAX_COPY_ALL_IMAGES, "Copy all");
+    if (overCap !== null) return err(overCap);
 
     const job = startJob(v.jobId, ctx.signal);
     let lastTotal = records.length;
+    let writing = false;
     try {
       const outcome = await renderCartImages(records, v.preset, {
         signal: job.signal,
@@ -278,6 +328,7 @@ export function registerCartCopyAndSheetHandlers(): void {
       // Last chance to back out: past this line the clipboard is replaced.
       if (job.signal.aborted) return err(CANCELLED);
       copySeq += 1;
+      writing = true;
       await writeImageFilesToClipboard(
         aliases,
         JSON.stringify({ kind: "cart-copy-all", count: aliases.length, preset: v.preset, seq: copySeq, ts: Date.now(), pid: process.pid })
@@ -291,8 +342,11 @@ export function registerCartCopyAndSheetHandlers(): void {
       });
       return ok({ fileCount: aliases.length, skipped, failed: outcome.failed });
     } catch (cause) {
-      log.warn("cart:copyAll failed", { message: cause instanceof Error ? cause.message : String(cause) });
-      return err(clipboardError(cause, "copy_failed"));
+      log.warn("cart:copyAll failed", {
+        writing,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err(writing ? clipboardError(cause, "copy_failed") : exportError("Could not prepare the images to copy"));
     } finally {
       job.release();
       broadcastCartExportProgress({ jobId: v.jobId, phase: "done", completed: lastTotal, total: lastTotal });
@@ -304,6 +358,8 @@ export function registerCartCopyAndSheetHandlers(): void {
     if (!v.ok) return err(v.error);
     const { records, skipped } = resolveExportableImages(v.captureIds);
     if (records.length === 0) return err(NOTHING_TO_EXPORT);
+    const overCap = tooManyImages(records.length, MAX_CONTACT_SHEET_IMAGES, "A sheet");
+    if (overCap !== null) return err(overCap);
 
     let destPath: string | null = null;
     if (v.action === "save") {
@@ -317,6 +373,7 @@ export function registerCartCopyAndSheetHandlers(): void {
 
     const job = startJob(v.jobId, ctx.signal);
     let lastTotal = records.length;
+    let writing = false;
     try {
       const built = await buildSheet({
         records,
@@ -339,7 +396,9 @@ export function registerCartCopyAndSheetHandlers(): void {
         shell.showItemInFolder(destPath);
         path = destPath;
       } else {
-        await copySheetImage(built.path, built.imageCount);
+        path = await stageClipboardSheet(built.path);
+        writing = true;
+        await copySheetImage(path, built.imageCount);
         notifyClipboardChanged();
       }
       return ok({
@@ -353,11 +412,7 @@ export function registerCartCopyAndSheetHandlers(): void {
       });
     } catch (cause) {
       log.warn("cart:contactSheet failed", { message: cause instanceof Error ? cause.message : String(cause) });
-      return err(
-        v.action === "copy"
-          ? clipboardError(cause, "copy_failed")
-          : { kind: "render", code: "export_failed", message: "Could not make the contact sheet" }
-      );
+      return err(writing ? clipboardError(cause, "copy_failed") : exportError("Could not make the contact sheet"));
     } finally {
       job.release();
       broadcastCartExportProgress({ jobId: v.jobId, phase: "done", completed: lastTotal, total: lastTotal });
@@ -371,6 +426,8 @@ export function registerCartCopyAndSheetHandlers(): void {
     if (!v.ok) return err(v.error);
     const { records } = resolveExportableImages(v.captureIds);
     if (records.length === 0) return err(NOTHING_TO_EXPORT);
+    const overCap = tooManyImages(records.length, MAX_COPY_ALL_IMAGES, "Copy all");
+    if (overCap !== null) return err(overCap);
     try {
       const outcome = await renderCartImages(records, v.preset);
       if (outcome.rendered.length === 0) {
@@ -400,6 +457,8 @@ export function registerCartCopyAndSheetHandlers(): void {
     if (!v.ok) return err(v.error);
     const { records } = resolveExportableImages(v.captureIds);
     if (records.length === 0) return err(NOTHING_TO_EXPORT);
+    const overCap = tooManyImages(records.length, MAX_CONTACT_SHEET_IMAGES, "A sheet");
+    if (overCap !== null) return err(overCap);
     try {
       const built = await buildSheet({
         records,

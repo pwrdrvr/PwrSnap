@@ -114,7 +114,8 @@ export function validateCartCommitToNew(
   return { ok: true, name: req.name };
 }
 
-const MAX_EXPORT_IDS = 1000;
+/** Most ids any cart export payload may carry (the Zip's cap). */
+export const MAX_EXPORT_IDS = 1000;
 
 /** `cart:exportZip` — `{ captureIds; preset; suggestedName?; jobId }`.
  *  Dedupes ids and caps cardinality so a runaway cart can't fan out into
@@ -252,10 +253,13 @@ export function validateCartCommitToExisting(
 }
 
 /** Copy all puts every image on the clipboard eagerly (PNG bytes per item on
- *  macOS), so it is capped well below the Zip. */
-export const MAX_COPY_ALL_IDS = 100;
-/** Past this, contact sheet tiles are too small to read. */
-export const MAX_CONTACT_SHEET_IDS = 200;
+ *  macOS), so it is capped well below the Zip. Counted on EXPORTABLE images
+ *  (after the skip rule) by the handler, the same count the cart panel shows
+ *  and caps on; the payload itself is bounded by MAX_EXPORT_IDS. */
+export const MAX_COPY_ALL_IMAGES = 100;
+/** Past this, contact sheet tiles are too small to read. Counted like
+ *  MAX_COPY_ALL_IMAGES. */
+export const MAX_CONTACT_SHEET_IMAGES = 200;
 
 type Invalid = { ok: false; error: PwrSnapError };
 
@@ -352,7 +356,7 @@ export function validateCartCopyAll(
   if (!isRecord(req)) {
     return { ok: false, error: validationError("not_object", "payload must be an object") };
   }
-  const ids = parseCaptureIds(req.captureIds, MAX_COPY_ALL_IDS);
+  const ids = parseCaptureIds(req.captureIds, MAX_EXPORT_IDS);
   if (!ids.ok) return ids;
   const preset = parsePreset(req.preset);
   if (!preset.ok) return preset;
@@ -387,7 +391,7 @@ export function validateCartPrepareSheetDrag(
   if (!isRecord(req)) {
     return { ok: false, error: validationError("not_object", "payload must be an object") };
   }
-  const ids = parseCaptureIds(req.captureIds, MAX_CONTACT_SHEET_IDS);
+  const ids = parseCaptureIds(req.captureIds, MAX_EXPORT_IDS);
   if (!ids.ok) return ids;
   const size = parseSheetSize(req.size);
   if (!size.ok) return size;

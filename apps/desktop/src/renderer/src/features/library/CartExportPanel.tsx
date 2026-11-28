@@ -51,9 +51,10 @@ const PRESET_LABELS: Record<RenderPreset, string> = { low: "Low", med: "Med", hi
 const SIZE_LABELS: Record<ContactSheetSize, string> = { s: "S", m: "M", l: "L" };
 
 /** Copy all writes every image eagerly; main refuses more than this
- *  (MAX_COPY_ALL_IDS in cart-validators.ts). */
+ *  (MAX_COPY_ALL_IMAGES in cart-validators.ts), counting images after the
+ *  skip rule exactly as this panel does. */
 export const COPY_ALL_MAX = 100;
-/** Main refuses a sheet past this (MAX_CONTACT_SHEET_IDS). */
+/** Main refuses a sheet past this (MAX_CONTACT_SHEET_IMAGES). */
 export const CONTACT_SHEET_MAX = 200;
 
 const COLUMN_CHOICES: readonly ContactSheetColumns[] = ["auto", 2, 3, 4, 5, 6];
@@ -271,15 +272,16 @@ export function CartExportPanel({
     return unsubscribe;
   }, []);
 
-  // Images that survive the export skip rule (videos and gone captures are
-  // left out), plus how many were left out, for the strip and the notes.
+  // Images that survive the export skip rule — main's resolveExportableImages:
+  // videos, trashed and gone captures are left out — plus how many were left
+  // out, for the strip, the estimates and the caps.
   const { images, leftOut } = useMemo(() => {
     const out: CaptureRecord[] = [];
     let left = 0;
     for (const id of captureIds) {
       const rec = records.get(id);
       if (rec === undefined) continue; // still hydrating
-      if (rec === null || rec.kind !== "image") left += 1;
+      if (rec === null || rec.kind !== "image" || rec.deleted_at !== null) left += 1;
       else out.push(rec);
     }
     return { images: out, leftOut: left };

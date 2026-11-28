@@ -6,6 +6,7 @@
 // typed Req<C> / Res<C> inference per command name.
 
 import type {
+  CartDragPayload,
   CommandName,
   PerfMarkPayload,
   RenderPreset,
@@ -232,11 +233,7 @@ declare global {
         segments?: Array<{ start: number; end: number }>;
         audio?: { includeSystemAudio: boolean; includeMicrophone: boolean };
       }): void;
-      startCartZipDrag(payload: {
-        captureIds: string[];
-        preset: RenderPreset;
-        suggestedName?: string;
-      }): void;
+      startCartZipDrag(payload: CartDragPayload): void;
       reportSelectorDiagnostics(payload: {
         innerWidth: number;
         innerHeight: number;

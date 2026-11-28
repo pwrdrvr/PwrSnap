@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { IPC_VIDEO_DRAG_START, ok } from "@pwrsnap/shared";
+import { IPC_CART_ZIP_DRAG_START, IPC_VIDEO_DRAG_START, ok } from "@pwrsnap/shared";
 
 const electronMock = vi.hoisted(() => ({
   handler: null as
@@ -19,7 +19,8 @@ const electronMock = vi.hoisted(() => ({
   nativeImage: {
     createFromPath: vi.fn(() => ({
       isEmpty: () => true
-    }))
+    })),
+    createEmpty: vi.fn(() => ({ isEmpty: () => true }))
   }
 }));
 
@@ -239,3 +240,73 @@ describe("video drag-out bridge", () => {
   });
 });
 
+describe("cart drag-out bridge", () => {
+  afterEach(() => {
+    disposeIpcDispatcher();
+    bus.unregister("cart:prepareZipDrag");
+    bus.unregister("cart:prepareFilesDrag");
+    bus.unregister("cart:prepareSheetDrag");
+    vi.clearAllMocks();
+  });
+
+  async function drag(payload: unknown): Promise<{ verb: string | null; startDrag: ReturnType<typeof vi.fn> }> {
+    let verb: string | null = null;
+    bus.register("cart:prepareZipDrag", async () => {
+      verb = "zip";
+      return ok({ path: "/tmp/cart.zip", fileCount: 2, iconPath: null });
+    });
+    bus.register("cart:prepareFilesDrag", async () => {
+      verb = "files";
+      return ok({ paths: ["/tmp/a.png", "/tmp/b.png"], iconPath: null });
+    });
+    bus.register("cart:prepareSheetDrag", async () => {
+      verb = "sheet";
+      return ok({ path: "/tmp/sheet.png", iconPath: null });
+    });
+    registerIpcDispatcher();
+    const call = electronMock.on.mock.calls.find(([channel]) => channel === IPC_CART_ZIP_DRAG_START);
+    const listener = call?.[1] as ((event: unknown, req: unknown) => void) | undefined;
+    if (listener === undefined) throw new Error("no cart drag listener registered");
+    const startDrag = vi.fn();
+    listener({ sender: { isDestroyed: () => false, startDrag } }, payload);
+    await new Promise((resolve) => setImmediate(resolve));
+    return { verb, startDrag };
+  }
+
+  const ids = ["cap_1", "cap_2"];
+
+  test("a payload without a kind is the Zip, dragged as one file", async () => {
+    const { verb, startDrag } = await drag({ captureIds: ids, preset: "med" });
+    expect(verb).toBe("zip");
+    expect(startDrag.mock.calls[0]?.[0]).toMatchObject({ file: "/tmp/cart.zip" });
+    expect(startDrag.mock.calls[0]?.[0]).not.toHaveProperty("files");
+  });
+
+  test("Copy all's chip drags every image as its own file", async () => {
+    const { verb, startDrag } = await drag({ kind: "files", captureIds: ids, preset: "high" });
+    expect(verb).toBe("files");
+    expect(startDrag.mock.calls[0]?.[0]).toMatchObject({ files: ["/tmp/a.png", "/tmp/b.png"] });
+  });
+
+  test("the sheet chip drags the sheet", async () => {
+    const { verb, startDrag } = await drag({
+      kind: "sheet",
+      captureIds: ids,
+      size: "m",
+      layout: { columns: "auto", spacing: "tight", background: "hatch" }
+    });
+    expect(verb).toBe("sheet");
+    expect(startDrag.mock.calls[0]?.[0]).toMatchObject({ file: "/tmp/sheet.png" });
+  });
+
+  test.each([
+    ["an unknown kind", { kind: "pdf", captureIds: ids, preset: "med" }],
+    ["a sheet without a size", { kind: "sheet", captureIds: ids, layout: {} }],
+    ["files without a preset", { kind: "files", captureIds: ids }],
+    ["no ids", { captureIds: [], preset: "med" }]
+  ])("refuses %s before any prepare", async (_label, payload) => {
+    const { verb, startDrag } = await drag(payload);
+    expect(verb).toBeNull();
+    expect(startDrag).not.toHaveBeenCalled();
+  });
+});

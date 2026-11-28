@@ -7,7 +7,13 @@ import {
   validateCartExportZipCancel,
   validateCartPrepareZipDrag,
   validateCartRename,
-  validateCartReorder
+  validateCartReorder,
+  validateCartContactSheet,
+  validateCartCopyAll,
+  validateCartPrepareFilesDrag,
+  validateCartPrepareSheetDrag,
+  MAX_CONTACT_SHEET_IDS,
+  MAX_COPY_ALL_IDS
 } from "../cart-validators";
 
 describe("validateCartExportZip", () => {
@@ -285,5 +291,81 @@ describe("validateCartCommitToExisting", () => {
       ok: false,
       error: { code: "projectId_required" }
     });
+  });
+});
+
+const LAYOUT = { columns: "auto", spacing: "tight", background: "hatch" } as const;
+
+describe("validateCartCopyAll", () => {
+  it("accepts ids + preset + jobId and dedupes ids in first-seen order", () => {
+    const r = validateCartCopyAll({ captureIds: ["b", "a", "b"], preset: "low", jobId: "j" });
+    expect(r).toEqual({ ok: true, captureIds: ["b", "a"], preset: "low", jobId: "j" });
+  });
+
+  it("caps distinct ids at MAX_COPY_ALL_IDS (duplicates do not count)", () => {
+    const ids = Array.from({ length: MAX_COPY_ALL_IDS }, (_, i) => `c${i}`);
+    expect(validateCartCopyAll({ captureIds: [...ids, ...ids], preset: "med", jobId: "j" }).ok).toBe(true);
+    const r = validateCartCopyAll({ captureIds: [...ids, "one-more"], preset: "med", jobId: "j" });
+    expect(r.ok ? null : r.error.code).toBe("too_many");
+  });
+
+  it("refuses a bad preset, empty ids, or a missing jobId", () => {
+    expect(validateCartCopyAll({ captureIds: ["a"], preset: "huge", jobId: "j" }).ok).toBe(false);
+    expect(validateCartCopyAll({ captureIds: [], preset: "low", jobId: "j" }).ok).toBe(false);
+    expect(validateCartCopyAll({ captureIds: ["a"], preset: "low" }).ok).toBe(false);
+  });
+
+  it("the files drag needs no jobId", () => {
+    expect(validateCartPrepareFilesDrag({ captureIds: ["a"], preset: "high" })).toEqual({
+      ok: true,
+      captureIds: ["a"],
+      preset: "high"
+    });
+  });
+});
+
+describe("validateCartContactSheet", () => {
+  it("accepts every size, column, spacing and background the picker offers", () => {
+    for (const size of ["s", "m", "l"]) {
+      for (const columns of ["auto", 1, 2, 3, 4, 5, 6, 7, 8]) {
+        for (const spacing of ["none", "tight", "roomy"]) {
+          for (const background of ["clear", "hatch", "black", "white"]) {
+            const r = validateCartContactSheet({
+              captureIds: ["a"],
+              size,
+              layout: { columns, spacing, background },
+              action: "copy",
+              jobId: "j"
+            });
+            expect(r.ok).toBe(true);
+          }
+        }
+      }
+    }
+  });
+
+  it("refuses columns outside auto / 1–8, unknown spacing or background, and unknown actions", () => {
+    const base = { captureIds: ["a"], size: "m", layout: LAYOUT, action: "save", jobId: "j" };
+    expect(validateCartContactSheet(base).ok).toBe(true);
+    for (const columns of [0, 9, 2.5, "3", null]) {
+      expect(validateCartContactSheet({ ...base, layout: { ...LAYOUT, columns } }).ok).toBe(false);
+    }
+    expect(validateCartContactSheet({ ...base, layout: { ...LAYOUT, spacing: "huge" } }).ok).toBe(false);
+    expect(validateCartContactSheet({ ...base, layout: { ...LAYOUT, background: "red" } }).ok).toBe(false);
+    expect(validateCartContactSheet({ ...base, size: "xl" }).ok).toBe(false);
+    expect(validateCartContactSheet({ ...base, action: "print" }).ok).toBe(false);
+  });
+
+  it("caps distinct ids at MAX_CONTACT_SHEET_IDS and trims the suggested name", () => {
+    const ids = Array.from({ length: MAX_CONTACT_SHEET_IDS + 1 }, (_, i) => `c${i}`);
+    const r = validateCartPrepareSheetDrag({ captureIds: ids, size: "s", layout: LAYOUT });
+    expect(r.ok ? null : r.error.code).toBe("too_many");
+    const named = validateCartPrepareSheetDrag({
+      captureIds: ["a"],
+      size: "s",
+      layout: LAYOUT,
+      suggestedName: "x".repeat(500)
+    });
+    expect(named.ok && named.suggestedName?.length).toBe(200);
   });
 });

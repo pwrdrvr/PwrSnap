@@ -73,6 +73,17 @@
      it. */
   --focus-ring: var(--accent);
 
+  /* ---------- COLOR — contact sheet backgrounds (cart export) ---------- */
+  /* The PNG's own colors, drawn in the sheet previews and swatches. They are
+     what the bake paints (main/cart/contact-sheet-bake.ts), so they do not
+     change with the app theme. */
+  --sheet-clear-light: #ffffff;
+  --sheet-clear-dark:  #d9d9d9;
+  --sheet-hatch-dark:  #1d1d1f;
+  --sheet-hatch-light: #2a2a2d;
+  --sheet-black:       #000000;
+  --sheet-white:       #ffffff;
+
   /* ---------- COLOR — brand blue (logo / parent stamp ONLY) ---------- */
   /* Reserved for the PwrDrvr brand mark on its navy plate. Do NOT use
      in product UI — the in-product accent is copper above. */

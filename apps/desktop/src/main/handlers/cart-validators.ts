@@ -4,7 +4,16 @@
 // boundary is the trust boundary; persistence-layer code assumes
 // validated input.
 
-import type { PwrSnapError } from "@pwrsnap/shared";
+import {
+  CONTACT_SHEET_BACKGROUNDS,
+  CONTACT_SHEET_SIZES,
+  CONTACT_SHEET_SPACINGS,
+  isContactSheetColumns,
+  type ContactSheetLayout,
+  type ContactSheetSize,
+  type PwrSnapError,
+  type RenderPreset
+} from "@pwrsnap/shared";
 
 function validationError(code: string, message: string): PwrSnapError {
   return { kind: "validation", code, message };
@@ -240,4 +249,174 @@ export function validateCartCommitToExisting(
     };
   }
   return { ok: true, projectId: req.projectId };
+}
+
+/** Copy all puts every image on the clipboard eagerly (PNG bytes per item on
+ *  macOS), so it is capped well below the Zip. */
+export const MAX_COPY_ALL_IDS = 100;
+/** Past this, contact sheet tiles are too small to read. */
+export const MAX_CONTACT_SHEET_IDS = 200;
+
+type Invalid = { ok: false; error: PwrSnapError };
+
+/** Shared `captureIds` rule: non-empty strings, deduped in first-seen order,
+ *  at most `max` distinct ids. */
+function parseCaptureIds(value: unknown, max: number): { ok: true; captureIds: string[] } | Invalid {
+  if (!Array.isArray(value) || value.length === 0) {
+    return {
+      ok: false,
+      error: validationError("captureIds_required", "captureIds must be a non-empty array")
+    };
+  }
+  const captureIds: string[] = [];
+  const seen = new Set<string>();
+  for (const id of value) {
+    if (typeof id !== "string" || id.length === 0) {
+      return {
+        ok: false,
+        error: validationError("captureId_invalid", "every captureId must be a non-empty string")
+      };
+    }
+    if (seen.has(id)) continue;
+    seen.add(id);
+    captureIds.push(id);
+  }
+  if (captureIds.length > max) {
+    return {
+      ok: false,
+      error: validationError("too_many", `cannot export more than ${max} captures at once`)
+    };
+  }
+  return { ok: true, captureIds };
+}
+
+function parsePreset(value: unknown): { ok: true; preset: RenderPreset } | Invalid {
+  if (value !== "low" && value !== "med" && value !== "high") {
+    return { ok: false, error: validationError("preset_invalid", "preset must be one of low | med | high") };
+  }
+  return { ok: true, preset: value };
+}
+
+function parseJobId(value: unknown): { ok: true; jobId: string } | Invalid {
+  if (typeof value !== "string" || value.length === 0 || value.length > 128) {
+    return { ok: false, error: validationError("jobId_invalid", "jobId must be a 1–128 character string") };
+  }
+  return { ok: true, jobId: value };
+}
+
+function parseSuggestedName(value: unknown): { ok: true; suggestedName: string | undefined } | Invalid {
+  if (value === undefined || value === null) return { ok: true, suggestedName: undefined };
+  if (typeof value !== "string") {
+    return { ok: false, error: validationError("suggestedName_invalid", "suggestedName must be a string") };
+  }
+  return { ok: true, suggestedName: value.slice(0, 200) };
+}
+
+function parseSheetSize(value: unknown): { ok: true; size: ContactSheetSize } | Invalid {
+  if (!(CONTACT_SHEET_SIZES as readonly unknown[]).includes(value)) {
+    return { ok: false, error: validationError("size_invalid", "size must be one of s | m | l") };
+  }
+  return { ok: true, size: value as ContactSheetSize };
+}
+
+function parseSheetLayout(value: unknown): { ok: true; layout: ContactSheetLayout } | Invalid {
+  if (!isRecord(value)) {
+    return { ok: false, error: validationError("layout_invalid", "layout must be an object") };
+  }
+  if (!isContactSheetColumns(value.columns)) {
+    return { ok: false, error: validationError("columns_invalid", "columns must be \"auto\" or 1–8") };
+  }
+  if (!(CONTACT_SHEET_SPACINGS as readonly unknown[]).includes(value.spacing)) {
+    return { ok: false, error: validationError("spacing_invalid", "spacing must be none | tight | roomy") };
+  }
+  if (!(CONTACT_SHEET_BACKGROUNDS as readonly unknown[]).includes(value.background)) {
+    return {
+      ok: false,
+      error: validationError("background_invalid", "background must be clear | hatch | black | white")
+    };
+  }
+  return {
+    ok: true,
+    layout: {
+      columns: value.columns,
+      spacing: value.spacing as ContactSheetLayout["spacing"],
+      background: value.background as ContactSheetLayout["background"]
+    }
+  };
+}
+
+/** `cart:copyAll` — `{ captureIds; preset; jobId }`. */
+export function validateCartCopyAll(
+  req: unknown
+): { ok: true; captureIds: string[]; preset: RenderPreset; jobId: string } | Invalid {
+  if (!isRecord(req)) {
+    return { ok: false, error: validationError("not_object", "payload must be an object") };
+  }
+  const ids = parseCaptureIds(req.captureIds, MAX_COPY_ALL_IDS);
+  if (!ids.ok) return ids;
+  const preset = parsePreset(req.preset);
+  if (!preset.ok) return preset;
+  const job = parseJobId(req.jobId);
+  if (!job.ok) return job;
+  return { ok: true, captureIds: ids.captureIds, preset: preset.preset, jobId: job.jobId };
+}
+
+/** `cart:prepareFilesDrag` — `{ captureIds; preset }`. */
+export function validateCartPrepareFilesDrag(
+  req: unknown
+): { ok: true; captureIds: string[]; preset: RenderPreset } | Invalid {
+  if (!isRecord(req)) {
+    return { ok: false, error: validationError("not_object", "payload must be an object") };
+  }
+  const v = validateCartCopyAll({ ...req, jobId: "drag" });
+  if (!v.ok) return v;
+  return { ok: true, captureIds: v.captureIds, preset: v.preset };
+}
+
+export type ValidContactSheetRequest = {
+  captureIds: string[];
+  size: ContactSheetSize;
+  layout: ContactSheetLayout;
+  suggestedName: string | undefined;
+};
+
+/** `cart:prepareSheetDrag` — `{ captureIds; size; layout; suggestedName? }`. */
+export function validateCartPrepareSheetDrag(
+  req: unknown
+): ({ ok: true } & ValidContactSheetRequest) | Invalid {
+  if (!isRecord(req)) {
+    return { ok: false, error: validationError("not_object", "payload must be an object") };
+  }
+  const ids = parseCaptureIds(req.captureIds, MAX_CONTACT_SHEET_IDS);
+  if (!ids.ok) return ids;
+  const size = parseSheetSize(req.size);
+  if (!size.ok) return size;
+  const layout = parseSheetLayout(req.layout);
+  if (!layout.ok) return layout;
+  const name = parseSuggestedName(req.suggestedName);
+  if (!name.ok) return name;
+  return {
+    ok: true,
+    captureIds: ids.captureIds,
+    size: size.size,
+    layout: layout.layout,
+    suggestedName: name.suggestedName
+  };
+}
+
+/** `cart:contactSheet` — the drag shape plus `action` and `jobId`. */
+export function validateCartContactSheet(
+  req: unknown
+): ({ ok: true; action: "copy" | "save"; jobId: string } & ValidContactSheetRequest) | Invalid {
+  if (!isRecord(req)) {
+    return { ok: false, error: validationError("not_object", "payload must be an object") };
+  }
+  const base = validateCartPrepareSheetDrag(req);
+  if (!base.ok) return base;
+  if (req.action !== "copy" && req.action !== "save") {
+    return { ok: false, error: validationError("action_invalid", "action must be copy | save") };
+  }
+  const job = parseJobId(req.jobId);
+  if (!job.ok) return job;
+  return { ...base, action: req.action, jobId: job.jobId };
 }
